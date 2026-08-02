@@ -31,10 +31,10 @@ function collapseDoubleStarRuns(glob: string): string {
 }
 
 // A drive prefix (`c:`, `C:`, ...) can never appear in a canonicalized, workspace-
-// relative path (see `canonicalizePath`), so a spec bearing one could never match
-// anything -- it must be rejected loudly at parse time rather than silently parsed
-// into a dead rule. Case-insensitive because the spec itself isn't lowercased until
-// match time.
+// relative path (see `canonicalizePath`), so a spec bearing one could never match a
+// path-keyed rule -- see `specHasNonCanonicalSyntax`, which uses this pattern, and
+// `pathMatches`, which fails closed on it. Case-insensitive because the spec itself
+// isn't lowercased until match time.
 const SPEC_DRIVE_PREFIX_RE = /^[a-z]:/i
 
 // True if `spec`, split on `/`, contains a segment that is exactly `.` or `..`, an
@@ -42,14 +42,34 @@ const SPEC_DRIVE_PREFIX_RE = /^[a-z]:/i
 // with a drive prefix. Incoming paths are canonicalized before matching -- `.`/`..`
 // segments collapsed, absolute/drive-prefixed paths refused outright -- so a spec
 // written in any of these non-canonical forms (`./src/**`, `src/./**`, `src/../**`,
-// `src//**`, `/src/**`, `c:/src/**`) could never match a canonicalized path. Rather
-// than parse such a spec into a rule that silently never fires, `parseRule` refuses it.
-// Segments are checked for EXACT equality: a `.`-bearing filename like `a.ts` or a
-// `..`-prefixed one like `..foo` is an ordinary segment and is left alone.
-function hasNonCanonicalSyntax(spec: string): boolean {
+// `src//**`, `/src/**`, `c:/src/**`) could never match a canonicalized path. Segments
+// are checked for EXACT equality: a `.`-bearing filename like `a.ts` or a `..`-prefixed
+// one like `..foo` is an ordinary segment and is left alone.
+//
+// NOT called from `parseRule`: a rule spec is shared syntax between command rules and
+// path rules, and a command spec legitimately contains `//` -- `run_command(git clone
+// https://github.com/x/y:*)` has an empty segment between the two `/` of `https://`,
+// which this check would flag even though it's an ordinary, matchable command rule.
+// Applying a check that's only meaningful for one of the two shared kinds uniformly at
+// parse time would make that command rule unrepresentable. Instead:
+// - `pathMatches` (below) consults this directly and fails closed on it -- silently, no
+//   rule is "wrong," it just can never match a canonicalized path.
+// - The Task-7 settings-loading engine calls this exported function against rules bound
+//   to path-keyed tools specifically, to report a LOUD settings problem to the user (a
+//   rule that can never match is almost certainly a typo, worth surfacing even though
+//   `parseRule` itself accepts it).
+export function specHasNonCanonicalSyntax(spec: string): boolean {
   if (SPEC_DRIVE_PREFIX_RE.test(spec)) return true
   return spec.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
 }
+
+// A spec this long has almost certainly been corrupted or pasted in by mistake -- no
+// legitimate hand- or tool-authored rule spec is anywhere near this size. The DP matcher
+// (`globMatch`) is linear time, not exponential, but linear in a ~50 KB spec is still
+// real cost: a spec that size was measured at ~1.1s per match, which is worth refusing
+// outright at parse time rather than silently accepting a rule that makes every matching
+// call against it slow.
+const MAX_SPEC_LENGTH = 1024
 
 /**
  * Parses one settings-file rule line. Accepts `tool_name` (matches every invocation)
@@ -62,9 +82,13 @@ function hasNonCanonicalSyntax(spec: string): boolean {
  * (`tool()`, `tool(   )` -- almost certainly a typo, not a deliberate "match nothing"),
  * a spec containing a raw NUL character (JSON settings can smuggle one in, and it would
  * otherwise silently behave like `**` in `globToRegExp`'s display form), and a spec
- * that is syntactically non-canonical per `hasNonCanonicalSyntax` above (it could never
- * match any canonicalized incoming path, so parsing it into a live-looking rule would
- * be silently misleading).
+ * longer than `MAX_SPEC_LENGTH` characters (see that constant's comment).
+ *
+ * Deliberately NOT rejected here: syntactically non-canonical path-shaped syntax (see
+ * `specHasNonCanonicalSyntax`). That check only makes sense for path rules, and a rule's
+ * kind (command vs. path) isn't known until `ruleMatches` sees what the `PermissionKey`
+ * carries -- applying it uniformly at parse time would also misfire on command specs
+ * that legitimately contain `//` (a URL). `pathMatches` applies it itself instead.
  */
 export function parseRule(raw: string): ParsedRule | null {
   const trimmed = raw.trim()
@@ -89,7 +113,7 @@ export function parseRule(raw: string): ParsedRule | null {
   const spec = trimmed.slice(firstParen + 1, lastParen)
   if (spec.trim() === '') return null
   if (spec.includes('\u0000')) return null
-  if (hasNonCanonicalSyntax(spec)) return null
+  if (spec.length > MAX_SPEC_LENGTH) return null
 
   return { tool: name, spec, raw }
 }
@@ -268,6 +292,15 @@ function canonicalizePath(path: string): string | null {
 }
 
 function pathMatches(spec: string, path: string): boolean {
+  // A spec that is syntactically non-canonical (`./src/**`, `src/../**`, a leading `/`,
+  // a drive prefix, ...) could never match a canonicalized incoming path -- fail closed
+  // here, silently. `parseRule` no longer rejects these at parse time (the same spec
+  // syntax is shared with command rules, where e.g. `//` legitimately appears in a
+  // URL), so this is where the "never matches" consequence for a PATH-keyed rule
+  // actually has to be enforced. Loudly reporting this as a likely settings typo is the
+  // Task-7 engine's job (via the exported `specHasNonCanonicalSyntax`), not this
+  // function's -- this function only needs the match/no-match answer.
+  if (specHasNonCanonicalSyntax(spec)) return false
   const canonical = canonicalizePath(path)
   // `null` means "not safely workspace-relative" (see `canonicalizePath`). An empty
   // string means the path collapsed all the way to the workspace root itself (`.`,
@@ -329,7 +362,7 @@ function singlePathSuggestions(tool: string, path: string): string[] {
   return suggestions
 }
 
-// Fallback for a single-path key whose (normalized) path contains a glob metacharacter
+// Fallback for a single-path key whose canonical path contains a glob metacharacter
 // (`*`/`?`) somewhere. The rule language has no escape syntax for `*`/`?`, so there is
 // no way to spell a rule spec that matches that literal path without ALSO matching
 // other paths as a glob -- offering the literal-looking `tool(path)` string would be
@@ -357,14 +390,23 @@ function dedupe(items: string[]): string[] {
 
 /**
  * Suggests settings-file rule strings that would authorize `key`, most specific first,
- * deduplicated. Used by the approval UI to offer "always allow" style shortcuts.
+ * deduplicated. Used by the approval UI to offer "always allow" style shortcuts. Every
+ * string this function emits is guaranteed to round-trip: `parseRule` accepts it AND
+ * `ruleMatches` matches the original `key` against it. That guarantee is what forces the
+ * canonicalization step below -- a suggestion built from a raw, non-canonical path would
+ * otherwise describe a rule that can never fire (see `specHasNonCanonicalSyntax` and
+ * `pathMatches`), silently useless the moment the user accepted it.
  * - command key: exact-normalized, first-two-tokens prefix (only when there are >= 2
  *   tokens), first-token prefix.
- * - single-path key: `tool(path)`, plus `tool(dir/**)` when the path has a directory
- *   part. Backslashes in the path are normalized to `/` first (rule specs are always
- *   written with forward slashes).
- * - single-path key whose (normalized) path contains a glob metacharacter (`*` or `?`)
- *   in its basename: `tool(dir/**)` if the directory part is non-empty and itself
+ * - single-path key: the path is run through `canonicalizePath` FIRST -- the same
+ *   normalization `pathMatches` applies to incoming paths (backslashes to `/`,
+ *   lowercased, `.`/`..` segments collapsed). `null` (an absolute path, a drive-prefixed
+ *   path, or a net `..` traversal above the workspace root) or `''` (collapses to the
+ *   workspace root itself, not a real file) both suggest `[]` -- there is nothing safe
+ *   to offer. Otherwise, suggestions are built from the canonical form: `tool(path)`,
+ *   plus `tool(dir/**)` when it has a directory part.
+ * - single-path key whose canonical path contains a glob metacharacter (`*` or `?`) in
+ *   its basename: `tool(dir/**)` if the directory part is non-empty and itself
  *   metachar-free, otherwise `[]` (no shortcut at all -- NOT the bare tool name; see
  *   `metacharPathSuggestions`). A model-proposed path is untrusted input reaching this
  *   function at approval time, so widening to "allow every invocation of this tool" as
@@ -377,9 +419,10 @@ export function suggestRules(key: PermissionKey): string[] {
     return dedupe(commandSuggestions(key.tool, key.command))
   }
   if (key.paths !== undefined && key.paths.length === 1) {
-    const normalized = key.paths[0]!.replace(/\\/g, '/')
-    if (/[*?]/.test(normalized)) return metacharPathSuggestions(key.tool, normalized)
-    return dedupe(singlePathSuggestions(key.tool, normalized))
+    const canonical = canonicalizePath(key.paths[0]!)
+    if (canonical === null || canonical === '') return []
+    if (/[*?]/.test(canonical)) return metacharPathSuggestions(key.tool, canonical)
+    return dedupe(singlePathSuggestions(key.tool, canonical))
   }
   return [key.tool]
 }
