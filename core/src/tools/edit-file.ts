@@ -210,6 +210,21 @@ export const editFileTool: Tool<EditFileArgs> = {
       return { ok: false, content: (e as Error).message }
     }
 
+    // The workspace root itself is not a file, whether or not it exists on disk. When the
+    // root exists, the isDirectory() check below happens to catch this anyway — but a root
+    // that does not exist yet throws ENOENT first, and that path used to be safe here only
+    // by accident (it happens to produce a "File not found" message rather than touching
+    // the disk). Naming the root explicitly means the refusal rests on containment, not on
+    // whichever accident of control flow the root's current existence happens to trigger.
+    if (abs === ctx.workspace.root) {
+      return {
+        ok: false,
+        content:
+          `${args.path} resolves to the workspace root, not a file; edit_file changes ` +
+          'files, not the workspace itself',
+      }
+    }
+
     // Stat first: the size has to be known before the bytes are in memory, and a directory
     // has to be named as one rather than surfacing as an errno from the read.
     let size: number
@@ -308,7 +323,7 @@ export const editFileTool: Tool<EditFileArgs> = {
 
     if (next !== raw) {
       try {
-        await writeFileAtomic(abs, next)
+        await writeFileAtomic(abs, next, ctx.workspace)
       } catch (e) {
         // Unwrapped, this leaked an absolute path into the permanent transcript and lost
         // the one fact the model needs: the file it asked about is still intact.

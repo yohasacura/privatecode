@@ -1,12 +1,15 @@
-import { afterEach, beforeEach, expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import {
-  chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+  chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync,
+  writeFileSync,
 } from 'node:fs'
+import { open } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { Workspace } from '../src/workspace.js'
 import { editFileTool } from '../src/tools/edit-file.js'
 import { writeFileTool } from '../src/tools/write-file.js'
+import { tempBasename, writeFileAtomic } from '../src/tools/atomic-write.js'
 
 let root: string
 let ctx: { workspace: Workspace }
@@ -336,6 +339,35 @@ test('write_file leaves no temporary files behind', async () => {
   expect(readdirSync(root)).toEqual(['a.ts'])
 })
 
+test('write_file surfaces a genuine flush error instead of swallowing it', async () => {
+  // `handle.sync().catch(() => {})` used to discard every error, not only the EINVAL its
+  // comment named, so a real EIO at flush was silently ignored and the rename went ahead
+  // anyway — committing a file that was never actually flushed. Patching
+  // FileHandle.prototype.sync (shared by every handle) to simulate that EIO is the only way
+  // to observe this: node:fs/promises itself cannot be spied on (its exports are
+  // non-configurable), but the class prototype writeFileAtomic's handle is an instance of
+  // can be, for the duration of this one test.
+  const probe = await open(join(root, '.sync-probe'), 'w')
+  const proto = Object.getPrototypeOf(probe) as { sync: () => Promise<void> }
+  await probe.close()
+  rmSync(join(root, '.sync-probe'))
+
+  const spy = vi.spyOn(proto, 'sync').mockImplementation(async () => {
+    const err = new Error('simulated flush failure') as NodeJS.ErrnoException
+    err.code = 'EIO'
+    throw err
+  })
+  try {
+    const r = await writeFileTool.execute({ path: 'flush.ts', content: 'x'.repeat(10) }, ctx)
+    expect(r.ok).toBe(false)
+    expect(r.content).toMatch(/could not write/i)
+  } finally {
+    spy.mockRestore()
+  }
+  // The target was never created, and the failed attempt cleaned up its own temp file.
+  expect(readdirSync(root)).toEqual(['a.ts'])
+})
+
 test('write_file survives two concurrent writes to the same path', async () => {
   // Pins that the temp file's name is unique per call. A name derived from the target
   // alone collides, and the loser of the race fails a write it should have completed.
@@ -375,4 +407,130 @@ test('write_file reports a read-only target without leaking an absolute path', a
   expect(r.content).not.toContain(root)
   expect(readFileSync(target, 'utf8')).toBe('original\n')
   expect(readdirSync(root)).toEqual(['a.ts', 'ro.ts'])
+})
+
+// --- Workspace-root containment ---------------------------------------------------
+//
+// `Workspace.resolve('.')` addresses the root itself, whether or not the root exists on
+// disk. If the root does not exist yet, `stat` throws ENOENT; that guard used to fall
+// through with `replaced` still null, and `mkdir(dirname(abs), { recursive: true })` then
+// created directories at the root's own *parent* — outside the workspace — while the
+// atomic temp file was opened there too, before being renamed onto the root path itself
+// and turning it into a plain file. `holder` is a second, disposable directory one level
+// above the workspace root, so any write outside the workspace is directly observable.
+
+test('write_file refuses to touch the workspace root when it does not exist yet', async () => {
+  const holder = mkdtempSync(join(tmpdir(), 'pc-root-'))
+  try {
+    const missingRoot = join(holder, 'not-created-yet')
+    const rootCtx = { workspace: new Workspace(missingRoot) }
+    const r = await writeFileTool.execute({ path: '.', content: 'PWNED\n' }, rootCtx)
+    expect(r.ok).toBe(false)
+    expect(r.content).toMatch(/workspace root/i)
+    // Nothing was created at the root path, and nothing leaked into its parent either.
+    expect(existsSync(missingRoot)).toBe(false)
+    expect(readdirSync(holder)).toEqual([])
+  } finally {
+    rmSync(holder, { recursive: true, force: true })
+  }
+})
+
+test('edit_file refuses to touch the workspace root when it does not exist yet', async () => {
+  const holder = mkdtempSync(join(tmpdir(), 'pc-root-'))
+  try {
+    const missingRoot = join(holder, 'not-created-yet')
+    const rootCtx = { workspace: new Workspace(missingRoot) }
+    const r = await editFileTool.execute(
+      { path: '.', search_text: 'a', replace_text: 'b' }, rootCtx)
+    expect(r.ok).toBe(false)
+    expect(r.content).toMatch(/workspace root/i)
+    expect(existsSync(missingRoot)).toBe(false)
+    expect(readdirSync(holder)).toEqual([])
+  } finally {
+    rmSync(holder, { recursive: true, force: true })
+  }
+})
+
+test('write_file refuses to touch the workspace root when it already exists', async () => {
+  // With the root already a real directory, the old code path happened to catch this via
+  // its isDirectory() check and report "is an existing directory" — safe by accident, not
+  // by containment. This pins the same explicit, principled refusal in both cases.
+  const r = await writeFileTool.execute({ path: '.', content: 'x' }, ctx)
+  expect(r.ok).toBe(false)
+  expect(r.content).toMatch(/workspace root/i)
+})
+
+test('edit_file refuses to touch the workspace root when it already exists', async () => {
+  const r = await editFileTool.execute(
+    { path: '.', search_text: 'a', replace_text: 'b' }, ctx)
+  expect(r.ok).toBe(false)
+  expect(r.content).toMatch(/workspace root/i)
+})
+
+// --- Temp-file naming cannot collide with the workspace denylist ------------------
+
+test('the atomic-write temp name never collides with a workspace-denylisted pattern', () => {
+  // Every stem `Workspace`'s own denylist refuses, used as the *target's* basename — the
+  // worst case, since a target legitimately named exactly one of these is the scenario the
+  // defect was found in. `.env` is the one whose pattern is suffix-unanchored
+  // (`/^\.env(\..+)?$/i` swallows anything shaped `.env.<more>`), which is what let the
+  // previous `.${basename}.${hex}.tmp` scheme collide; the rest require an exact or a
+  // suffix match that a trailing `~<hex>.tmp` cannot produce.
+  const deniedStems = [
+    'env', 'id_rsa', 'id_ed25519', 'notes.pem', 'cert.pfx', 'cert.p12', '.npmrc', 'credentials',
+  ]
+  for (const stem of deniedStems) {
+    const name = tempBasename(stem)
+    // If the generated name matches a denylisted pattern, Workspace.resolve refuses it —
+    // exactly the fate an orphaned temp file left by a mid-write crash would suffer, making
+    // it permanently invisible to every other tool routed through the same workspace.
+    expect(() => ctx.workspace.resolve(name)).not.toThrow()
+  }
+})
+
+test('the temp name never starts with two literal dots for a dotfile target', () => {
+  // Workspace.resolve treats any relative path *starting with* the characters `..` as
+  // escaping the workspace (`rel.startsWith('..')`), regardless of whether it is an actual
+  // parent-directory segment. A naive `.${targetBasename}~<hex>.tmp` scheme produces exactly
+  // that for a target whose own basename already starts with a dot (`.npmrc`, `.gitignore`),
+  // which would make the orphan unreachable via a *different* code path than the denylist —
+  // this pins that the chosen scheme cannot start with `..` for any target name.
+  for (const stem of ['.npmrc', '.gitignore', '.env', '..already-double']) {
+    const name = tempBasename(stem)
+    expect(name.startsWith('..')).toBe(false)
+    expect(() => ctx.workspace.resolve(name)).not.toThrow()
+  }
+})
+
+test('writeFileAtomic refuses to write outside its own workspace, independent of the caller', async () => {
+  // Defense in depth for the atomic-write layer itself: every caller today already resolves
+  // `abs` through Workspace before reaching here, but that is a fact about the callers, not
+  // something this function can see. Called directly with a path that was never checked —
+  // exactly what a future caller that gets it wrong would do — it must still refuse rather
+  // than silently opening a temp file, and writing, outside the workspace it was handed.
+  const outside = join(dirname(root), 'escaped.txt')
+  await expect(writeFileAtomic(outside, 'x', ctx.workspace)).rejects.toThrow(/escapes the workspace/)
+  expect(existsSync(outside)).toBe(false)
+})
+
+test('write_file succeeds against a target literally named env', async () => {
+  // End-to-end version of the same scenario: a real write to a file named `env` must not
+  // be able to synthesise a temp path the workspace itself would refuse to ever see again.
+  const r = await writeFileTool.execute({ path: 'env', content: 'not a secret\n' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(readFileSync(join(root, 'env'), 'utf8')).toBe('not a secret\n')
+  // No orphaned temp file left behind either.
+  expect(readdirSync(root).sort()).toEqual(['a.ts', 'env'])
+})
+
+// --- write_file size ceiling -------------------------------------------------------
+
+test('write_file refuses to create a file larger than the read_file/edit_file ceiling', async () => {
+  const giant = 'a'.repeat(10 * 1024 * 1024 + 1)
+  const r = await writeFileTool.execute({ path: 'giant.txt', content: giant }, ctx)
+  expect(r.ok).toBe(false)
+  expect(r.content).toMatch(/larger than/i)
+  expect(r.content).toMatch(/10\.0 MB/)
+  // Refused before anything touched the disk.
+  expect(existsSync(join(root, 'giant.txt'))).toBe(false)
 })

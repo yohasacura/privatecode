@@ -8,6 +8,21 @@ export interface WriteFileArgs {
   content: string
 }
 
+/**
+ * The same ceiling read_file and edit_file apply, for the same reason: the content is
+ * about to be held in memory and then written whole. Duplicated rather than shared — see
+ * edit-file.ts's identical constant — so the three tools' ceilings cannot silently drift
+ * apart from one shared import changing underneath them.
+ */
+const MAX_FILE_BYTES = 10 * 1024 * 1024
+
+/** Mirrors read_file's and edit_file's size wording so all three describe sizes alike. */
+function describeBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} bytes`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 export const writeFileTool: Tool<WriteFileArgs> = {
   name: 'write_file',
   description:
@@ -39,6 +54,33 @@ export const writeFileTool: Tool<WriteFileArgs> = {
       return { ok: false, content: (e as Error).message }
     }
 
+    // The workspace root itself is not a file, whether or not it exists on disk yet.
+    // Without this, a root that does not exist yet slips past the ENOENT guard below with
+    // `replaced` still null, and `mkdir(dirname(abs), ...)` then creates directories at the
+    // root's own *parent* — outside the workspace — while the atomic temp file is opened
+    // there too, before ever being renamed onto the root path itself. Refusing this case up
+    // front means the guarantee rests on containment again, not on the root happening to
+    // already exist as a directory.
+    if (abs === ctx.workspace.root) {
+      return {
+        ok: false,
+        content:
+          `${args.path} resolves to the workspace root, not a file; write_file cannot ` +
+          'replace the workspace itself',
+      }
+    }
+
+    const bytes = Buffer.byteLength(args.content, 'utf8')
+    if (bytes > MAX_FILE_BYTES) {
+      return {
+        ok: false,
+        content:
+          `${args.path} would be ${describeBytes(bytes)}; write_file refuses to create or ` +
+          `replace a file larger than ${describeBytes(MAX_FILE_BYTES)}, the ceiling ` +
+          'read_file and edit_file both apply.',
+      }
+    }
+
     // Whether the target already exists, and how big it was. Several paths lead a model to
     // overwrite a file it did not mean to: edit_file's not-found hint points here by name,
     // and read_file caps at 2000 lines, so a model that saw only the head of a long file
@@ -62,10 +104,9 @@ export const writeFileTool: Tool<WriteFileArgs> = {
       }
     }
 
-    const bytes = Buffer.byteLength(args.content, 'utf8')
     try {
       await mkdir(dirname(abs), { recursive: true })
-      await writeFileAtomic(abs, args.content)
+      await writeFileAtomic(abs, args.content, ctx.workspace)
     } catch (e) {
       return { ok: false, content: `Could not write ${args.path}: ${fsErrorReason(abs, e)}` }
     }
