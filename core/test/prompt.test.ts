@@ -10,16 +10,16 @@ test('names the workspace root', () => {
 // thinking runaway (docs/SPIKE-TEMPERATURE.md, arm T3).
 test('tells the model to commit rather than re-check', () => {
   const p = buildSystemPrompt({ workspaceRoot: '/w', mode: 'normal' })
-  expect(p).toMatch(/re-check|deliberat/i)
+  expect(p).toMatch(/do not deliberate at length.*do not re-check a decision/is)
 })
 
 test('plan mode says no changes will be made', () => {
   const p = buildSystemPrompt({ workspaceRoot: '/w', mode: 'plan' })
-  expect(p).toMatch(/plan/i)
-  expect(p).toMatch(/cannot (modify|change)/i)
+  expect(p).toMatch(/you are in plan mode.*no editing tools.*investigate.*concrete plan/is)
 })
 
 test('stays small enough not to crowd the context', () => {
   const p = buildSystemPrompt({ workspaceRoot: '/w', mode: 'normal' })
-  expect(p.length).toBeLessThan(3000)
+  // Actual: ~620 chars. Headroom: 2x. Increasing this is a deliberate budget change.
+  expect(p.length).toBeLessThan(1400)
 })

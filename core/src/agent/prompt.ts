@@ -17,15 +17,11 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     'Work in small steps. Each step: use exactly one tool, look at the result, then decide',
     'the next step. Never claim something works unless a command or test you ran says so.',
     '',
-    'Decide quickly and act. Do not deliberate at length, and do not re-check a decision',
-    'you have already made — if you notice yourself going over the same reasoning twice,',
-    'stop and call the tool. Prefer the smallest change that satisfies the request.',
+    'Do not deliberate at length, and do not re-check a decision you have already made —',
+    'if you notice yourself going over the same reasoning twice, stop and call the tool.',
+    'Prefer the smallest change that satisfies the request.',
     '',
-    'Read narrowly. Everything you read stays in the conversation permanently, so prefer a',
-    'line range over a whole file, and a targeted search over a broad one.',
-    '',
-    'When editing, copy search_text verbatim out of the file you just read, and include',
-    'enough surrounding lines that it matches exactly one place.',
+    'Prefer a targeted search over a broad one.',
   ]
 
   if (opts.mode === 'plan') {
