@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, expect, test } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../src/workspace.js'
 import { readFileTool } from '../src/tools/read-file.js'
 import { listDirTool } from '../src/tools/list-dir.js'
 import { findFilesTool } from '../src/tools/find-files.js'
+import { editFileTool } from '../src/tools/edit-file.js'
 
 let ctx: { workspace: Workspace }
 /** Parent of the workspace root, so a sibling directory exists to try to escape into. */
@@ -91,7 +93,11 @@ test('read_file honours a line range', async () => {
 test('read_file reports a missing file as a tool failure, not an exception', async () => {
   const r = await readFileTool.execute({ path: 'src/nope.ts' }, ctx)
   expect(r.ok).toBe(false)
-  expect(r.content).toMatch(/not found|ENOENT/i)
+  // `/not found|ENOENT/i` was satisfied by the raw errno itself, so the OR always matched
+  // while an absolute path leaked into the permanent transcript alongside it. The message
+  // is short and fixed, so pin it exactly.
+  expect(r.content).toBe('File not found: src/nope.ts')
+  expect(r.content).not.toContain(tempRoot)
 })
 
 test('read_file refuses to leave the workspace', async () => {
@@ -109,6 +115,62 @@ test('list_dir lists entries and marks directories', async () => {
   const r = await listDirTool.execute({ path: '.' }, ctx)
   expect(r.content).toContain('src/')
   expect(r.content).toContain('README.md')
+})
+
+// --- Failure paths must not spend permanent transcript on an absolute path ----------
+//
+// Everything a tool returns is append-only transcript. `fsErrorReason` exists for exactly
+// this and the two write tools' tests already assert `not.toContain(root)`; the read path
+// was held to no such bar and leaked the workspace's absolute path plus a raw errno.
+// Measured before the fix:
+//   read_file -> "File not found: nope.txt"
+//   list_dir  -> "Could not list nope: ENOENT: no such file or directory, scandir 'C:\...'"
+
+test('list_dir reports a missing directory without leaking the absolute path', async () => {
+  const r = await listDirTool.execute({ path: 'nope' }, ctx)
+  expect(r.ok).toBe(false)
+  expect(r.content).toContain('nope')
+  expect(r.content).not.toContain(tempRoot)
+  expect(r.content).not.toContain('scandir')
+})
+
+test('list_dir reports an unreadable directory without leaking the absolute path', async () => {
+  const locked = join(tempRoot, 'locked-dir')
+  mkdirSync(locked)
+  const user = process.env.USERNAME ?? process.env.USER ?? ''
+  execFileSync('icacls', [locked, '/deny', `${user}:(OI)(CI)(RX)`], { stdio: 'ignore' })
+  try {
+    const r = await listDirTool.execute({ path: 'locked-dir' }, ctx)
+    expect(r.ok).toBe(false)
+    // If the deny ACE silently failed to apply this would be a successful listing, so
+    // asserting the failure is also what keeps this test honest.
+    expect(r.content).toContain('locked-dir')
+    expect(r.content).toMatch(/EPERM|EACCES|permitted|denied/i)
+    expect(r.content).not.toContain(tempRoot)
+    expect(r.content).not.toContain('scandir')
+  } finally {
+    execFileSync('icacls', [locked, '/remove:d', user], { stdio: 'ignore' })
+    rmSync(locked, { recursive: true, force: true })
+  }
+})
+
+test('read_file reports an unreadable file without leaking the absolute path', async () => {
+  const locked = join(tempRoot, 'locked.txt')
+  writeFileSync(locked, 'secret\n')
+  const user = process.env.USERNAME ?? process.env.USER ?? ''
+  execFileSync('icacls', [locked, '/deny', `${user}:(R)`], { stdio: 'ignore' })
+  try {
+    const r = await readFileTool.execute({ path: 'locked.txt' }, ctx)
+    expect(r.ok).toBe(false)
+    expect(r.content).toContain('locked.txt')
+    expect(r.content).toMatch(/EPERM|EACCES|permitted|denied/i)
+    expect(r.content).not.toContain(tempRoot)
+    // The raw errno appends `, open '<abs>'`; the whole tail goes, not just the path.
+    expect(r.content).not.toMatch(/, open /)
+  } finally {
+    execFileSync('icacls', [locked, '/remove:d', user], { stdio: 'ignore' })
+    rmSync(locked, { force: true })
+  }
 })
 
 test('find_files matches a glob', async () => {
@@ -244,6 +306,53 @@ test('I7 CRLF endings never reach the numbered output', async () => {
   expect(r.content).toContain('3\t\n')
 })
 
+// --- The UTF-8 BOM must not reach the model as content ----------------------------
+//
+// `buffer.toString('utf8')` keeps U+FEFF, so line 1 arrived at the model with an
+// invisible character glued to its front. Two bugs were cancelling: the model copies that
+// line back as an anchor, edit_file holds the file's own BOM aside so the anchor cannot
+// match exactly, and the whitespace-tolerant fallback then matches it anyway — reporting
+// "the anchor matched only after ignoring whitespace" for an anchor that was verbatim.
+
+test('read_file does not put the BOM in front of line 1', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pc-bom-'))
+  try {
+    const c = { workspace: new Workspace(dir) }
+    writeFileSync(join(dir, 'bom.cs'), '﻿int y = 2;\nint z = 3;\n')
+    const r = await readFileTool.execute({ path: 'bom.cs' }, c)
+    expect(r.ok).toBe(true)
+    expect(r.content).not.toContain('﻿')
+    expect(r.content).toContain('1\tint y = 2;')
+    // The BOM is not a line either: the count is of real lines.
+    expect(r.content).toContain('(2 lines)')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an anchor copied from read_file line 1 of a BOM file matches exactly', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pc-bom-'))
+  try {
+    const c = { workspace: new Workspace(dir) }
+    writeFileSync(join(dir, 'bom.cs'), '﻿int y = 2;\nint z = 3;\n')
+    const read = await readFileTool.execute({ path: 'bom.cs' }, c)
+    // Exactly what the model has in front of it: the payload of the numbered row.
+    const line1 = read.content.split('\n')[1]!.split('\t')[1]!
+
+    const edit = await editFileTool.execute(
+      { path: 'bom.cs', search_text: line1, replace_text: 'int y = 9;' }, c)
+
+    expect(edit.ok).toBe(true)
+    // The whole point: an anchor copied verbatim is an exact match, with no spurious note.
+    expect(edit.content).not.toMatch(/ignoring whitespace/)
+    const bytes = readFileSync(join(dir, 'bom.cs'))
+    expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
+    expect(bytes.toString('utf8')).toBe('﻿int y = 9;\nint z = 3;\n')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // --- Important 8: .git prefix filtering hides files the agent needs ----------------
 
 test('I8 list_dir shows .gitignore and .github but hides the .git directory', async () => {
@@ -333,11 +442,30 @@ test('F1 find_files filters mixed-case paths to hidden directories', async () =>
 })
 
 test('F1 list_dir filters hidden entries case-insensitively', async () => {
-  // Ensure list_dir also applies case-insensitive filtering
-  // (it receives real on-disk casing from readdir, but be defensive)
+  // This used to run against the shared fixture, whose `.git` and `node_modules` are
+  // created in lowercase and come back from readdir in lowercase — so dropping
+  // `.toLowerCase()` in list-dir.ts left it green and it tested nothing about casing.
+  // Real entries with real uppercase names, in a workspace of their own because a
+  // case-insensitive filesystem will not hold `.git` and `.GIT` side by side.
+  const dir = mkdtempSync(join(tmpdir(), 'pc-case-'))
+  try {
+    mkdirSync(join(dir, '.GIT'))
+    mkdirSync(join(dir, 'Node_Modules'))
+    writeFileSync(join(dir, 'keep.ts'), 'x')
+    const r = await listDirTool.execute({ path: '.' }, { workspace: new Workspace(dir) })
+    const entries = r.content.split('\n')
+    expect(entries).toContain('keep.ts')
+    expect(entries).not.toContain('.GIT/')
+    expect(entries).not.toContain('Node_Modules/')
+    expect(r.content).toContain('(hidden: .GIT/, Node_Modules/)')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('F1 list_dir still filters the ordinary lowercase entries', async () => {
   const r = await listDirTool.execute({ path: '.' }, ctx)
   const lines = r.content.split('\n')
-  // .git/ and node_modules/ should be in the hidden footer, not in the main list
   expect(lines.some((l) => l === '.git/' || l === 'node_modules/')).toBe(false)
   expect(r.content).toContain('(hidden: .git/, node_modules/)')
 })

@@ -1,4 +1,5 @@
 import { readdir } from 'node:fs/promises'
+import { fsErrorReason } from './atomic-write.js'
 import type { Tool } from './types.js'
 
 /**
@@ -61,7 +62,17 @@ export const listDirTool: Tool<ListDirArgs> = {
           : '(empty directory)'
       return { ok: true, content: body + footer }
     } catch (e) {
-      return { ok: false, content: `Could not list ${args.path}: ${(e as Error).message}` }
+      // Measured before this: `Could not list nope: ENOENT: no such file or directory,
+      // scandir 'C:\Users\...\nope'` — an absolute path and a raw errno, permanently, in a
+      // transcript, for what is one short sentence of information. fsErrorReason exists for
+      // exactly this; the write tools have used it from the start.
+      const err = e as NodeJS.ErrnoException
+      return {
+        ok: false,
+        content: err.code === 'ENOENT'
+          ? `Directory not found: ${args.path}`
+          : `Could not list ${args.path}: ${fsErrorReason(target, e)}`,
+      }
     }
   },
 }

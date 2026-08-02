@@ -1,5 +1,6 @@
 import { glob } from 'node:fs/promises'
 import { isAbsolute, join, posix, relative, sep, win32 } from 'node:path'
+import { fsErrorReason } from './atomic-write.js'
 import type { Tool } from './types.js'
 
 export interface FindFilesArgs { glob: string }
@@ -113,7 +114,12 @@ export const findFilesTool: Tool<FindFilesArgs> = {
         matches.push(segments.join('/'))
       }
     } catch (e) {
-      return { ok: false, content: `Glob failed: ${(e as Error).message}` }
+      // Held to the same bar as the other three read tools: no absolute path, no raw
+      // errno. Stated plainly because it matters: this branch is NOT covered by a test.
+      // fs.glob swallows per-entry failures rather than throwing — measured against a
+      // nonexistent root and against an ACL-denied subdirectory, both of which returned an
+      // ordinary result — so there is no honest way to reach it from the outside today.
+      return { ok: false, content: `Glob failed: ${fsErrorReason(ctx.workspace.root, e)}` }
     }
 
     if (matches.length === 0) return { ok: true, content: `No files match ${args.glob}` }

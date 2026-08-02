@@ -1,4 +1,6 @@
 import { readFile, stat } from 'node:fs/promises'
+import { fsErrorReason } from './atomic-write.js'
+import { BOM } from './line-endings.js'
 import type { Tool } from './types.js'
 
 export interface ReadFileArgs {
@@ -142,7 +144,11 @@ export const readFileTool: Tool<ReadFileArgs> = {
         ok: false,
         content: err.code === 'ENOENT'
           ? `File not found: ${args.path}`
-          : `Could not read ${args.path}: ${err.message}`,
+          // Not `err.message`: raw errno text is `EPERM: operation not permitted, open
+          // 'C:\Users\...'` - it spends permanent transcript on a path the model cannot use
+          // and buries the one word that says what happened. The two write tools already
+          // route through fsErrorReason and assert their messages never contain the root.
+          : `Could not read ${args.path}: ${fsErrorReason(abs, e)}`,
       }
     }
 
@@ -165,7 +171,11 @@ export const readFileTool: Tool<ReadFileArgs> = {
         ok: false,
         content: err.code === 'ENOENT'
           ? `File not found: ${args.path}`
-          : `Could not read ${args.path}: ${err.message}`,
+          // Not `err.message`: raw errno text is `EPERM: operation not permitted, open
+          // 'C:\Users\...'` - it spends permanent transcript on a path the model cannot use
+          // and buries the one word that says what happened. The two write tools already
+          // route through fsErrorReason and assert their messages never contain the root.
+          : `Could not read ${args.path}: ${fsErrorReason(abs, e)}`,
       }
     }
 
@@ -179,7 +189,15 @@ export const readFileTool: Tool<ReadFileArgs> = {
       }
     }
 
-    const lines = splitLines(buffer.toString('utf8'))
+    // The BOM is the file's encoding marker, not its content, and it must not reach the
+    // model: it made line 1 arrive with an invisible U+FEFF glued to its front, so an
+    // anchor the model copied back from line 1 could never match exactly. Two bugs were
+    // cancelling — edit_file holds the file's own BOM aside, and its whitespace-tolerant
+    // fallback then matched the BOM-carrying anchor anyway, reporting "matched only after
+    // ignoring whitespace" for an anchor that was in fact verbatim. edit_file and
+    // write_file put the BOM back on the way out, so dropping it here loses nothing.
+    const decoded = buffer.toString('utf8')
+    const lines = splitLines(decoded.startsWith(BOM) ? decoded.slice(1) : decoded)
     const total = lines.length
     const header = `${args.path} (${total} lines)`
     if (total === 0) return { ok: true, content: header }
