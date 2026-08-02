@@ -283,15 +283,102 @@ test('edit_file says so when the edit produced no change at all', async () => {
   expect(statSync(join(root, 'n.ts')).ino).toBe(before.ino)
 })
 
+// --- write_file preserves the shape of the file it replaces ------------------------
+//
+// read_file shows the model an LF-only view of every file and strips the BOM, so the
+// model cannot supply either even in principle — the same reason edit_file restores them
+// rather than trusting its input. write_file rewrites every line of the file, so getting
+// this wrong turns each agent change into a whole-file diff and disables the user's git,
+// which the design names as the only safety net. The user's stack is C#/TS on Windows and
+// MSBuild treats the BOM as meaningful.
+
+const CS_CRLF_BOM = `${BOM}using System;\r\nnamespace A\r\n{\r\n    class B { }\r\n}\r\n`
+
+test('write_file preserves an existing file\'s CRLF endings and its BOM', async () => {
+  writeFileSync(join(root, 'A.cs'), CS_CRLF_BOM)
+  const r = await writeFileTool.execute(
+    { path: 'A.cs', content: 'using System;\nnamespace A\n{\n    class C { }\n}\n' }, ctx)
+  expect(r.ok).toBe(true)
+  const bytes = readFileSync(join(root, 'A.cs'))
+  expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
+  expect(bytes.toString('utf8')).toBe(
+    `${BOM}using System;\r\nnamespace A\r\n{\r\n    class C { }\r\n}\r\n`)
+  // No lone LF anywhere: every newline is still preceded by a carriage return.
+  expect(bytes.toString('utf8').replace(/\r\n/g, '')).not.toContain('\n')
+})
+
+test('write_file says in the result when it matched the existing file\'s endings', async () => {
+  writeFileSync(join(root, 'A.cs'), CS_CRLF_BOM)
+  const r = await writeFileTool.execute(
+    { path: 'A.cs', content: 'using System;\nnamespace A\n{\n}\n' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(r.content).toMatch(/CRLF/)
+  expect(r.content).toMatch(/byte-order mark/i)
+  // The byte count reported is the count actually written, not the count handed in.
+  expect(r.content).toMatch(/-> 37 bytes/)
+  expect(statSync(join(root, 'A.cs')).size).toBe(37)
+})
+
+test('write_file leaves an LF file LF and says nothing about endings', async () => {
+  writeFileSync(join(root, 'lf.ts'), 'const x = 1\nconst y = 2\n')
+  const r = await writeFileTool.execute({ path: 'lf.ts', content: 'const x = 9\n' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(readFileSync(join(root, 'lf.ts'), 'utf8')).toBe('const x = 9\n')
+  expect(r.content).not.toMatch(/CRLF|byte-order mark/i)
+})
+
+test('write_file converts CRLF content to LF when the existing file is LF', async () => {
+  writeFileSync(join(root, 'lf.ts'), 'const x = 1\nconst y = 2\n')
+  const r = await writeFileTool.execute({ path: 'lf.ts', content: 'const x = 9\r\n' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(readFileSync(join(root, 'lf.ts'), 'utf8')).toBe('const x = 9\n')
+  expect(r.content).toMatch(/LF/)
+})
+
+test('write_file writes a genuinely new file exactly as given', async () => {
+  // Nothing to preserve: a new file's endings are the model's to choose, and silently
+  // rewriting them would be inventing a shape the workspace never asked for.
+  const r = await writeFileTool.execute(
+    { path: 'fresh.cs', content: 'line one\r\nline two\r\n' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(readFileSync(join(root, 'fresh.cs'), 'utf8')).toBe('line one\r\nline two\r\n')
+  expect(r.content).not.toMatch(/CRLF|byte-order mark/i)
+})
+
+test('write_file preserves the dominant ending of a mixed-ending file', async () => {
+  writeFileSync(join(root, 'mixed.ts'), 'a\r\nb\nc\r\nd\r\n')
+  const r = await writeFileTool.execute({ path: 'mixed.ts', content: 'x\ny\n' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(readFileSync(join(root, 'mixed.ts'), 'utf8')).toBe('x\r\ny\r\n')
+})
+
+test('write_file does not invent endings for a file that has none', async () => {
+  writeFileSync(join(root, 'oneline.txt'), 'no newline here')
+  const r = await writeFileTool.execute(
+    { path: 'oneline.txt', content: 'first\r\nsecond\r\n' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(readFileSync(join(root, 'oneline.txt'), 'utf8')).toBe('first\r\nsecond\r\n')
+})
+
+test('write_file does not read line endings out of a binary file it replaces', async () => {
+  // A file with NUL bytes has no line structure to preserve; guessing at one would be
+  // inventing it. The replacement is text and is written exactly as given.
+  writeFileSync(join(root, 'blob.bin'), Buffer.from([0x00, 0x0d, 0x0a, 0x00, 0x0d, 0x0a]))
+  const r = await writeFileTool.execute({ path: 'blob.bin', content: 'a\nb\n' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(readFileSync(join(root, 'blob.bin'), 'utf8')).toBe('a\nb\n')
+})
+
 // --- write_file overwrite reporting -----------------------------------------------
 
-test('write_file reports that it replaced an existing file, with both sizes', async () => {
+test('write_file reports that it replaced an existing file, with both sizes in order', async () => {
   writeFileSync(join(root, 'important.ts'), 'x'.repeat(48_890))
   const r = await writeFileTool.execute({ path: 'important.ts', content: 'oops\n' }, ctx)
   expect(r.ok).toBe(true)
-  expect(r.content).toMatch(/Replaced/)
-  expect(r.content).toContain('48890')
-  expect(r.content).toContain('5')
+  // Order-blind `toContain` checks let the two sizes swap places, and `toContain('5')` is
+  // satisfied by the '5' inside '48890'. The receipt is the only surviving record that an
+  // overwrite happened at all, so which number is which is the whole point of it.
+  expect(r.content).toBe('Replaced important.ts (48890 bytes -> 5 bytes).')
 })
 
 test('write_file still reports a plain create for a new file', async () => {
@@ -467,6 +554,28 @@ test('edit_file refuses to touch the workspace root when it already exists', asy
   expect(r.content).toMatch(/workspace root/i)
 })
 
+// `abs === ctx.workspace.root` is a string comparison, and Windows strips trailing dots
+// and spaces before it opens a path — `<root>\. ` is the root itself. `workspace.ts`
+// already knows this (TRAILING_DOTS_AND_SPACES); the two write tools did not, so `. `
+// resolved to a string that is not the root, passed the guard, and created a root-level
+// entry literally named `. ` — measured, both tools.
+for (const path of ['. ', '.  ', '..', '. .']) {
+  test(`write_file refuses "${path}", which Windows opens as the workspace root`, async () => {
+    const r = await writeFileTool.execute({ path, content: 'PWNED\n' }, ctx)
+    expect(r.ok).toBe(false)
+    expect(r.content).toMatch(/workspace root|escapes the workspace/i)
+    expect(readdirSync(root)).toEqual(['a.ts'])
+  })
+}
+
+test('edit_file refuses ". ", which Windows opens as the workspace root', async () => {
+  const r = await editFileTool.execute(
+    { path: '. ', search_text: 'a', replace_text: 'b' }, ctx)
+  expect(r.ok).toBe(false)
+  expect(r.content).toMatch(/workspace root|escapes the workspace/i)
+  expect(readdirSync(root)).toEqual(['a.ts'])
+})
+
 // --- Temp-file naming cannot collide with the workspace denylist ------------------
 
 test('the atomic-write temp name never collides with a workspace-denylisted pattern', () => {
@@ -511,6 +620,21 @@ test('writeFileAtomic refuses to write outside its own workspace, independent of
   const outside = join(dirname(root), 'escaped.txt')
   await expect(writeFileAtomic(outside, 'x', ctx.workspace)).rejects.toThrow(/escapes the workspace/)
   expect(existsSync(outside)).toBe(false)
+})
+
+test('writeFileAtomic enforces the secrets denylist on the target, not only on its directory', async () => {
+  // The re-resolution above only ever covered `dirname(abs)`, so containment held while the
+  // denylist did not: `writeFileAtomic(join(root, '.env'), ...)` wrote the file. Not
+  // reachable from today's two callers, both of which resolve the full path first — but
+  // that is a fact about the callers, which is exactly what this layer must not assume.
+  for (const name of ['.env', 'id_rsa', 'secret.pem', '.npmrc', 'credentials']) {
+    const target = join(root, name)
+    await expect(writeFileAtomic(target, 'SECRET=1', ctx.workspace))
+      .rejects.toThrow(/denied/i)
+    expect(existsSync(target)).toBe(false)
+  }
+  // And no orphaned temp file was left behind by any of the refusals.
+  expect(readdirSync(root)).toEqual(['a.ts'])
 })
 
 test('write_file succeeds against a target literally named env', async () => {

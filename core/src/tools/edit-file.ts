@@ -1,6 +1,8 @@
 import { readFile, stat } from 'node:fs/promises'
 import { applySearchReplace } from '../edit/search-replace.js'
+import { opensAsWorkspaceRoot } from '../workspace.js'
 import { writeFileAtomic, fsErrorReason } from './atomic-write.js'
+import { BOM, applyEndings, detectEndings, toLf } from './line-endings.js'
 import type { Tool } from './types.js'
 
 export interface EditFileArgs {
@@ -30,9 +32,6 @@ const MAX_DIFF_CHARS = 4_000
 /** Ceiling on one rendered row, so a single minified line cannot blow the budget alone. */
 const MAX_DIFF_LINE_CHARS = 400
 
-/** U+FEFF, built from its code point because the character itself is invisible in source. */
-const BOM = String.fromCharCode(0xfeff)
-
 /** Mirrors read_file's size wording so the two tools describe the same file the same way. */
 function describeBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} bytes`
@@ -56,37 +55,6 @@ function notTextReason(head: Buffer): string | null {
     return `it has NUL bytes in the first ${head.length} bytes, so it is binary`
   }
   return null
-}
-
-function countOf(haystack: string, needle: string): number {
-  let n = 0
-  let i = haystack.indexOf(needle)
-  while (i !== -1) {
-    n++
-    i = haystack.indexOf(needle, i + needle.length)
-  }
-  return n
-}
-
-interface Endings {
-  /** The ending the file will be written back with. */
-  eol: '\n' | '\r\n'
-  crlf: number
-  lf: number
-}
-
-/**
- * The file's line endings, by count.
- *
- * A file with no newline at all reports LF, which costs nothing: there is no ending to
- * preserve, and any ending the replacement introduces has no precedent in the file to
- * contradict. Lone carriage returns are not counted as endings — read_file does not treat
- * them as line breaks either — and survive the round trip untouched.
- */
-function detectEndings(text: string): Endings {
-  const crlf = countOf(text, '\r\n')
-  const lf = countOf(text, '\n') - crlf
-  return { eol: crlf > lf ? '\r\n' : '\n', crlf, lf }
 }
 
 /**
@@ -217,7 +185,12 @@ export const editFileTool: Tool<EditFileArgs> = {
     // by accident (it happens to produce a "File not found" message rather than touching
     // the disk). Naming the root explicitly means the refusal rests on containment, not on
     // whichever accident of control flow the root's current existence happens to trigger.
-    if (abs === ctx.workspace.root) {
+    //
+    // Compared against the path Windows would actually *open*, not the string that was
+    // typed: Windows strips trailing dots and spaces before opening, so `<root>\. ` is the
+    // root. Raw equality missed that, and `path: ". "` reached the disk (measured: it
+    // created a root-level entry literally named `. `). workspace.ts already owns this rule.
+    if (opensAsWorkspaceRoot(abs, ctx.workspace.root)) {
       return {
         ok: false,
         content:
@@ -308,18 +281,16 @@ export const editFileTool: Tool<EditFileArgs> = {
     // LF text and the file's own ending is restored on the way out, which is also what
     // stops a fallback edit from converting the lines it touched.
     const endings = detectEndings(body)
-    const lfBody = endings.crlf === 0 ? body : body.split('\r\n').join('\n')
-    const search = args.search_text.split('\r\n').join('\n')
-    const replace = args.replace_text.split('\r\n').join('\n')
+    const lfBody = toLf(body)
+    const search = toLf(args.search_text)
+    const replace = toLf(args.replace_text)
 
     const outcome = applySearchReplace(lfBody, search, replace)
     if (!outcome.ok) {
       return { ok: false, content: `edit_file could not apply the change: ${outcome.hint}` }
     }
 
-    const restored = endings.eol === '\r\n'
-      ? outcome.text.split('\n').join('\r\n')
-      : outcome.text
+    const restored = applyEndings(outcome.text, endings.eol)
     const next = hasBom ? `${BOM}${restored}` : restored
 
     if (next !== raw) {

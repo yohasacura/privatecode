@@ -1,11 +1,66 @@
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir, open, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { opensAsWorkspaceRoot } from '../workspace.js'
 import { writeFileAtomic, fsErrorReason } from './atomic-write.js'
+import { BOM, applyEndings, detectEndings, toLf } from './line-endings.js'
 import type { Tool } from './types.js'
 
 export interface WriteFileArgs {
   path: string
   content: string
+}
+
+/**
+ * How much of the head of an existing file is inspected to learn its shape.
+ *
+ * Bounded rather than a full read: this runs on every overwrite, the file may be up to
+ * MAX_FILE_BYTES, and nothing beyond the head changes the answer in any realistic file. A
+ * file whose first 64 KB is CRLF and whose remainder is LF-dominant would be classified by
+ * its head; that is a deliberate trade, and it is the same answer a human would give.
+ */
+const DETECT_BYTES = 64 * 1024
+
+/** The shape of an existing text file that a whole-file rewrite has to put back. */
+interface ExistingShape {
+  bom: boolean
+  /** The dominant ending, or null when the file has no line endings to preserve. */
+  eol: '\n' | '\r\n' | null
+}
+
+/**
+ * The line endings and BOM of the file about to be replaced, or null if there is nothing
+ * to learn from it.
+ *
+ * Returns null for a file whose head contains NUL bytes: that file has no line structure
+ * to preserve, and inferring one from stray CR/LF bytes inside binary data would be
+ * inventing a shape rather than keeping one. Also returns null if the file cannot be
+ * opened — the write itself will fail and report that properly.
+ */
+async function readExistingShape(abs: string): Promise<ExistingShape | null> {
+  let handle: Awaited<ReturnType<typeof open>>
+  try {
+    handle = await open(abs, 'r')
+  } catch {
+    return null
+  }
+  try {
+    const buffer = Buffer.alloc(DETECT_BYTES)
+    const { bytesRead } = await handle.read(buffer, 0, DETECT_BYTES, 0)
+    const head = buffer.subarray(0, bytesRead)
+    if (head.includes(0)) return null
+    // A multi-byte character clipped by the 64 KB bound decodes to U+FFFD, which affects
+    // neither the BOM test (position 0) nor the CR/LF counts.
+    const text = head.toString('utf8')
+    const endings = detectEndings(text)
+    return {
+      bom: text.charCodeAt(0) === 0xfeff,
+      eol: endings.crlf + endings.lf === 0 ? null : endings.eol,
+    }
+  } catch {
+    return null
+  } finally {
+    await handle.close().catch(() => {})
+  }
 }
 
 /**
@@ -62,7 +117,11 @@ export const writeFileTool: Tool<WriteFileArgs> = {
     // there too, before ever being renamed onto the root path itself. Refusing this case up
     // front means the guarantee rests on containment again, not on the root happening to
     // already exist as a directory.
-    if (abs === ctx.workspace.root) {
+    //
+    // Compared against the path Windows would actually *open*: it strips trailing dots and
+    // spaces first, so `<root>\. ` is the root. Raw equality missed that, and `path: ". "`
+    // reached the disk (measured: it created a root-level entry literally named `. `).
+    if (opensAsWorkspaceRoot(abs, ctx.workspace.root)) {
       return {
         ok: false,
         content:
@@ -105,18 +164,50 @@ export const writeFileTool: Tool<WriteFileArgs> = {
       }
     }
 
+    // Overwriting an existing file keeps that file's line endings and its BOM. This tool
+    // rewrites every line, so normalising the endings turns a one-line change into a
+    // whole-file diff — and the design names the user's own git as the only safety net,
+    // which a whole-file diff switches off. The BOM is not cosmetic either: MSBuild treats
+    // it as meaningful and this workspace is C#/TS on Windows. The model cannot supply
+    // either one, because read_file shows it an LF-only, BOM-less view of every file — the
+    // same reason edit_file restores them rather than trusting its input, and the same
+    // logic, imported rather than copied.
+    //
+    // A genuinely new file is left exactly as given: there is no existing shape to match,
+    // and imposing one would be inventing a convention the workspace never expressed.
+    let content = args.content
+    const notes: string[] = []
+    if (replaced !== null) {
+      const shape = await readExistingShape(abs)
+      if (shape?.eol) {
+        const restored = applyEndings(toLf(content), shape.eol)
+        if (restored !== content) {
+          content = restored
+          notes.push(
+            `line endings were normalised to ${shape.eol === '\r\n' ? 'CRLF' : 'LF'}, ` +
+            'matching the file that was replaced')
+        }
+      }
+      if (shape?.bom && !content.startsWith(BOM)) {
+        content = `${BOM}${content}`
+        notes.push("the file's UTF-8 byte-order mark was preserved")
+      }
+    }
+    const written = Buffer.byteLength(content, 'utf8')
+
     try {
       await mkdir(dirname(abs), { recursive: true })
-      await writeFileAtomic(abs, args.content, ctx.workspace)
+      await writeFileAtomic(abs, content, ctx.workspace)
     } catch (e) {
       return { ok: false, content: `Could not write ${args.path}: ${fsErrorReason(abs, e)}` }
     }
 
+    const note = notes.length === 0 ? '' : `\n(note: ${notes.join('; ')})`
     return {
       ok: true,
       content: replaced === null
-        ? `Wrote ${args.path} (${bytes} bytes).`
-        : `Replaced ${args.path} (${replaced} bytes -> ${bytes} bytes).`,
+        ? `Wrote ${args.path} (${written} bytes).${note}`
+        : `Replaced ${args.path} (${replaced} bytes -> ${written} bytes).${note}`,
     }
   },
 }

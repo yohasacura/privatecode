@@ -87,16 +87,22 @@ export function tempBasename(targetBasename: string): string {
  * fsync'd, so this is a guarantee against a crash mid-write, not against a power loss
  * reordering the rename itself — the failure mode the tools actually face.
  *
- * `abs`'s directory is re-resolved through `workspace` before it is ever opened, rather
- * than trusted as-is. Every caller today reaches this function with an `abs` that already
- * came from `Workspace.resolve`, but that is a fact about the callers, not one this
- * function can see for itself — and it is exactly the assumption that broke once before,
- * when a directory that did not yet exist let a caller's own containment check fall
- * through. Re-resolving here means containment holds even for a caller that gets it wrong.
+ * `abs` is re-resolved through `workspace` before it is ever opened, rather than trusted
+ * as-is. Every caller today reaches this function with an `abs` that already came from
+ * `Workspace.resolve`, but that is a fact about the callers, not one this function can see
+ * for itself — and it is exactly the assumption that broke once before, when a directory
+ * that did not yet exist let a caller's own containment check fall through.
+ *
+ * The whole path is re-resolved, not merely `dirname(abs)`. Resolving only the directory
+ * gave containment but not the secrets denylist, because the denylist matches the *file's*
+ * own segment: `writeFileAtomic(join(root, '.env'), 'SECRET=1', ws)` wrote the file, with
+ * this function's own comment claiming the guarantee held. Neither of today's two callers
+ * can reach that, but "the callers get it right" is precisely what re-resolving here
+ * exists not to depend on.
  */
 export async function writeFileAtomic(abs: string, data: string, workspace: Workspace): Promise<void> {
-  const tmpDir = workspace.resolve(dirname(abs))
-  const tmp = join(tmpDir, tempBasename(basename(abs)))
+  const target = workspace.resolve(abs)
+  const tmp = join(dirname(target), tempBasename(basename(target)))
   // 'wx' rather than 'w': the cleanup below deletes this path, so it must be a file this
   // call created and not one it happened to find.
   const handle = await open(tmp, 'wx')
@@ -111,7 +117,7 @@ export async function writeFileAtomic(abs: string, data: string, workspace: Work
       throw e
     })
     await handle.close()
-    await renameWithRetry(tmp, abs)
+    await renameWithRetry(tmp, target)
   } catch (e) {
     await handle.close().catch(() => {})
     await rm(tmp, { force: true }).catch(() => {})

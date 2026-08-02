@@ -60,6 +60,22 @@ const DENIED_SEGMENTS: RegExp[] = [
 const TRAILING_DOTS_AND_SPACES = /[. ]+$/
 
 /**
+ * Whether `abs` is a path the OS would open as the workspace root itself.
+ *
+ * `abs === root` is a string comparison, and Windows strips trailing dots and spaces
+ * before it opens a path (see TRAILING_DOTS_AND_SPACES above), so `<root>\. ` opens the
+ * root. Measured: `write_file` with `path: ". "` passed a raw-equality guard and created a
+ * root-level entry literally named `. `; `edit_file` had the same hole.
+ *
+ * Deliberately slightly over-strict on POSIX, where `. ` is an ordinary filename and does
+ * not address the parent: refusing to *write a file called `. `* costs nothing, and the
+ * target platform is Windows.
+ */
+export function opensAsWorkspaceRoot(abs: string, root: string): boolean {
+  return pathResolve(abs.replace(TRAILING_DOTS_AND_SPACES, '')) === root
+}
+
+/**
  * Refuse a single path segment that names something other than the plain file it appears
  * to name. Applied to the caller's spelling and again to the canonical one.
  */
