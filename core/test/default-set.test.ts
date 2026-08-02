@@ -15,6 +15,7 @@ import { buildRegistry } from '../src/tools/default-set.js'
  */
 test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
   expect(buildRegistry().readOnlyNames().sort()).toEqual(
-    ['ask_user', 'find_files', 'git_status', 'list_dir', 'read_file', 'search_code', 'todo_write'],
+    ['ask_user', 'find_files', 'git_status', 'list_dir', 'read_file', 'search_code',
+     'symbol_outline', 'todo_write'],
   )
 })

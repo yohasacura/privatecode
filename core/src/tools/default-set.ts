@@ -13,6 +13,7 @@ import { gitStatusTool } from './git-tool.js'
 import { TodoStore } from '../interaction.js'
 import { todoWriteTool } from './todo-write.js'
 import { askUserTool } from './ask-user.js'
+import { symbolOutlineTool } from './symbol-outline.js'
 
 export interface Toolset {
   registry: ToolRegistry
@@ -27,7 +28,8 @@ export function createToolset(): Toolset {
   const todos = new TodoStore()
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
-                   backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool]) {
+                   backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
+                   symbolOutlineTool]) {
     registry.register(t)
   }
   return { registry, background, todos }
