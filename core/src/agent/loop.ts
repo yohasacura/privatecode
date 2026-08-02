@@ -180,7 +180,14 @@ export class Agent {
   readonly transcript: Transcript
 
   constructor(opts: AgentOptions) {
-    const mode = opts.mode ?? 'normal'
+    // The option is the single source of truth for the mode when given; otherwise the
+    // engine's own `mode` (a caller that already configured the engine itself) is trusted
+    // instead of silently overriding it to 'normal'. A reviewer demonstrated the desync
+    // this prevents: `new Agent({ permissions: engineInPlanMode })` with no `mode` option
+    // used to yield agent-mode 'normal' (no plan narrowing at all) while the engine's own
+    // `modeDefault` still answered 'plan mode' for every `ask` tier — the full tool list
+    // AND auto-allow, strictly worse than normal mode's ask-before-write.
+    const mode = opts.mode ?? opts.permissions?.mode ?? 'normal'
     // Defaults must come AFTER the spread: an explicitly-undefined property would
     // otherwise overwrite them.
     this.opts = {
@@ -204,12 +211,14 @@ export class Agent {
         ? opts.allowedTools.filter((n) => readOnly.includes(n))
         : readOnly
     }
-    // The engine's own `mode` field is what `decide()` actually reads; the option here is
-    // the single source of truth for it. Only synced when both are given — an engine
-    // passed in with no `mode` option (e.g. a caller that already set the engine's mode
-    // itself) is left alone rather than forced to 'normal'.
-    if (opts.permissions && opts.mode) {
-      opts.permissions.mode = opts.mode
+    // The engine's own `mode` field is what `decide()` actually reads. Now that `mode`
+    // above already resolved the single source of truth (the option if given, else the
+    // engine's own), write it back whenever an engine is present so both sides always
+    // agree — this also covers the case the option WAS given (e.g. `mode: 'autopilot'`
+    // with an engine constructed as 'normal'), which the old `opts.mode`-only guard synced
+    // one way but never the other.
+    if (opts.permissions) {
+      opts.permissions.mode = mode
     }
     this.transcript = opts.transcript ?? new Transcript()
     if (this.transcript.messages().length === 0) {
@@ -455,42 +464,79 @@ export class Agent {
     const prepared = this.opts.registry.prepare(name, args)
     if (!prepared.ok) return { ok: false, content: prepared.content }
 
-    const engine = this.opts.permissions
-    if (engine) {
-      const key: PermissionKey = prepared.tool.permissionKey?.(prepared.args) ?? { tool: name }
-      const decision = engine.decide(key)
-      if (decision.verdict === 'deny') {
-        return { ok: false, content: `Not run. ${decision.reason}` }
+    // The whole gate is wrapped: `port.requestApproval` is a host boundary (today an
+    // in-process callback, tomorrow IPC/JSON), and a rejection from it must not propagate
+    // out of `runTool`. Left unguarded, that throw would escape past the assistant message
+    // that already carries the tool_call — the exact poisoned-transcript state the class
+    // comment on `runTurn` warns about, since no tool reply would ever be appended for it —
+    // and `runTurn` would reject instead of returning a `TurnResult`. `executePrepared`
+    // already never throws on its own, so it stays outside this try: nothing here needs it
+    // caught twice.
+    try {
+      const engine = this.opts.permissions
+      if (engine) {
+        const key: PermissionKey = prepared.tool.permissionKey?.(prepared.args) ?? { tool: name }
+        const decision = engine.decide(key)
+        if (decision.verdict === 'deny') {
+          return { ok: false, content: `Not run. ${decision.reason}` }
+        }
+        if (decision.verdict === 'ask') {
+          const port = this.opts.interaction
+          if (!port) {
+            return {
+              ok: false,
+              content: 'Not run: this action needs the user\'s approval and no interactive ' +
+                       'host is connected. Suggest it to the user instead.',
+            }
+          }
+          const preview = await this.approvalPreviewFor(prepared, name, args)
+          const decided = await port.requestApproval({
+            tool: name,
+            summary: preview.summary,
+            detail: preview.detail,
+            suggestedRules: suggestRules(key),
+          })
+          // The dialog can resolve after the turn was cancelled — a step lasts 35-40 s, an
+          // Esc press can land at any point in that window, and "pending approval" is no
+          // exception. Re-checked here, immediately after the await, rather than trusting
+          // the caller to notice: a stale `allow` must not execute into an aborted turn.
+          if (this.opts.signal?.aborted) {
+            return {
+              ok: false,
+              content: 'Not run: the turn was cancelled while approval was pending.',
+            }
+          }
+          if (decided.verdict === 'deny') {
+            const why = decided.comment ? `: "${decided.comment}"` : ''
+            return {
+              ok: false,
+              content: `The user declined this ${name} call${why}. Take their comment into ` +
+                       'account and adjust your approach; do not simply retry the same call.',
+            }
+          }
+          if (decided.verdict !== 'allow') {
+            // `ApprovalDecision` is a closed union in TS, but the port is a host boundary —
+            // at runtime it can hand back `{}`, a typo'd verdict, `null`, or anything else
+            // JSON allows. Only a recognized 'allow' proceeds; everything else fails closed
+            // rather than being treated as consent.
+            return {
+              ok: false,
+              content: 'Not run: the approval reply was not recognized, so it was treated ' +
+                       'as a denial.',
+            }
+          }
+          if (decided.remember) {
+            try {
+              engine.remember(decided.remember.rule, decided.remember.layer)
+            } catch { /* remembering must never fail the approved call */ }
+          }
+        }
       }
-      if (decision.verdict === 'ask') {
-        const port = this.opts.interaction
-        if (!port) {
-          return {
-            ok: false,
-            content: 'Not run: this action needs the user\'s approval and no interactive ' +
-                     'host is connected. Suggest it to the user instead.',
-          }
-        }
-        const preview = await this.approvalPreviewFor(prepared, name, args)
-        const decided = await port.requestApproval({
-          tool: name,
-          summary: preview.summary,
-          detail: preview.detail,
-          suggestedRules: suggestRules(key),
-        })
-        if (decided.verdict === 'deny') {
-          const why = decided.comment ? `: "${decided.comment}"` : ''
-          return {
-            ok: false,
-            content: `The user declined this ${name} call${why}. Take their comment into ` +
-                     'account and adjust your approach; do not simply retry the same call.',
-          }
-        }
-        if (decided.remember) {
-          try {
-            engine.remember(decided.remember.rule, decided.remember.layer)
-          } catch { /* remembering must never fail the approved call */ }
-        }
+    } catch (e) {
+      return {
+        ok: false,
+        content: `Not run: the approval flow failed (${e instanceof Error ? e.message : String(e)}); ` +
+                 'treated as a denial.',
       }
     }
     return this.opts.registry.executePrepared(prepared, this.toolContext())
@@ -511,7 +557,13 @@ export class Agent {
       const preview = await p.tool.approvalPreview?.(p.args, this.toolContext())
       if (preview) return preview
     } catch { /* fall through */ }
-    return { summary: name, detail: rawArgs.slice(0, 1_000) }
+    // Matches the marker the tools' own approvalPreview implementations use (e.g.
+    // write-file.ts, edit-file.ts) so a silent clip never reads as the whole argument
+    // string to whoever is approving it.
+    const detail = rawArgs.length > 1_000
+      ? `${rawArgs.slice(0, 1_000)}\n... (clipped)`
+      : rawArgs
+    return { summary: name, detail }
   }
 
   /**
