@@ -16,11 +16,12 @@ export interface GitArgs {
 const VALID_ACTIONS: readonly GitAction[] = ['status', 'diff', 'log', 'blame']
 
 /**
- * Refuses anything that is not plainly a ref: no leading `-` (which would be read by git
- * as an option, e.g. `--output=...` writing an attacker-chosen file) and nothing outside
- * a small, safe character set. This is the sole gate between model-supplied text and an
- * argv slot git treats as an option-or-ref, so it has to reject option-shaped input, not
- * just validate ref-shaped input.
+ * Restricts a ref to a small, safe character set (letters, digits, underscore, dot, slash,
+ * tilde, caret, hyphen). Note that the pattern *alone* does not refuse a leading `-`, since
+ * `-` is itself one of the allowed characters — `-O../outside.txt` matches it just fine.
+ * `validate` additionally rejects any base starting with `-` (which git would otherwise read
+ * as an option, e.g. `-O<file>` writing to an attacker-chosen path); the character-class
+ * pattern plus that explicit leading-dash rejection together close the option-injection hole.
  */
 const BASE_PATTERN = /^[A-Za-z0-9_.\/~^-]{1,80}$/
 
@@ -75,6 +76,12 @@ export const gitStatusTool: Tool<GitArgs> = {
           error: `base must be a plain git ref matching ${BASE_PATTERN} (no flags or option-like values)`,
         }
       }
+      if (r.base.startsWith('-')) {
+        return {
+          ok: false,
+          error: 'base must be a git ref (branch, tag, or commit); options are not accepted',
+        }
+      }
     }
     const args: GitArgs = { action }
     if (r.path !== undefined) args.path = r.path
@@ -116,6 +123,16 @@ export const gitStatusTool: Tool<GitArgs> = {
 
     const all = (result.all ?? '').trim()
     if (result.failed || result.exitCode !== 0) {
+      if (result.exitCode === undefined) {
+        // execa never got a process to run (e.g. ENOENT: git isn't on PATH), so `all` and
+        // `exitCode` are both undefined — there is no process output to report.
+        return {
+          ok: false,
+          content:
+            'git could not be run (is git installed and on PATH?), so git_status has ' +
+            'nothing to report.',
+        }
+      }
       if (/not a git repository/i.test(all)) {
         return {
           ok: false,
@@ -124,7 +141,11 @@ export const gitStatusTool: Tool<GitArgs> = {
             'git_status has nothing to report.',
         }
       }
-      return { ok: false, content: clipOutput(all, OUTPUT_CHAR_LIMIT) }
+      const clipped = clipOutput(all, OUTPUT_CHAR_LIMIT)
+      return {
+        ok: false,
+        content: clipped === '' ? `exit ${result.exitCode} with no output` : clipped,
+      }
     }
 
     if (all === '') {
