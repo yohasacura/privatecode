@@ -64,3 +64,30 @@ test('raises a typed error when the server returns a non-2xx status', async () =
   await expect(client.chat({ messages: [], maxTokens: 10 }))
     .rejects.toThrow(/llama\.cpp request failed/)
 })
+
+test('props() maps all fields from /props correctly', async () => {
+  const propsPayload = {
+    default_generation_settings: { n_ctx: 131072 },
+    total_slots: 1,
+    model_path: 'D:\\LocalAgentAI\\models\\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf',
+    build_info: 'b10202-155372596',
+    model_alias: 'Qwen3.6-35B-A3B',
+    chat_template: '{% for message in messages %}...{% endfor %}',
+  }
+
+  const fake = await startFakeServer((body, req) => {
+    if (req.url === '/props') {
+      return propsPayload
+    }
+    return {}
+  })
+  stop = fake.close
+  const client = new LlamaClient({ baseUrl: fake.url, model: 'Qwen3.6-35B-A3B' })
+
+  const result = await client.props()
+
+  expect(result.buildInfo).toBe('b10202-155372596')
+  expect(result.modelPath).toBe('D:\\LocalAgentAI\\models\\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf')
+  expect(result.contextLength).toBe(131072)
+  expect(result.totalSlots).toBe(1)
+})
