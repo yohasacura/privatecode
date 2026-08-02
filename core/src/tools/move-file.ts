@@ -1,5 +1,5 @@
 import { mkdir, stat } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { dirname, sep } from 'node:path'
 import { opensAsWorkspaceRoot } from '../workspace.js'
 import { fsErrorReason, renameWithRetry } from './atomic-write.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
@@ -126,6 +126,18 @@ export const moveFileTool: Tool<MoveFileArgs> = {
         return { ok: false, content: `Could not check ${args.to}: ${fsErrorReason(toAbs, e)}` }
       }
       // ENOENT: no existing target, nothing to refuse.
+    }
+
+    // A directory cannot be moved into its own subtree; and if we let it reach mkdir,
+    // the parent chain for `to` would be created INSIDE `from` before rename fails —
+    // a failed call must not mutate the workspace.
+    const fromPrefix = fromAbs.toLowerCase() + sep
+    if (toAbs.toLowerCase() === fromAbs.toLowerCase() ||
+        toAbs.toLowerCase().startsWith(fromPrefix)) {
+      return {
+        ok: false,
+        content: `Cannot move ${args.from} into itself or its own subtree (${args.to}).`,
+      }
     }
 
     try {
