@@ -1,5 +1,5 @@
-import { beforeAll, expect, test } from 'vitest'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { afterAll, beforeAll, expect, test } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../src/workspace.js'
@@ -8,14 +8,19 @@ import { listDirTool } from '../src/tools/list-dir.js'
 import { findFilesTool } from '../src/tools/find-files.js'
 
 let ctx: { workspace: Workspace }
+let tempRoot: string
 
 beforeAll(() => {
-  const root = mkdtempSync(join(tmpdir(), 'pc-read-'))
-  mkdirSync(join(root, 'src'))
-  writeFileSync(join(root, 'src', 'a.ts'), 'one\ntwo\nthree\nfour\nfive\n')
-  writeFileSync(join(root, 'src', 'b.ts'), 'export const b = 1\n')
-  writeFileSync(join(root, 'README.md'), '# hi\n')
-  ctx = { workspace: new Workspace(root) }
+  tempRoot = mkdtempSync(join(tmpdir(), 'pc-read-'))
+  mkdirSync(join(tempRoot, 'src'))
+  writeFileSync(join(tempRoot, 'src', 'a.ts'), 'one\ntwo\nthree\nfour\nfive\n')
+  writeFileSync(join(tempRoot, 'src', 'b.ts'), 'export const b = 1\n')
+  writeFileSync(join(tempRoot, 'README.md'), '# hi\n')
+  ctx = { workspace: new Workspace(tempRoot) }
+})
+
+afterAll(() => {
+  rmSync(tempRoot, { recursive: true, force: true })
 })
 
 test('read_file numbers lines', async () => {
