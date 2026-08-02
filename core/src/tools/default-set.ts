@@ -6,21 +6,28 @@ import { searchCodeTool } from './search-code.js'
 import { editFileTool } from './edit-file.js'
 import { writeFileTool } from './write-file.js'
 import { runCommandTool } from './run-command.js'
+import { BackgroundTasks, backgroundTaskTool } from './background-task.js'
 
-/**
- * It must not live in cli.ts: importing that file would run its main() as a side effect,
- * which would break the integration test and anything else that just wants the same
- * tool set without launching a CLI session.
- *
- * The tools this plan delivers. Later plans add the remaining eight.
- */
-export function buildRegistry(): ToolRegistry {
-  const r = new ToolRegistry()
+export interface Toolset {
+  registry: ToolRegistry
+  /** Owned by the host: call stopAll() on shutdown so no orphan processes survive. */
+  background: BackgroundTasks
+}
+
+export function createToolset(): Toolset {
+  const registry = new ToolRegistry()
+  const background = new BackgroundTasks()
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
-                   editFileTool, writeFileTool, runCommandTool]) {
-    r.register(t)
+                   editFileTool, writeFileTool, runCommandTool,
+                   backgroundTaskTool(background)]) {
+    registry.register(t)
   }
-  return r
+  return { registry, background }
+}
+
+/** Back-compat for existing callers/tests that only need the registry. */
+export function buildRegistry(): ToolRegistry {
+  return createToolset().registry
 }
 
 /**
