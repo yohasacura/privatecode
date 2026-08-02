@@ -88,7 +88,13 @@ export const findFilesTool: Tool<FindFilesArgs> = {
 
     const matches: string[] = []
     try {
-      for await (const entry of glob(args.glob, { cwd: ctx.workspace.root, withFileTypes: true, dot: true } as any)) {
+      // Known limitation, not an oversight: Node's fs.glob has no `dot` option, so there is
+      // no way to opt a pattern into matching dotted path segments. A non-dotted pattern
+      // (e.g. "**/*.yml") therefore cannot reach a dotted path (e.g. ".github/workflows/ci.yml");
+      // the caller must write an explicitly dotted pattern (e.g. ".github/**/*.yml") to see it.
+      // Measured directly against fs.glob on Node v24.18.1 - passing `dot: true` is silently
+      // ignored, not rejected, which is why it must not be passed at all.
+      for await (const entry of glob(args.glob, { cwd: ctx.workspace.root, withFileTypes: true })) {
         // The tool is called find_files: a bare directory name is indistinguishable from
         // an extensionless file, and the model will call read_file on it.
         if (entry.isDirectory()) continue

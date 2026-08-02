@@ -343,37 +343,47 @@ test('F1 list_dir filters hidden entries case-insensitively', async () => {
 })
 
 // --- Finding 2: dotfile discovery with non-dotted patterns -------------------
+//
+// Node's fs.glob has no `dot` option (see find-files.ts): passing `dot: true` was
+// silently ignored, so it could never have made a non-dotted pattern reach a dotted
+// path. The two tests below used to claim the opposite - each used a pattern that was
+// *already* explicitly dotted (".github/**/*.yml", ".*"), which glob matches with or
+// without the option, so both passed identically before and after the option existed
+// and demonstrated nothing about it. They are rewritten as honest characterisation
+// tests of the actual, measured limitation, pinned so a future Node runtime change
+// that adds real dot-matching is caught here instead of silently changing find_files.
 
-test('F2 find_files discovers dotted paths when explicitly referenced', async () => {
-  // This is a regression test: glob with dot: true enables dotted paths.
-  // An explicit pattern like .github/** finds files inside .github.
-  const r = await findFilesTool.execute({ glob: '.github/**/*.yml' }, ctx)
+test('F2 a non-dotted pattern does not reach a path under a dotted directory', async () => {
+  const r = await findFilesTool.execute({ glob: '**/*.yml' }, ctx)
   expect(r.ok).toBe(true)
-  expect(r.content).toContain('.github/workflows/ci.yml')
+  expect(r.content).not.toContain('.github/workflows/ci.yml')
+  expect(r.content).toMatch(/^No files match/)
 })
 
-test('F2 find_files discovers dotfiles with dot: true', async () => {
-  // .gitignore and .gitattributes should be found with dot: true
-  const r = await findFilesTool.execute({ glob: '.*' }, ctx)
+test('F2 a non-dotted pattern does not reach a top-level dotfile', async () => {
+  const r = await findFilesTool.execute({ glob: '*' }, ctx)
   expect(r.ok).toBe(true)
-  expect(r.content).toContain('.gitignore')
-  expect(r.content).toContain('.gitattributes')
+  expect(r.content).not.toContain('.gitignore')
+  expect(r.content).not.toContain('.gitattributes')
+  expect(r.content).not.toContain('.env')
 })
 
-test('F2 find_files still filters .git and node_modules with dot: true', async () => {
-  // Ensure the segment filter is not bypassed by dot: true.
-  // Even with patterns like .git/**, the hidden segment filter should apply.
+test('F2 find_files still filters .git and node_modules for an explicitly dotted pattern', async () => {
+  // .git/** is itself explicitly dotted, so glob does yield matches under it; the hidden
+  // segment filter is what must remove them - this is independent of the dot:true finding.
   const r = await findFilesTool.execute({ glob: '.git/**' }, ctx)
   expect(r.content).toMatch(/^No files match/)
   expect(r.content).not.toContain('objects/ab/cdef')
 })
 
-test('F2 find_files still filters .env with dot: true', async () => {
-  // The secrets denylist in workspace.resolve() must still fire.
-  // Use a pattern that would find .env if it weren't filtered.
-  const r = await findFilesTool.execute({ glob: '**/*' }, ctx)
+test('F2 find_files applies the secrets denylist to an explicitly dotted pattern', async () => {
+  // A non-dotted pattern like "**/*" never reaches .env at all (see the limitation above),
+  // so it would prove nothing about the resolve() denylist. ".env" is explicitly dotted,
+  // so glob genuinely yields it; the assertion is that ctx.workspace.resolve()'s secrets
+  // denylist - not glob's inability to match dotfiles - is what keeps it out of the result.
+  const r = await findFilesTool.execute({ glob: '.env' }, ctx)
   expect(r.ok).toBe(true)
-  // .env should not appear in the output (it's filtered by workspace.resolve())
-  const lines = r.content.split('\n').filter((l) => l === '.env' || l.endsWith('/.env'))
-  expect(lines).toHaveLength(0)
+  // Not a bare toContain('.env') check: the "No files match .env" message itself echoes
+  // the pattern, so that assertion would pass trivially even if the entry were matched.
+  expect(r.content.split('\n')).not.toContain('.env')
 })
