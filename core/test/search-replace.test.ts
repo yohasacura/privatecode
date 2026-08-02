@@ -55,3 +55,74 @@ test('reports the closest line when the anchor is not found', () => {
   expect(out.reason).toBe('not_found')
   expect(out.hint).toContain('hello')
 })
+
+// Defect 1: source.replace(search, replace) treats `replace` as a replacement *pattern*,
+// not literal text, even though `search` is a plain string. $&, $$, $` and $' must all be
+// inserted verbatim, not expanded.
+test('inserts $& in the replacement literally instead of expanding it to the matched text', () => {
+  const out = applySearchReplace('OLD\n', 'OLD', 'NEW $& END')
+  expect(out.ok).toBe(true)
+  if (!out.ok) return
+  expect(out.matchedExactly).toBe(true)
+  expect(out.text).toBe('NEW $& END\n')
+})
+
+test('inserts $$ in the replacement literally instead of collapsing it to one dollar sign', () => {
+  const out = applySearchReplace('run(cmd)\n', 'run(cmd)', 'echo $$')
+  expect(out.ok).toBe(true)
+  if (!out.ok) return
+  expect(out.text).toBe('echo $$\n')
+})
+
+test('inserts $` in the replacement literally instead of splicing in the file prefix', () => {
+  const out = applySearchReplace('prefix-text\nOLD\n', 'OLD', 'before $` after')
+  expect(out.ok).toBe(true)
+  if (!out.ok) return
+  expect(out.text).toBe('prefix-text\nbefore $` after\n')
+})
+
+test("inserts $' in the replacement literally instead of splicing in trailing file content", () => {
+  const out = applySearchReplace("OLD\nsuffix-text\n", 'OLD', "after $' end")
+  expect(out.ok).toBe(true)
+  if (!out.ok) return
+  expect(out.text).toBe("after $' end\nsuffix-text\n")
+})
+
+// Defect 2: countOccurrences advances by the needle's length, so overlapping occurrences
+// (e.g. the two overlapping "==" inside "===") are undercounted to 1 and the exact-match
+// path silently applies an ambiguous anchor.
+test('counts overlapping occurrences so a short ambiguous anchor is rejected, not silently applied', () => {
+  const out = applySearchReplace('if (a === b) { x = 1; }\n', '==', 'IS_EQ')
+  expect(out.ok).toBe(false)
+  if (out.ok) return
+  expect(out.reason).toBe('ambiguous')
+})
+
+// Defect 3: the not-found hint used to score similarity against the anchor's first line only,
+// so two blocks sharing an identical opener tie and the hint always points at the first one,
+// even when the anchor's near-miss body is inside the second block.
+test('scores the not-found hint against the whole window, not just the first line, when openers repeat', () => {
+  const src = [
+    'if (config.enabled) {',
+    '  doSomething();',
+    '}',
+    '',
+    'if (config.enabled) {',
+    '  doSomethingElse();',
+    '  more();',
+    '}',
+    '',
+  ].join('\n')
+  const anchor = [
+    'if (config.enabled) {',
+    '  doSomethingEls();', // typo: near-miss for the *second* block's body
+    '  more();',
+    '}',
+  ].join('\n')
+  const out = applySearchReplace(src, anchor, 'x')
+  expect(out.ok).toBe(false)
+  if (out.ok) return
+  expect(out.reason).toBe('not_found')
+  expect(out.hint).toContain('line 5')
+  expect(out.hint).not.toContain('line 1:')
+})

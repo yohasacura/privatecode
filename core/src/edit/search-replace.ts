@@ -2,12 +2,13 @@ export type EditOutcome =
   | { ok: true; text: string; matchedExactly: boolean }
   | { ok: false; reason: 'empty' | 'not_found' | 'ambiguous'; hint: string }
 
+/** Counts overlapping occurrences too, so a self-overlapping anchor (`==` inside `===`) isn't undercounted. */
 function countOccurrences(haystack: string, needle: string): number {
   let n = 0
   let i = haystack.indexOf(needle)
   while (i !== -1) {
     n++
-    i = haystack.indexOf(needle, i + needle.length)
+    i = haystack.indexOf(needle, i + 1)
   }
   return n
 }
@@ -43,7 +44,10 @@ export function applySearchReplace(source: string, search: string, replace: stri
 
   const exact = countOccurrences(source, search)
   if (exact === 1) {
-    return { ok: true, text: source.replace(search, replace), matchedExactly: true }
+    // A function replacer inserts `replace` literally. The two-argument form of String.replace
+    // treats a string second argument as a replacement *pattern* and still expands $$, $&, $`
+    // and $' even though `search` itself is a plain string, not a regex.
+    return { ok: true, text: source.replace(search, () => replace), matchedExactly: true }
   }
   if (exact > 1) {
     return {
@@ -79,16 +83,20 @@ export function applySearchReplace(source: string, search: string, replace: stri
     }
   }
 
-  // Not found: point at the most similar line so the retry is cheap.
-  let best = { line: '', score: 0, index: -1 }
-  const firstSearchLine = search.split('\n')[0] ?? ''
-  lines.forEach((line, index) => {
-    const score = similarity(normalise(firstSearchLine), normalise(line))
-    if (score > best.score) best = { line, score, index }
-  })
+  // Not found: point at the most similar window so the retry is cheap. Score against the
+  // same multi-line window shape as the whitespace-tolerant matcher above (not just the
+  // anchor's first line) so two blocks sharing an identical opener don't tie and hide which
+  // block the near-miss is actually in.
+  const windowSize = Math.max(1, Math.min(searchLineCount, lines.length))
+  let best = { window: '', score: 0, index: -1 }
+  for (let i = 0; i + windowSize <= lines.length; i++) {
+    const window = lines.slice(i, i + windowSize).join('\n')
+    const score = similarity(normSearch, normalise(window))
+    if (score > best.score) best = { window, score, index: i }
+  }
   const hint = best.index >= 0 && best.score > 0.2
-    ? `search_text was not found. The closest line in the file is line ${best.index + 1}: ` +
-      `${JSON.stringify(best.line)}. Copy the text verbatim from the file.`
+    ? `search_text was not found. The closest match in the file starts at line ${best.index + 1}: ` +
+      `${JSON.stringify(best.window)}. Copy the text verbatim from the file.`
     : `search_text was not found anywhere in the file. Read the file again before editing.`
   return { ok: false, reason: 'not_found', hint }
 }
