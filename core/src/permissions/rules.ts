@@ -265,6 +265,26 @@ function normalizePath(path: string): string {
  * guessed at, so `edit_file(src/**)` can't be fooled by `src/../.env`, and
  * `edit_file(**)` can't be fooled by `/etc/shadow` or `C:/x`.
  *
+ * Also mirrors two more Win32-open-time aliasing tricks -- the same class of bug as
+ * `TRAILING_DOTS_AND_SPACES` in workspace.ts, applied here so a PATH-keyed deny rule
+ * spec'd against the canonical spelling can't be bypassed by a spelling Windows treats
+ * as identical. Measured: deny `edit_file(src/generated/**)` plus a call spelled
+ * `src/generated./x.ts` (trailing dot) reached `allow`, even though Windows opens that
+ * path as `src/generated/x.ts`.
+ * - Each ordinary (non `.`/`..`) segment has trailing dots and spaces stripped, same
+ *   pattern and reason as `TRAILING_DOTS_AND_SPACES`: Windows strips them when it opens
+ *   a file, so `generated.` and `generated ` both open `generated`, and the canonical
+ *   form used for matching must reflect that, not the caller's literal spelling.
+ * - A segment whose basename (the part before any extension) has 8.3 short-name shape
+ *   (`genera~1`) canonicalizes the whole path to `null`: an 8.3 alias names some real
+ *   long filename, but resolving it requires a filesystem stat, which this lexical
+ *   function does not do. Rather than pass the short name through as if it were an
+ *   ordinary segment (silently never matching the long-name spec it actually opens),
+ *   this refuses to guess -- and the DENY tier (`denyMatchesUncanonicalizablePath` in
+ *   engine.ts) already treats `canonicalizePath() === null` as fail-closed for a spec'd
+ *   deny rule, so an unresolvable 8.3 alias against a deny spec denies rather than
+ *   falling through as "no match, keep looking."
+ *
  * Exported so `engine.ts`'s DENY tier can ask, for a spec'd deny rule, whether an incoming
  * path canonicalizes at all -- `null` (or `''`, the workspace-root-itself case) is the
  * signal it uses to fail closed (treat an uncanonicalizable path as denied rather than as
@@ -275,9 +295,9 @@ export function canonicalizePath(path: string): string | null {
   if (normalized.startsWith('/') || /^[a-z]:/.test(normalized)) return null
 
   const stack: string[] = []
-  for (const segment of normalized.split('/')) {
-    if (segment === '' || segment === '.') continue
-    if (segment === '..') {
+  for (const rawSegment of normalized.split('/')) {
+    if (rawSegment === '' || rawSegment === '.') continue
+    if (rawSegment === '..') {
       if (stack.length > 0 && stack[stack.length - 1] !== '..') {
         stack.pop()
       } else {
@@ -286,9 +306,20 @@ export function canonicalizePath(path: string): string | null {
         // extends) that leading `..` run itself.
         stack.push('..')
       }
-    } else {
-      stack.push(segment)
+      continue
     }
+    // Windows strips trailing dots and spaces when it opens a file (see
+    // TRAILING_DOTS_AND_SPACES in workspace.ts) -- strip the same way here, on this
+    // ordinary segment only ('.'/'..' above are navigation tokens, not filenames, and
+    // are handled before reaching this point), so the canonical form matches the
+    // spelling Windows actually opens.
+    const segment = rawSegment.replace(/[. ]+$/, '')
+    if (segment === '') continue // stripped down to nothing: treat like an empty segment
+    // 8.3 short-name shape in the basename (before any extension) -- see the doc comment
+    // above. Can't be resolved lexically, so the whole path is uncanonicalizable.
+    const basename = segment.includes('.') ? segment.slice(0, segment.indexOf('.')) : segment
+    if (/~\d+/.test(basename)) return null
+    stack.push(segment)
   }
 
   const collapsed = stack.join('/')

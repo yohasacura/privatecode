@@ -343,6 +343,21 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     turnRenderer.reset()
     stopAbortListening = startAbortListening(() => currentAbort?.abort())
 
+    // Snapshot both the engine reference and its problems length from the CURRENT
+    // engine, before the turn runs. `remember()`'s "kept for this session only" fallback
+    // and `addSessionRule`'s parse/canonical-syntax refusals push onto `engine.problems`
+    // mid-turn (from inside an approval decision), but nothing ever printed them after
+    // the startup banner -- they were silently swallowed. Capturing the engine object
+    // itself (not just `engine.problems` by value) matters because `/new` and `/resume`
+    // call `rebuild()`, which reassigns the outer `engine` variable to a brand new
+    // PermissionEngine between turns; printing against whatever `engine` happens to
+    // point to *after* the turn would either miss problems (if rebuilt away) or -- if a
+    // rebuild somehow produced a same-shaped array -- misattribute them. Reading off
+    // `turnEngine` (fixed at this turn's start) is always the engine `session.send` just
+    // ran against.
+    const turnEngine = engine
+    const problemsBefore = turnEngine.problems.length
+
     const started = performance.now()
     let result: TurnResult | undefined
     try {
@@ -353,6 +368,9 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       stopAbortListening?.()
       stopAbortListening = undefined
       currentAbort = undefined
+    }
+    for (const p of turnEngine.problems.slice(problemsBefore)) {
+      process.stdout.write(`settings: ${p}\n`)
     }
     if (!result) return
 

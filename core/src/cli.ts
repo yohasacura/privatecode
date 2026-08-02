@@ -201,26 +201,38 @@ async function main() {
   if (oneShotReadline) sessionOpts.interaction = createConsolePort(oneShotReadline.adapter)
   const session = new Session(sessionOpts)
 
-  let result
+  // The REPL's own shutdown() calls toolset.background.stopAll() so a background_task
+  // process never outlives the process that started it (see repl.ts). This one-shot path
+  // is the other caller of the same Toolset contract, and used to skip that call entirely
+  // -- a `background_task` start left a live child (and the execa/PowerShell handles that
+  // keep the event loop alive) behind after the turn finished, so the process never
+  // exited on its own. try/finally here, around both the send and the result report
+  // below, guarantees stopAll() runs on every exit from this block: normal completion,
+  // the catch-and-return below, or a throw from the console.log calls themselves.
   try {
-    result = await session.send(values.task)
-  } catch (e) {
-    // Session.send absorbs abort/timeout into stoppedBecause, but a genuine transport
-    // failure still escapes as an exception — that is not a turn outcome and must not
-    // print as an unhandled stack trace.
-    console.error(turnErrorMessage(server, e))
-    process.exitCode = 1
-    return
-  } finally {
-    oneShotReadline?.close()
-  }
+    let result
+    try {
+      result = await session.send(values.task)
+    } catch (e) {
+      // Session.send absorbs abort/timeout into stoppedBecause, but a genuine transport
+      // failure still escapes as an exception — that is not a turn outcome and must not
+      // print as an unhandled stack trace.
+      console.error(turnErrorMessage(server, e))
+      process.exitCode = 1
+      return
+    } finally {
+      oneShotReadline?.close()
+    }
 
-  console.log(`\n--- ${result.stoppedBecause} after ${result.steps} step${result.steps === 1 ? '' : 's'} ---`)
-  if (result.stoppedBecause === 'timeout' || result.stoppedBecause === 'truncated') {
-    console.log(
-      '(this is a real outcome on a slow local model, not necessarily a defect in the task)')
+    console.log(`\n--- ${result.stoppedBecause} after ${result.steps} step${result.steps === 1 ? '' : 's'} ---`)
+    if (result.stoppedBecause === 'timeout' || result.stoppedBecause === 'truncated') {
+      console.log(
+        '(this is a real outcome on a slow local model, not necessarily a defect in the task)')
+    }
+    process.exitCode = result.stoppedBecause === 'done' ? 0 : 1
+  } finally {
+    await toolset.background.stopAll()
   }
-  process.exitCode = result.stoppedBecause === 'done' ? 0 : 1
 }
 
 // process.exitCode, never process.exit(): on Windows, some runs of this CLI that called
