@@ -10,22 +10,27 @@ import { deleteFileTool } from './delete-file.js'
 import { runCommandTool } from './run-command.js'
 import { BackgroundTasks, backgroundTaskTool } from './background-task.js'
 import { gitStatusTool } from './git-tool.js'
+import { TodoStore } from '../interaction.js'
+import { todoWriteTool } from './todo-write.js'
+import { askUserTool } from './ask-user.js'
 
 export interface Toolset {
   registry: ToolRegistry
   /** Owned by the host: call stopAll() on shutdown so no orphan processes survive. */
   background: BackgroundTasks
+  todos: TodoStore
 }
 
 export function createToolset(): Toolset {
   const registry = new ToolRegistry()
   const background = new BackgroundTasks()
+  const todos = new TodoStore()
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
-                   backgroundTaskTool(background), gitStatusTool]) {
+                   backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool]) {
     registry.register(t)
   }
-  return { registry, background }
+  return { registry, background, todos }
 }
 
 /** Back-compat for existing callers/tests that only need the registry. */

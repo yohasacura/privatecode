@@ -1,8 +1,11 @@
 import type { Workspace } from '../workspace.js'
+import type { InteractionPort, TodoStore } from '../interaction.js'
 
 export interface ToolContext {
   workspace: Workspace
   signal?: AbortSignal
+  interaction?: InteractionPort
+  todos?: TodoStore
 }
 
 export interface ToolResult {
