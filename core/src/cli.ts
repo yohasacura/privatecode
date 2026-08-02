@@ -35,8 +35,8 @@ function serverUnreachableMessage(server: string, detail?: string): string {
 }
 
 /**
- * llama.cpp answered with an HTTP error status: the process is up and reachable, so the
- * restart advice in serverUnreachableMessage does not apply and must not be shown here.
+ * llama.cpp answered: the process is up and reachable, so the restart advice in
+ * serverUnreachableMessage does not apply and must not be shown here.
  *
  * Demonstrated case: a live, RUNNING server answered a mid-turn request with HTTP 500,
  * and the old code printed "Could not reach llama.cpp ... Start it with
@@ -44,16 +44,24 @@ function serverUnreachableMessage(server: string, detail?: string): string {
  * for things like context-window overflow, which on a 35B local model with a long
  * transcript is one of the most likely real mid-turn failures — so this says what the
  * server actually replied instead of misdiagnosing it as connectivity.
+ *
+ * "Answered" is broader than "answered with an error status", which is why this no longer
+ * assumes `err.status` exists. A 200 carrying a non-JSON body, and a 200 carrying JSON
+ * with no `choices` — llama.cpp's own shape for a refused request — are both a running
+ * server replying, and both used to reach the branch below this one.
  */
 function serverErrorMessage(server: string, err: LlamaRequestError): string {
+  const what = err.status === undefined
+    ? 'it sent a reply this client could not use'
+    : `it answered HTTP ${err.status}`
   const body = err.body ? `\nServer response: ${err.body}` : ''
   return (
-    `\nllama.cpp at ${server} is running and answered, but rejected or failed on this ` +
-    `request: HTTP ${err.status}.${body}\n` +
+    `\nllama.cpp at ${server} is running and answered, but the request failed: ${what}.\n` +
+    `${err.message}${body}\n` +
     'The server is not down, so restarting it is unlikely to help. On a local model, a ' +
-    '4xx/5xx mid-turn is most often the conversation exceeding the context window; try a ' +
-    'shorter task or a fresh session. Pass --server <url> if this points at the wrong ' +
-    'server.\n'
+    'mid-turn failure like this is most often the conversation exceeding the context ' +
+    'window; try a shorter task or a fresh session. Pass --server <url> if this points at ' +
+    'the wrong server.\n'
   )
 }
 
@@ -184,12 +192,17 @@ async function main() {
     // runTurn absorbs abort/timeout into stoppedBecause, but a genuine transport failure
     // still escapes as an exception — that is not a turn outcome and must not print as an
     // unhandled stack trace. Not every escaped exception means the same thing, though:
-    // LlamaRequestError carries `status` only when the server actually answered with an
-    // HTTP error, as opposed to the request never reaching it at all (connection
-    // refused, DNS failure, our own timeout). Those two must not share a message — one
-    // means "start the server", the other means the server is up and rejected the
-    // request (most likely context overflow on a local model).
-    if (e instanceof LlamaRequestError && e.status !== undefined) {
+    // LlamaRequestError.answered says whether the server produced a response at all, as
+    // opposed to the request never reaching it (connection refused, DNS failure, our own
+    // timeout). Those two must not share a message — one means "start the server", the
+    // other means the server is up and the request failed (most likely context overflow
+    // on a local model).
+    //
+    // This used to branch on `e.status !== undefined`, which asks "did the HTTP layer
+    // error", not "did the server answer": a 200 with a non-JSON body escaped as a raw
+    // SyntaxError and a 200 with no `choices` carried `status: undefined`, so both landed
+    // in the "start the server" branch for a server that had just replied.
+    if (e instanceof LlamaRequestError && e.answered) {
       console.error(serverErrorMessage(server, e))
     } else {
       console.error(serverUnreachableMessage(server, e instanceof Error ? e.message : String(e)))

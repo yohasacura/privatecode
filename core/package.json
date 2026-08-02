@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "//": "AbortSignal.any (llama/client.ts, agent/loop.ts) landed in Node 20.3; on anything older every model call throws TypeError at the first request.",
+    "node": ">=20.3.0"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

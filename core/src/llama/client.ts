@@ -8,12 +8,41 @@ export interface LlamaClientOptions {
   requestTimeoutMs?: number
 }
 
+export interface LlamaRequestFailure {
+  /** HTTP status, when the failure arrived as an HTTP response. */
+  status?: number
+  /** What the server sent back, bounded — often the only diagnostic there is. */
+  body?: string
+  /**
+   * Whether llama.cpp produced a response at all.
+   *
+   * The question a caller actually needs answered is "is the server up?", and `status` is
+   * not that question: a 200 whose body is not JSON, and a 200 whose JSON has no
+   * `choices`, are both a running server replying, and both used to reach the CLI either
+   * as a raw SyntaxError or as an error with `status: undefined`. The CLI branched on
+   * `status !== undefined`, i.e. on "did the HTTP layer error", and so told the user to
+   * restart a server that was up and answering. Only a request that never got a response —
+   * connection refused, DNS failure, a timeout — sets this false.
+   */
+  answered: boolean
+}
+
 export class LlamaRequestError extends Error {
-  constructor(message: string, readonly status?: number, readonly body?: string) {
+  readonly status?: number
+  readonly body?: string
+  readonly answered: boolean
+
+  constructor(message: string, failure: LlamaRequestFailure) {
     super(message)
     this.name = 'LlamaRequestError'
+    if (failure.status !== undefined) this.status = failure.status
+    if (failure.body !== undefined) this.body = failure.body
+    this.answered = failure.answered
   }
 }
+
+/** Ceiling on how much of a response body is carried on an error. */
+const MAX_ERROR_BODY_CHARS = 600
 
 export class LlamaClient {
   private readonly baseUrl: string
@@ -49,7 +78,13 @@ export class LlamaClient {
 
     const choice = data?.choices?.[0]
     if (!choice) {
-      throw new LlamaRequestError('llama.cpp request failed: response had no choices')
+      // The server answered — this is a well-formed HTTP 200 whose JSON is not a
+      // completion. llama.cpp's own shape for a refused request is exactly this: 200 with
+      // an `error` object. Carrying the body is the only way the user learns what it said.
+      throw new LlamaRequestError('llama.cpp request failed: response had no choices', {
+        answered: true,
+        body: JSON.stringify(data).slice(0, MAX_ERROR_BODY_CHARS),
+      })
     }
     return {
       message: choice.message,
@@ -103,16 +138,33 @@ export class LlamaClient {
     try {
       res = await fetch(this.baseUrl + path, { ...init, signal })
     } catch (cause) {
+      // The one genuine "the server is not there" case: nothing answered.
       throw new LlamaRequestError(
         `llama.cpp request failed: ${this.baseUrl + path} unreachable (${String(cause)})`,
+        { answered: false },
       )
     }
     const text = await res.text()
     if (!res.ok) {
+      throw new LlamaRequestError(`llama.cpp request failed: HTTP ${res.status}`, {
+        status: res.status,
+        body: text.slice(0, MAX_ERROR_BODY_CHARS),
+        answered: true,
+      })
+    }
+    if (!text) return {}
+    try {
+      return JSON.parse(text)
+    } catch {
+      // A 2xx carrying something that is not JSON — an HTML error page from a proxy, a
+      // truncated body. Unwrapped, this escaped as a raw SyntaxError, which is not a
+      // LlamaRequestError, so the CLI's catch treated it as a transport failure and told
+      // the user to restart a server that had just replied to them.
       throw new LlamaRequestError(
-        `llama.cpp request failed: HTTP ${res.status}`, res.status, text.slice(0, 600),
+        `llama.cpp request failed: ${this.baseUrl + path} answered HTTP ${res.status} with a ` +
+        'body that is not JSON',
+        { status: res.status, body: text.slice(0, MAX_ERROR_BODY_CHARS), answered: true },
       )
     }
-    return text ? JSON.parse(text) : {}
   }
 }
