@@ -1,5 +1,5 @@
 import type { ToolSchema } from '../llama/types.js'
-import type { Tool, ToolContext, ToolResult } from './types.js'
+import type { Tool, ToolContext, ToolResult, Validation } from './types.js'
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool<any>>()
@@ -41,14 +41,14 @@ export class ToolRegistry {
     } catch (e) {
       return { ok: false, content: `Arguments for ${name} could not be parsed as JSON: ${e}` }
     }
-    let validation
+    let validation: Validation<any>
     try {
       validation = tool.validate(parsed)
+      if (!validation.ok) {
+        return { ok: false, content: `Invalid arguments for ${name}: ${validation.error}` }
+      }
     } catch (e) {
       return { ok: false, content: `Invalid arguments for ${name}: ${e instanceof Error ? e.message : String(e)}` }
-    }
-    if (!validation.ok) {
-      return { ok: false, content: `Invalid arguments for ${name}: ${validation.error}` }
     }
     try {
       return await tool.execute(validation.args, ctx)

@@ -104,3 +104,31 @@ test('converts a throwing validate() to a failed ToolResult', async () => {
   // Message should name the tool and indicate invalid arguments.
   expect(out.content).toMatch(/invalid arguments for thrower/i)
 })
+
+test('handles validate() returning undefined without throwing', async () => {
+  const reg = new ToolRegistry()
+  // This tool's validate() can return undefined on one branch, simulating the defect
+  // where a missing return statement causes the function to fall through.
+  const undefinedReturnerTool = {
+    name: 'undefReturner',
+    description: 'A tool whose validate() returns undefined on one branch.',
+    parameters: { type: 'object', properties: { text: { type: 'string' } } },
+    validate(raw: unknown) {
+      const r = raw as { text?: unknown }
+      if (typeof r?.text === 'string' && r.text.trim() !== '') {
+        return { ok: true, args: { text: r.text } }
+      }
+      // BUG: missing return statement on error branch, falls through to undefined
+    },
+    async execute(args: { text: string }) {
+      return { ok: true, content: args.text }
+    },
+  } as Tool<{ text: string }>
+  reg.register(undefinedReturnerTool)
+  // Call with invalid arguments to trigger the missing return.
+  const out = await reg.run('undefReturner', '{}', ctx)
+  // Must resolve (not reject) with a failed ToolResult, not throw TypeError on .ok access.
+  expect(out.ok).toBe(false)
+  // Message should name the tool and indicate invalid arguments.
+  expect(out.content).toMatch(/invalid arguments for undefReturner/i)
+})
