@@ -93,3 +93,7 @@ table) — there is no separate `.jsx`/`.mjs`/`.cjs` grammar to vendor.
 - A missing or unreadable wasm file must fail loudly, naming the exact path it looked at —
   the ripgrep lesson (`vendor/ripgrep/PROVENANCE.md`): a silent "no symbols" for a missing
   binary is indistinguishable from a genuinely symbol-free file.
+- **Bundling:** When the Tauri shell is built, these wasm files ship as bundled resources.
+  The resolution order in `core/src/outline/tree-sitter.ts` (env override →
+  package-root vendor dir) must keep working from the packaged layout; the env var
+  `PRIVATECODE_TS_WASM_DIR` is the escape hatch if the packaged path differs.

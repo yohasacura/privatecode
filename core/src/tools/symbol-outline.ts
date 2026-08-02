@@ -118,6 +118,10 @@ export const symbolOutlineTool: Tool<SymbolOutlineArgs> = {
     }
 
     const lines = result.map((e) => `${'  '.repeat(e.depth)}${e.kind} ${e.name}  :${e.line}`)
-    return { ok: true, content: `${args.path} — ${result.length} symbols:\n${lines.join('\n')}` }
+    const lastEntry = result[result.length - 1]
+    const isCapped = lastEntry?.kind === '...'
+    const realCount = isCapped ? result.length - 1 : result.length
+    const header = `${args.path} — ${realCount} symbols${isCapped ? ' (capped at 400)' : ''}`
+    return { ok: true, content: `${header}:\n${lines.join('\n')}` }
   },
 }

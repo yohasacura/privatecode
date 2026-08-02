@@ -63,6 +63,8 @@ const JS_FAMILY_TABLE: Record<string, string> = {
   type_alias_declaration: 'type',
   // TypeScript's `namespace Foo { ... }` and `module Foo { ... }` both parse as `module`.
   module: 'namespace',
+  // The vendored tree-sitter-typescript grammar parses `namespace Foo { ... }` as `internal_module`.
+  internal_module: 'namespace',
 }
 
 const C_SHARP_TABLE: Record<string, string> = {
@@ -100,7 +102,7 @@ const MAX_ENTRIES = 400
  * documents for `vendor/ripgrep/rg.exe`. `PRIVATECODE_TS_WASM_DIR` overrides it outright
  * (no fallback beneath it: an explicit override that is wrong should be reported as wrong,
  * not silently bypassed), the same override contract `search-code.ts` gives
- * `PRIVATECODE_RG`.
+ * `PRIVATECODE_RG`. See `vendor/tree-sitter/PROVENANCE.md` for bundling rules.
  */
 function resolveWasmDir(): string {
   const override = process.env.PRIVATECODE_TS_WASM_DIR
