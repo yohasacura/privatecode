@@ -341,7 +341,7 @@ test('ignores RIPGREP_CONFIG_PATH from the ambient environment', async () => {
 test('reports "no matches" with a warning when the only stderr is a malformed .gitignore line', async () => {
   await withWorkspace(async (dir, c) => {
     writeFileSync(join(dir, 'a.ts'), 'hello world\n')
-    writeFileSync(join(dir, '.gitignore'), '[\n')
+    writeFileSync(join(dir, '.gitignore'), '[\n[\n')
     const r = await searchCodeTool.execute({ pattern: 'zzz_absent_zzz' }, c)
     expect(r.ok).toBe(true)
     expect(r.content).toMatch(/no matches/i)
@@ -354,12 +354,40 @@ test('reports "no matches" with a warning when the only stderr is a malformed .g
 test('still returns real matches, with the same warning, when the .gitignore is malformed', async () => {
   await withWorkspace(async (dir, c) => {
     writeFileSync(join(dir, 'a.ts'), 'hello world\n')
-    writeFileSync(join(dir, '.gitignore'), '[\n')
+    writeFileSync(join(dir, '.gitignore'), '[\n[\n')
     const r = await searchCodeTool.execute({ pattern: 'hello' }, c)
     expect(r.ok).toBe(true)
     expect(r.content).toMatch(/a\.ts:1:hello world/)
     expect(r.content).toMatch(/warning/i)
     expect(r.content).toMatch(/gitignore/i)
+  })
+})
+
+/** Critical 1 regression variant: one bad line in each of two ignore files. */
+test('reports "no matches" with a warning when multiple ignore files have malformed lines', async () => {
+  await withWorkspace(async (dir, c) => {
+    writeFileSync(join(dir, 'a.ts'), 'hello world\n')
+    mkdirSync(join(dir, 'sub'))
+    writeFileSync(join(dir, '.gitignore'), '[\n')
+    writeFileSync(join(dir, 'sub', '.gitignore'), '[\n')
+    const r = await searchCodeTool.execute({ pattern: 'zzz_absent_zzz' }, c)
+    expect(r.ok).toBe(true)
+    expect(r.content).toMatch(/no matches/i)
+    expect(r.content).toMatch(/warning/i)
+  })
+})
+
+/** Critical 1 regression variant: one bad line in each of two ignore files, with matches. */
+test('still returns real matches with a warning when multiple ignore files have malformed lines', async () => {
+  await withWorkspace(async (dir, c) => {
+    writeFileSync(join(dir, 'a.ts'), 'hello world\n')
+    mkdirSync(join(dir, 'sub'))
+    writeFileSync(join(dir, '.gitignore'), '[\n')
+    writeFileSync(join(dir, 'sub', '.gitignore'), '[\n')
+    const r = await searchCodeTool.execute({ pattern: 'hello' }, c)
+    expect(r.ok).toBe(true)
+    expect(r.content).toMatch(/a\.ts:1:hello world/)
+    expect(r.content).toMatch(/warning/i)
   })
 })
 

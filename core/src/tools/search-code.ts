@@ -279,19 +279,25 @@ function summariseStderr(stderr: string): string {
  * with non-empty stderr is therefore not, by itself, proof the resolved binary isn't
  * ripgrep - it is ripgrep's own ordinary shape for "nothing found, but here is a warning".
  *
- * What *is* proof is a line that does not carry the prefix, because nothing that answers
- * `--version` the way ripgrep does would otherwise write to stderr on a bare "no matches"
- * run. Every impostor shape measured produces exactly that: a shell error routed through
- * `cmd.exe` ("'C:\...' is not recognized as an internal or external command", "'this' is
- * not recognized...") or a real-but-wrong executable's own error text ("sethostname: Use
- * the ...") - none of which start with `rg: `.
+ * Ripgrep prefixes only the *first* line of a multi-line message. When a .gitignore has
+ * two bad lines, stderr looks like:
+ *   rg: .\.gitignore: line 1: error ...
+ *   .\.gitignore: line 2: error ...
+ *
+ * Judge only the first non-empty line: if it carries the `rg: ` prefix, treat the
+ * output as ripgrep's own. Every impostor shape measured produces stderr where the
+ * *first* line lacks the prefix: a shell error routed through `cmd.exe` ("'C:\...' is
+ * not recognized as an internal or external command", "'this' is not recognized...") or
+ * a real-but-wrong executable's own error text ("sethostname: Use the ...").
  */
 function hasNonRipgrepStderr(stderr: string): boolean {
-  return stderr
+  const firstLine = stderr
     .split('\n')
     .map((l) => l.trim())
-    .filter((l) => l !== '')
-    .some((l) => !l.startsWith('rg:'))
+    .find((l) => l !== '')
+
+  // Check only the first non-empty line
+  return firstLine !== undefined && !firstLine.startsWith('rg:')
 }
 
 /** Minor 3: the same bounded suffix ripgrep's own warnings get on the exit-2 (partial
