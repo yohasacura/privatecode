@@ -20,6 +20,22 @@ export class WorkspaceViolation extends Error {
  * Patterns that are refused regardless of the permission rules, because reading them
  * once is already the damage. Matched against the workspace-relative path, case
  * insensitively, per path segment.
+ *
+ * Known limitation, accepted deliberately: this is a denylist over *names*, and a
+ * hardlink is not a link to a denied file, it is a second equally-real name for the
+ * same bytes. `mklink /H notes.txt .env` succeeds without admin rights and produces a
+ * `notes.txt` whose canonical form (`realpathSync.native`) is `notes.txt`, not `.env` —
+ * there is nothing for canonicalization to see through, because there is no alias
+ * relationship, just two directory entries pointing at the same inode. This vector is
+ * not closed here, and deliberately so: an `nlink > 1` backstop would also reject
+ * ordinary, legitimately hardlinked files, and pnpm lays out `node_modules` using
+ * hardlinks, so that check would break normal JavaScript workspaces. The vector is
+ * also unreachable from the tools this workspace currently exposes (nothing here can
+ * create a link), and once a tool exists that can run arbitrary shell commands it
+ * bypasses this jail far more directly than a hardlink would. Callers must not treat
+ * this denylist as a capability boundary against an actor able to create filesystem
+ * links — it is a best-effort guard against accidental or lexical access, not a
+ * security boundary against a deliberate adversary with link-creation ability.
  */
 const DENIED_SEGMENTS: RegExp[] = [
   /^\.env(\..+)?$/i,
@@ -40,22 +56,6 @@ const DENIED_SEGMENTS: RegExp[] = [
 const TRAILING_DOTS_AND_SPACES = /[. ]+$/
 
 /**
- * True for an 8.3 short name such as `ENV~1`, `ENV~1.PRO` or `SERVER~1.PEM`. Those alias
- * denied long names (`.env`, `.env.production`, `server.pem`) and are accepted by every
- * Windows file API, so they have to be refused outright: the aliased target cannot be
- * known when the file does not exist yet, and this is a denylist, so it fails closed.
- */
-function isShortNameAlias(segment: string): boolean {
-  const dot = segment.lastIndexOf('.')
-  const base = dot === -1 ? segment : segment.slice(0, dot)
-  const extension = dot === -1 ? '' : segment.slice(dot + 1)
-  // A short name is at most 8 characters plus an optional 3 character extension, and
-  // never holds more than one dot.
-  if (base.includes('.') || base.length > 8 || extension.length > 3) return false
-  return /~\d+$/.test(base)
-}
-
-/**
  * Refuse a single path segment that names something other than the plain file it appears
  * to name. Applied to the caller's spelling and again to the canonical one.
  */
@@ -68,11 +68,15 @@ function assertSegmentAllowed(segment: string, path: string): void {
     )
   }
   const opened = segment.replace(TRAILING_DOTS_AND_SPACES, '')
-  if (isShortNameAlias(opened)) {
-    throw new WorkspaceViolation(
-      `access denied to ${path} (segment "${segment}" is an 8.3 short name and may alias a denied file)`,
-    )
-  }
+  // An 8.3 short name such as `ENV~1` is not matched here on the caller's literal
+  // spelling: it is caught one layer up, in resolve(), where the path is re-checked
+  // against `canonicalize()`'s output. `realpathSync.native` expands the alias to its
+  // real long name (`ENV~1` -> `.env`), and that canonical segment is run back through
+  // this same function, so it hits the DENIED_SEGMENTS loop below on the name it
+  // actually aliases. A short name that does not exist yet aliases nothing, so there is
+  // nothing to deny — see the "lexical 8.3 rule" note in workspace.test.ts for the
+  // verification that canonicalization alone covers this without false denials on real
+  // `~N` filenames.
   for (const pattern of DENIED_SEGMENTS) {
     if (pattern.test(opened)) {
       throw new WorkspaceViolation(`access denied to ${path} (matched ${pattern})`)
@@ -94,6 +98,21 @@ function canonicalize(target: string): string {
       const real = realpathSync.native(current)
       return pending.length === 0 ? real : pathJoin(real, ...pending)
     } catch {
+      // Windows strips trailing dots and spaces when it opens a file (see
+      // TRAILING_DOTS_AND_SPACES above), but realpathSync.native does not tolerate them
+      // and fails outright on a name like `ENV~1.`. Retry once with the same stripping
+      // applied to the final segment before walking up a level: otherwise a trailing
+      // dot or space would hide whatever that segment aliases (an 8.3 short name, a
+      // junction) from every check below, even though Windows itself opens the file.
+      const strippedBase = basename(current).replace(TRAILING_DOTS_AND_SPACES, '')
+      if (strippedBase !== basename(current) && strippedBase !== '') {
+        try {
+          const real = realpathSync.native(pathJoin(dirname(current), strippedBase))
+          return pending.length === 0 ? real : pathJoin(real, ...pending)
+        } catch {
+          // Stripped name doesn't exist either; fall through and walk up.
+        }
+      }
       const parent = dirname(current)
       if (parent === current) return target
       pending.unshift(basename(current))

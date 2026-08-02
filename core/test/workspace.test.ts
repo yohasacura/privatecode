@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from 'vitest'
+import { afterAll, expect, onTestFinished, test } from 'vitest'
 import { execSync } from 'node:child_process'
 import {
   existsSync,
@@ -66,6 +66,13 @@ mkdirSync(join(planted, 'certs'))
 writeFileSync(join(planted, 'certs', 'server.pem'), PRIVATE_KEY)
 mkdirSync(join(planted, 'src'))
 writeFileSync(join(planted, 'src', 'environment.ts'), 'export const ok = true\n')
+// Planted so the 8.3-alias bypasses below have a real file to alias. Denial is now
+// pinned to canonicalization only (see the "isShortNameAlias" removal note), and
+// canonicalization can only expand an alias of a file that actually exists - an alias
+// of nothing protects nothing, which is exactly why the old lexical rule was wrong.
+writeFileSync(join(planted, '.env.production'), SECRET)
+writeFileSync(join(planted, '.npmrc'), '//registry.npmjs.org/:_authToken=secret\n')
+writeFileSync(join(planted, 'credentials'), 'aws_access_key_id=AKIAEXAMPLE\n')
 
 /** The 8.3 alias of `.env`, when the volume generates short names at all. */
 let shortNameAlias: string | null = null
@@ -136,21 +143,37 @@ test('a denied spelling never yields a path to read', () => {
 test('a real file whose name merely resembles a secret is still allowed', () => {
   const ws = new Workspace(planted)
   expect(ws.resolve('src/environment.ts')).toBe(join(planted, 'src', 'environment.ts'))
-  expect(() => ws.resolve('notes~draft.md')).not.toThrow() // tilde without digits
-  expect(() => ws.resolve('report~1.markdown')).not.toThrow() // extension too long for 8.3
-  expect(() => ws.resolve('my.backup~2.tar.gz')).not.toThrow() // more dots than 8.3 allows
+  expect(() => ws.resolve('notes~draft.md')).not.toThrow()
+  expect(() => ws.resolve('report~1.markdown')).not.toThrow()
+  expect(() => ws.resolve('my.backup~2.tar.gz')).not.toThrow()
+  expect(() => ws.resolve('data~1.csv')).not.toThrow()
+})
+
+// There is no standalone rule for 8.3 short names: `isShortNameAlias` was removed
+// after verifying (the same way the bypass itself was found) that disabling it while
+// leaving canonicalization intact still denies `ENV~1` and `NPMRC~1` - `resolve()`
+// re-checks the path against `canonicalize()`'s output, which expands the alias to its
+// real long name and runs that back through the same denylist - while a standalone
+// rule additionally rejected legitimate names like `data~1.csv` and `report~1.md` that
+// alias nothing. This test pins the protection to canonicalization, not to a lexical
+// 8.3 pattern match.
+test.skipIf(shortNameAlias === null)('the 8.3 alias is still denied purely by canonicalization', () => {
+  const ws = new Workspace(planted)
+  expect(() => ws.resolve('ENV~1'), 'ENV~1').toThrow(WorkspaceViolation)
+  expect(() => ws.resolve('ENV~1'), 'ENV~1').toThrow(/denied/i)
 })
 
 // ---------------------------------------------------------------------------
 // Regression: `mklink /J` needs no privilege, and a lexical check cannot see
 // through the junction it creates.
+//
+// The junction below points at C:\Windows, so it is created inside the one test
+// that needs it, not at module-import time, and its cleanup is registered with
+// onTestFinished right after creation. That scopes the artifact's lifetime to a
+// single test: if the run is aborted or crashes, there is no window where a live
+// junction into C:\Windows sits in %TEMP% waiting on an afterAll that never runs
+// (which is exactly the failure that previously required manual cleanup).
 // ---------------------------------------------------------------------------
-
-const junctionRoot = mkdtempSync(join(tmpdir(), 'pc-ws-junction-'))
-const escapingLink = join(junctionRoot, 'link')
-const containedTarget = join(junctionRoot, 'inner')
-const containedLink = join(junctionRoot, 'ilink')
-mkdirSync(containedTarget)
 
 function mklink(link: string, target: string): boolean {
   try {
@@ -161,12 +184,30 @@ function mklink(link: string, target: string): boolean {
   }
 }
 
-// Created at collection time so the tests can skip themselves where the OS or the
-// filesystem refuses; the suite has to stay green on such a machine.
-const escapingLinkMade = onWindows && mklink(escapingLink, 'C:\\Windows')
-const containedLinkMade = onWindows && mklink(containedLink, containedTarget)
+/**
+ * Remove the junctions themselves first, and only recurse into the directory once
+ * they are gone - a recursive delete must never follow a live junction.
+ */
+function cleanupJunctionRoot(junctionRoot: string, links: string[]): void {
+  for (const link of links) {
+    try {
+      rmdirSync(link)
+    } catch {
+      // already gone, or never created
+    }
+  }
+  if (links.every((link) => !existsSync(link))) {
+    rmSync(junctionRoot, { recursive: true, force: true })
+  }
+}
 
-test.skipIf(!escapingLinkMade)('a directory junction cannot be used to escape the root', () => {
+test('a directory junction cannot be used to escape the root', (t) => {
+  if (!onWindows) return t.skip()
+  const junctionRoot = mkdtempSync(join(tmpdir(), 'pc-ws-junction-'))
+  const escapingLink = join(junctionRoot, 'link')
+  onTestFinished(() => cleanupJunctionRoot(junctionRoot, [escapingLink]))
+  if (!mklink(escapingLink, 'C:\\Windows')) return t.skip()
+
   const ws = new Workspace(junctionRoot)
   // The junction really does reach C:\Windows: this is the read the jail must stop.
   expect(readFileSync(join(escapingLink, 'win.ini'), 'utf8').length).toBeGreaterThan(0)
@@ -189,7 +230,15 @@ test.skipIf(!escapingLinkMade)('a directory junction cannot be used to escape th
   expect(leaked).toBeNull()
 })
 
-test.skipIf(!containedLinkMade)('a junction that stays inside the root still works', () => {
+test('a junction that stays inside the root still works', (t) => {
+  if (!onWindows) return t.skip()
+  const junctionRoot = mkdtempSync(join(tmpdir(), 'pc-ws-junction-'))
+  const containedTarget = join(junctionRoot, 'inner')
+  const containedLink = join(junctionRoot, 'ilink')
+  mkdirSync(containedTarget)
+  onTestFinished(() => cleanupJunctionRoot(junctionRoot, [containedLink]))
+  if (!mklink(containedLink, containedTarget)) return t.skip()
+
   const ws = new Workspace(junctionRoot)
   expect(ws.resolve('ilink\\a.txt')).toBe(join(junctionRoot, 'ilink', 'a.txt'))
 })
@@ -229,18 +278,8 @@ test.skipIf(!onWindows)('unusual but legitimate Windows path shapes keep working
 })
 
 afterAll(() => {
-  // Remove the junctions themselves first, and only recurse into the directory
-  // once they are gone - a recursive delete must never follow a live junction.
-  for (const link of [escapingLink, containedLink]) {
-    try {
-      rmdirSync(link)
-    } catch {
-      // already gone, or never created
-    }
-  }
-  if (!existsSync(escapingLink) && !existsSync(containedLink)) {
-    rmSync(junctionRoot, { recursive: true, force: true })
-  }
+  // The two junction roots clean up their own artifacts via onTestFinished, scoped
+  // to the tests that create them; nothing junction-related is left to do here.
   rmSync(planted, { recursive: true, force: true })
   rmSync(root, { recursive: true, force: true })
 })
