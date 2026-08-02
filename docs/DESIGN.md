@@ -103,7 +103,7 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 | **code search** | ripgrep + tree-sitter symbol map. **No embeddings.** | zero index to go stale, no second model, no VRAM contention. A stale semantic index is what makes competing tools confidently wrong about the user's own code |
 | **permissions** | full Claude Code-equivalent: `allow`/`ask`/`deny` with `deny` winning; pattern rules (`Bash(dotnet test:*)`, `Edit(src/**)`); three merged settings layers (user → project → local) | user requirement. A pending prompt costs **zero tokens** — the KV cache sits untouched while the user decides |
 | **modes** | normal (ask by rules) · plan (no write tools in grammar) · auto-edit · autopilot (explicit, red banner) | |
-| **hard denies** | `rm -rf`, `git push`, `git reset --hard`, reading `.env`/`*.pem`/`id_rsa`, any path outside the workspace root | |
+| **hard denies** | `rm -rf`, `git push`, `git reset --hard`, reading `.env`/`*.pem`/`id_rsa`, any path outside the workspace root | **Known limitation:** the deny list matches file *names*. A hardlink (`mklink /H`, no admin needed) gives a denied file's bytes a second, undenied name, and this is not detected — accepted deliberately, since an `nlink`-based backstop would also break pnpm's hardlinked `node_modules` layout, and the vector needs a link-creation capability nothing in this tool set grants. The same mechanism defeats containment, not just the name denylist: `mklink /H <root>\innocent.txt <a file outside the root>` produces a path `resolve()` accepts as inside the workspace whose bytes come from outside it. Bounded to files on the same volume; directories cannot be hardlinked. |
 | **network** | denied to PrivateCode itself, allowed to child processes (`dotnet restore`, `npm install`) | user's call |
 | **long-running commands** | `run_command` and `background_task` treat a process exit as *evidence*, not as completion: anything long-running carries a readiness condition (a file appears, a port answers, a marker is logged) and is polled against it | learned the hard way while installing the toolchain — the VS Build Tools installer returned exit code 0 and printed "Successfully installed" within seconds while the real 3.3 GB install ran on asynchronously for three more minutes. An agent that trusts exit codes will confidently report success on a job that has not started |
 | **checkpoints** | none — the user's own git is the safety net | user's call. Mitigation: before autopilot starts, check `git status` and offer a WIP commit or stash if the tree is dirty |
@@ -128,7 +128,7 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 | | `search_code` | ripgrep |
 | | `symbol_outline` | tree-sitter: file structure, symbol definitions |
 | | `git_status` | status / diff / log / blame — read-only |
-| write | `edit_file` | SEARCH/REPLACE, payload outside JSON |
+| write | `edit_file` | SEARCH/REPLACE, payload **inside** the normal JSON arguments — see §3 and §7; the spike measured zero escaping failures, so the non-standard channel bought nothing |
 | | `write_file` | new files and full rewrites |
 | | `move_file`, `delete_file` | separate from bash so permission rules can see them |
 | run | `run_command` | PowerShell, with timeout |
@@ -248,7 +248,10 @@ The real argument defect is different: on a *trivial* file, 2 of 5 runs emitted 
 
 ## 8. Open items
 
-- Finish the edit-reliability probe and settle whether SEARCH/REPLACE anchors need
+- ~~Finish the edit-reliability probe and settle whether SEARCH/REPLACE anchors need
   whitespace-tolerant matching (and therefore whether payload-outside-JSON buys anything,
-  given the grammar already guarantees valid escaping).
+  given the grammar already guarantees valid escaping).~~ **Closed** by the edit probe,
+  recorded in §7: all 7 non-empty anchors matched byte-for-byte, there were no escaping
+  failures, the payload rides inside the normal JSON arguments, and whitespace-tolerant
+  matching ships as a safety net rather than as a load-bearing part.
 - Firewall rule for port 8080.

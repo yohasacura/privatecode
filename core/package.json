@@ -1,0 +1,26 @@
+{
+  "name": "@privatecode/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "//": "AbortSignal.any (llama/client.ts, agent/loop.ts) landed in Node 20.3; on anything older every model call throws TypeError at the first request.",
+    "node": ">=20.3.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit",
+    "agent": "tsx src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.4",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "execa": "^9.5.0"
+  }
+}
