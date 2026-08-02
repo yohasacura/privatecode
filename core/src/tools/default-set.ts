@@ -5,6 +5,7 @@ import { findFilesTool } from './find-files.js'
 import { searchCodeTool } from './search-code.js'
 import { editFileTool } from './edit-file.js'
 import { writeFileTool } from './write-file.js'
+import { runCommandTool } from './run-command.js'
 
 /**
  * It must not live in cli.ts: importing that file would run its main() as a side effect,
@@ -16,7 +17,7 @@ import { writeFileTool } from './write-file.js'
 export function buildRegistry(): ToolRegistry {
   const r = new ToolRegistry()
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
-                   editFileTool, writeFileTool]) {
+                   editFileTool, writeFileTool, runCommandTool]) {
     r.register(t)
   }
   return r

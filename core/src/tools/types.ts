@@ -13,6 +13,16 @@ export interface ToolResult {
 
 export type Validation<A> = { ok: true; args: A } | { ok: false; error: string }
 
+export interface PermissionKey {
+  tool: string
+  [key: string]: unknown
+}
+
+export interface ApprovalPreview {
+  summary: string
+  detail: string
+}
+
 export interface Tool<A> {
   name: string
   description: string
@@ -35,4 +45,8 @@ export interface Tool<A> {
    */
   validate(raw: unknown): Validation<A>
   execute(args: A, ctx: ToolContext): Promise<ToolResult>
+  /** Return a permission key for this invocation; used by the permission system. */
+  permissionKey?(args: A): PermissionKey
+  /** Return human-readable text for approvals. */
+  approvalPreview?(args: A): ApprovalPreview
 }
