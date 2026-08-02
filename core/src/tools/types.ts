@@ -54,6 +54,11 @@ export interface Tool<A> {
   execute(args: A, ctx: ToolContext): Promise<ToolResult>
   /** Return a permission key for this invocation; used by the permission system. */
   permissionKey?(args: A): PermissionKey
-  /** Return human-readable text for approvals. */
-  approvalPreview?(args: A): ApprovalPreview
+  /**
+   * Return human-readable text for approvals. `ctx` is offered for a tool that needs it
+   * (e.g. to describe a path relative to the workspace root) but every current
+   * implementation ignores it — a function declaring fewer parameters than this type
+   * satisfies it fine, since the extra argument is simply never read.
+   */
+  approvalPreview?(args: A, ctx: ToolContext): ApprovalPreview
 }

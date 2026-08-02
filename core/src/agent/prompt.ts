@@ -1,6 +1,8 @@
+import type { AgentMode } from '../permissions/engine.js'
+
 export interface PromptOptions {
   workspaceRoot: string
-  mode: 'normal' | 'plan'
+  mode: AgentMode
 }
 
 /**
@@ -33,5 +35,15 @@ export function buildSystemPrompt(opts: PromptOptions): string {
       'how. The user will approve it before any change is made.',
     ].join('\n')
   }
+  if (opts.mode === 'autopilot') {
+    return [
+      ...common,
+      '',
+      'You are in AUTOPILOT mode: act without waiting for confirmations, but stay strictly ' +
+      'inside the workspace.',
+    ].join('\n')
+  }
+  // 'normal' and 'auto-edit' both use the common prompt verbatim: what differs between
+  // them is which tool calls the permission engine gates, not what the model is told.
   return common.join('\n')
 }

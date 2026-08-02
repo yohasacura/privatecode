@@ -1,6 +1,10 @@
 import type { ToolSchema } from '../llama/types.js'
 import type { Tool, ToolContext, ToolResult, Validation } from './types.js'
 
+export type Prepared =
+  | { ok: true; tool: Tool<any>; args: any }
+  | { ok: false; content: string }
+
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool<any>>()
 
@@ -38,8 +42,14 @@ export class ToolRegistry {
     })
   }
 
-  /** Never throws: a failure must reach the model as text it can act on. */
-  async run(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolResult> {
+  /**
+   * Parse + validate a call without executing it; never throws. Split out of `run` so a
+   * caller (the permission gate) can decide whether the call may proceed at all before
+   * anything with a side effect happens — the tool is already resolved and its arguments
+   * already validated by the time that decision is made, so approving it doesn't repeat
+   * any of this work.
+   */
+  prepare(name: string, rawArgs: string): Prepared {
     const tool = this.tools.get(name)
     if (!tool) {
       return { ok: false, content: `Unknown tool "${name}".` }
@@ -65,10 +75,22 @@ export class ToolRegistry {
     } catch (e) {
       return { ok: false, content: `Invalid arguments for ${name}: ${e instanceof Error ? e.message : String(e)}` }
     }
+    return { ok: true, tool, args: validation.args }
+  }
+
+  /** Execute a Prepared that was ok; never throws. */
+  async executePrepared(p: { tool: Tool<any>; args: any }, ctx: ToolContext): Promise<ToolResult> {
     try {
-      return await tool.execute(validation.args, ctx)
+      return await p.tool.execute(p.args, ctx)
     } catch (e) {
-      return { ok: false, content: `${name} failed: ${e instanceof Error ? e.message : String(e)}` }
+      return { ok: false, content: `${p.tool.name} failed: ${e instanceof Error ? e.message : String(e)}` }
     }
+  }
+
+  /** Never throws: a failure must reach the model as text it can act on. */
+  async run(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolResult> {
+    const prepared = this.prepare(name, rawArgs)
+    if (!prepared.ok) return { ok: false, content: prepared.content }
+    return this.executePrepared(prepared, ctx)
   }
 }

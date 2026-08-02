@@ -3,7 +3,7 @@ import { applySearchReplace } from '../edit/search-replace.js'
 import { opensAsWorkspaceRoot } from '../workspace.js'
 import { writeFileAtomic, fsErrorReason } from './atomic-write.js'
 import { BOM, applyEndings, detectEndings, toLf } from './line-endings.js'
-import type { Tool } from './types.js'
+import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
 
 export interface EditFileArgs {
   path: string
@@ -169,6 +169,17 @@ export const editFileTool: Tool<EditFileArgs> = {
     return {
       ok: true,
       args: { path: r.path, search_text: r.search_text, replace_text: r.replace_text },
+    }
+  },
+  permissionKey(args): PermissionKey {
+    return { tool: 'edit_file', paths: [args.path] }
+  },
+  approvalPreview(args): ApprovalPreview {
+    const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}\n... (clipped)` : s)
+    return {
+      summary: `edit ${args.path}`,
+      detail: `edit_file ${args.path}\n<<<<<<< SEARCH\n${clip(args.search_text, 1_500)}\n` +
+              `=======\n${clip(args.replace_text, 1_500)}\n>>>>>>> REPLACE`,
     }
   },
   async execute(args, ctx) {
