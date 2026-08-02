@@ -1,69 +1,21 @@
 import { existsSync, statSync } from 'node:fs'
+import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
-import { Agent } from './agent/loop.js'
-import { LlamaClient, LlamaRequestError } from './llama/client.js'
+import { LlamaClient } from './llama/client.js'
 import { Workspace } from './workspace.js'
-import { buildRegistry, READ_ONLY_TOOLS } from './tools/default-set.js'
+import { createToolset, READ_ONLY_TOOLS } from './tools/default-set.js'
+import { PermissionEngine, type AgentMode } from './permissions/engine.js'
+import { loadLayers } from './permissions/settings.js'
+import { Session, type SessionOptions } from './session/session.js'
+import { SessionStore } from './session/store.js'
+import { createConsolePort, type ReadlineLike } from './cli/console-port.js'
+import { createEventRenderer, HEALTH_CHECK_TIMEOUT_MS, serverUnreachableMessage, turnErrorMessage } from './cli/render.js'
+import { runRepl } from './cli/repl.js'
 
 const DEFAULT_SERVER = 'http://127.0.0.1:8080'
 const MODEL = 'Qwen3.6-35B-A3B'
 
-/** The up-front liveness probe must fail fast, not inherit the turn client's 600 s
- * transport timeout — see the health-check call site for why. */
-const HEALTH_CHECK_TIMEOUT_MS = 5_000
-
-function fmtDuration(ms: number): string {
-  return ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`
-}
-
-/**
- * Actionable, not a stack trace: names the server and how to start it.
- *
- * Only for a genuine connectivity failure — the server never answered at all (refused
- * connection, DNS failure, timed out). Do not use this for an HTTP error response; the
- * server answering with a status code proves it is up, and telling the user to restart
- * something that is already running is actively misleading. See serverErrorMessage for
- * that case.
- */
-function serverUnreachableMessage(server: string, detail?: string): string {
-  return (
-    `\nCould not reach llama.cpp at ${server}${detail ? ` (${detail})` : ''}.\n` +
-    'Start it with D:\\LocalAgentAI\\Start-QwenServer.bat and wait for the dashboard to ' +
-    'show RUNNING with VRAM free, then try again. Pass --server <url> if it runs ' +
-    'somewhere else.\n'
-  )
-}
-
-/**
- * llama.cpp answered: the process is up and reachable, so the restart advice in
- * serverUnreachableMessage does not apply and must not be shown here.
- *
- * Demonstrated case: a live, RUNNING server answered a mid-turn request with HTTP 500,
- * and the old code printed "Could not reach llama.cpp ... Start it with
- * Start-QwenServer.bat" for a server that was already running. llama.cpp returns 4xx/5xx
- * for things like context-window overflow, which on a 35B local model with a long
- * transcript is one of the most likely real mid-turn failures — so this says what the
- * server actually replied instead of misdiagnosing it as connectivity.
- *
- * "Answered" is broader than "answered with an error status", which is why this no longer
- * assumes `err.status` exists. A 200 carrying a non-JSON body, and a 200 carrying JSON
- * with no `choices` — llama.cpp's own shape for a refused request — are both a running
- * server replying, and both used to reach the branch below this one.
- */
-function serverErrorMessage(server: string, err: LlamaRequestError): string {
-  const what = err.status === undefined
-    ? 'it sent a reply this client could not use'
-    : `it answered HTTP ${err.status}`
-  const body = err.body ? `\nServer response: ${err.body}` : ''
-  return (
-    `\nllama.cpp at ${server} is running and answered, but the request failed: ${what}.\n` +
-    `${err.message}${body}\n` +
-    'The server is not down, so restarting it is unlikely to help. On a local model, a ' +
-    'mid-turn failure like this is most often the conversation exceeding the context ' +
-    'window; try a shorter task or a fresh session. Pass --server <url> if this points at ' +
-    'the wrong server.\n'
-  )
-}
+const VALID_MODES: readonly AgentMode[] = ['normal', 'plan', 'auto-edit', 'autopilot']
 
 /** Parses a required positive-integer CLI flag, returning a usage error instead of NaN,
  * a negative step count, or a raw parseArgs stack trace for a value like "-3". */
@@ -78,8 +30,43 @@ function parsePositiveInt(raw: string, flag: string): { ok: true; value: number 
   return { ok: true, value }
 }
 
-const USAGE = 'usage: npm run agent -- --workspace <dir> --task "<text>" [--plan] ' +
-  '[--server <url>] [--steps <n>]'
+/**
+ * `--plan` wins for back-compat when both are given. Returns `value: undefined` when
+ * neither flag was given at all -- distinct from resolving to `'normal'` -- so a resumed
+ * session's own stored mode is free to win instead of being silently clobbered to
+ * 'normal' by every invocation that didn't ask for a mode.
+ */
+function resolveMode(values: { plan?: boolean; mode?: string }):
+  { ok: true; value: AgentMode | undefined } | { ok: false; error: string } {
+  if (values.plan) return { ok: true, value: 'plan' }
+  if (values.mode === undefined) return { ok: true, value: undefined }
+  if (!VALID_MODES.includes(values.mode as AgentMode)) {
+    return { ok: false, error: `--mode must be one of ${VALID_MODES.join(', ')}, got "${values.mode}"` }
+  }
+  return { ok: true, value: values.mode as AgentMode }
+}
+
+const USAGE =
+  'usage: npm run agent -- --workspace <dir> [--task "<text>"]\n' +
+  '                         [--mode normal|plan|auto-edit|autopilot] [--plan]\n' +
+  '                         [--server <url>] [--steps <n>] [--resume <id>]\n' +
+  '  --task "<text>"  run one turn and exit (approvals prompt on a TTY, fail closed otherwise)\n' +
+  '  (no --task)      start the interactive REPL\n' +
+  '  --resume <id>    continue a saved session (REPL only; one-shot runs have no store)'
+
+/** Builds a plain, raw-mode-free ReadlineLike for the one-shot `--task` path: it never
+ * runs a turn the user can abort mid-flight, so it needs none of the REPL's keypress
+ * plumbing -- just enough to let an approval prompt (Allow? / always / askUser) work. */
+function createOneShotReadline(): { adapter: ReadlineLike; close(): void } {
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  return {
+    adapter: {
+      question: (prompt: string) => rl.question(prompt),
+      write: (text: string) => process.stdout.write(text),
+    },
+    close: () => rl.close(),
+  }
+}
 
 async function main() {
   let values: {
@@ -88,6 +75,8 @@ async function main() {
     server?: string
     plan?: boolean
     steps?: string
+    mode?: string
+    resume?: string
   }
   try {
     ;({ values } = parseArgs({
@@ -97,6 +86,8 @@ async function main() {
         server: { type: 'string', default: DEFAULT_SERVER },
         plan: { type: 'boolean', default: false },
         steps: { type: 'string', default: '40' },
+        mode: { type: 'string' },
+        resume: { type: 'string' },
       },
     }))
   } catch (e) {
@@ -107,7 +98,7 @@ async function main() {
     process.exitCode = 2
     return
   }
-  if (!values.workspace || !values.task) {
+  if (!values.workspace) {
     console.error(USAGE)
     process.exitCode = 2
     return
@@ -119,6 +110,13 @@ async function main() {
     // then reported "max_steps after NaN steps" without ever calling the model — an
     // opaque failure for what is just a bad flag value.
     console.error(`${stepsParsed.error}\n\n${USAGE}`)
+    process.exitCode = 2
+    return
+  }
+
+  const modeParsed = resolveMode(values)
+  if (!modeParsed.ok) {
+    console.error(`${modeParsed.error}\n\n${USAGE}`)
     process.exitCode = 2
     return
   }
@@ -135,14 +133,32 @@ async function main() {
 
   const server = values.server ?? DEFAULT_SERVER
   const client = new LlamaClient({ baseUrl: server, model: MODEL })
+  const toolset = createToolset()
 
-  // A dead or unreachable server is not a turn outcome — it is checked up front so the
-  // failure names the server and the fix instead of surfacing mid-turn as a raw
-  // transport exception once the model already looks like it is "thinking". Uses its own
-  // short-timeout client rather than `client` above: `client` carries the turn's 600 s
-  // transport timeout, which is right for a real generation but means a black-holed
-  // --server (accepts the TCP connection, then never answers) printed nothing for ten
-  // minutes before this probe ever failed.
+  if (values.task === undefined) {
+    // Interactive REPL: its own store-backed sessions, its own banner, its own health
+    // reporting (the up-front hard health() gate below is one-shot-only — a REPL should
+    // still start and show /sessions, /todos etc. even with the server down, and let the
+    // banner's own props() probe reveal connectivity softly instead of refusing to run
+    // at all).
+    const store = new SessionStore(values.workspace)
+    const replOpts: Parameters<typeof runRepl>[0] = {
+      client, server, model: MODEL, workspaceRoot: values.workspace, toolset,
+      maxSteps: stepsParsed.value, store,
+    }
+    if (modeParsed.value !== undefined) replOpts.mode = modeParsed.value
+    if (values.resume !== undefined) replOpts.resume = values.resume
+    await runRepl(replOpts)
+    return
+  }
+
+  // One-shot `--task`: a dead or unreachable server is not a turn outcome — it is checked
+  // up front so the failure names the server and the fix instead of surfacing mid-turn as
+  // a raw transport exception once the model already looks like it is "thinking". Uses
+  // its own short-timeout client rather than `client` above: `client` carries the turn's
+  // 600 s transport timeout, which is right for a real generation but means a
+  // black-holed --server (accepts the TCP connection, then never answers) printed
+  // nothing for ten minutes before this probe ever failed.
   const healthClient = new LlamaClient({
     baseUrl: server, model: MODEL, requestTimeoutMs: HEALTH_CHECK_TIMEOUT_MS,
   })
@@ -152,63 +168,47 @@ async function main() {
     return
   }
 
-  const registry = buildRegistry()
-  const mode = values.plan ? 'plan' : 'normal'
+  const mode = modeParsed.value ?? 'normal'
   if (mode === 'plan') {
     // Agent derives its own restriction from the registry regardless of what is passed
     // here; this line only tells the user what that restriction is.
     console.log(`\x1b[90mplan mode: read-only tools only (${READ_ONLY_TOOLS.join(', ')})\x1b[0m`)
   }
 
-  const agent = new Agent({
+  const { layers, problems } = loadLayers(values.workspace)
+  const engine = new PermissionEngine({ layers, mode, workspaceRoot: values.workspace, problems })
+  for (const p of engine.problems) console.error(`settings: ${p}`)
+
+  // No interaction port at all when stdout is not a TTY: an `ask` verdict then fails
+  // closed with the loop's own "no interactive host is connected" message instead of
+  // hanging a script or CI run on a prompt nobody can answer.
+  const oneShotReadline = process.stdout.isTTY ? createOneShotReadline() : undefined
+  const renderer = createEventRenderer()
+
+  const sessionOpts: SessionOptions = {
     client,
-    registry,
-    context: { workspace: new Workspace(values.workspace) },
+    toolset,
+    workspaceRoot: values.workspace,
     mode,
+    engine,
     maxSteps: stepsParsed.value,
-    events: {
-      // A step can run 40-90 s; printing nothing until it ends is the one thing this
-      // interface must not do. This line is the countdown's starting gun.
-      onStepStart: (i) => console.log(
-        `\x1b[90m--- step ${i.step} (budget ${fmtDuration(i.timeoutMs)}) ---\x1b[0m`),
-      onThinking: (t) => console.log(`\x1b[90m[thinking, ~${Math.ceil(t.length / 4)} tok]\x1b[0m`),
-      onContinuation: (s) => console.log(
-        `\x1b[33m! step ${s} ran out of room while thinking; forcing an action now\x1b[0m`),
-      onToolCall: (n, a) => console.log(`\x1b[36m\u2192 ${n}\x1b[0m ${a.slice(0, 200)}`),
-      onToolResult: (n, r) => console.log(
-        `${r.ok ? '\x1b[32m\u2713' : '\x1b[31m\u2717'} ${n}\x1b[0m ${r.content.split('\n')[0]?.slice(0, 200)}`),
-      onAssistantText: (t) => console.log(`\n${t}\n`),
-      onStepDone: (i) => console.log(
-        `\x1b[90m  ${i.seconds.toFixed(1)}s` +
-        `${i.tokensPerSecond ? `, ${i.tokensPerSecond.toFixed(1)} tok/s` : ''}` +
-        `${i.continued ? ', continued after truncation' : ''}\x1b[0m`),
-    },
-  })
+    events: renderer.events,
+  }
+  if (oneShotReadline) sessionOpts.interaction = createConsolePort(oneShotReadline.adapter)
+  const session = new Session(sessionOpts)
 
   let result
   try {
-    result = await agent.runTurn(values.task)
+    result = await session.send(values.task)
   } catch (e) {
-    // runTurn absorbs abort/timeout into stoppedBecause, but a genuine transport failure
-    // still escapes as an exception — that is not a turn outcome and must not print as an
-    // unhandled stack trace. Not every escaped exception means the same thing, though:
-    // LlamaRequestError.answered says whether the server produced a response at all, as
-    // opposed to the request never reaching it (connection refused, DNS failure, our own
-    // timeout). Those two must not share a message — one means "start the server", the
-    // other means the server is up and the request failed (most likely context overflow
-    // on a local model).
-    //
-    // This used to branch on `e.status !== undefined`, which asks "did the HTTP layer
-    // error", not "did the server answer": a 200 with a non-JSON body escaped as a raw
-    // SyntaxError and a 200 with no `choices` carried `status: undefined`, so both landed
-    // in the "start the server" branch for a server that had just replied.
-    if (e instanceof LlamaRequestError && e.answered) {
-      console.error(serverErrorMessage(server, e))
-    } else {
-      console.error(serverUnreachableMessage(server, e instanceof Error ? e.message : String(e)))
-    }
+    // Session.send absorbs abort/timeout into stoppedBecause, but a genuine transport
+    // failure still escapes as an exception — that is not a turn outcome and must not
+    // print as an unhandled stack trace.
+    console.error(turnErrorMessage(server, e))
     process.exitCode = 1
     return
+  } finally {
+    oneShotReadline?.close()
   }
 
   console.log(`\n--- ${result.stoppedBecause} after ${result.steps} step${result.steps === 1 ? '' : 's'} ---`)
