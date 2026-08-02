@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
-import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import ts from 'typescript'
@@ -8,39 +7,7 @@ import { Agent, type StepInfo, type StepStartInfo } from '../../src/agent/loop.j
 import { LlamaClient } from '../../src/llama/client.js'
 import { Workspace } from '../../src/workspace.js'
 import { buildRegistry } from '../../src/tools/default-set.js'
-
-/**
- * Every file in the tree, by path and by bytes.
- *
- * Plan mode used to be checked by comparing one file's contents before and after. That
- * cannot see the escape a real plan-mode failure actually produces — a file the agent
- * *created* — and "no editing tools are available to you at all" is a promise about the
- * whole workspace, which is the acceptance criterion. The listing is returned alongside
- * the hash so a failure names the file instead of printing two hex strings.
- */
-function snapshotTree(dir: string): { files: string[]; hash: string } {
-  const files: string[] = []
-  const h = createHash('sha256')
-  const walk = (current: string, prefix: string): void => {
-    const entries = readdirSync(current, { withFileTypes: true })
-      .sort((a, b) => a.name.localeCompare(b.name))
-    for (const entry of entries) {
-      const rel = prefix + entry.name
-      if (entry.isDirectory()) {
-        files.push(`${rel}/`)
-        h.update(`D ${rel}\n`)
-        walk(join(current, entry.name), `${rel}/`)
-      } else {
-        files.push(rel)
-        h.update(`F ${rel} `)
-        h.update(readFileSync(join(current, entry.name)))
-        h.update('\n')
-      }
-    }
-  }
-  walk(dir, '')
-  return { files, hash: h.digest('hex') }
-}
+import { snapshotTree } from './helpers.js'
 
 /**
  * Compiles the (small, single-function) edited file and actually calls slugify, instead
