@@ -1,7 +1,5 @@
-import type { ChatRequest, ChatResult, ServerProps, Sampling } from './types.js'
-
-/** Replaced by the shared, guarded profile in Task 2. */
-const DEFAULT_SAMPLING: Sampling = { temperature: 0.6, top_p: 0.95, top_k: 20, min_p: 0 }
+import type { ChatRequest, ChatResult, ServerProps } from './types.js'
+import { QWEN_SAMPLING, assertSafeSampling } from './sampling.js'
 
 export interface LlamaClientOptions {
   baseUrl: string
@@ -29,7 +27,8 @@ export class LlamaClient {
   }
 
   async chat(req: ChatRequest): Promise<ChatResult> {
-    const sampling = req.sampling ?? DEFAULT_SAMPLING
+    const sampling = req.sampling ?? QWEN_SAMPLING
+    assertSafeSampling(sampling)
     const payload: Record<string, unknown> = {
       model: this.model,
       messages: req.messages,
