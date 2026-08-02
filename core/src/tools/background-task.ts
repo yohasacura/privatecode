@@ -19,10 +19,13 @@ export interface BackgroundTaskArgs {
   ready_when?: ReadyWhen
 }
 
+// Parameterized so .all is a stream, not undefined — ResultPromise import used.
+type ExecaChild = ResultPromise<any>
+
 interface Entry {
   id: string
   command: string
-  child: any
+  child: ExecaChild
   buffer: string
   dropped: number
   cursor: number
@@ -62,7 +65,7 @@ export class BackgroundTasks {
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
       { cwd, reject: false, windowsHide: true, all: true, buffer: false },
-    )
+    ) as unknown as ExecaChild
     const entry: Entry = {
       id, command, child, buffer: '', dropped: 0, cursor: 0, markerSeen: false,
       ready, startedAt: Date.now(), exit: null,
