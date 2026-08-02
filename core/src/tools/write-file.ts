@@ -3,7 +3,7 @@ import { dirname } from 'node:path'
 import { opensAsWorkspaceRoot } from '../workspace.js'
 import { writeFileAtomic, fsErrorReason } from './atomic-write.js'
 import { BOM, applyEndings, detectEndings, toLf } from './line-endings.js'
-import type { Tool } from './types.js'
+import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
 
 export interface WriteFileArgs {
   path: string
@@ -101,6 +101,19 @@ export const writeFileTool: Tool<WriteFileArgs> = {
       return { ok: false, error: 'content must be a string' }
     }
     return { ok: true, args: { path: r.path, content: r.content } }
+  },
+  permissionKey(args): PermissionKey {
+    return { tool: 'write_file', paths: [args.path] }
+  },
+  approvalPreview(args): ApprovalPreview {
+    const bytes = Buffer.byteLength(args.content, 'utf8')
+    const clipped = args.content.length > 1_500
+      ? `${args.content.slice(0, 1_500)}\n... (clipped)`
+      : args.content
+    return {
+      summary: `write ${args.path}`,
+      detail: `write_file ${args.path} (${bytes} bytes)\n${clipped}`,
+    }
   },
   async execute(args, ctx) {
     let abs: string

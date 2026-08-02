@@ -5,21 +5,39 @@ import { findFilesTool } from './find-files.js'
 import { searchCodeTool } from './search-code.js'
 import { editFileTool } from './edit-file.js'
 import { writeFileTool } from './write-file.js'
+import { moveFileTool } from './move-file.js'
+import { deleteFileTool } from './delete-file.js'
+import { runCommandTool } from './run-command.js'
+import { BackgroundTasks, backgroundTaskTool } from './background-task.js'
+import { gitStatusTool } from './git-tool.js'
+import { TodoStore } from '../interaction.js'
+import { todoWriteTool } from './todo-write.js'
+import { askUserTool } from './ask-user.js'
+import { symbolOutlineTool } from './symbol-outline.js'
 
-/**
- * It must not live in cli.ts: importing that file would run its main() as a side effect,
- * which would break the integration test and anything else that just wants the same
- * tool set without launching a CLI session.
- *
- * The tools this plan delivers. Later plans add the remaining eight.
- */
-export function buildRegistry(): ToolRegistry {
-  const r = new ToolRegistry()
+export interface Toolset {
+  registry: ToolRegistry
+  /** Owned by the host: call stopAll() on shutdown so no orphan processes survive. */
+  background: BackgroundTasks
+  todos: TodoStore
+}
+
+export function createToolset(): Toolset {
+  const registry = new ToolRegistry()
+  const background = new BackgroundTasks()
+  const todos = new TodoStore()
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
-                   editFileTool, writeFileTool]) {
-    r.register(t)
+                   editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
+                   backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
+                   symbolOutlineTool]) {
+    registry.register(t)
   }
-  return r
+  return { registry, background, todos }
+}
+
+/** Back-compat for existing callers/tests that only need the registry. */
+export function buildRegistry(): ToolRegistry {
+  return createToolset().registry
 }
 
 /**

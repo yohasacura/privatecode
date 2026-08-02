@@ -1,8 +1,11 @@
+import type { InteractionPort } from '../interaction.js'
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ChatResult } from '../llama/types.js'
+import type { AgentMode, PermissionEngine } from '../permissions/engine.js'
+import { suggestRules } from '../permissions/rules.js'
 import { Transcript } from '../transcript/transcript.js'
 import type { ToolRegistry } from '../tools/registry.js'
-import type { ToolContext, ToolResult } from '../tools/types.js'
+import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } from '../tools/types.js'
 import { buildSystemPrompt } from './prompt.js'
 
 /**
@@ -86,7 +89,20 @@ export interface AgentOptions {
    * pass a mutating tool through in plan mode by naming it here.
    */
   allowedTools?: string[]
-  mode?: 'normal' | 'plan'
+  mode?: AgentMode
+  /**
+   * The permission gate `runTool` consults before a tool executes. Omitting this option
+   * entirely reproduces today's behavior exactly — every tool runs unconsulted, gate code
+   * included — so an existing caller that never heard of permissions is unaffected.
+   */
+  permissions?: PermissionEngine
+  /**
+   * How an `ask` verdict is put to the user. Required for `permissions` to ever produce
+   * anything other than a flat refusal: with an engine but no port, an `ask` verdict
+   * cannot be shown to anyone, so the call is refused with a message telling the model to
+   * suggest it to the user instead of retrying.
+   */
+  interaction?: InteractionPort
   maxSteps?: number
   /**
    * Token budget for one generation. Defaults to DEFAULT_MAX_TOKENS_PER_STEP.
@@ -164,7 +180,14 @@ export class Agent {
   readonly transcript: Transcript
 
   constructor(opts: AgentOptions) {
-    const mode = opts.mode ?? 'normal'
+    // The option is the single source of truth for the mode when given; otherwise the
+    // engine's own `mode` (a caller that already configured the engine itself) is trusted
+    // instead of silently overriding it to 'normal'. A reviewer demonstrated the desync
+    // this prevents: `new Agent({ permissions: engineInPlanMode })` with no `mode` option
+    // used to yield agent-mode 'normal' (no plan narrowing at all) while the engine's own
+    // `modeDefault` still answered 'plan mode' for every `ask` tier — the full tool list
+    // AND auto-allow, strictly worse than normal mode's ask-before-write.
+    const mode = opts.mode ?? opts.permissions?.mode ?? 'normal'
     // Defaults must come AFTER the spread: an explicitly-undefined property would
     // otherwise overwrite them.
     this.opts = {
@@ -187,6 +210,15 @@ export class Agent {
       this.opts.allowedTools = opts.allowedTools
         ? opts.allowedTools.filter((n) => readOnly.includes(n))
         : readOnly
+    }
+    // The engine's own `mode` field is what `decide()` actually reads. Now that `mode`
+    // above already resolved the single source of truth (the option if given, else the
+    // engine's own), write it back whenever an engine is present so both sides always
+    // agree — this also covers the case the option WAS given (e.g. `mode: 'autopilot'`
+    // with an engine constructed as 'normal'), which the old `opts.mode`-only guard synced
+    // one way but never the other.
+    if (opts.permissions) {
+      opts.permissions.mode = mode
     }
     this.transcript = opts.transcript ?? new Transcript()
     if (this.transcript.messages().length === 0) {
@@ -400,13 +432,24 @@ export class Agent {
   }
 
   /**
-   * Runs a tool, refusing anything outside `allowedTools` before it can act.
+   * Runs a tool, refusing anything outside `allowedTools` before it can act, then — if a
+   * `PermissionEngine` was supplied — gating the call through it before execution.
    *
    * The schemas sent to the server are already filtered, and on the real server the
    * grammar keeps the model inside them — but "no editing tools are available to you at
    * all" is a promise made to the user in plan mode, and it must not depend on a remote
    * process behaving. A refusal goes back as an ordinary tool message so the model can
    * correct itself.
+   *
+   * The permission gate runs strictly after that allowedTools refusal: plan mode's
+   * guarantee is enforced by the tool list itself, not by whatever the engine happens to
+   * decide for a tool it should never see in the first place.
+   *
+   * `prepare` runs before the gate so the engine's `decide()` — and, on an `ask` verdict,
+   * the approval preview shown to the user — sees the tool's OWN validated args (e.g. a
+   * resolved `path`), not the model's raw JSON string. This also means a call with bad
+   * JSON or arguments that fail validation is rejected exactly as before, without ever
+   * reaching the engine.
    */
   private async runTool(name: string, args: string): Promise<ToolResult> {
     const allowed = this.opts.allowedTools
@@ -417,7 +460,110 @@ export class Agent {
                  `Available tools: ${allowed.join(', ') || 'none'}.`,
       }
     }
-    return this.opts.registry.run(name, args, this.toolContext())
+
+    const prepared = this.opts.registry.prepare(name, args)
+    if (!prepared.ok) return { ok: false, content: prepared.content }
+
+    // The whole gate is wrapped: `port.requestApproval` is a host boundary (today an
+    // in-process callback, tomorrow IPC/JSON), and a rejection from it must not propagate
+    // out of `runTool`. Left unguarded, that throw would escape past the assistant message
+    // that already carries the tool_call — the exact poisoned-transcript state the class
+    // comment on `runTurn` warns about, since no tool reply would ever be appended for it —
+    // and `runTurn` would reject instead of returning a `TurnResult`. `executePrepared`
+    // already never throws on its own, so it stays outside this try: nothing here needs it
+    // caught twice.
+    try {
+      const engine = this.opts.permissions
+      if (engine) {
+        const key: PermissionKey = prepared.tool.permissionKey?.(prepared.args) ?? { tool: name }
+        const decision = engine.decide(key)
+        if (decision.verdict === 'deny') {
+          return { ok: false, content: `Not run. ${decision.reason}` }
+        }
+        if (decision.verdict === 'ask') {
+          const port = this.opts.interaction
+          if (!port) {
+            return {
+              ok: false,
+              content: 'Not run: this action needs the user\'s approval and no interactive ' +
+                       'host is connected. Suggest it to the user instead.',
+            }
+          }
+          const preview = await this.approvalPreviewFor(prepared, name, args)
+          const decided = await port.requestApproval({
+            tool: name,
+            summary: preview.summary,
+            detail: preview.detail,
+            suggestedRules: suggestRules(key),
+          })
+          // The dialog can resolve after the turn was cancelled — a step lasts 35-40 s, an
+          // Esc press can land at any point in that window, and "pending approval" is no
+          // exception. Re-checked here, immediately after the await, rather than trusting
+          // the caller to notice: a stale `allow` must not execute into an aborted turn.
+          if (this.opts.signal?.aborted) {
+            return {
+              ok: false,
+              content: 'Not run: the turn was cancelled while approval was pending.',
+            }
+          }
+          if (decided.verdict === 'deny') {
+            const why = decided.comment ? `: "${decided.comment}"` : ''
+            return {
+              ok: false,
+              content: `The user declined this ${name} call${why}. Take their comment into ` +
+                       'account and adjust your approach; do not simply retry the same call.',
+            }
+          }
+          if (decided.verdict !== 'allow') {
+            // `ApprovalDecision` is a closed union in TS, but the port is a host boundary —
+            // at runtime it can hand back `{}`, a typo'd verdict, `null`, or anything else
+            // JSON allows. Only a recognized 'allow' proceeds; everything else fails closed
+            // rather than being treated as consent.
+            return {
+              ok: false,
+              content: 'Not run: the approval reply was not recognized, so it was treated ' +
+                       'as a denial.',
+            }
+          }
+          if (decided.remember) {
+            try {
+              engine.remember(decided.remember.rule, decided.remember.layer)
+            } catch { /* remembering must never fail the approved call */ }
+          }
+        }
+      }
+    } catch (e) {
+      return {
+        ok: false,
+        content: `Not run: the approval flow failed (${e instanceof Error ? e.message : String(e)}); ` +
+                 'treated as a denial.',
+      }
+    }
+    return this.opts.registry.executePrepared(prepared, this.toolContext())
+  }
+
+  /**
+   * Human-readable text for an approval prompt: the tool's own `approvalPreview` when it
+   * has one, otherwise the bare tool name and a clipped view of its raw arguments.
+   *
+   * A broken preview must never block an otherwise-approvable call — a tool's
+   * `approvalPreview` is presentation code, not a gate, so a throw or a missing
+   * implementation falls back rather than failing the whole tool call.
+   */
+  private async approvalPreviewFor(
+    p: { tool: Tool<any>; args: any }, name: string, rawArgs: string,
+  ): Promise<ApprovalPreview> {
+    try {
+      const preview = await p.tool.approvalPreview?.(p.args, this.toolContext())
+      if (preview) return preview
+    } catch { /* fall through */ }
+    // Matches the marker the tools' own approvalPreview implementations use (e.g.
+    // write-file.ts, edit-file.ts) so a silent clip never reads as the whole argument
+    // string to whoever is approving it.
+    const detail = rawArgs.length > 1_000
+      ? `${rawArgs.slice(0, 1_000)}\n... (clipped)`
+      : rawArgs
+    return { summary: name, detail }
   }
 
   /**

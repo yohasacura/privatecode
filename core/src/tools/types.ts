@@ -1,8 +1,11 @@
 import type { Workspace } from '../workspace.js'
+import type { InteractionPort, TodoStore } from '../interaction.js'
 
 export interface ToolContext {
   workspace: Workspace
   signal?: AbortSignal
+  interaction?: InteractionPort
+  todos?: TodoStore
 }
 
 export interface ToolResult {
@@ -12,6 +15,20 @@ export interface ToolResult {
 }
 
 export type Validation<A> = { ok: true; args: A } | { ok: false; error: string }
+
+/** What the permission engine matches rules against. Built by the tool itself. */
+export interface PermissionKey {
+  tool: string
+  /** For command-running tools: the exact command line. */
+  command?: string
+  /** For file tools: workspace-relative paths this call touches. */
+  paths?: string[]
+}
+
+export interface ApprovalPreview {
+  summary: string
+  detail: string
+}
 
 export interface Tool<A> {
   name: string
@@ -35,4 +52,13 @@ export interface Tool<A> {
    */
   validate(raw: unknown): Validation<A>
   execute(args: A, ctx: ToolContext): Promise<ToolResult>
+  /** Return a permission key for this invocation; used by the permission system. */
+  permissionKey?(args: A): PermissionKey
+  /**
+   * Return human-readable text for approvals. `ctx` is offered for a tool that needs it
+   * (e.g. to describe a path relative to the workspace root) but every current
+   * implementation ignores it — a function declaring fewer parameters than this type
+   * satisfies it fine, since the extra argument is simply never read.
+   */
+  approvalPreview?(args: A, ctx: ToolContext): ApprovalPreview
 }

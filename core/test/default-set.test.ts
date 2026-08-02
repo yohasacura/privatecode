@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import { buildRegistry } from '../src/tools/default-set.js'
 
 /**
- * Pins the readOnly set of the six REAL tools, not synthetic stand-ins.
+ * Pins the readOnly set of the eight REAL tools, not synthetic stand-ins.
  *
  * registry.test.ts proves ToolRegistry.readOnlyNames() reflects whatever a tool declares
  * about itself — but that only guarantees the mechanism is honest, not that the actual
@@ -15,6 +15,7 @@ import { buildRegistry } from '../src/tools/default-set.js'
  */
 test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
   expect(buildRegistry().readOnlyNames().sort()).toEqual(
-    ['find_files', 'list_dir', 'read_file', 'search_code'],
+    ['ask_user', 'find_files', 'git_status', 'list_dir', 'read_file', 'search_code',
+     'symbol_outline', 'todo_write'],
   )
 })

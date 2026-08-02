@@ -60,11 +60,31 @@ export class Transcript {
     return this.items.map((m) => JSON.stringify(m)).join('\n')
   }
 
+  /**
+   * Parses one message per line. A line that fails to parse throws immediately, naming
+   * its 1-based line number, rather than silently dropping a corrupt entry or letting a
+   * raw SyntaxError (with no indication of *where*) escape to the caller.
+   */
   static fromJSONL(text: string): Transcript {
     const t = new Transcript()
-    for (const line of text.split('\n')) {
-      if (line.trim()) t.append(JSON.parse(line) as ChatMessage)
+    const lines = text.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!
+      if (!line.trim()) continue
+      try {
+        t.append(JSON.parse(line) as ChatMessage)
+      } catch (e) {
+        throw new Error(
+          `corrupt transcript at line ${i + 1}: ${e instanceof Error ? e.message : String(e)}`,
+        )
+      }
     }
     return t
+  }
+
+  /** Number of messages currently stored; the persistence layer's cursor into what has
+   * already been written to disk is a slice starting at this count. */
+  count(): number {
+    return this.items.length
   }
 }
