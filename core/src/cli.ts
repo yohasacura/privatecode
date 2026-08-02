@@ -121,6 +121,10 @@ async function main() {
     return
   }
 
+  if (values.task !== undefined && values.resume !== undefined) {
+    console.error('note: --resume is ignored with --task')
+  }
+
   // `new Workspace(dir)` does not check the directory exists — it only resolves and
   // canonicalizes paths. Pointing --workspace at a typo'd or nonexistent directory used
   // to burn several full model steps (every tool call failing with ENOENT) before the

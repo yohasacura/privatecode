@@ -93,8 +93,10 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   let questionCancelled = false
   let exiting = false
   /** First idle Ctrl+C arms this and prints a hint; a second one while still armed exits.
-   * Reset at the top of every main-loop iteration, so it never survives past a completed
-   * command or turn to ambush a much later, unrelated Ctrl+C. */
+   * Reset at the top of every main-loop iteration (line 371), and also at the start of
+   * runTurn() and handleCommand(), so it never survives into a running turn to cause a
+   * mid-flight shutdown on a stale signal. SIGINT handler always returns early if
+   * currentAbort is defined, never consulting idleArmed. */
   let idleArmed = false
   let contextLength: number | undefined
 
@@ -229,8 +231,11 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     // A turn in flight always wins: cooked-mode Ctrl+C (an approval question is up,
     // raw mode is off) reaches here as a real SIGINT rather than the keypress listener,
     // and must abort the turn exactly like Escape or a raw-mode Ctrl+C would.
-    if (currentAbort && !currentAbort.signal.aborted) {
-      currentAbort.abort()
+    if (currentAbort) {
+      if (!currentAbort.signal.aborted) {
+        currentAbort.abort()
+      }
+      // already cancelling; not an idle exit (idleArmed is now meaningless until the turn completes)
       return
     }
     if (idleArmed) {
@@ -294,6 +299,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     try {
       rebuild(undefined, id)
       process.stdout.write(`Resumed session ${session.id} (mode: ${session.mode}).\n`)
+      for (const p of engine.problems) process.stdout.write(`settings: ${p}\n`)
     } catch (e) {
       // store.load() throws actionable messages for a missing or corrupt session; the
       // current session is untouched (rebuild only assigns on success), so this is a
@@ -313,6 +319,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   }
 
   async function handleCommand(line: string): Promise<void> {
+    idleArmed = false
     const spaceIdx = line.indexOf(' ')
     const cmd = spaceIdx === -1 ? line : line.slice(0, spaceIdx)
     const arg = spaceIdx === -1 ? '' : line.slice(spaceIdx + 1).trim()
@@ -320,7 +327,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     switch (cmd) {
       case '/help': process.stdout.write(HELP_TEXT); return
       case '/mode': await handleMode(arg); return
-      case '/new': rebuild(undefined, undefined); process.stdout.write(`Started a new session: ${session.id}\n`); return
+      case '/new': rebuild(undefined, undefined); process.stdout.write(`Started a new session: ${session.id}\n`); for (const p of engine.problems) process.stdout.write(`settings: ${p}\n`); return
       case '/sessions': handleSessions(); return
       case '/resume': handleResume(arg); return
       case '/todos': handleTodos(); return
@@ -330,6 +337,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   }
 
   async function runTurn(text: string): Promise<void> {
+    idleArmed = false
     currentAbort = new AbortController()
     questionCancelled = false
     turnRenderer.reset()
