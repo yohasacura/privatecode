@@ -15,6 +15,24 @@ import { buildSystemPrompt } from './prompt.js'
  */
 export const DEFAULT_STEP_TIMEOUT_MS = 90_000
 
+/**
+ * Default token budget for one generation.
+ *
+ * 8000, because the measurement that matters was taken under exactly the configuration
+ * this class ships: `docs/DESIGN.md` §7 records median thinking of **5591 tokens** on a
+ * hard edit at `tool_choice: 'auto'`, with one run reaching **6119**. The previous default
+ * of 4000 sat below that median, so the median hard edit was guaranteed to truncate — and
+ * the branch then carried a whole truncation-continuation path to recover from a failure
+ * the default itself had chosen. 8000 clears the measured median and the measured tail,
+ * and is the same budget the spike used when taking those numbers.
+ *
+ * This is not a licence to spiral: 8000 is a ceiling, not a target, and raising it further
+ * was measured as buying a longer spiral rather than a better answer (`max_tokens=2000`
+ * gave 1/5 completions, `8000` gave 2/5 — the lever is `tool_choice`, not the budget).
+ * What the budget buys is that a step which *would* have finished is not cut off.
+ */
+export const DEFAULT_MAX_TOKENS_PER_STEP = 8_000
+
 export interface StepStartInfo {
   /** 1-based index of this step within the turn. */
   step: number
@@ -70,7 +88,13 @@ export interface AgentOptions {
   allowedTools?: string[]
   mode?: 'normal' | 'plan'
   maxSteps?: number
-  /** Generous by design: thinking needs room. Truncation is handled, not avoided. */
+  /**
+   * Token budget for one generation. Defaults to DEFAULT_MAX_TOKENS_PER_STEP.
+   *
+   * Generous by design: thinking needs room. Truncation is handled, not avoided — but a
+   * default that guarantees truncation on the median hard edit is not "handled", it is
+   * chosen. See DEFAULT_MAX_TOKENS_PER_STEP.
+   */
   maxTokensPerStep?: number
   /**
    * Wall-clock ceiling for one step, covering the model call and its continuation.
@@ -88,6 +112,13 @@ export interface AgentOptions {
    * forced to call a tool can never terminate, so `'required'` belongs to a caller who
    * knows this turn must end in an action. The truncation continuation always uses
    * `'required'` regardless, since by then talking has already failed.
+   *
+   * Known gap, deliberately left open here: the strongest measured lever is applied only
+   * as a per-*turn* setting, so a turn that is mostly actions and ends in one summary step
+   * cannot have `'required'` on the action steps and `'auto'` on the last one. Choosing
+   * per step — required while work remains, auto once it does not — needs a signal this
+   * loop does not have yet, and belongs to a later plan. Until then the default stays
+   * `'auto'` and DEFAULT_MAX_TOKENS_PER_STEP carries the cost.
    */
   toolChoice?: 'auto' | 'required'
   transcript?: Transcript
@@ -139,7 +170,7 @@ export class Agent {
     this.opts = {
       ...opts,
       maxSteps: opts.maxSteps ?? 40,
-      maxTokensPerStep: opts.maxTokensPerStep ?? 4000,
+      maxTokensPerStep: opts.maxTokensPerStep ?? DEFAULT_MAX_TOKENS_PER_STEP,
       mode,
       stepTimeoutMs: opts.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS,
       toolChoice: opts.toolChoice ?? 'auto',
@@ -386,7 +417,30 @@ export class Agent {
                  `Available tools: ${allowed.join(', ') || 'none'}.`,
       }
     }
-    return this.opts.registry.run(name, args, this.opts.context)
+    return this.opts.registry.run(name, args, this.toolContext())
+  }
+
+  /**
+   * The context tools are run with, carrying the turn's cancellation.
+   *
+   * `this.opts.context` used to be passed through untouched, so `ctx.signal` was undefined
+   * for every tool call there has ever been. `search_code` already wires
+   * `cancelSignal: ctx.signal`, so that branch was dead code: a 30 s ripgrep and an
+   * unbounded `find_files` walk both ignored the user's cancel, and interrupt is a stated
+   * requirement.
+   *
+   * The step deadline is deliberately *not* included — it covers the model calls, and
+   * tools carry their own timeouts. A caller-supplied context signal is combined rather
+   * than replaced, so a caller that already has its own cancellation keeps it.
+   */
+  private toolContext(): ToolContext {
+    const turn = this.opts.signal
+    if (!turn) return this.opts.context
+    const own = this.opts.context.signal
+    return {
+      ...this.opts.context,
+      signal: own && own !== turn ? AbortSignal.any([own, turn]) : turn,
+    }
   }
 
   private report(m: ChatMessage): void {

@@ -99,10 +99,11 @@ function hang() {
 
 type ExtraOptions = Partial<Omit<AgentOptions, 'client' | 'registry' | 'context'>>
 
-function makeAgent(url: string, extra: ExtraOptions = {}) {
+function makeAgent(url: string, extra: ExtraOptions = {}, alsoRegister: Tool<any>[] = []) {
   const registry = new ToolRegistry()
   registry.register(ping)
   registry.register(boom)
+  for (const t of alsoRegister) registry.register(t)
   const root = mkdtempSync(join(tmpdir(), 'pc-loop-'))
   workspaces.push(root)
   return new Agent({
@@ -338,6 +339,101 @@ test('the first call of a step follows AgentOptions.toolChoice, defaulting to au
 })
 
 // ---------------------------------------------------------------------------
+// The default step budget
+// ---------------------------------------------------------------------------
+
+// docs/DESIGN.md §7 measured median thinking on a hard edit at 5591 tokens under exactly
+// the tool_choice the Agent defaults to ('auto'), with one run reaching 6119. A default
+// budget of 4000 therefore guaranteed the median hard edit truncated, and the branch then
+// carried a whole truncation-continuation path to recover from a failure the default
+// itself had chosen. The default has to clear the measured median, not sit under it.
+test('the default per-step token budget clears the measured median hard edit', async () => {
+  const fake = await startFakeServer(() => textResponse('done'))
+  stop = fake.close
+
+  await makeAgent(fake.url).runTurn('go')
+
+  expect(fake.requests[0].body.max_tokens).toBe(8000)
+  expect(fake.requests[0].body.max_tokens).toBeGreaterThan(6119)
+})
+
+test('an explicit maxTokensPerStep still wins over the default', async () => {
+  const fake = await startFakeServer(() => textResponse('done'))
+  stop = fake.close
+
+  await makeAgent(fake.url, { maxTokensPerStep: 512 }).runTurn('go')
+
+  expect(fake.requests[0].body.max_tokens).toBe(512)
+})
+
+// ---------------------------------------------------------------------------
+// The tool context the Agent hands to tools
+// ---------------------------------------------------------------------------
+
+// search_code already wires `cancelSignal: ctx.signal`, and find_files' traversal is
+// unbounded, but the Agent passed `this.opts.context` through untouched — so `ctx.signal`
+// was undefined for every tool call ever made and that whole branch was dead code. A
+// 30 s ripgrep and an unbounded walk both ignored the user's cancel.
+test('the turn signal reaches the tool context', async () => {
+  let seen: AbortSignal | undefined
+  let abortedDuringCall: boolean | undefined
+  const probe: Tool<Record<string, never>> = {
+    name: 'probe',
+    readOnly: false,
+    description: 'records the context it was handed',
+    parameters: { type: 'object', properties: {} },
+    validate: () => ({ ok: true, args: {} }),
+    execute: async (_args, ctx) => {
+      seen = ctx.signal
+      abortedDuringCall = ctx.signal?.aborted
+      return { ok: true, content: 'probed' }
+    },
+  }
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    return n === 1 ? toolCallResponse('probe', '{}') : textResponse('done')
+  })
+  stop = fake.close
+  const controller = new AbortController()
+  const agent = makeAgent(fake.url, { signal: controller.signal }, [probe])
+
+  await agent.runTurn('go')
+
+  expect(seen).toBeInstanceOf(AbortSignal)
+  expect(abortedDuringCall).toBe(false)
+  // It is the *turn's* cancel, not some unrelated signal: cancelling the turn cancels
+  // what the tool was given.
+  controller.abort()
+  expect(seen!.aborted).toBe(true)
+})
+
+test('a turn with no signal leaves the tool context alone', async () => {
+  let seen: unknown = 'never ran'
+  const probe: Tool<Record<string, never>> = {
+    name: 'probe',
+    readOnly: false,
+    description: 'records the context it was handed',
+    parameters: { type: 'object', properties: {} },
+    validate: () => ({ ok: true, args: {} }),
+    execute: async (_args, ctx) => {
+      seen = ctx.signal
+      return { ok: true, content: 'probed' }
+    },
+  }
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    return n === 1 ? toolCallResponse('probe', '{}') : textResponse('done')
+  })
+  stop = fake.close
+
+  await makeAgent(fake.url, {}, [probe]).runTurn('go')
+
+  expect(seen).toBeUndefined()
+})
+
+// ---------------------------------------------------------------------------
 // allowedTools is a safety guarantee, not a hint
 // ---------------------------------------------------------------------------
 
@@ -565,9 +661,14 @@ test('sub-second timeout budget formats correctly (not 0 s)', async () => {
   expect(result.stoppedBecause).toBe('timeout')
   // Should not contain "0 s" for a 400ms budget
   expect(result.finalText).not.toMatch(/\b0\s+s\b/)
-  // Should either say "400 ms" or some reasonable sub-second format
-  expect(result.finalText).toMatch(/\d+\s*(ms|s)/)
-  // Verify the transcript also has the fixed message
-  const last = agent.transcript.messages().at(-2)! // -2 because -1 is the appended nudge
+  expect(result.finalText).toMatch(/400 ms/)
+  // The nudge appended to the transcript is the LAST message, not the second to last:
+  // reading at(-2) read back the test's own 'go silent' user message, so hard-coding a
+  // `0 s` budget in loop.ts produced the exact text this test is named for and still
+  // passed. The nudge is what the model actually sees next, so it is what must be right.
+  const last = agent.transcript.messages().at(-1)!
+  expect(last.role).toBe('user')
+  expect(last.content).toMatch(/time limit/i)
+  expect(last.content).toMatch(/400 ms/)
   expect(last.content).not.toMatch(/\b0\s+s\b/)
 })
