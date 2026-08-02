@@ -10,7 +10,7 @@ const MAX_RESULTS = 200
 const SEPARATOR = /[\\/]/
 
 /** Path segments never enumerated, matched whole - the same rule list_dir applies. */
-const HIDDEN_SEGMENTS = new Set(['.git', 'node_modules'])
+const HIDDEN_SEGMENTS = new Set(['.git', 'node_modules'].map((s) => s.toLowerCase()))
 
 /**
  * Absolute under either platform's rules, not just the host's: a pattern is model-written
@@ -88,13 +88,13 @@ export const findFilesTool: Tool<FindFilesArgs> = {
 
     const matches: string[] = []
     try {
-      for await (const entry of glob(args.glob, { cwd: ctx.workspace.root, withFileTypes: true })) {
+      for await (const entry of glob(args.glob, { cwd: ctx.workspace.root, withFileTypes: true, dot: true } as any)) {
         // The tool is called find_files: a bare directory name is indistinguishable from
         // an extensionless file, and the model will call read_file on it.
         if (entry.isDirectory()) continue
         const rel = relative(ctx.workspace.root, join(entry.parentPath, entry.name))
         const segments = rel.split(sep)
-        if (segments.some((segment) => HIDDEN_SEGMENTS.has(segment))) continue
+        if (segments.some((segment) => HIDDEN_SEGMENTS.has(segment.toLowerCase()))) continue
         // Enumeration goes through the same jail as reading. glob is given the model's raw
         // pattern, so containment and the secrets denylist have to be enforced on what
         // comes back out, not on what went in.

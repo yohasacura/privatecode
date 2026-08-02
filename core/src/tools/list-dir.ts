@@ -14,7 +14,7 @@ import type { Tool } from './types.js'
  * a bug and the agent may try to create one over the top of it. Whatever is hidden is
  * named in the footer, so a filtered listing is never presented as a complete one.
  */
-const HIDDEN_NAMES = new Set(['.git', 'node_modules'])
+const HIDDEN_NAMES = new Set(['.git', 'node_modules'].map((s) => s.toLowerCase()))
 
 export interface ListDirArgs { path: string }
 
@@ -47,7 +47,7 @@ export const listDirTool: Tool<ListDirArgs> = {
       const hidden: string[] = []
       for (const entry of entries) {
         const label = entry.isDirectory() ? `${entry.name}/` : entry.name
-        if (HIDDEN_NAMES.has(entry.name)) hidden.push(label)
+        if (HIDDEN_NAMES.has(entry.name.toLowerCase())) hidden.push(label)
         else names.push(label)
       }
       names.sort()

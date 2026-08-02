@@ -308,3 +308,72 @@ test('an unparseable glob is a failure naming the pattern, not an empty result',
   expect(r.content).toMatch(/Invalid glob pattern/)
   expect(r.content).toContain('[')
 })
+
+// --- Finding 1: case-insensitive hidden-segment filter --------------------------
+
+test('F1 find_files filters .git even with alternate casing', async () => {
+  // This is a regression test: on Windows, glob returns the *pattern's* casing for
+  // literal segments, so ".GIT/**" yields ".GIT/objects/ab/cdef". The filter must
+  // compare case-insensitively to catch this bypass.
+  const r = await findFilesTool.execute({ glob: '.GIT/**' }, ctx)
+  expect(r.content).toMatch(/^No files match/)
+  expect(r.content).not.toContain('objects/ab/cdef')
+})
+
+test('F1 find_files filters node_modules even with alternate casing', async () => {
+  const r = await findFilesTool.execute({ glob: 'NODE_MODULES/**/*.js' }, ctx)
+  expect(r.content).toMatch(/^No files match/)
+  expect(r.content).not.toContain('index.js')
+})
+
+test('F1 find_files filters mixed-case paths to hidden directories', async () => {
+  // .Git/objects/ab/cdef should also be filtered
+  const r = await findFilesTool.execute({ glob: '.Git/objects/ab/*' }, ctx)
+  expect(r.content).toMatch(/^No files match/)
+})
+
+test('F1 list_dir filters hidden entries case-insensitively', async () => {
+  // Ensure list_dir also applies case-insensitive filtering
+  // (it receives real on-disk casing from readdir, but be defensive)
+  const r = await listDirTool.execute({ path: '.' }, ctx)
+  const lines = r.content.split('\n')
+  // .git/ and node_modules/ should be in the hidden footer, not in the main list
+  expect(lines.some((l) => l === '.git/' || l === 'node_modules/')).toBe(false)
+  expect(r.content).toContain('(hidden: .git/, node_modules/)')
+})
+
+// --- Finding 2: dotfile discovery with non-dotted patterns -------------------
+
+test('F2 find_files discovers dotted paths when explicitly referenced', async () => {
+  // This is a regression test: glob with dot: true enables dotted paths.
+  // An explicit pattern like .github/** finds files inside .github.
+  const r = await findFilesTool.execute({ glob: '.github/**/*.yml' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(r.content).toContain('.github/workflows/ci.yml')
+})
+
+test('F2 find_files discovers dotfiles with dot: true', async () => {
+  // .gitignore and .gitattributes should be found with dot: true
+  const r = await findFilesTool.execute({ glob: '.*' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(r.content).toContain('.gitignore')
+  expect(r.content).toContain('.gitattributes')
+})
+
+test('F2 find_files still filters .git and node_modules with dot: true', async () => {
+  // Ensure the segment filter is not bypassed by dot: true.
+  // Even with patterns like .git/**, the hidden segment filter should apply.
+  const r = await findFilesTool.execute({ glob: '.git/**' }, ctx)
+  expect(r.content).toMatch(/^No files match/)
+  expect(r.content).not.toContain('objects/ab/cdef')
+})
+
+test('F2 find_files still filters .env with dot: true', async () => {
+  // The secrets denylist in workspace.resolve() must still fire.
+  // Use a pattern that would find .env if it weren't filtered.
+  const r = await findFilesTool.execute({ glob: '**/*' }, ctx)
+  expect(r.ok).toBe(true)
+  // .env should not appear in the output (it's filtered by workspace.resolve())
+  const lines = r.content.split('\n').filter((l) => l === '.env' || l.endsWith('/.env'))
+  expect(lines).toHaveLength(0)
+})
