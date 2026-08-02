@@ -128,7 +128,7 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 | | `search_code` | ripgrep |
 | | `symbol_outline` | tree-sitter: file structure, symbol definitions |
 | | `git_status` | status / diff / log / blame — read-only |
-| write | `edit_file` | SEARCH/REPLACE, payload outside JSON |
+| write | `edit_file` | SEARCH/REPLACE, payload **inside** the normal JSON arguments — see §3 and §7; the spike measured zero escaping failures, so the non-standard channel bought nothing |
 | | `write_file` | new files and full rewrites |
 | | `move_file`, `delete_file` | separate from bash so permission rules can see them |
 | run | `run_command` | PowerShell, with timeout |
@@ -248,7 +248,10 @@ The real argument defect is different: on a *trivial* file, 2 of 5 runs emitted 
 
 ## 8. Open items
 
-- Finish the edit-reliability probe and settle whether SEARCH/REPLACE anchors need
+- ~~Finish the edit-reliability probe and settle whether SEARCH/REPLACE anchors need
   whitespace-tolerant matching (and therefore whether payload-outside-JSON buys anything,
-  given the grammar already guarantees valid escaping).
+  given the grammar already guarantees valid escaping).~~ **Closed** by the edit probe,
+  recorded in §7: all 7 non-empty anchors matched byte-for-byte, there were no escaping
+  failures, the payload rides inside the normal JSON arguments, and whitespace-tolerant
+  matching ships as a safety net rather than as a load-bearing part.
 - Firewall rule for port 8080.
