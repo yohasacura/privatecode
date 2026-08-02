@@ -172,16 +172,18 @@ export class Agent {
         return { steps: step - 1, finalText: lastText, stoppedBecause: 'aborted' }
       }
       if (outcome.kind === 'timeout') {
-        const seconds = Math.round(this.opts.stepTimeoutMs / 1000)
+        const seconds = this.opts.stepTimeoutMs >= 1000
+          ? `${Math.round(this.opts.stepTimeoutMs / 1000)} s`
+          : `${this.opts.stepTimeoutMs} ms`
         this.transcript.append({
           role: 'user',
-          content: `The previous step hit its ${seconds} s time limit before you replied, ` +
+          content: `The previous step hit its ${seconds} time limit before you replied, ` +
                    'so it was abandoned and nothing was done. Take one small action next.',
         })
         return {
           steps: step,
           finalText: lastText ||
-            `Stopped: step ${step} passed its ${seconds} s time limit with no reply.`,
+            `Stopped: step ${step} passed its ${seconds} time limit with no reply.`,
           stoppedBecause: 'timeout',
         }
       }
@@ -208,7 +210,11 @@ export class Agent {
       const calls = message.tool_calls ?? []
       if (calls.length === 0) {
         this.transcript.append(this.assistantMessage(message))
-        return { steps: step, finalText: text, stoppedBecause: 'done' }
+        return {
+          steps: step,
+          finalText: lastText || 'The model ended the turn without producing an answer.',
+          stoppedBecause: 'done',
+        }
       }
 
       this.transcript.append(this.assistantMessage(message))

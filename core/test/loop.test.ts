@@ -474,3 +474,40 @@ test('a timed-out step still closes its stepStart', async () => {
 
   expect(rec.names()).toEqual(['stepStart', 'stepDone'])
 })
+
+// ---------------------------------------------------------------------------
+// Residual fixes: Item 1 and Item 2
+// ---------------------------------------------------------------------------
+
+// Item 1: finish_reason: 'stop' with empty content should have a fallback like
+// the other terminal paths (timeout, truncated, max_steps).
+test('finish_reason: stop with empty content returns a fallback, not empty finalText', async () => {
+  const fake = await startFakeServer(() => textResponse(''))
+  stop = fake.close
+  const agent = makeAgent(fake.url)
+
+  const result = await agent.runTurn('go')
+
+  expect(result.stoppedBecause).toBe('done')
+  // The fix: should use a fallback message, not empty string
+  expect(result.finalText).not.toBe('')
+  expect(result.finalText).toMatch(/answer|ended|model stopped|produced/)
+})
+
+// Item 2: sub-second timeout budgets should not read as "0 s"
+test('sub-second timeout budget formats correctly (not 0 s)', async () => {
+  const fake = await startFakeServer(hang)
+  stop = fake.close
+  const agent = makeAgent(fake.url, { stepTimeoutMs: 400 })
+
+  const result = await agent.runTurn('go silent')
+
+  expect(result.stoppedBecause).toBe('timeout')
+  // Should not contain "0 s" for a 400ms budget
+  expect(result.finalText).not.toMatch(/\b0\s+s\b/)
+  // Should either say "400 ms" or some reasonable sub-second format
+  expect(result.finalText).toMatch(/\d+\s*(ms|s)/)
+  // Verify the transcript also has the fixed message
+  const last = agent.transcript.messages().at(-2)! // -2 because -1 is the appended nudge
+  expect(last.content).not.toMatch(/\b0\s+s\b/)
+})
