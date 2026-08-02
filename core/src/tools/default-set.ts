@@ -5,6 +5,8 @@ import { findFilesTool } from './find-files.js'
 import { searchCodeTool } from './search-code.js'
 import { editFileTool } from './edit-file.js'
 import { writeFileTool } from './write-file.js'
+import { moveFileTool } from './move-file.js'
+import { deleteFileTool } from './delete-file.js'
 import { runCommandTool } from './run-command.js'
 import { BackgroundTasks, backgroundTaskTool } from './background-task.js'
 import { gitStatusTool } from './git-tool.js'
@@ -19,7 +21,7 @@ export function createToolset(): Toolset {
   const registry = new ToolRegistry()
   const background = new BackgroundTasks()
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
-                   editFileTool, writeFileTool, runCommandTool,
+                   editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
                    backgroundTaskTool(background), gitStatusTool]) {
     registry.register(t)
   }

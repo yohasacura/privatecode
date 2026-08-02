@@ -14,7 +14,7 @@ import type { Workspace } from '../workspace.js'
  */
 const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
 
-async function renameWithRetry(tmp: string, abs: string): Promise<void> {
+export async function renameWithRetry(tmp: string, abs: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
       await rename(tmp, abs)
