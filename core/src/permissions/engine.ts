@@ -1,6 +1,6 @@
 import type { RememberLayer } from '../interaction.js'
 import type { PermissionKey } from '../tools/types.js'
-import { type ParsedRule, parseRule, ruleMatches, specHasNonCanonicalSyntax } from './rules.js'
+import { canonicalizePath, type ParsedRule, parseRule, ruleMatches, specHasNonCanonicalSyntax } from './rules.js'
 import {
   addRuleToSettings,
   localSettingsPath,
@@ -23,42 +23,63 @@ export const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['edit_file', 'writ
 /** Tools whose grantable act is running something outside the workspace jail. */
 export const EXEC_TOOLS: ReadonlySet<string> = new Set(['run_command', 'background_task'])
 
-/**
- * Matched against the normalized command of any `command` key. NOT overridable by any
- * layer, any mode, or any user approval -- these exist because "the model asked and the
- * user clicked allow" is not a sufficient safeguard against a single irreversible action,
- * and the decision reason says so explicitly so the model (and the user, reading the
- * transcript) understands this isn't a rule that can be worked around by rephrasing.
- *
- * Deliberately pattern-based, not parse-based: `/\bgit\s+push\b/i` matches `git push`
- * wherever it appears in the command line, including inside `echo git push` -- a false
- * positive on a harmless command. That overreach is accepted on purpose. A hard deny that
- * tried to be precise (e.g. only matching `git push` as the whole command, or only when
- * it's the first word) would also have to correctly parse shell quoting, `&&` chains, and
- * subshells to stay safe, and a parser subtle enough to have a gap is worse than a blunt
- * substring match that never has one: the failure direction that matters here is "denied
- * something safe" (mildly annoying, ask the user to run it), not "allowed something
- * destructive" (unrecoverable).
- */
+// Amended by the Task-7 review: the original rm/git patterns missed `rm -rfv`,
+// `rm -r -f`, `rm --recursive --force`, `git -C . push`, and `git.exe push`.
+// These are deliberately overreaching (deny-side false positives are safe):
+// this table is a speed bump against the obvious catastrophes, NOT a security
+// boundary — a determined command line can always evade a regex.
 const HARD_DENY: { pattern: RegExp; why: string }[] = [
-  { pattern: /\brm\s+(-\w*r\w*f|-\w*f\w*r)\b/i, why: 'recursive force delete' },
-  { pattern: /\bgit\s+push\b/i, why: "pushing is the user's own action" },
-  { pattern: /\bgit\s+reset\s+--hard\b/i, why: 'destroys uncommitted work' },
-  { pattern: /\b(rmdir|rd)\s+\/s\b/i, why: 'recursive directory delete' },
-  { pattern: /\bremove-item\b(?=[\s\S]*-recurse)[\s\S]*-force\b/i, why: 'recursive force delete' },
+  { pattern: /\brm\b(?=[\s\S]*(\s-\w*r|\s--recursive\b))(?=[\s\S]*(\s-\w*f|\s--force\b))/i,
+    why: 'recursive force delete' },
+  { pattern: /\bgit(\.exe)?\b[^|;&]*\bpush\b/i, why: 'pushing is the user\'s own action' },
+  { pattern: /\bgit(\.exe)?\b[^|;&]*\breset\b[\s\S]*--hard\b/i, why: 'destroys uncommitted work' },
+  { pattern: /\b(rmdir|rd)\b[^|;&]*\s\/s\b/i, why: 'recursive directory delete' },
+  { pattern: /\bremove-item\b(?=[\s\S]*-recurse)[\s\S]*-force\b|\bremove-item\b(?=[\s\S]*-force)[\s\S]*-recurse\b/i,
+    why: 'recursive force delete' },
   { pattern: /\bformat-volume\b|\bformat\s+[a-z]:/i, why: 'formats a volume' },
 ]
 
 // Trim + collapse internal whitespace runs to a single space -- the same shape of
 // normalization `rules.ts` applies before command comparison, kept as a private copy here
-// rather than importing `rules.ts`'s (unexported) helper. Case is left alone: every
-// `HARD_DENY` pattern already carries the `i` flag.
+// rather than importing `rules.ts`'s (unexported) helper. Does NOT lowercase: this is an
+// invariant every entry in `HARD_DENY` depends on -- every pattern there MUST carry the
+// `i` flag itself, or a differently-cased command (`RM -RF`, `Git.EXE Push`) would
+// silently slip past it.
 function normalizeForHardDeny(command: string): string {
   return command.trim().replace(/\s+/g, ' ')
 }
 
 function scopeLabel(scope: SettingsLayer['scope']): string {
   return `${scope} settings`
+}
+
+// DENY-TIER-ONLY fail-closed check. `ruleMatches` (rules.ts) already refuses to match a
+// spec'd path rule against a path that can't be lexically canonicalized (absolute,
+// drive-prefixed, a net `..` above the workspace root, or an empty `paths` array) --
+// `pathMatches` there just returns `false`, "no match, keep looking." That is the right
+// behavior for ASK and ALLOW: a rule that can't resolve a path should not grant anything.
+// For DENY it is backwards: treating "can't be evaluated" the same as "doesn't match"
+// would let a deny rule be dodged by handing it a path shape the canonicalizer refuses
+// (or no path at all) -- exactly the shape of input someone trying to route around a deny
+// rule would reach for. So, for a same-tool, spec'd DENY rule only, an empty `paths` array
+// or any path that fails to canonicalize is itself treated as a match.
+//
+// Deliberately does NOT fire for a keyless call (`key.paths === undefined`, e.g. a spec'd
+// deny rule against a `background_task` control op, or any tool call whose key carries
+// neither `command` nor `paths`): there is no path here to fail to canonicalize, so this
+// check stays silent and `decide()` falls through to the ask/allow tiers and mode default
+// as before. That is safe to leave unchanged because the workspace jail (`Workspace`, see
+// workspace.ts) is the actual backstop against a tool reaching outside the workspace root
+// regardless of what this engine decides -- this check only hardens the path-bearing half
+// of the deny tier, not a substitute for the jail.
+function denyMatchesUncanonicalizablePath(rule: ParsedRule, key: PermissionKey): boolean {
+  if (rule.tool !== key.tool || rule.spec === undefined) return false
+  if (key.paths === undefined) return false
+  if (key.paths.length === 0) return true
+  return key.paths.some((p) => {
+    const canonical = canonicalizePath(p)
+    return canonical === null || canonical === ''
+  })
 }
 
 interface ParsedLayer {
@@ -70,15 +91,25 @@ interface ParsedLayer {
 
 export class PermissionEngine {
   mode: AgentMode
-  readonly problems: string[] = []
+  readonly problems: string[]
 
   private readonly workspaceRoot: string
   private readonly layers: ParsedLayer[]
   private readonly sessionAllow: ParsedRule[] = []
 
-  constructor(opts: { layers: SettingsLayer[]; mode: AgentMode; workspaceRoot: string }) {
+  /**
+   * `opts.problems`, if given, is merged in FRONT of whatever this constructor's own rule
+   * parsing adds (see `parseRuleList`). Callers MUST pass `loadLayers(root).problems` here
+   * (or an equivalent) -- `loadLayers` already detects and reports every way a settings
+   * file's JSON can be malformed (bad JSON, wrong-shaped `permissions`, non-array lists,
+   * ...), and this constructor has no other way to learn about those; omitting this field
+   * silently drops those warnings on the floor even though the engine still degrades safely
+   * (a bad layer loads as empty either way).
+   */
+  constructor(opts: { layers: SettingsLayer[]; mode: AgentMode; workspaceRoot: string; problems?: string[] }) {
     this.mode = opts.mode
     this.workspaceRoot = opts.workspaceRoot
+    this.problems = [...(opts.problems ?? [])]
     this.layers = opts.layers.map((layer) => ({
       scope: layer.scope,
       allow: this.parseRuleList(layer.permissions.allow, layer.scope),
@@ -118,8 +149,8 @@ export class PermissionEngine {
 
   decide(key: PermissionKey): Decision {
     if (key.command !== undefined) {
-      const command = key.command
-      const hard = HARD_DENY.find((h) => h.pattern.test(normalizeForHardDeny(command)))
+      const normalized = normalizeForHardDeny(key.command)
+      const hard = HARD_DENY.find((h) => h.pattern.test(normalized))
       if (hard) {
         return {
           verdict: 'deny',
@@ -129,9 +160,15 @@ export class PermissionEngine {
     }
 
     for (const layer of this.layers) {
-      const rule = layer.deny.find((r) => ruleMatches(r, key))
+      const rule = layer.deny.find((r) => ruleMatches(r, key) || denyMatchesUncanonicalizablePath(r, key))
       if (rule) {
-        return { verdict: 'deny', reason: `Denied by rule "${rule.raw}" (${scopeLabel(layer.scope)}).` }
+        if (ruleMatches(rule, key)) {
+          return { verdict: 'deny', reason: `Denied by rule "${rule.raw}" (${scopeLabel(layer.scope)}).` }
+        }
+        return {
+          verdict: 'deny',
+          reason: `Denied by rule "${rule.raw}" (${scopeLabel(layer.scope)}) — path could not be resolved to a workspace-relative form, failing closed.`,
+        }
       }
     }
 
@@ -184,14 +221,37 @@ export class PermissionEngine {
           return { verdict: 'ask', reason: 'normal mode' }
         }
         return { verdict: 'allow', reason: 'normal mode' }
+      default:
+        // Fail closed on a mode value this switch doesn't recognize -- `AgentMode`'s type
+        // rules this out statically, but `mode` is a mutable public field, so a bad value
+        // reaching here at runtime (a bug elsewhere, a bad deserialize, ...) must not fall
+        // through to `undefined` (which every caller would then have to guard against
+        // separately); it asks instead of silently doing nothing or crashing.
+        return { verdict: 'ask', reason: 'unknown mode' }
     }
   }
 
-  /** "always allow" for this session only -- never persisted, gone when the process exits. */
+  /**
+   * "always allow" for this session only -- never persisted, gone when the process exits.
+   *
+   * Validates before storing anything, the same way `remember()` does for a persisted
+   * rule: `parseRule` rejecting the string outright, or accepting it but flagging a
+   * non-canonical spec on a non-EXEC tool (`specHasNonCanonicalSyntax` -- a rule that can
+   * never match a workspace path), both mean this "always allow" would silently do
+   * nothing forever. Storing it anyway would be worse than useless here, since the user
+   * just approved something on the belief that it took effect -- so neither case is
+   * added to `sessionAllow`; both are reported as a problem instead.
+   */
   addSessionRule(rule: string): void {
     const parsed = parseRule(rule)
     if (parsed === null) {
-      this.problems.push(`ignored malformed rule "${rule}" in session settings`)
+      this.problems.push(`ignored malformed rule "${rule}" from an approval`)
+      return
+    }
+    if (!EXEC_TOOLS.has(parsed.tool) && parsed.spec !== undefined && specHasNonCanonicalSyntax(parsed.spec)) {
+      this.problems.push(
+        `rule "${parsed.raw}" from an approval can never match a workspace path (non-canonical syntax); rewrite it without ./ .. // or an absolute prefix`,
+      )
       return
     }
     this.sessionAllow.push(parsed)
@@ -237,16 +297,26 @@ export class PermissionEngine {
 
     const parsed = parseRule(rule)
     if (parsed === null) {
-      this.problems.push(`ignored malformed rule "${rule}" in ${scopeLabel(layer)}`)
+      this.problems.push(`ignored malformed rule "${rule}" from an approval`)
+      return
+    }
+    if (!EXEC_TOOLS.has(parsed.tool) && parsed.spec !== undefined && specHasNonCanonicalSyntax(parsed.spec)) {
+      this.problems.push(
+        `rule "${parsed.raw}" from an approval can never match a workspace path (non-canonical syntax); rewrite it without ./ .. // or an absolute prefix`,
+      )
       return
     }
 
     const path = this.pathForLayer(layer)
     try {
       addRuleToSettings(path, 'allow', rule)
-      this.addParsedRuleToLayer(layer, parsed)
-    } catch {
+    } catch (e) {
+      this.problems.push(
+        `could not persist rule "${rule}" to ${scopeLabel(layer)}: ${(e as Error).message}; kept for this session only`,
+      )
       this.sessionAllow.push(parsed)
+      return
     }
+    this.addParsedRuleToLayer(layer, parsed)
   }
 }

@@ -264,8 +264,13 @@ function normalizePath(path: string): string {
  * check: a path that can't be resolved to a clean relative form is refused rather than
  * guessed at, so `edit_file(src/**)` can't be fooled by `src/../.env`, and
  * `edit_file(**)` can't be fooled by `/etc/shadow` or `C:/x`.
+ *
+ * Exported so `engine.ts`'s DENY tier can ask, for a spec'd deny rule, whether an incoming
+ * path canonicalizes at all -- `null` (or `''`, the workspace-root-itself case) is the
+ * signal it uses to fail closed (treat an uncanonicalizable path as denied rather than as
+ * "no match, keep looking") instead of duplicating this logic.
  */
-function canonicalizePath(path: string): string | null {
+export function canonicalizePath(path: string): string | null {
   const normalized = path.replace(/\\/g, '/').toLowerCase()
   if (normalized.startsWith('/') || /^[a-z]:/.test(normalized)) return null
 

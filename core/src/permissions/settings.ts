@@ -150,11 +150,24 @@ export function loadLayers(root: string): { layers: SettingsLayer[]; problems: s
 }
 
 /**
- * Read-modify-write one layer file: read existing JSON (a missing file, or one whose
- * content isn't a usable JSON object, is treated the same as `{}` -- the write must
- * succeed and produce a fresh, valid file rather than fail because the old one was
- * corrupt), deep-default `permissions.allow/ask/deny` to `[]`, append `rule` to `list` if
- * it isn't already present verbatim, and write back pretty-printed with `\n` line endings.
+ * Read-modify-write one layer file: read existing JSON, deep-default
+ * `permissions.allow/ask/deny` to `[]`, append `rule` to `list` if it isn't already present
+ * (compared trimmed on both sides), and write back pretty-printed with `\n` line endings.
+ *
+ * A MISSING file is the only case treated as `{}` -- that's the normal state for a layer
+ * that has never had a rule remembered into it, and there is nothing to lose by starting
+ * fresh. An EXISTING file that fails to parse, or whose shape can't be trusted (its JSON
+ * root isn't an object, `permissions` is present but isn't an object, or one of
+ * `allow`/`ask`/`deny` is present but isn't an array) is a different situation: it may hold
+ * deny/ask rules the user is relying on right now, and silently replacing it with a fresh
+ * document -- as this function used to do -- would permanently erase them the moment any
+ * tool call happened to trigger a `remember()`. So this function now THROWS in every one of
+ * those cases, naming the file and the problem, and writes nothing. The caller
+ * (`engine.ts`'s `remember()`) catches this, keeps the just-approved rule as a session-only
+ * grant, and surfaces the throw's message as a problem so the user learns their settings
+ * file needs manual attention. `loadLayers` already reports these same shape problems when
+ * *reading* a layer -- this is the write-side half of not compounding a broken file into
+ * permanent data loss.
  *
  * Any top-level key besides `permissions` -- and any key inside `permissions` besides
  * `allow`/`ask`/`deny` -- is carried through untouched, so a hand-added comment-like field
@@ -166,26 +179,48 @@ export function loadLayers(root: string): { layers: SettingsLayer[]; problems: s
  */
 export function addRuleToSettings(filePath: string, list: 'allow' | 'ask' | 'deny', rule: string): void {
   let doc: Record<string, unknown> = {}
+
   if (existsSync(filePath)) {
+    const raw = readFileSync(filePath, 'utf8')
+    let candidate: unknown
     try {
-      const candidate: unknown = JSON.parse(readFileSync(filePath, 'utf8'))
-      if (isRecord(candidate)) doc = candidate
-    } catch {
-      // Corrupt existing file: fall through with a fresh `{}`. The user's new rule must
-      // still get written -- refusing because the old file was already broken would
-      // compound the problem, not fix it.
+      candidate = JSON.parse(raw)
+    } catch (e) {
+      throw new Error(
+        `${filePath} exists but is not valid JSON (${(e as Error).message}); fix or delete it — refusing to overwrite`,
+      )
     }
+    if (!isRecord(candidate)) {
+      throw new Error(
+        `${filePath} exists but its JSON root is not an object; fix or delete it — refusing to overwrite`,
+      )
+    }
+    doc = candidate
   }
 
-  const existingPermissions = isRecord(doc['permissions']) ? doc['permissions'] : {}
-  const toStringArray = (value: unknown): string[] =>
-    Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
+  const permissionsRaw = doc['permissions']
+  if (permissionsRaw !== undefined && !isRecord(permissionsRaw)) {
+    throw new Error(`${filePath} exists but "permissions" is not an object; fix or delete it — refusing to overwrite`)
+  }
+  const existingPermissions: Record<string, unknown> = isRecord(permissionsRaw) ? permissionsRaw : {}
 
-  const allow = toStringArray(existingPermissions['allow'])
-  const ask = toStringArray(existingPermissions['ask'])
-  const deny = toStringArray(existingPermissions['deny'])
+  const toStringArray = (key: 'allow' | 'ask' | 'deny'): string[] => {
+    const value = existingPermissions[key]
+    if (value === undefined) return []
+    if (!Array.isArray(value)) {
+      throw new Error(
+        `${filePath} exists but "permissions.${key}" is not an array; fix or delete it — refusing to overwrite`,
+      )
+    }
+    return value.filter((entry): entry is string => typeof entry === 'string')
+  }
+
+  const allow = toStringArray('allow')
+  const ask = toStringArray('ask')
+  const deny = toStringArray('deny')
   const lists = { allow, ask, deny }
-  if (!lists[list].includes(rule)) lists[list].push(rule)
+  const trimmedRule = rule.trim()
+  if (!lists[list].some((existing) => existing.trim() === trimmedRule)) lists[list].push(rule)
 
   const nextDoc = {
     ...doc,
