@@ -75,3 +75,32 @@ test('reports an unknown tool without throwing', async () => {
   expect(out.ok).toBe(false)
   expect(out.content).toMatch(/unknown tool/i)
 })
+
+test('converts a throwing validate() to a failed ToolResult', async () => {
+  const reg = new ToolRegistry()
+  const throwingTool: Tool<{ value: string }> = {
+    name: 'thrower',
+    description: 'A tool whose validate() throws.',
+    parameters: { type: 'object', properties: { value: { type: 'string' } } },
+    validate(raw) {
+      // Simulate the defect: accessing a field without checking it exists first.
+      // If the model omits 'options', this dereferences undefined and throws.
+      const r = raw as { options?: { flags?: string[] } }
+      const flagCount = r.options!.flags!.length // throws: Cannot read properties of undefined
+      if (flagCount === 0) {
+        return { ok: false, error: 'at least one flag required' }
+      }
+      return { ok: true, args: { value: String(flagCount) } }
+    },
+    async execute(args) {
+      return { ok: true, content: args.value }
+    },
+  }
+  reg.register(throwingTool)
+  // The model sends arguments that omit 'options', triggering the throw.
+  const out = await reg.run('thrower', '{}', ctx)
+  // Must resolve (not reject) with a failed ToolResult.
+  expect(out.ok).toBe(false)
+  // Message should name the tool and indicate invalid arguments.
+  expect(out.content).toMatch(/invalid arguments for thrower/i)
+})

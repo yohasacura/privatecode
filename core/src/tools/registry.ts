@@ -41,7 +41,12 @@ export class ToolRegistry {
     } catch (e) {
       return { ok: false, content: `Arguments for ${name} could not be parsed as JSON: ${e}` }
     }
-    const validation = tool.validate(parsed)
+    let validation
+    try {
+      validation = tool.validate(parsed)
+    } catch (e) {
+      return { ok: false, content: `Invalid arguments for ${name}: ${e instanceof Error ? e.message : String(e)}` }
+    }
     if (!validation.ok) {
       return { ok: false, content: `Invalid arguments for ${name}: ${validation.error}` }
     }
