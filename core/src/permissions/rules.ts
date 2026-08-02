@@ -13,23 +13,13 @@ export interface ParsedRule {
 
 const TOOL_NAME_RE = /^[a-z_][a-z0-9_]*$/i
 
-// Hard cap on `**` occurrences a glob spec may contain (after collapsing adjacent runs,
-// see `collapseDoubleStarRuns`). Each `**` compiles (in `globToRegExp` below) to a `.*`
-// separated from its neighbors by literal segments; a chain of alternating
-// `.*<literal>` groups is the classic catastrophic-backtracking shape -- there are
-// exponentially many ways to distribute a non-matching input across the groups, so
-// matching cost is exponential in the group count. 8 keeps the worst case (2^8 = 256
-// backtracking states) effectively instant; a rule that legitimately needs more `**`
-// than that is vanishingly unlikely, so it's rejected at parse time instead, before any
-// dangerous regex is ever built.
-const MAX_DOUBLE_STAR = 8
-
 // Collapses runs of adjacent `**` segments -- however many, whether directly touching
 // (`a/****b`) or `/`-joined (`a/**/**/b`) -- into a single `**`, since they're
-// equivalent to it. Applied both before glob translation (so `a/**/**/b` behaves like
-// `a/**/b`) and before the `MAX_DOUBLE_STAR` count below (so a redundant run of
-// double-stars can't be used to dodge that check by inflating a raw `**` count that
-// collapsing would otherwise reduce).
+// equivalent to it. Applied before matching (so `a/**/**/b` behaves like `a/**/b`,
+// which the token-wise DP matcher below relies on: without this collapse, two
+// `/`-separated globstar tokens would each demand their own literal `/` character in
+// the path, which a single intervening `/` can't satisfy) and before glob-to-RegExp
+// translation for the same reason.
 function collapseDoubleStarRuns(glob: string): string {
   let prev: string
   let next = glob
@@ -40,12 +30,25 @@ function collapseDoubleStarRuns(glob: string): string {
   return next
 }
 
-// Counts `**` occurrences after collapsing adjacent runs -- the number of `.*`-vs-
-// literal alternations `globToRegExp` will produce for this glob, and so the quantity
-// `MAX_DOUBLE_STAR` bounds.
-function countDoubleStars(glob: string): number {
-  const collapsed = collapseDoubleStarRuns(glob)
-  return collapsed.match(/\*\*/g)?.length ?? 0
+// A drive prefix (`c:`, `C:`, ...) can never appear in a canonicalized, workspace-
+// relative path (see `canonicalizePath`), so a spec bearing one could never match
+// anything -- it must be rejected loudly at parse time rather than silently parsed
+// into a dead rule. Case-insensitive because the spec itself isn't lowercased until
+// match time.
+const SPEC_DRIVE_PREFIX_RE = /^[a-z]:/i
+
+// True if `spec`, split on `/`, contains a segment that is exactly `.` or `..`, an
+// empty segment (from a leading `/`, a trailing `/`, or an internal `//`), or starts
+// with a drive prefix. Incoming paths are canonicalized before matching -- `.`/`..`
+// segments collapsed, absolute/drive-prefixed paths refused outright -- so a spec
+// written in any of these non-canonical forms (`./src/**`, `src/./**`, `src/../**`,
+// `src//**`, `/src/**`, `c:/src/**`) could never match a canonicalized path. Rather
+// than parse such a spec into a rule that silently never fires, `parseRule` refuses it.
+// Segments are checked for EXACT equality: a `.`-bearing filename like `a.ts` or a
+// `..`-prefixed one like `..foo` is an ordinary segment and is left alone.
+function hasNonCanonicalSyntax(spec: string): boolean {
+  if (SPEC_DRIVE_PREFIX_RE.test(spec)) return true
+  return spec.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
 }
 
 /**
@@ -55,9 +58,13 @@ function countDoubleStars(glob: string): number {
  * contain parentheses -- and nothing may follow that closing paren. Anything that does
  * not fit this shape returns `null` rather than a best-effort partial parse: a typo'd
  * rule must be loud (Task 7 reports nulls as settings problems), not silently inert.
- * This includes an empty string, an unbalanced `(`, an empty spec (`tool()` -- almost
- * certainly a typo, not a deliberate "match nothing"), and a spec with more than
- * `MAX_DOUBLE_STAR` `**` occurrences (the ReDoS bound above).
+ * This includes an empty string, an unbalanced `(`, an empty or whitespace-only spec
+ * (`tool()`, `tool(   )` -- almost certainly a typo, not a deliberate "match nothing"),
+ * a spec containing a raw NUL character (JSON settings can smuggle one in, and it would
+ * otherwise silently behave like `**` in `globToRegExp`'s display form), and a spec
+ * that is syntactically non-canonical per `hasNonCanonicalSyntax` above (it could never
+ * match any canonicalized incoming path, so parsing it into a live-looking rule would
+ * be silently misleading).
  */
 export function parseRule(raw: string): ParsedRule | null {
   const trimmed = raw.trim()
@@ -80,8 +87,9 @@ export function parseRule(raw: string): ParsedRule | null {
   }
 
   const spec = trimmed.slice(firstParen + 1, lastParen)
-  if (spec === '') return null
-  if (countDoubleStars(spec) > MAX_DOUBLE_STAR) return null
+  if (spec.trim() === '') return null
+  if (spec.includes('\u0000')) return null
+  if (hasNonCanonicalSyntax(spec)) return null
 
   return { tool: name, spec, raw }
 }
@@ -132,8 +140,13 @@ const DOUBLE_STAR_PLACEHOLDER = '\u0000'
  * second `/` for the `**` to span). This is a deliberate deviation from minimatch,
  * where a trailing-slash `**` can also match zero segments. Adjacent `**` runs are
  * collapsed first (see `collapseDoubleStarRuns`).
- * Exported only so tests can exercise the translation directly; callers needing path
- * matching should go through `ruleMatches`.
+ *
+ * NOT THE MATCHER: actual path matching goes through `tokenizeGlob`/`globMatch` below
+ * (a token-wise DP walk, immune to backtracking) via `pathMatches`. This function
+ * builds a backtracking regex and is kept only for display/verification purposes --
+ * e.g. showing a user what a spec "means" -- where its NUL-placeholder trick (see
+ * `DOUBLE_STAR_PLACEHOLDER`) is fine because the caller isn't feeding it adversarial
+ * input to test against. Exported only so tests can exercise the translation directly.
  */
 export function globToRegExp(glob: string): RegExp {
   const collapsed = collapseDoubleStarRuns(glob)
@@ -144,6 +157,67 @@ export function globToRegExp(glob: string): RegExp {
   const questioned = starred.replace(/\?/g, '[^/]')
   const pattern = questioned.split(DOUBLE_STAR_PLACEHOLDER).join('.*')
   return new RegExp(`^${pattern}$`, 'i')
+}
+
+type GlobToken = { kind: 'globstar' } | { kind: 'star' } | { kind: 'question' } | { kind: 'char'; ch: string }
+
+// Splits an (already `collapseDoubleStarRuns`-collapsed) glob into a token sequence for
+// `globMatch`. A run of two or more consecutive `*` characters (already reduced to
+// exactly `**` by the caller in the common case, but this loop also tolerates a raw
+// longer run like `***` reaching here directly) becomes one `globstar` token.
+function tokenizeGlob(spec: string): GlobToken[] {
+  const tokens: GlobToken[] = []
+  for (let i = 0; i < spec.length; i++) {
+    if (spec[i] === '*') {
+      if (spec[i + 1] === '*') {
+        // collapse the whole run of consecutive stars (>= 2) into one globstar
+        while (spec[i + 1] === '*') i++
+        tokens.push({ kind: 'globstar' })
+      } else {
+        tokens.push({ kind: 'star' })
+      }
+    } else if (spec[i] === '?') {
+      tokens.push({ kind: 'question' })
+    } else {
+      tokens.push({ kind: 'char', ch: spec[i]! })
+    }
+  }
+  return tokens
+}
+
+/**
+ * O(tokens*path) DP: no backtracking regex, no pathological input. Case-insensitively
+ * lowercased by the caller. globstar crosses '/', star and question do not.
+ *
+ * `prev[j]` / `next[j]` mean "the tokens consumed so far can match `path`'s first `j`
+ * characters." Each token widens the reachable-prefix-lengths set from `prev` to
+ * `next`; the final answer is whether the full path length is reachable after the last
+ * token. Runtime is O(tokens x pathLength) with no branching on path content, so there
+ * is no input that makes it slow -- this is what lets `parseRule` accept an unbounded
+ * number of `**` tokens instead of capping them against exponential regex backtracking.
+ */
+function globMatch(tokens: GlobToken[], path: string): boolean {
+  const n = path.length
+  let prev = new Array<boolean>(n + 1).fill(false)
+  prev[0] = true
+  for (const t of tokens) {
+    const next = new Array<boolean>(n + 1).fill(false)
+    if (t.kind === 'globstar') {
+      next[0] = prev[0]!
+      for (let j = 1; j <= n; j++) next[j] = prev[j]! || next[j - 1]!
+    } else if (t.kind === 'star') {
+      next[0] = prev[0]!
+      for (let j = 1; j <= n; j++) {
+        next[j] = prev[j]! || (next[j - 1]! && path[j - 1] !== '/')
+      }
+    } else if (t.kind === 'question') {
+      for (let j = 1; j <= n; j++) next[j] = prev[j - 1]! && path[j - 1] !== '/'
+    } else {
+      for (let j = 1; j <= n; j++) next[j] = prev[j - 1]! && path[j - 1] === t.ch
+    }
+    prev = next
+  }
+  return prev[n]!
 }
 
 // Normalizes a rule spec's glob text for matching: backslashes to forward slashes (in
@@ -195,8 +269,14 @@ function canonicalizePath(path: string): string | null {
 
 function pathMatches(spec: string, path: string): boolean {
   const canonical = canonicalizePath(path)
-  if (canonical === null) return false
-  return globToRegExp(normalizePath(spec)).test(canonical)
+  // `null` means "not safely workspace-relative" (see `canonicalizePath`). An empty
+  // string means the path collapsed all the way to the workspace root itself (`.`,
+  // `./`, `src/..`, or `""`) -- that's a valid canonical form, but it isn't a *file*
+  // any glob spec (including a bare `**`) is meant to authorize, so it's treated the
+  // same as a failed canonicalization here: no spec'd rule matches it.
+  if (canonical === null || canonical === '') return false
+  const tokens = tokenizeGlob(collapseDoubleStarRuns(normalizePath(spec)))
+  return globMatch(tokens, canonical)
 }
 
 /**
@@ -249,6 +329,28 @@ function singlePathSuggestions(tool: string, path: string): string[] {
   return suggestions
 }
 
+// Fallback for a single-path key whose (normalized) path contains a glob metacharacter
+// (`*`/`?`) somewhere. The rule language has no escape syntax for `*`/`?`, so there is
+// no way to spell a rule spec that matches that literal path without ALSO matching
+// other paths as a glob -- offering the literal-looking `tool(path)` string would be
+// actively misleading (it wouldn't mean what it looks like it means). If the metachar
+// is confined to the basename and the directory part is itself metachar-free, a
+// directory-scoped rule (`tool(dir/**)`) is still a safe, honest suggestion -- it
+// authorizes the containing directory, not a widened version of the literal path.
+// Otherwise (metachar in the directory part too, or no directory part at all) there is
+// no safe shortcut to offer: return `[]` so the approval host falls back to
+// allow-once, rather than reaching for the bare `tool` rule (which would authorize
+// every path, not just ones near this one) as the old behavior did.
+function metacharPathSuggestions(tool: string, path: string): string[] {
+  const lastSlash = path.lastIndexOf('/')
+  const dir = lastSlash === -1 ? '' : path.slice(0, lastSlash)
+  const basename = lastSlash === -1 ? path : path.slice(lastSlash + 1)
+  if (/[*?]/.test(basename) && dir !== '' && !/[*?]/.test(dir)) {
+    return [`${tool}(${dir}/**)`]
+  }
+  return []
+}
+
 function dedupe(items: string[]): string[] {
   return [...new Set(items)]
 }
@@ -261,11 +363,12 @@ function dedupe(items: string[]): string[] {
  * - single-path key: `tool(path)`, plus `tool(dir/**)` when the path has a directory
  *   part. Backslashes in the path are normalized to `/` first (rule specs are always
  *   written with forward slashes).
- * - single-path key whose (normalized) path contains a glob metacharacter (`*` or `?`):
- *   just the bare tool name. The rule language has no escape syntax for `*`/`?`, so
- *   there is no way to spell a rule spec that matches that literal path without also
- *   matching other paths as a glob -- offering the literal-looking `tool(path)` string
- *   would be actively misleading.
+ * - single-path key whose (normalized) path contains a glob metacharacter (`*` or `?`)
+ *   in its basename: `tool(dir/**)` if the directory part is non-empty and itself
+ *   metachar-free, otherwise `[]` (no shortcut at all -- NOT the bare tool name; see
+ *   `metacharPathSuggestions`). A model-proposed path is untrusted input reaching this
+ *   function at approval time, so widening to "allow every invocation of this tool" as
+ *   a fallback is not acceptable here.
  * - multi-path key (e.g. move) or keyless: just the bare tool name -- a spec covering
  *   every path precisely enough to be useful is not worth guessing at.
  */
@@ -275,7 +378,7 @@ export function suggestRules(key: PermissionKey): string[] {
   }
   if (key.paths !== undefined && key.paths.length === 1) {
     const normalized = key.paths[0]!.replace(/\\/g, '/')
-    if (/[*?]/.test(normalized)) return [key.tool]
+    if (/[*?]/.test(normalized)) return metacharPathSuggestions(key.tool, normalized)
     return dedupe(singlePathSuggestions(key.tool, normalized))
   }
   return [key.tool]
