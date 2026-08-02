@@ -66,9 +66,26 @@ beforeAll(() => {
   ctx = { workspace: new Workspace(root) }
 })
 
+/**
+ * Whatever the developer running this suite already had. Teardown used to `delete` both
+ * keys unconditionally, which is not "restore": for anyone who runs the suite with
+ * PRIVATECODE_RG genuinely set, the tests silently unset it.
+ */
+const SAVED_ENV = {
+  PRIVATECODE_RG: process.env.PRIVATECODE_RG,
+  RIPGREP_CONFIG_PATH: process.env.RIPGREP_CONFIG_PATH,
+}
+
+function restoreEnv(): void {
+  for (const [key, value] of Object.entries(SAVED_ENV)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+}
+
 afterAll(() => {
   rmSync(root, { recursive: true, force: true })
-  delete process.env.PRIVATECODE_RG
+  restoreEnv()
 })
 
 beforeEach(() => {
@@ -117,6 +134,69 @@ test('never returns the contents of a denylisted file (.env, id_rsa, *.pem, cred
   expect(r.content).not.toMatch(/\.env:|id_rsa:|secret\.pem:|credentials:/)
   expect(r.ok).toBe(true)
   expect(r.content).toBe(`No matches for /${SECRET}/`)
+})
+
+/**
+ * The two denylist layers, pinned one at a time.
+ *
+ * The test above plants only files that BOTH layers cover, so it survived either layer
+ * being deleted: making `lineStaysInsideWorkspace`'s catch `return true`, or emptying
+ * `DENIED_GLOBS`, each kept the suite green. That is not a test of defence in depth, it
+ * is a test that at least one of two guards happens to be present.
+ *
+ * They are genuinely different guarantees. `DENIED_GLOBS` keeps ripgrep from ever
+ * *opening* the file; `lineStaysInsideWorkspace` keeps a result line from ever reaching
+ * the transcript, and is the only one of the two that can see through canonicalization or
+ * survive the argv changing. Each is given a fixture the other cannot act on.
+ */
+
+test('the per-line workspace filter alone keeps a denylisted hit out of the result', async () => {
+  await withWorkspace(async (dir, c) => {
+    // A stub that ignores argv entirely, so DENIED_GLOBS cannot possibly be what stops
+    // this: the only thing standing between the model and the line is the resolve() check
+    // applied to each result line. That is also the realistic shape of the risk - the
+    // globs are ripgrep flags, and stop applying the moment the argv changes.
+    const stub = join(dir, 'stub-rg.bat')
+    // The leaked payload is deliberately NOT the pattern: "No matches for /<pattern>/"
+    // echoes the pattern back, so searching for the secret would make any assertion about
+    // the secret's absence a false positive.
+    writeStubRg(stub, ['echo .env:1:SECRET_KEY=leaked-through-the-denylist'])
+    process.env.PRIVATECODE_RG = stub
+
+    const r = await searchCodeTool.execute({ pattern: 'SECRET_KEY' }, c)
+
+    expect(r.content).not.toContain('leaked-through-the-denylist')
+    expect(r.content).not.toMatch(/\.env:/)
+    expect(r.ok).toBe(true)
+    expect(r.content).toMatch(/no matches/i)
+  })
+})
+
+test('the ripgrep exclusions alone keep a denylisted file from being opened at all', async () => {
+  await withWorkspace(async (dir, c) => {
+    // The per-line filter cannot express "never read the bytes", and it is invisible in
+    // the result either way - so the observable is whether ripgrep *tried*. Both files get
+    // a deny ACE: ripgrep names on stderr every file it failed to open, so the bait proves
+    // the mechanism works and is what keeps this test from passing on a silently-failed
+    // icacls, while id_rsa must be absent because ripgrep was never allowed near it.
+    const key = join(dir, 'id_rsa')
+    const bait = join(dir, 'bait.txt')
+    writeFileSync(key, `${SECRET}\n`)
+    writeFileSync(bait, `${SECRET}\n`)
+    const user = process.env.USERNAME ?? process.env.USER ?? ''
+    execFileSync('icacls', [key, '/deny', `${user}:(R)`], { stdio: 'ignore' })
+    execFileSync('icacls', [bait, '/deny', `${user}:(R)`], { stdio: 'ignore' })
+    try {
+      const r = await searchCodeTool.execute({ pattern: SECRET }, c)
+      expect(r.content).toMatch(/bait\.txt/)
+      expect(r.content).toMatch(/denied|os error 5/i)
+      expect(r.content).not.toMatch(/id_rsa/)
+      expect(r.content).not.toContain(SECRET.slice(0, 12))
+    } finally {
+      execFileSync('icacls', [key, '/remove:d', user], { stdio: 'ignore' })
+      execFileSync('icacls', [bait, '/remove:d', user], { stdio: 'ignore' })
+    }
+  })
 })
 
 test('reports a loud failure when PRIVATECODE_RG points at nothing', async () => {
@@ -255,8 +335,37 @@ test('bounds the width of a single result line', async () => {
     expect(r.ok).toBe(true)
     expect(r.content).toMatch(/bundle\.js:1/)
     // The transcript this lands in is append-only, so the bound has to be a real bound,
-    // not "smaller than the file".
+    // not "smaller than the file". This case is bounded by ripgrep's `--max-columns`; the
+    // JS cap that the code calls "the guarantee" is pinned by the test below, because a
+    // 2,000-character ceiling is satisfied by the `--max-columns` preview on its own.
     expect(r.content.length).toBeLessThan(2_000)
+  })
+})
+
+/**
+ * Important 2, second layer.
+ *
+ * `--max-columns` bounds the *matched line*, not the `path:line:` prefix ripgrep prepends,
+ * and it is a ripgrep flag, so it stops applying the moment the argv changes. search-code.ts
+ * says so in as many words - "the width bound is the guarantee; the flag is only the cheap
+ * way to get most of it" - but nothing tested it: with a short path, the preview alone
+ * comes to ~350 characters, so deleting `truncateLine` entirely left the 2,000-character
+ * assertion above green.
+ *
+ * A 200-character filename puts the prefix outside anything ripgrep bounds: measured, the
+ * finished line is ~534 characters with the JS cap removed and exactly 421 with it.
+ */
+test('bounds the width of a result line whose length is in the path, not the match', async () => {
+  await withWorkspace(async (dir, c) => {
+    const longName = `${'n'.repeat(200)}.txt`
+    writeFileSync(join(dir, longName), `${'x'.repeat(500)}needleLongPath${'y'.repeat(500)}\n`)
+
+    const r = await searchCodeTool.execute({ pattern: 'needleLongPath' }, c)
+
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('[... line truncated]')
+    // 400 characters plus the ' [... line truncated]' marker, and nothing more.
+    expect(r.content.length).toBeLessThanOrEqual(421)
   })
 })
 

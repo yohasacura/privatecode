@@ -48,7 +48,13 @@ export class ToolRegistry {
     try {
       parsed = rawArgs.trim() === '' ? {} : JSON.parse(rawArgs)
     } catch (e) {
-      return { ok: false, content: `Arguments for ${name} could not be parsed as JSON: ${e}` }
+      // Same shape as the other two catches in this function: interpolating `e` directly
+      // renders "SyntaxError: ..." via toString, which is not what the other paths produce.
+      return {
+        ok: false,
+        content: `Arguments for ${name} could not be parsed as JSON: ` +
+          `${e instanceof Error ? e.message : String(e)}`,
+      }
     }
     let validation: Validation<any>
     try {

@@ -46,11 +46,6 @@ test('allows a file that merely contains the word env', () => {
   expect(() => ws.resolve('src/environment.ts')).not.toThrow()
 })
 
-test('reports paths relative to the root', () => {
-  const ws = new Workspace(root)
-  expect(ws.relative(join(root, 'src', 'a.ts'))).toBe(`src${sep}a.ts`)
-})
-
 // ---------------------------------------------------------------------------
 // Regression: a real secret, planted in a real workspace, read back the way a
 // reviewer read it. Every spelling below is a name Windows opens as the secret
@@ -275,8 +270,6 @@ test('the workspace root addresses itself', () => {
   for (const p of ['', '.', './', root, root + sep]) {
     expect(ws.resolve(p), JSON.stringify(p)).toBe(root)
   }
-  // resolve() and relative() round-trip at the root, not just below it.
-  expect(ws.resolve(ws.relative(root))).toBe(root)
 })
 
 test('resolves paths that do not exist yet', () => {

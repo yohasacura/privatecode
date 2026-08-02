@@ -182,8 +182,4 @@ export class Workspace {
 
     return abs
   }
-
-  relative(absolute: string): string {
-    return pathRelative(this.root, pathResolve(absolute))
-  }
 }

@@ -1,12 +1,26 @@
-import { expect, test } from 'vitest'
+import { afterAll, beforeAll, expect, test } from 'vitest'
 import { ToolRegistry } from '../src/tools/registry.js'
 import type { Tool } from '../src/tools/types.js'
 import { Workspace } from '../src/workspace.js'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const ctx = { workspace: new Workspace(mkdtempSync(join(tmpdir(), 'pc-reg-'))) }
+// Created in a hook, not at module scope: at module scope there is no hook that owns it,
+// and this file leaked one `pc-reg-*` directory into %TEMP% per run — 23 had accumulated.
+// Nothing here actually touches the filesystem; the workspace exists only because
+// ToolContext requires one.
+let root: string
+let ctx: { workspace: Workspace }
+
+beforeAll(() => {
+  root = mkdtempSync(join(tmpdir(), 'pc-reg-'))
+  ctx = { workspace: new Workspace(root) }
+})
+
+afterAll(() => {
+  rmSync(root, { recursive: true, force: true })
+})
 
 const echo: Tool<{ text: string }> = {
   name: 'echo',
