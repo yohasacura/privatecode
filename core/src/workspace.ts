@@ -29,13 +29,17 @@ export class WorkspaceViolation extends Error {
  * relationship, just two directory entries pointing at the same inode. This vector is
  * not closed here, and deliberately so: an `nlink > 1` backstop would also reject
  * ordinary, legitimately hardlinked files, and pnpm lays out `node_modules` using
- * hardlinks, so that check would break normal JavaScript workspaces. The vector is
- * also unreachable from the tools this workspace currently exposes (nothing here can
- * create a link), and once a tool exists that can run arbitrary shell commands it
- * bypasses this jail far more directly than a hardlink would. Callers must not treat
- * this denylist as a capability boundary against an actor able to create filesystem
- * links — it is a best-effort guard against accidental or lexical access, not a
- * security boundary against a deliberate adversary with link-creation ability.
+ * hardlinks, so that check would break normal JavaScript workspaces. The same mechanism
+ * defeats containment, not just the name denylist: `mklink /H <root>\innocent.txt
+ * <a file outside the root>` produces a path `resolve()` accepts as inside the workspace
+ * whose bytes come from outside it. Bounded to files on the same volume; directories
+ * cannot be hardlinked. The vector is also unreachable from the tools this workspace
+ * currently exposes (nothing here can create a link), and once a tool exists that can
+ * run arbitrary shell commands it bypasses this jail far more directly than a hardlink
+ * would. Callers must not treat this denylist as a capability boundary against an actor
+ * able to create filesystem links — it is a best-effort guard against accidental or
+ * lexical access, not a security boundary against a deliberate adversary with
+ * link-creation ability.
  */
 const DENIED_SEGMENTS: RegExp[] = [
   /^\.env(\..+)?$/i,

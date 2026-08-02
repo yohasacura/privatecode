@@ -107,21 +107,32 @@ test('denies every spelling that opens a denied file', () => {
     'certs/server.pem::$DATA',
     'certs\\server.pem::$DATA',
     '.env:', // bare stream separator
-    'ENV~1', // 8.3 alias of .env
-    'ENV~1.PRO', // 8.3 alias of .env.production
-    'certs/SERVER~1.PEM',
-    'NPMRC~1',
-    'CREDEN~1',
     '.env.', // trailing dot, stripped by the OS on open
     '.env ', // trailing space, likewise
     '.env. . ', // and any run of them
     'certs/server.pem.',
-    'ENV~1.', // short name plus trailing dot
     'sub/.env::$DATA', // nested, not just at the top level
   ]
   for (const p of bypasses) {
     expect(() => ws.resolve(p), p).toThrow(WorkspaceViolation)
     expect(() => ws.resolve(p), p).toThrow(/denied/i)
+  }
+  // 8.3 short-name aliases are only denied if they exist (volume has short-name
+  // generation enabled). On a volume with it disabled, these names alias nothing, so
+  // allowing them is correct.
+  if (shortNameAlias !== null) {
+    const shortNameBypasses = [
+      'ENV~1', // 8.3 alias of .env
+      'ENV~1.PRO', // 8.3 alias of .env.production
+      'NPMRC~1',
+      'CREDEN~1',
+      'ENV~1.', // short name plus trailing dot
+      'certs/SERVER~1.PEM',
+    ]
+    for (const p of shortNameBypasses) {
+      expect(() => ws.resolve(p), p).toThrow(WorkspaceViolation)
+      expect(() => ws.resolve(p), p).toThrow(/denied/i)
+    }
   }
 })
 
@@ -129,7 +140,7 @@ test('a denied spelling never yields a path to read', () => {
   const ws = new Workspace(planted)
   // Prove the closure the way the bypass was found: ask for the path, and if one
   // ever comes back, read it and fail loudly with whatever it exposed.
-  for (const p of ['.env::$DATA', 'ENV~1', '.env.', '.env ', 'certs/server.pem::$DATA']) {
+  for (const p of ['.env::$DATA', '.env.', '.env ', 'certs/server.pem::$DATA']) {
     let leaked: string | null = null
     try {
       leaked = readFileSync(ws.resolve(p), 'utf8')
@@ -137,6 +148,17 @@ test('a denied spelling never yields a path to read', () => {
       expect(error, p).toBeInstanceOf(WorkspaceViolation)
     }
     expect(leaked, p).toBeNull()
+  }
+  // 8.3 short-name aliases are only denied if they exist (volume has short-name
+  // generation enabled).
+  if (shortNameAlias !== null) {
+    let leaked: string | null = null
+    try {
+      leaked = readFileSync(ws.resolve('ENV~1'), 'utf8')
+    } catch (error) {
+      expect(error, 'ENV~1').toBeInstanceOf(WorkspaceViolation)
+    }
+    expect(leaked, 'ENV~1').toBeNull()
   }
 })
 
