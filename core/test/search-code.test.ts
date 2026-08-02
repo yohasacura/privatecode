@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, afterAll, expect, test } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -8,13 +9,45 @@ import { searchCodeTool } from '../src/tools/search-code.js'
 
 // Point every test at the vendored binary explicitly. Tests must not depend on ambient
 // PATH: that would let them pass on a machine (or CI runner) that happens to have `rg`
-// installed while exercising a code path the shipped product never takes.
+// installed while exercising a code path the shipped product never takes. The one
+// exception is the vendored-default test at the bottom, which deliberately unsets the
+// override - see the comment there.
 const VENDORED_RG = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'vendor', 'ripgrep', 'rg.exe')
 
 const SECRET = 'sk-search-code-denylist-probe-9f3e1a'
 
 let root: string
 let ctx: { workspace: Workspace }
+
+/**
+ * A scratch workspace of its own. Several tests below need a tree that the other tests
+ * must not see - a four-megabyte line, a file with a deny ACE on it, five files with
+ * identical match counts - because those fixtures change the result of every other
+ * search that walks the same root.
+ */
+async function withWorkspace(
+  fn: (dir: string, c: { workspace: Workspace }) => Promise<void>,
+): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'pc-rg-case-'))
+  try {
+    await fn(dir, { workspace: new Workspace(dir) })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/**
+ * A batch file that answers `--version` the way ripgrep does and prints whatever `body`
+ * says for any other invocation. It exists so a test can drive the output-handling
+ * branches (an unparseable result line, in particular) with a binary that legitimately
+ * passes the resolution-time ripgrep check - i.e. without weakening that check.
+ */
+function writeStubRg(path: string, body: string[]): void {
+  writeFileSync(
+    path,
+    ['@echo off', 'if "%~1"=="--version" goto version', ...body, 'exit /b 0', ':version', 'echo ripgrep 14.1.1', 'exit /b 0', ''].join('\r\n'),
+  )
+}
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'pc-rg-'))
@@ -42,6 +75,7 @@ beforeEach(() => {
   // Reset before every test, including the loud-failure tests below, so a broken override
   // set by one test never leaks into the next.
   process.env.PRIVATECODE_RG = VENDORED_RG
+  delete process.env.RIPGREP_CONFIG_PATH
 })
 
 test('finds matches with file and line number', async () => {
@@ -93,17 +127,262 @@ test('reports a loud failure when PRIVATECODE_RG points at nothing', async () =>
   expect(r.content).not.toMatch(/no matches/i)
 })
 
-test('reports a loud failure when PRIVATECODE_RG points at a file that is not ripgrep', async () => {
-  const notRipgrep = join(root, 'not-actually-ripgrep.exe')
-  writeFileSync(notRipgrep, 'this is plain text, not a valid Windows executable\n')
-  process.env.PRIVATECODE_RG = notRipgrep
-  const r = await searchCodeTool.execute({ pattern: 'validateToken' }, ctx)
-  expect(r.ok).toBe(false)
-  expect(r.content).toMatch(/ripgrep/i)
-  expect(r.content).not.toMatch(/no matches/i)
-  // Pins the specific branch: a spawn that never produced an exit code (verified directly
-  // - execa resolves such a case with `exitCode: undefined`, not a number) must be reported
-  // as "did not run", not folded into the generic "unexpected exit status" wording that
-  // numeric-but-unrecognised exit codes get.
-  expect(r.content).toMatch(/did not run/i)
+/**
+ * Critical 1. The previous version of this test used a single fixture named
+ * `not-actually-ripgrep.exe` and passed for the wrong reason: only the `.exe` shape made
+ * execa fail to spawn at all (`exitCode: undefined`). Renaming that same fixture `.bat`
+ * turned the result into `ok: true, "No matches"` - the tool telling the model the user's
+ * code does not contain what it searched for, because a broken binary was mistaken for an
+ * exhaustive empty search. The extension must not decide the outcome, so every shape a
+ * wrong `PRIVATECODE_RG` can take is enumerated here:
+ *
+ *   - a directory                    (spawns via cmd, exit 1, shell error on stderr)
+ *   - a text file named `.bat`       (spawns via cmd, exit 1, shell error on stderr)
+ *   - a text file with no extension  (spawns via cmd, exit 0, *empty* stdout)
+ *   - a text file named `.exe`       (never spawns at all, exitCode undefined)
+ *   - a real executable that is not ripgrep (spawns fine, exit 1, its own stderr)
+ *
+ * All five must be refused before a search is ever attempted, and none may be reported as
+ * an empty result.
+ */
+const brokenBinaryShapes: Array<{ name: string; make: (dir: string) => string; expect: RegExp }> = [
+  {
+    name: 'a directory',
+    make: (dir) => {
+      const p = join(dir, 'a-directory')
+      mkdirSync(p)
+      return p
+    },
+    expect: /not a file/i,
+  },
+  {
+    name: 'a text file named .bat',
+    make: (dir) => {
+      const p = join(dir, 'fake.bat')
+      writeFileSync(p, 'this is plain text, not a valid batch file\n')
+      return p
+    },
+    expect: /is not ripgrep/i,
+  },
+  {
+    name: 'a text file with a non-executable extension',
+    make: (dir) => {
+      const p = join(dir, 'credentials.json')
+      writeFileSync(p, '{"not":"ripgrep"}\n')
+      return p
+    },
+    expect: /is not ripgrep/i,
+  },
+  {
+    name: 'a text file named .exe',
+    make: (dir) => {
+      const p = join(dir, 'fake.exe')
+      writeFileSync(p, 'this is plain text, not a valid Windows executable\n')
+      return p
+    },
+    expect: /is not ripgrep/i,
+  },
+  {
+    name: 'a real executable that is not ripgrep',
+    make: () => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'hostname.exe'),
+    expect: /is not ripgrep/i,
+  },
+]
+
+for (const shape of brokenBinaryShapes) {
+  test(`reports a loud failure when PRIVATECODE_RG points at ${shape.name}`, async () => {
+    await withWorkspace(async (dir) => {
+      process.env.PRIVATECODE_RG = shape.make(dir)
+      const r = await searchCodeTool.execute({ pattern: 'validateToken' }, ctx)
+      expect(r.ok).toBe(false)
+      expect(r.content).toMatch(/ripgrep/i)
+      expect(r.content).toMatch(shape.expect)
+      // The whole point: a binary that cannot search must never be reported as a search
+      // that found nothing.
+      expect(r.content).not.toMatch(/no matches/i)
+    })
+  })
+}
+
+/**
+ * Critical 1, second layer, pinned on its own.
+ *
+ * The resolution-time `--version` handshake catches all five shapes above, which means it
+ * would also mask the `execute`-time exit-code rules and leave them untested. They are a
+ * separate layer and must hold alone: a binary can pass a handshake and still not be
+ * ripgrep (a wrapper script, a shim, a binary swapped after resolution was cached). Both
+ * stubs below answer `--version` exactly as ripgrep does, so only the exit-code rules can
+ * catch them. Measured with the handshake and the `isFile()` check both disabled, these
+ * rules alone still reject every one of the five shapes above - the two layers are
+ * independent, not one guard with a spare.
+ */
+test('reports a loud failure when ripgrep exits 0 without printing a match', async () => {
+  await withWorkspace(async (dir, c) => {
+    const stub = join(dir, 'stub-rg.bat')
+    writeStubRg(stub, ['exit /b 0'])
+    process.env.PRIVATECODE_RG = stub
+    const r = await searchCodeTool.execute({ pattern: 'validateToken' }, c)
+    // Exit 0 means "matches were found". Nothing on stdout therefore means the process
+    // is not ripgrep, whatever it answered at resolution time.
+    expect(r.ok).toBe(false)
+    expect(r.content).not.toMatch(/no matches/i)
+  })
+})
+
+test('reports a loud failure when ripgrep exits 1 but complains on stderr', async () => {
+  await withWorkspace(async (dir, c) => {
+    const stub = join(dir, 'stub-rg.bat')
+    writeStubRg(stub, ['echo something is badly wrong 1>&2', 'exit /b 1'])
+    process.env.PRIVATECODE_RG = stub
+    const r = await searchCodeTool.execute({ pattern: 'validateToken' }, c)
+    // Real ripgrep exits 1 silently when it simply found nothing; a shell error on stderr
+    // with the same code is the "no matches" impostor this whole spec is written against.
+    expect(r.ok).toBe(false)
+    expect(r.content).not.toMatch(/no matches/i)
+    expect(r.content).toMatch(/something is badly wrong/)
+  })
+})
+
+/** Important 2. */
+test('bounds the width of a single result line', async () => {
+  await withWorkspace(async (dir, c) => {
+    // Minified bundles, lockfiles, base64 blobs and single-line JSON are ordinary, and
+    // `dist/` is not excluded the way `node_modules/` and `.git/` are.
+    mkdirSync(join(dir, 'dist'))
+    writeFileSync(join(dir, 'dist', 'bundle.js'), `${'x'.repeat(2_000_000)}needleWideLine${'y'.repeat(2_000_000)}\n`)
+
+    const r = await searchCodeTool.execute({ pattern: 'needleWideLine' }, c)
+    expect(r.ok).toBe(true)
+    expect(r.content).toMatch(/bundle\.js:1/)
+    // The transcript this lands in is append-only, so the bound has to be a real bound,
+    // not "smaller than the file".
+    expect(r.content.length).toBeLessThan(2_000)
+  })
+})
+
+/** Important 3. */
+test('keeps good matches when one file in the workspace cannot be read', async () => {
+  await withWorkspace(async (dir, c) => {
+    const readable = join(dir, 'readable.txt')
+    const locked = join(dir, 'locked.txt')
+    writeFileSync(readable, 'needleUnreadable in a readable file\n')
+    writeFileSync(locked, 'needleUnreadable in a locked file\n')
+    const user = process.env.USERNAME ?? process.env.USER ?? ''
+    // ripgrep exits 2 for *any* error, including a non-fatal per-file one, while still
+    // printing every good match it found. One ACL-restricted file, cloud placeholder or
+    // locked file must not discard the whole workspace's results.
+    execFileSync('icacls', [locked, '/deny', `${user}:(R)`], { stdio: 'ignore' })
+    try {
+      const r = await searchCodeTool.execute({ pattern: 'needleUnreadable' }, c)
+      expect(r.ok).toBe(true)
+      expect(r.content).toMatch(/readable\.txt:1:needleUnreadable/)
+      // If the deny ACE silently failed to apply, ripgrep would have exited 0 and there
+      // would be no warning - so this assertion is also what keeps the test honest.
+      expect(r.content).toMatch(/warning/i)
+      expect(r.content).toMatch(/denied|os error 5/i)
+    } finally {
+      execFileSync('icacls', [locked, '/remove:d', user], { stdio: 'ignore' })
+    }
+  })
+})
+
+/** Important 4. */
+test('returns the same truncated result set every time', async () => {
+  await withWorkspace(async (dir, c) => {
+    // Five files with an equal number of matches, and a cap smaller than the total.
+    // `--max-count` is ripgrep's *per-file* cap and ripgrep walks directories in
+    // parallel, so without an explicit ordering the surviving subset is whichever files
+    // the worker threads happened to finish first.
+    for (const name of ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts']) {
+      writeFileSync(join(dir, name), 'needleDeterminism one\nneedleDeterminism two\n')
+    }
+    const answers = new Set<string>()
+    for (let i = 0; i < 8; i++) {
+      const r = await searchCodeTool.execute({ pattern: 'needleDeterminism', max_results: 2 }, c)
+      expect(r.ok).toBe(true)
+      answers.add(r.content)
+    }
+    expect([...answers]).toHaveLength(1)
+  })
+})
+
+/** Important 5. */
+test('ignores RIPGREP_CONFIG_PATH from the ambient environment', async () => {
+  await withWorkspace(async (dir, c) => {
+    writeFileSync(join(dir, '.hidden-notes.txt'), 'needleAmbientConfig\n')
+    const config = join(dir, 'rgconfig')
+    writeFileSync(config, '--hidden\n')
+    process.env.RIPGREP_CONFIG_PATH = config
+    try {
+      const r = await searchCodeTool.execute({ pattern: 'needleAmbientConfig' }, c)
+      // An offline privacy tool must not let an environment variable inject flags into
+      // its search engine: with the config honoured, `--hidden` changes traversal and the
+      // dotfile turns up. (`--pre=<path>` in the same file makes ripgrep try to launch
+      // that command against every file it walks.)
+      expect(r.content).not.toMatch(/hidden-notes/)
+      expect(r.ok).toBe(true)
+    } finally {
+      delete process.env.RIPGREP_CONFIG_PATH
+    }
+  })
+})
+
+/** Minor 6. */
+test('does not claim truncation when exactly max_results matches exist', async () => {
+  await withWorkspace(async (dir, c) => {
+    writeFileSync(join(dir, 'three.ts'), 'needleExact\nneedleExact\nneedleExact\n')
+    const r = await searchCodeTool.execute({ pattern: 'needleExact', max_results: 3 }, c)
+    expect(r.ok).toBe(true)
+    expect(r.content.split('\n')).toHaveLength(3)
+    expect(r.content).not.toMatch(/stopped at/i)
+  })
+})
+
+/** Minor 6, grammar. */
+test('says "1 match", not "1 matches", when truncating at one', async () => {
+  await withWorkspace(async (dir, c) => {
+    writeFileSync(join(dir, 'three.ts'), 'needleGrammar\nneedleGrammar\nneedleGrammar\n')
+    const r = await searchCodeTool.execute({ pattern: 'needleGrammar', max_results: 1 }, c)
+    expect(r.ok).toBe(true)
+    expect(r.content).toMatch(/stopped at 1 match\b/)
+    expect(r.content).not.toMatch(/1 matches/)
+  })
+})
+
+/** Minor 7. */
+test('drops a result line the workspace filter cannot parse', async () => {
+  await withWorkspace(async (dir, c) => {
+    // A safety filter must drop what it cannot parse, not pass it through. Nothing
+    // ripgrep prints under the current flags takes this shape, but adding `--context`,
+    // `--heading` or `--json` later would make a fail-open filter a bypass, so the
+    // behaviour is pinned with a stub that speaks ripgrep's `--version` handshake and
+    // then prints a line with no `path:line:` prefix.
+    const stub = join(dir, 'stub-rg.bat')
+    writeStubRg(stub, ['echo binary file matches [found NUL byte around offset 31]'])
+    process.env.PRIVATECODE_RG = stub
+    const r = await searchCodeTool.execute({ pattern: 'anything' }, c)
+    expect(r.content).not.toMatch(/binary file matches/)
+    expect(r.ok).toBe(true)
+    expect(r.content).toMatch(/no matches/i)
+  })
+})
+
+/** Minor 8. */
+test('resolves the vendored ripgrep when PRIVATECODE_RG is unset', async () => {
+  // Every other test sets the override, so the branch the shipped product actually takes
+  // - `vendoredRgPath()`, resolved relative to the module - had no coverage at all: a
+  // wrong relative path there would have left the whole suite green. PATH is emptied for
+  // the duration so the system-ripgrep fallback cannot stand in for the vendored copy on
+  // a machine that happens to have `rg` installed.
+  const savedPath = process.env.PATH
+  delete process.env.PRIVATECODE_RG
+  process.env.PATH = ''
+  try {
+    const r = await searchCodeTool.execute({ pattern: 'validateToken' }, ctx)
+    expect(r.ok).toBe(true)
+    expect(r.content).toMatch(/src[\\/]auth\.ts:1/)
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH
+    else process.env.PATH = savedPath
+  }
 })
