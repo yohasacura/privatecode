@@ -1,17 +1,30 @@
+import { existsSync, statSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { Agent } from './agent/loop.js'
-import { LlamaClient } from './llama/client.js'
+import { LlamaClient, LlamaRequestError } from './llama/client.js'
 import { Workspace } from './workspace.js'
 import { buildRegistry, READ_ONLY_TOOLS } from './tools/default-set.js'
 
 const DEFAULT_SERVER = 'http://127.0.0.1:8080'
 const MODEL = 'Qwen3.6-35B-A3B'
 
+/** The up-front liveness probe must fail fast, not inherit the turn client's 600 s
+ * transport timeout — see the health-check call site for why. */
+const HEALTH_CHECK_TIMEOUT_MS = 5_000
+
 function fmtDuration(ms: number): string {
   return ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`
 }
 
-/** Actionable, not a stack trace: names the server and how to start it. */
+/**
+ * Actionable, not a stack trace: names the server and how to start it.
+ *
+ * Only for a genuine connectivity failure — the server never answered at all (refused
+ * connection, DNS failure, timed out). Do not use this for an HTTP error response; the
+ * server answering with a status code proves it is up, and telling the user to restart
+ * something that is already running is actively misleading. See serverErrorMessage for
+ * that case.
+ */
 function serverUnreachableMessage(server: string, detail?: string): string {
   return (
     `\nCould not reach llama.cpp at ${server}${detail ? ` (${detail})` : ''}.\n` +
@@ -21,18 +34,93 @@ function serverUnreachableMessage(server: string, detail?: string): string {
   )
 }
 
+/**
+ * llama.cpp answered with an HTTP error status: the process is up and reachable, so the
+ * restart advice in serverUnreachableMessage does not apply and must not be shown here.
+ *
+ * Demonstrated case: a live, RUNNING server answered a mid-turn request with HTTP 500,
+ * and the old code printed "Could not reach llama.cpp ... Start it with
+ * Start-QwenServer.bat" for a server that was already running. llama.cpp returns 4xx/5xx
+ * for things like context-window overflow, which on a 35B local model with a long
+ * transcript is one of the most likely real mid-turn failures — so this says what the
+ * server actually replied instead of misdiagnosing it as connectivity.
+ */
+function serverErrorMessage(server: string, err: LlamaRequestError): string {
+  const body = err.body ? `\nServer response: ${err.body}` : ''
+  return (
+    `\nllama.cpp at ${server} is running and answered, but rejected or failed on this ` +
+    `request: HTTP ${err.status}.${body}\n` +
+    'The server is not down, so restarting it is unlikely to help. On a local model, a ' +
+    '4xx/5xx mid-turn is most often the conversation exceeding the context window; try a ' +
+    'shorter task or a fresh session. Pass --server <url> if this points at the wrong ' +
+    'server.\n'
+  )
+}
+
+/** Parses a required positive-integer CLI flag, returning a usage error instead of NaN,
+ * a negative step count, or a raw parseArgs stack trace for a value like "-3". */
+function parsePositiveInt(raw: string, flag: string): { ok: true; value: number } | { ok: false; error: string } {
+  if (!/^\d+$/.test(raw.trim())) {
+    return { ok: false, error: `--${flag} must be a positive whole number, got "${raw}"` }
+  }
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value <= 0) {
+    return { ok: false, error: `--${flag} must be a positive whole number, got "${raw}"` }
+  }
+  return { ok: true, value }
+}
+
+const USAGE = 'usage: npm run agent -- --workspace <dir> --task "<text>" [--plan] ' +
+  '[--server <url>] [--steps <n>]'
+
 async function main() {
-  const { values } = parseArgs({
-    options: {
-      workspace: { type: 'string' },
-      task: { type: 'string' },
-      server: { type: 'string', default: DEFAULT_SERVER },
-      plan: { type: 'boolean', default: false },
-      steps: { type: 'string', default: '40' },
-    },
-  })
+  let values: {
+    workspace?: string
+    task?: string
+    server?: string
+    plan?: boolean
+    steps?: string
+  }
+  try {
+    ;({ values } = parseArgs({
+      options: {
+        workspace: { type: 'string' },
+        task: { type: 'string' },
+        server: { type: 'string', default: DEFAULT_SERVER },
+        plan: { type: 'boolean', default: false },
+        steps: { type: 'string', default: '40' },
+      },
+    }))
+  } catch (e) {
+    // node's parseArgs throws (ERR_PARSE_ARGS_INVALID_OPTION_VALUE etc.) on things like
+    // `--steps -3`, where the value looks like another flag. Uncaught, that reached the
+    // user as a raw stack trace for what is an ordinary usage mistake.
+    console.error(`${e instanceof Error ? e.message : String(e)}\n\n${USAGE}`)
+    process.exitCode = 2
+    return
+  }
   if (!values.workspace || !values.task) {
-    console.error('usage: npm run agent -- --workspace <dir> --task "<text>" [--plan] [--server <url>] [--steps <n>]')
+    console.error(USAGE)
+    process.exitCode = 2
+    return
+  }
+
+  const stepsParsed = parsePositiveInt(values.steps ?? '40', 'steps')
+  if (!stepsParsed.ok) {
+    // Bare `Number(values.steps)` used to hand max_steps = NaN straight to Agent, which
+    // then reported "max_steps after NaN steps" without ever calling the model — an
+    // opaque failure for what is just a bad flag value.
+    console.error(`${stepsParsed.error}\n\n${USAGE}`)
+    process.exitCode = 2
+    return
+  }
+
+  // `new Workspace(dir)` does not check the directory exists — it only resolves and
+  // canonicalizes paths. Pointing --workspace at a typo'd or nonexistent directory used
+  // to burn several full model steps (every tool call failing with ENOENT) before the
+  // turn gave up, instead of failing in under a second.
+  if (!existsSync(values.workspace) || !statSync(values.workspace).isDirectory()) {
+    console.error(`\nWorkspace directory not found: ${values.workspace}\n`)
     process.exitCode = 2
     return
   }
@@ -42,8 +130,15 @@ async function main() {
 
   // A dead or unreachable server is not a turn outcome — it is checked up front so the
   // failure names the server and the fix instead of surfacing mid-turn as a raw
-  // transport exception once the model already looks like it is "thinking".
-  if (!(await client.health())) {
+  // transport exception once the model already looks like it is "thinking". Uses its own
+  // short-timeout client rather than `client` above: `client` carries the turn's 600 s
+  // transport timeout, which is right for a real generation but means a black-holed
+  // --server (accepts the TCP connection, then never answers) printed nothing for ten
+  // minutes before this probe ever failed.
+  const healthClient = new LlamaClient({
+    baseUrl: server, model: MODEL, requestTimeoutMs: HEALTH_CHECK_TIMEOUT_MS,
+  })
+  if (!(await healthClient.health())) {
     console.error(serverUnreachableMessage(server))
     process.exitCode = 1
     return
@@ -62,7 +157,7 @@ async function main() {
     registry,
     context: { workspace: new Workspace(values.workspace) },
     mode,
-    maxSteps: Number(values.steps),
+    maxSteps: stepsParsed.value,
     events: {
       // A step can run 40-90 s; printing nothing until it ends is the one thing this
       // interface must not do. This line is the countdown's starting gun.
@@ -87,14 +182,23 @@ async function main() {
     result = await agent.runTurn(values.task)
   } catch (e) {
     // runTurn absorbs abort/timeout into stoppedBecause, but a genuine transport failure
-    // (server crashed, connection refused mid-turn) still escapes as an exception — that
-    // is not a turn outcome and must not print as an unhandled stack trace.
-    console.error(serverUnreachableMessage(server, e instanceof Error ? e.message : String(e)))
+    // still escapes as an exception — that is not a turn outcome and must not print as an
+    // unhandled stack trace. Not every escaped exception means the same thing, though:
+    // LlamaRequestError carries `status` only when the server actually answered with an
+    // HTTP error, as opposed to the request never reaching it at all (connection
+    // refused, DNS failure, our own timeout). Those two must not share a message — one
+    // means "start the server", the other means the server is up and rejected the
+    // request (most likely context overflow on a local model).
+    if (e instanceof LlamaRequestError && e.status !== undefined) {
+      console.error(serverErrorMessage(server, e))
+    } else {
+      console.error(serverUnreachableMessage(server, e instanceof Error ? e.message : String(e)))
+    }
     process.exitCode = 1
     return
   }
 
-  console.log(`\n--- ${result.stoppedBecause} after ${result.steps} steps ---`)
+  console.log(`\n--- ${result.stoppedBecause} after ${result.steps} step${result.steps === 1 ? '' : 's'} ---`)
   if (result.stoppedBecause === 'timeout' || result.stoppedBecause === 'truncated') {
     console.log(
       '(this is a real outcome on a slow local model, not necessarily a defect in the task)')
@@ -102,9 +206,23 @@ async function main() {
   process.exitCode = result.stoppedBecause === 'done' ? 0 : 1
 }
 
-// process.exitCode, never process.exit(): forcing an immediate exit while an
-// AbortSignal.timeout() from a just-finished step is still pending its own teardown
-// crashes node on Windows (observed: "Assertion failed: !(handle->flags &
-// UV_HANDLE_CLOSING), file src\win\async.c"). Setting exitCode and letting the event
-// loop drain naturally avoids racing that teardown and still reports the right code.
+// process.exitCode, never process.exit(): on Windows, some runs of this CLI that called
+// process.exit() at the end crashed instead of exiting with the correct code, printing
+//   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94
+// (surfacing as exit code 127) even though the turn itself had already finished cleanly.
+//
+// What is and is not established: both crashing runs involved a step that used
+// search_code, i.e. had spawned an execa child process; a read_file-only plan run, with
+// the same 90 s step AbortSignal.timeout() armed and ~88 s of it still unexpired, exited
+// 0 cleanly three times out of three. Minimal repros of "an armed AbortSignal.timeout()
+// plus a pending fetch, then process.exit()" were clean, and so were the same plus a
+// spawned execa child — so the trigger is narrower than either "a pending step timer" or
+// "a spawned child process" alone. The precise trigger is NOT established.
+//
+// Do not reason from that gap to "this exit path has no pending timer / spawned no
+// child, so process.exit() is safe here": that is exactly the reasoning that reintroduces
+// this crash, and the actual trigger is not known well enough to rule any path out.
+// process.exitCode plus letting main() resolve and the event loop drain naturally sets
+// the same exit code without forcing synchronous teardown, and has shown no crash in any
+// run since switching to it. Do not reintroduce process.exit() on any path here.
 main().catch((e) => { console.error(e); process.exitCode = 1 })

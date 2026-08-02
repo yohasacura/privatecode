@@ -1,11 +1,34 @@
-import { beforeAll, describe, expect, test } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { afterAll, beforeAll, describe, expect, test } from 'vitest'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import ts from 'typescript'
 import { Agent, type StepInfo, type StepStartInfo } from '../../src/agent/loop.js'
 import { LlamaClient } from '../../src/llama/client.js'
 import { Workspace } from '../../src/workspace.js'
 import { buildRegistry } from '../../src/tools/default-set.js'
+
+/**
+ * Compiles the (small, single-function) edited file and actually calls slugify, instead
+ * of grepping the source for a substring. `expect(after).toMatch(/replace\(/)` used to
+ * pass before the agent ran at all, because the ORIGINAL file already contains
+ * `replace(` — it proved nothing about whether the requested change landed. This proves
+ * the behavior: a model that "improves" the file in some other shape (a different regex,
+ * a different helper) still passes as long as slugify actually strips the characters the
+ * task asked for; a model that left slugify unchanged fails here even if it happened to
+ * add an unrelated `replace(` call elsewhere in the file.
+ */
+function loadSlugify(source: string): (title: string) => string {
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS },
+  })
+  const exports: { slugify?: (title: string) => string } = {}
+  new Function('exports', outputText)(exports)
+  if (typeof exports.slugify !== 'function') {
+    throw new Error(`src/slug.ts no longer exports a slugify function:\n${source}`)
+  }
+  return exports.slugify
+}
 
 const SERVER = process.env.PRIVATECODE_SERVER ?? 'http://127.0.0.1:8080'
 const enabled = process.env.PRIVATECODE_INTEGRATION === '1'
@@ -32,6 +55,14 @@ describe.runIf(enabled)('against the real Qwen3.6 server', () => {
     root = mkdtempSync(join(tmpdir(), 'pc-int-'))
     mkdirSync(join(root, 'src'))
     writeFileSync(join(root, 'src', 'slug.ts'), ORIGINAL_SLUG)
+  })
+
+  // Each run of this suite created its own %TEMP%\pc-int-* directory and never removed
+  // it, leaking one per invocation. force: true because this only needs to best-effort
+  // clean up a scratch directory, not fail the suite if something is still holding a
+  // handle open on it.
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true })
   })
 
   /**
@@ -96,8 +127,20 @@ describe.runIf(enabled)('against the real Qwen3.6 server', () => {
     const after = readFileSync(join(root, 'src', 'slug.ts'), 'utf8')
     console.log(`[edit] file after run:\n${after}`)
 
-    expect(after).toMatch(/replace\(/)
     expect(after).not.toBe(ORIGINAL_SLUG)
+
+    // Behavioral proof the requested change actually landed: strips characters that are
+    // not letters, digits or hyphens, after lowercasing. Deliberately not an exact-string
+    // match on the output — the task left the model free to choose its own regex/helper
+    // shape, and pinning one exact spelling would make this test load-bearing on style
+    // rather than on the outcome the task actually asked for.
+    const slugify = loadSlugify(after)
+    const slug = slugify('Hello, World! #1')
+    expect(slug).toMatch(/^[a-z0-9-]+$/)
+    expect(slug.toLowerCase()).toBe(slug)
+    expect(slug).not.toMatch(/[,!#]/)
+    expect(slug).toContain('hello')
+    expect(slug).toContain('world')
   })
 
   test('plan mode cannot write, because the tools are not offered',
