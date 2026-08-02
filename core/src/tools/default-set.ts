@@ -7,6 +7,7 @@ import { editFileTool } from './edit-file.js'
 import { writeFileTool } from './write-file.js'
 import { runCommandTool } from './run-command.js'
 import { BackgroundTasks, backgroundTaskTool } from './background-task.js'
+import { gitStatusTool } from './git-tool.js'
 
 export interface Toolset {
   registry: ToolRegistry
@@ -19,7 +20,7 @@ export function createToolset(): Toolset {
   const background = new BackgroundTasks()
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
                    editFileTool, writeFileTool, runCommandTool,
-                   backgroundTaskTool(background)]) {
+                   backgroundTaskTool(background), gitStatusTool]) {
     registry.register(t)
   }
   return { registry, background }
