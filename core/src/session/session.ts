@@ -75,6 +75,8 @@ export class Session {
   private titled: boolean
   /** Set by setMode(), consumed (and cleared) by the next send(). */
   private pendingModeNote: string | undefined
+  /** Guard against concurrent send() calls. persistedCount and pendingModeNote are not concurrency-safe. */
+  private sending = false
 
   constructor(opts: SessionOptions) {
     this.opts = opts
@@ -88,7 +90,8 @@ export class Session {
 
       // A transcript replayed against a different workspace tree would silently lie about
       // what it did and did not touch -- refuse rather than proceed.
-      if (resolve(meta.workspaceRoot) !== resolve(opts.workspaceRoot)) {
+      // NTFS case-insensitivity: two spellings of one directory must not read as different.
+      if (resolve(meta.workspaceRoot).toLowerCase() !== resolve(opts.workspaceRoot).toLowerCase()) {
         throw new Error(
           `session "${opts.resume}" belongs to workspace "${meta.workspaceRoot}", not ` +
           `"${opts.workspaceRoot}"; refusing to resume it against a different workspace`,
@@ -155,33 +158,48 @@ export class Session {
    * turn runs.
    */
   async send(text: string, signal?: AbortSignal): Promise<TurnResult> {
-    const note = this.pendingModeNote
-    this.pendingModeNote = undefined
-    const userText = note ? `${note}\n${text}` : text
-
-    const agent = this.buildAgent(signal)
-    const result = await agent.runTurn(userText)
-
-    if (!this.titled) {
-      this.meta.title = titleFrom(text)
-      this.titled = true
+    if (this.sending) {
+      throw new Error('a turn is already running in this session')
     }
-    this.meta.updatedAt = new Date().toISOString()
+    this.sending = true
+    try {
+      const note = this.pendingModeNote
+      this.pendingModeNote = undefined
+      const userText = note ? `${note}\n${text}` : text
 
-    const store = this.opts.store
-    if (store) {
-      // Slices from transcript.messages(), never held references: append() already
-      // deep-freezes its stored entries, so this is the read-only view, not a live alias.
-      const all = this.transcript.messages()
-      const fresh = all.slice(this.persistedCount)
-      if (fresh.length > 0) {
-        store.appendMessages(this.id, fresh)
-        this.persistedCount = all.length
+      const agent = this.buildAgent(signal)
+      const result = await agent.runTurn(userText)
+
+      // Early abort (signal already aborted before runTurn appended the user message):
+      // the note was consumed but never made it to the transcript. Restore it so it
+      // prefixes the next send(), allowing the mode change to eventually reach the model.
+      if (result.stoppedBecause === 'aborted' && result.steps === 0 && note !== undefined) {
+        this.pendingModeNote = note
       }
-      store.saveMeta(this.meta)
-    }
 
-    return result
+      if (!this.titled) {
+        this.meta.title = titleFrom(text)
+        this.titled = true
+      }
+      this.meta.updatedAt = new Date().toISOString()
+
+      const store = this.opts.store
+      if (store) {
+        // Slices from transcript.messages(), never held references: append() already
+        // deep-freezes its stored entries, so this is the read-only view, not a live alias.
+        const all = this.transcript.messages()
+        const fresh = all.slice(this.persistedCount)
+        if (fresh.length > 0) {
+          store.appendMessages(this.id, fresh)
+          this.persistedCount = all.length
+        }
+        store.saveMeta(this.meta)
+      }
+
+      return result
+    } finally {
+      this.sending = false
+    }
   }
 
   private buildAgent(signal?: AbortSignal): Agent {

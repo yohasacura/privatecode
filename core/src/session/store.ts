@@ -51,6 +51,22 @@ export class SessionStore {
   }
 
   /**
+   * Validates that a parsed object has all required SessionMeta fields with correct types.
+   * Returns a non-empty string describing the first missing/malformed field, or empty string
+   * if valid.
+   */
+  private validateMeta(parsed: unknown): string {
+    const obj = parsed as Partial<SessionMeta>
+    if (typeof obj.id !== 'string') return 'id'
+    if (typeof obj.title !== 'string') return 'title'
+    if (typeof obj.createdAt !== 'string') return 'createdAt'
+    if (typeof obj.updatedAt !== 'string') return 'updatedAt'
+    if (typeof obj.workspaceRoot !== 'string') return 'workspaceRoot'
+    if (typeof obj.mode !== 'string') return 'mode'
+    return ''
+  }
+
+  /**
    * Every session's metadata, most-recently-updated first. A `*.meta.json` that fails to
    * read, fails to parse, or is missing a required field is skipped and recorded in
    * `problems` instead of aborting the whole listing -- one damaged file must not hide
@@ -64,15 +80,9 @@ export class SessionStore {
     for (const name of readdirSync(this.dir)) {
       if (!name.endsWith('.meta.json')) continue
       try {
-        const parsed = JSON.parse(readFileSync(join(this.dir, name), 'utf8')) as Partial<SessionMeta>
-        if (
-          typeof parsed.id !== 'string' ||
-          typeof parsed.title !== 'string' ||
-          typeof parsed.createdAt !== 'string' ||
-          typeof parsed.updatedAt !== 'string' ||
-          typeof parsed.workspaceRoot !== 'string' ||
-          typeof parsed.mode !== 'string'
-        ) {
+        const parsed = JSON.parse(readFileSync(join(this.dir, name), 'utf8'))
+        const invalid = this.validateMeta(parsed)
+        if (invalid) {
           this.problems.push(`${name}: missing or malformed session metadata fields, skipped`)
           continue
         }
@@ -102,8 +112,18 @@ export class SessionStore {
     }
     let meta: SessionMeta
     try {
-      meta = JSON.parse(readFileSync(metaFile, 'utf8')) as SessionMeta
+      const parsed = JSON.parse(readFileSync(metaFile, 'utf8'))
+      const invalid = this.validateMeta(parsed)
+      if (invalid) {
+        throw new Error(
+          `session ${id} has a corrupt meta file (${invalid}); delete ${metaFile} to discard it`,
+        )
+      }
+      meta = parsed as SessionMeta
     } catch (e) {
+      if (e instanceof Error && e.message.includes('corrupt meta file')) {
+        throw e
+      }
       throw new Error(
         `session "${id}" metadata is corrupt (${metaFile}): ${e instanceof Error ? e.message : String(e)}`,
       )
