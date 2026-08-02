@@ -13,9 +13,13 @@ export interface ToolResult {
 
 export type Validation<A> = { ok: true; args: A } | { ok: false; error: string }
 
+/** What the permission engine matches rules against. Built by the tool itself. */
 export interface PermissionKey {
   tool: string
-  [key: string]: unknown
+  /** For command-running tools: the exact command line. */
+  command?: string
+  /** For file tools: workspace-relative paths this call touches. */
+  paths?: string[]
 }
 
 export interface ApprovalPreview {
