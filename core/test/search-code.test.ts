@@ -327,6 +327,42 @@ test('ignores RIPGREP_CONFIG_PATH from the ambient environment', async () => {
   })
 })
 
+/**
+ * Critical 1 regression. Real ripgrep exits 1 with non-empty stderr for a workspace whose
+ * `.gitignore` has a malformed line: the parse error is a warning, not a failure, and does
+ * not set an error exit code. Treating any exit-1-with-stderr as "this is not really
+ * ripgrep" makes that ordinary warning indistinguishable from a broken binary, so "no
+ * matches" becomes unreachable on any repo with a malformed .gitignore, .ignore or
+ * .rgignore line - confirmed directly against the vendored binary: `rg --regexp
+ * zzz_absent_zzz .` over a workspace whose only `.gitignore` line is `[` exits 1 and prints
+ * `rg: .\.gitignore: line 1: error parsing glob '[': unclosed character class; missing
+ * ']'` on stderr, with empty stdout.
+ */
+test('reports "no matches" with a warning when the only stderr is a malformed .gitignore line', async () => {
+  await withWorkspace(async (dir, c) => {
+    writeFileSync(join(dir, 'a.ts'), 'hello world\n')
+    writeFileSync(join(dir, '.gitignore'), '[\n')
+    const r = await searchCodeTool.execute({ pattern: 'zzz_absent_zzz' }, c)
+    expect(r.ok).toBe(true)
+    expect(r.content).toMatch(/no matches/i)
+    expect(r.content).toMatch(/warning/i)
+    expect(r.content).toMatch(/gitignore/i)
+  })
+})
+
+/** Critical 1 regression, other direction: the same malformed ignore file must not swallow real matches. */
+test('still returns real matches, with the same warning, when the .gitignore is malformed', async () => {
+  await withWorkspace(async (dir, c) => {
+    writeFileSync(join(dir, 'a.ts'), 'hello world\n')
+    writeFileSync(join(dir, '.gitignore'), '[\n')
+    const r = await searchCodeTool.execute({ pattern: 'hello' }, c)
+    expect(r.ok).toBe(true)
+    expect(r.content).toMatch(/a\.ts:1:hello world/)
+    expect(r.content).toMatch(/warning/i)
+    expect(r.content).toMatch(/gitignore/i)
+  })
+})
+
 /** Minor 6. */
 test('does not claim truncation when exactly max_results matches exist', async () => {
   await withWorkspace(async (dir, c) => {

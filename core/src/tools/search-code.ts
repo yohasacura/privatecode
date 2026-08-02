@@ -270,12 +270,46 @@ function summariseStderr(stderr: string): string {
   return text.length <= MAX_WARNING_CHARS ? text : `${text.slice(0, MAX_WARNING_CHARS)}...`
 }
 
+/**
+ * Every diagnostic line ripgrep itself writes - including a warning, such as an
+ * ignore-file parse error, that does not set an error exit code - is prefixed `rg: `.
+ * Verified directly against the vendored binary: a workspace whose only `.gitignore` line
+ * is `[` makes a real search exit 1 with `rg: .\.gitignore: line 1: error parsing glob
+ * '[': unclosed character class; missing ']'` on stderr and nothing on stdout. Exit 1
+ * with non-empty stderr is therefore not, by itself, proof the resolved binary isn't
+ * ripgrep - it is ripgrep's own ordinary shape for "nothing found, but here is a warning".
+ *
+ * What *is* proof is a line that does not carry the prefix, because nothing that answers
+ * `--version` the way ripgrep does would otherwise write to stderr on a bare "no matches"
+ * run. Every impostor shape measured produces exactly that: a shell error routed through
+ * `cmd.exe` ("'C:\...' is not recognized as an internal or external command", "'this' is
+ * not recognized...") or a real-but-wrong executable's own error text ("sethostname: Use
+ * the ...") - none of which start with `rg: `.
+ */
+function hasNonRipgrepStderr(stderr: string): boolean {
+  return stderr
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '')
+    .some((l) => !l.startsWith('rg:'))
+}
+
+/** Minor 3: the same bounded suffix ripgrep's own warnings get on the exit-2 (partial
+ * error) path, attached whenever ripgrep wrote diagnostics, on whichever successful exit
+ * code it used. Before this, stderr was discarded entirely on exit 0 and exit 1, so a
+ * malformed `.gitignore` produced real matches - or a genuine "no matches" - with no hint
+ * that part of the ignore configuration had failed to parse. */
+function warningSuffix(stderr: string): string {
+  return stderr ? `\n(warning: ${summariseStderr(stderr)})` : ''
+}
+
 export const searchCodeTool: Tool<SearchCodeArgs> = {
   name: 'search_code',
   description:
     'Search the workspace with a regular expression (ripgrep). Returns file:line:text, ' +
     'ordered by path. This is the primary way to locate code; it is exact and never ' +
-    'stale. Very long lines are truncated.',
+    'stale. Very long lines are truncated, and on a truncated line the text that matched ' +
+    'the pattern may itself have been cut and so may not appear in what is returned.',
   parameters: {
     type: 'object',
     properties: {
@@ -400,14 +434,17 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
           'the search cannot be trusted' + (stderr ? `: ${summariseStderr(stderr)}` : ''),
       }
     }
-    if (exitCode === 1 && stderr !== '') {
+    if (exitCode === 1 && hasNonRipgrepStderr(stderr)) {
       return {
         ok: false,
         // Deliberately avoids the words "no matches": that phrase is what a successful
-        // empty search says, and callers (including this suite) key on it.
+        // empty search says, and callers (including this suite) key on it. Only reached
+        // when some stderr line lacks ripgrep's own `rg: ` prefix - a genuine ripgrep
+        // warning (e.g. a malformed ignore-file line) exits 1 with prefixed stderr and
+        // falls through to the ordinary "no matches" path below, warning attached.
         content:
-          'search_code failed: ripgrep exited 1 (nothing found) but wrote to stderr, so ' +
-          `the search did not run as asked: ${summariseStderr(stderr)}`,
+          'search_code failed: ripgrep exited 1 (nothing found) but wrote to stderr that ' +
+          `is not one of its own diagnostics, so the search did not run as asked: ${summariseStderr(stderr)}`,
       }
     }
 
@@ -428,13 +465,12 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
     }
 
     if (lines.length === 0) {
-      return { ok: true, content: `No matches for /${args.pattern}/` }
+      return { ok: true, content: `No matches for /${args.pattern}/${warningSuffix(stderr)}` }
     }
 
     // Computed from the pre-slice count: `>=` claimed truncation whenever exactly `max`
     // matches existed, which is the common case for a small max_results.
     const capped = lines.length > max ? `\n(stopped at ${max} ${max === 1 ? 'match' : 'matches'})` : ''
-    const warning = exitCode === 2 ? `\n(warning: ripgrep could not search everything: ${summariseStderr(stderr)})` : ''
-    return { ok: true, content: lines.slice(0, max).map(truncateLine).join('\n') + capped + warning }
+    return { ok: true, content: lines.slice(0, max).map(truncateLine).join('\n') + capped + warningSuffix(stderr) }
   },
 }
