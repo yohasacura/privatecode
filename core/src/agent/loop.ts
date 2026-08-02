@@ -62,6 +62,10 @@ export interface AgentOptions {
    * constraint grammar from exactly that list. The loop also refuses a call to anything
    * outside the list before executing it, because plan mode is a user-facing safety
    * guarantee and must not rest solely on a remote server's grammar.
+   *
+   * In `mode: 'plan'` this is a ceiling, not a grant: the constructor always narrows it
+   * (or, if omitted, sets it) to the registry's `readOnlyNames()`. There is no way to
+   * pass a mutating tool through in plan mode by naming it here.
    */
   allowedTools?: string[]
   mode?: 'normal' | 'plan'
@@ -129,15 +133,29 @@ export class Agent {
   readonly transcript: Transcript
 
   constructor(opts: AgentOptions) {
+    const mode = opts.mode ?? 'normal'
     // Defaults must come AFTER the spread: an explicitly-undefined property would
     // otherwise overwrite them.
     this.opts = {
       ...opts,
       maxSteps: opts.maxSteps ?? 40,
       maxTokensPerStep: opts.maxTokensPerStep ?? 4000,
-      mode: opts.mode ?? 'normal',
+      mode,
       stepTimeoutMs: opts.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS,
       toolChoice: opts.toolChoice ?? 'auto',
+    }
+    // Plan mode's "no editing tools are available to you at all" (prompt.ts) is a promise
+    // to the user, not a hint to the model, and it must not depend on every call site
+    // remembering to pass allowedTools. So it is not the caller's to get right: whatever
+    // was passed is narrowed to the registry's own readOnly declarations, and when
+    // nothing was passed the readOnly set becomes the whole list. A caller cannot widen
+    // plan mode past what the registry itself calls safe, and forgetting allowedTools
+    // entirely (the defect a reviewer found) is no longer able to open anything.
+    if (mode === 'plan') {
+      const readOnly = opts.registry.readOnlyNames()
+      this.opts.allowedTools = opts.allowedTools
+        ? opts.allowedTools.filter((n) => readOnly.includes(n))
+        : readOnly
     }
     this.transcript = opts.transcript ?? new Transcript()
     if (this.transcript.messages().length === 0) {

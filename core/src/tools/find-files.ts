@@ -67,6 +67,7 @@ function patternProblem(pattern: string): string | null {
 
 export const findFilesTool: Tool<FindFilesArgs> = {
   name: 'find_files',
+  readOnly: true,
   description: 'Find files by glob pattern, for example "src/**/*.ts". Directories are not returned.',
   parameters: {
     type: 'object',

@@ -10,6 +10,7 @@ const ctx = { workspace: new Workspace(mkdtempSync(join(tmpdir(), 'pc-reg-'))) }
 
 const echo: Tool<{ text: string }> = {
   name: 'echo',
+  readOnly: true,
   description: 'Echo text back.',
   parameters: {
     type: 'object',
@@ -43,6 +44,17 @@ test('can emit a subset of schemas', () => {
   reg.register(echo)
   reg.register({ ...echo, name: 'echo2' })
   expect(reg.schemas(['echo2']).map((s) => s.function.name)).toEqual(['echo2'])
+})
+
+// readOnlyNames() is the sole basis Agent uses to derive plan mode's tool list, so it
+// must reflect exactly what each tool declares about itself, not registration order or
+// count.
+test('readOnlyNames reports only tools that declare readOnly: true', () => {
+  const reg = new ToolRegistry()
+  reg.register(echo)
+  reg.register({ ...echo, name: 'writer', readOnly: false })
+  reg.register({ ...echo, name: 'echo2' })
+  expect(reg.readOnlyNames().sort()).toEqual(['echo', 'echo2'])
 })
 
 test('runs a valid call', async () => {
@@ -80,6 +92,7 @@ test('converts a throwing validate() to a failed ToolResult', async () => {
   const reg = new ToolRegistry()
   const throwingTool: Tool<{ value: string }> = {
     name: 'thrower',
+    readOnly: true,
     description: 'A tool whose validate() throws.',
     parameters: { type: 'object', properties: { value: { type: 'string' } } },
     validate(raw) {
@@ -111,6 +124,7 @@ test('handles validate() returning undefined without throwing', async () => {
   // where a missing return statement causes the function to fall through.
   const undefinedReturnerTool = {
     name: 'undefReturner',
+    readOnly: true,
     description: 'A tool whose validate() returns undefined on one branch.',
     parameters: { type: 'object', properties: { text: { type: 'string' } } },
     validate(raw: unknown) {

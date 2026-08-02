@@ -20,6 +20,7 @@ export interface ListDirArgs { path: string }
 
 export const listDirTool: Tool<ListDirArgs> = {
   name: 'list_dir',
+  readOnly: true,
   description: 'List the entries of a directory in the workspace. Directories end with "/".',
   parameters: {
     type: 'object',

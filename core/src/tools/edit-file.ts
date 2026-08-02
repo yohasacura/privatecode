@@ -166,6 +166,7 @@ function renderDiff(before: string, after: string, path: string): string {
 
 export const editFileTool: Tool<EditFileArgs> = {
   name: 'edit_file',
+  readOnly: false,
   description:
     'Replace an exact fragment of a file. search_text must be copied verbatim from the ' +
     'file and must identify exactly one place — include surrounding lines if it would ' +

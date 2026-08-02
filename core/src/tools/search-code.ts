@@ -311,6 +311,7 @@ function warningSuffix(stderr: string): string {
 
 export const searchCodeTool: Tool<SearchCodeArgs> = {
   name: 'search_code',
+  readOnly: true,
   description:
     'Search the workspace with a regular expression (ripgrep). Returns file:line:text, ' +
     'ordered by path. This is the primary way to locate code; it is exact and never ' +

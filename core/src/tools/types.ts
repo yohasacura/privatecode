@@ -19,6 +19,16 @@ export interface Tool<A> {
   /** JSON Schema for the arguments; llama.cpp turns this into a constraint grammar. */
   parameters: Record<string, unknown>
   /**
+   * True if this tool cannot change the workspace, or anything else, no matter what
+   * arguments it is called with. This is the sole source of truth for what plan mode may
+   * offer: `Agent` derives its plan-mode tool list from this flag via
+   * `ToolRegistry.readOnlyNames()` rather than trusting a separately-maintained name list,
+   * so a tool that forgets to declare itself does not silently become plan-safe (the
+   * field is required, so leaving it out is a compile error) and a plan-mode caller
+   * cannot forget to restrict the tool list (there is nothing for it to remember).
+   */
+  readOnly: boolean
+  /**
    * Semantic validation. The schema grammar already guarantees well-formed JSON and the
    * right types; this catches arguments that are valid and still useless, such as an
    * empty search_text.

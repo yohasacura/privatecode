@@ -24,6 +24,7 @@ beforeEach(() => { pingCalls = 0; boomCalls = 0 })
 
 const ping: Tool<{ value: string }> = {
   name: 'ping',
+  readOnly: true,
   description: 'ping',
   parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
   validate: (raw) => {
@@ -38,6 +39,7 @@ const ping: Tool<{ value: string }> = {
 /** Stands in for a write tool: running it at all is the damage. */
 const boom: Tool<Record<string, never>> = {
   name: 'boom',
+  readOnly: false,
   description: 'has a side effect',
   parameters: { type: 'object', properties: {} },
   validate: () => ({ ok: true, args: {} }),
@@ -354,6 +356,64 @@ test('a tool outside allowedTools is refused before it runs', async () => {
   const toolMessage = fake.requests[1].body.messages.find((m: any) => m.role === 'tool')
   expect(toolMessage.name).toBe('boom')
   expect(toolMessage.content).toMatch(/not available/i)
+})
+
+// ---------------------------------------------------------------------------
+// Plan mode cannot be constructed unsafely
+//
+// A reviewer demonstrated that `mode: 'plan'` alone restricted nothing: only
+// `allowedTools` filtered the schemas and gated the runtime backstop, and nothing forced
+// a plan-mode caller to pass it. These pin the fix: the constructor derives the
+// restriction itself from the registry's `readOnly` declarations, so there is no call
+// site left that can omit, forget, or widen it.
+// ---------------------------------------------------------------------------
+
+test('mode: "plan" alone, with no allowedTools passed, still refuses a mutating tool', async () => {
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    return n === 1 ? toolCallResponse('boom', '{}') : textResponse('understood')
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url, { mode: 'plan' })
+
+  await agent.runTurn('please edit something')
+
+  expect(boomCalls).toBe(0)
+  const toolMessage = fake.requests[1].body.messages.find((m: any) => m.role === 'tool')
+  expect(toolMessage.name).toBe('boom')
+  expect(toolMessage.content).toMatch(/not available/i)
+})
+
+// The schema-level defence matters as much as the runtime refusal: llama.cpp builds its
+// constraint grammar from what is offered, so a mutating tool must never even be listed.
+test('mode: "plan" alone never offers a mutating tool\'s schema to the model', async () => {
+  const fake = await startFakeServer(() => textResponse('done'))
+  stop = fake.close
+  const agent = makeAgent(fake.url, { mode: 'plan' })
+
+  await agent.runTurn('look around')
+
+  const names = fake.requests[0].body.tools.map((t: any) => t.function.name)
+  expect(names).toEqual(['ping'])
+})
+
+// A caller cannot widen plan mode by naming a mutating tool explicitly either: the
+// registry's readOnly declarations are a ceiling, not a grant.
+test('plan mode narrows an explicit allowedTools list down to its readOnly members', async () => {
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    return n === 1 ? toolCallResponse('boom', '{}') : textResponse('understood')
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url, { mode: 'plan', allowedTools: ['ping', 'boom'] })
+
+  await agent.runTurn('please edit something')
+
+  expect(boomCalls).toBe(0)
+  const names = fake.requests[0].body.tools.map((t: any) => t.function.name)
+  expect(names).toEqual(['ping'])
 })
 
 // ---------------------------------------------------------------------------

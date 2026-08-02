@@ -25,6 +25,7 @@ function describeBytes(bytes: number): string {
 
 export const writeFileTool: Tool<WriteFileArgs> = {
   name: 'write_file',
+  readOnly: false,
   description:
     'Create a new file, or overwrite one completely. Use edit_file for changes to an ' +
     'existing file — rewriting a whole file costs many times more output tokens.',

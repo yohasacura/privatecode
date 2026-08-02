@@ -14,6 +14,15 @@ export class ToolRegistry {
   }
 
   /**
+   * Names of registered tools that declare `readOnly: true`. The sole basis `Agent` uses
+   * to restrict plan mode: this reads the tools' own declarations rather than a parallel
+   * list a caller has to keep in sync by hand.
+   */
+  readOnlyNames(): string[] {
+    return [...this.tools.values()].filter((t) => t.readOnly).map((t) => t.name)
+  }
+
+  /**
    * Schemas to send to the model. Passing a subset is how modes are enforced: llama.cpp
    * builds its constraint grammar from exactly this list, so a tool that is not in it is
    * unreachable rather than merely discouraged.

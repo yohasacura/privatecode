@@ -72,6 +72,7 @@ function splitLines(text: string): string[] {
 
 export const readFileTool: Tool<ReadFileArgs> = {
   name: 'read_file',
+  readOnly: true,
   description:
     'Read a text file from the workspace. Returns lines numbered from 1, at most ' +
     `${MAX_LINES} lines and ${MAX_CHARS} characters per call. Prefer a line range over ` +
