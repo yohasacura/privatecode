@@ -88,7 +88,7 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 
 | area | decision | rationale |
 |---|---|---|
-| **form factor** | standalone desktop app, not a VS Code extension | user requirement |
+| **form factor** | ~~standalone desktop app~~ → **VS Code extension** (reversed 2026-08-03 after using the built app: every UI complaint was about re-implementing IDE furniture worse than the IDE does). The engine is unchanged; the IDE supplies tree, diffs, settings, dialogs. See `docs/superpowers/plans/2026-08-03-vscode-extension.md` | user requirement, then user reversal on evidence |
 | **stack** | Tauri 2 — Rust shell (window, fs, process spawning) + **TypeScript agent core** | ~70 MB RAM vs Electron's ~400; WebView2 already ships with Win11; the agent logic stays in the language Qwen writes best, so the model can maintain its own tool |
 | **dev / build** | both on the GPU laptop; only the built `.exe` is copied to the work laptop | keeps the weak machine free of toolchains. Build while the server is stopped — Rust saturates all cores |
 | **toolchain to install** | Rust + Node (~2 GB, one-time, then fully offline) | not currently present; .NET, git, ripgrep, Python 3.14 already are |

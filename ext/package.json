@@ -44,6 +44,11 @@
           ],
           "default": "normal",
           "markdownDescription": "Default permission mode. `normal` asks before edits and commands, `plan` is read-only, `auto-edit` allows edits but asks for commands, `autopilot` acts unattended."
+        },
+        "privatecode.devSmokeQuery": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Testing hook: when set, the chat view opens with this prompt already submitted at startup. Leave empty for normal use."
         }
       }
     },
@@ -51,12 +56,17 @@
       {
         "command": "privatecode.showLog",
         "title": "PrivateCode: Show Log"
+      },
+      {
+        "command": "privatecode.pickMode",
+        "title": "PrivateCode: Change Mode"
       }
     ]
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
-    "package": "npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository -o privatecode.vsix"
+    "build": "node scripts/stage-vendor.mjs && node scripts/build.mjs",
+    "package": "npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository -o privatecode.vsix",
+    "stage": "node scripts/stage-vendor.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
