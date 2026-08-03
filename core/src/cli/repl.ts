@@ -40,11 +40,29 @@ const HELP_TEXT =
   'Anything else is sent to the model. Esc or Ctrl+C aborts a turn in progress; ' +
   'Ctrl+C twice at this prompt exits.\n'
 
-function formatContextLine(approxTokens: number, contextLength: number | undefined): string {
+/**
+ * The REPL's post-turn "context ..." status segment, as a pure function of the numbers
+ * involved -- extracted so a smoke script can drive it directly without a live server.
+ *
+ * Prefers the real, server-reported number: when `promptTokens` is known (non-null) AND
+ * `contextLength` was learned at startup, renders `Nk/Nk (P%)` off the actual usage.
+ * Otherwise falls back to the old character-count heuristic, `approxTokens`, labelled
+ * `(approx)` so it is never mistaken for the real figure.
+ */
+export function formatContextLine(
+  promptTokens: number | null,
+  contextLength: number | undefined,
+  approxTokens: number,
+): string {
+  if (promptTokens !== null && contextLength !== undefined) {
+    const pct = Math.round((promptTokens / contextLength) * 100)
+    return `context ${(promptTokens / 1000).toFixed(1)}k/${(contextLength / 1000).toFixed(1)}k (${pct}%)`
+  }
   const used = `~${Math.round(approxTokens / 1000)}k`
-  return contextLength === undefined
-    ? `${used} tokens used`
+  const base = contextLength === undefined
+    ? `${used} tokens`
     : `${used}/${Math.round(contextLength / 1000)}k tokens`
+  return `context ${base} (approx)`
 }
 
 /**
@@ -401,7 +419,8 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     if (stats.totalTokens > 0 && stats.totalSeconds > 0) {
       parts.push(`${(stats.totalTokens / stats.totalSeconds).toFixed(0)} tok/s`)
     }
-    parts.push(`context ${formatContextLine(session.approxTokens(), contextLength)}`)
+    const usage = session.contextUsage()
+    parts.push(formatContextLine(usage.promptTokens, contextLength, usage.approxTokens))
     process.stdout.write(`${parts.join(' · ')}\n`)
 
     if (questionCancelled && result.stoppedBecause === 'aborted') {

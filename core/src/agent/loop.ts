@@ -52,6 +52,13 @@ export interface StepInfo {
   step: number
   seconds: number
   completionTokens?: number
+  /**
+   * The server's own count of this step's prompt (input) tokens -- the newest one is the
+   * best available estimate of the whole transcript's current size, since it already
+   * includes everything the model was actually shown, prior completions included. Used by
+   * `Session.contextUsage()`/`fillRatio()` for real (non-heuristic) context accounting.
+   */
+  promptTokens?: number
   tokensPerSecond?: number
   continued: boolean
 }
@@ -403,6 +410,8 @@ export class Agent {
         seconds: (performance.now() - started) / 1000,
         ...(last?.usage?.completion_tokens !== undefined
           ? { completionTokens: last.usage.completion_tokens } : {}),
+        ...(last?.usage?.prompt_tokens !== undefined
+          ? { promptTokens: last.usage.prompt_tokens } : {}),
         ...(last?.timings?.predicted_per_second !== undefined
           ? { tokensPerSecond: last.timings.predicted_per_second } : {}),
         continued,

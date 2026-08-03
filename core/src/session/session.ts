@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
-import { Agent, type AgentEvents, type AgentOptions, type TurnResult } from '../agent/loop.js'
+import { Agent, type AgentEvents, type AgentOptions, type StepInfo, type TurnResult } from '../agent/loop.js'
 import type { InteractionPort } from '../interaction.js'
 import type { LlamaClient } from '../llama/client.js'
 import type { AgentMode, PermissionEngine } from '../permissions/engine.js'
@@ -77,6 +77,15 @@ export class Session {
   private pendingModeNote: string | undefined
   /** Guard against concurrent send() calls. persistedCount and pendingModeNote are not concurrency-safe. */
   private sending = false
+  /** The newest server-reported `usage.prompt_tokens`, from the latest completed step
+   * across the session's whole life (not just the current turn). `null` until the first
+   * step of the first turn completes. See `contextUsage()`. */
+  private latestPromptTokens: number | null = null
+  /** Running total of `usage.completion_tokens` across every completed step this session
+   * has ever run. Recorded per the Task 7 brief; not yet exposed on its own -- `fillRatio`
+   * intentionally uses `latestPromptTokens` alone (the next step's prompt size already
+   * includes every prior completion), so this total is here for a later consumer. */
+  private cumulativeCompletionTokens = 0
 
   constructor(opts: SessionOptions) {
     this.opts = opts
@@ -150,6 +159,54 @@ export class Session {
 
   approxTokens(): number {
     return this.transcript.approxTokens()
+  }
+
+  /**
+   * Real usage numbers where available, alongside the always-on heuristic.
+   *
+   * `promptTokens` is the newest server-reported prompt size (the latest completed step's
+   * `usage.prompt_tokens`, tapped off the agent's own events -- see `composeEvents`), and
+   * is `null` until the first step of the first turn completes; `approxTokens` is the
+   * existing character-count heuristic over the transcript, which is always available
+   * (including before the first step) and never null.
+   */
+  contextUsage(): { promptTokens: number | null; approxTokens: number } {
+    return { promptTokens: this.latestPromptTokens, approxTokens: this.approxTokens() }
+  }
+
+  /**
+   * How full the model's context window is, as a fraction of `contextLength`, or `null`
+   * before the first step (mirroring `contextUsage().promptTokens`).
+   *
+   * Deliberately just `promptTokens / contextLength`, not `promptTokens + this turn's
+   * completion so far`: the *next* step's own prompt size already includes every
+   * completion the model has produced up to that point, so adding completion tokens on
+   * top here would double-count them. This is also Task 9's compaction trigger input; it
+   * does not special-case a mode-note or a compaction having just run (Task 9's own
+   * concern, not this one's).
+   */
+  fillRatio(contextLength: number): number | null {
+    if (this.latestPromptTokens === null) return null
+    return this.latestPromptTokens / contextLength
+  }
+
+  /**
+   * Builds the `AgentEvents` actually handed to `Agent`: the host's own events (if any),
+   * composed with -- never replaced by -- an internal tap on `onStepDone` that records
+   * `contextUsage()`'s inputs. Every other host handler (onThinking, onToolCall, ...)
+   * passes through completely untouched; only `onStepDone` is wrapped, and the wrapped
+   * version always calls the host's own `onStepDone` too (when one was given), so a host
+   * renderer -- e.g. the REPL's per-step timing line -- keeps firing exactly as before.
+   */
+  private composeEvents(host: AgentEvents | undefined): AgentEvents {
+    const captureStepDone = (info: StepInfo): void => {
+      if (info.promptTokens !== undefined) this.latestPromptTokens = info.promptTokens
+      if (info.completionTokens !== undefined) {
+        this.cumulativeCompletionTokens += info.completionTokens
+      }
+      host?.onStepDone?.(info)
+    }
+    return { ...host, onStepDone: captureStepDone }
   }
 
   /**
@@ -232,7 +289,10 @@ export class Session {
       agentOpts.mode = this.meta.mode
     }
     if (this.opts.interaction) agentOpts.interaction = this.opts.interaction
-    if (this.opts.events) agentOpts.events = this.opts.events
+    // Always composed, even when no host events were supplied: Session must keep tapping
+    // onStepDone for contextUsage()/fillRatio() on every turn, host renderer or not (a
+    // one-shot CLI call, or a test, may never pass `events` at all).
+    agentOpts.events = this.composeEvents(this.opts.events)
     if (this.opts.maxSteps !== undefined) agentOpts.maxSteps = this.opts.maxSteps
     if (signal) agentOpts.signal = signal
 
