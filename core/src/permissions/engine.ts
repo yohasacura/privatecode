@@ -239,9 +239,27 @@ export class PermissionEngine {
 
     switch (this.mode) {
       case 'plan':
-        // Agent already restricts the offered tools to read-only in plan mode; the engine
-        // never sees a write tool here, and if it somehow does, the loop's allowedTools
-        // refusal fires first.
+        // Fails closed here rather than trusting the Agent's construction-time narrowing.
+        //
+        // The old comment said "the engine never sees a write tool here, and if it somehow
+        // does, the loop's allowedTools refusal fires first". Both halves hold only for an
+        // Agent CONSTRUCTED in plan mode, and a mid-turn switch guarantees it was not:
+        // `Agent` resolves its mode once, in the constructor (loop.ts), and only then
+        // narrows `allowedTools`; `engine.mode` is a mutable field re-read on every
+        // decide(). So a turn started in `normal` (allowedTools undefined, loop.ts's
+        // refusal inert) that had `setMode('plan')` applied to it mid-flight met an engine
+        // that auto-allowed every write and command for the rest of the turn -- clicking
+        // the read-only mode made the agent strictly MORE permissive than the one it
+        // replaced. That is exactly the desync the constructor's own comment describes
+        // having fixed for the construction path, reintroduced at runtime.
+        //
+        // This arm is inert in correct plan operation: every member of both sets declares
+        // `readOnly: false`, so `registry.readOnlyNames()` never offers one to a
+        // plan-mode Agent and decide() is never reached for it. It fires only in the
+        // desync case, which is precisely when something must.
+        if (FILE_WRITE_TOOLS.has(key.tool) || EXEC_TOOLS.has(key.tool)) {
+          return { verdict: 'deny', reason: 'plan mode is read-only', source: 'mode' }
+        }
         return { verdict: 'allow', reason: 'plan mode', source: 'mode' }
       case 'autopilot':
         return { verdict: 'allow', reason: 'autopilot mode', source: 'mode' }

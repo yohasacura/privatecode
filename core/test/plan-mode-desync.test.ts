@@ -1,0 +1,48 @@
+import { expect, test } from 'vitest'
+import { PermissionEngine } from '../src/permissions/engine.js'
+
+/**
+ * A turn built in one mode meeting an engine that was switched to `plan` underneath it.
+ *
+ * `Agent` resolves its mode ONCE, in its constructor, and only then narrows
+ * `allowedTools`; `PermissionEngine.mode` is a mutable field re-read on every `decide()`.
+ * `Session.setMode` mutates it with no in-flight guard, and the desktop app leaves the
+ * mode chips live during a turn. So a turn started in `normal` — `allowedTools` undefined,
+ * which makes the loop's own refusal inert — could have `plan` applied to it mid-flight
+ * and then meet a `modeDefault` that answered `allow` for everything.
+ *
+ * Clicking the mode labelled "Read-only. Investigates and proposes, changes nothing" made
+ * the agent strictly MORE permissive than the `normal` it replaced: every remaining edit,
+ * delete, move and shell command in that turn ran with no approval card at all.
+ */
+const root = 'C:\ws'
+
+test('plan mode denies writes and commands even when the Agent was built in another mode', () => {
+  const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })
+  // Exactly what Session.setMode does mid-turn: mutate the live engine.
+  engine.mode = 'plan'
+
+  for (const tool of ['write_file', 'edit_file', 'delete_file', 'move_file']) {
+    const d = engine.decide({ tool, paths: ['src/app.ts'] })
+    expect(d.verdict, `${tool} must not be auto-allowed by plan mode`).toBe('deny')
+  }
+  for (const tool of ['run_command', 'background_task']) {
+    const d = engine.decide({ tool, command: 'npm test' })
+    expect(d.verdict, `${tool} must not be auto-allowed by plan mode`).toBe('deny')
+  }
+})
+
+test('plan mode still allows read-only tools, and background_task control ops', () => {
+  const engine = new PermissionEngine({ layers: [], mode: 'plan', workspaceRoot: root })
+  expect(engine.decide({ tool: 'read_file', paths: ['a.ts'] }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'search_code' }).verdict).toBe('allow')
+  // Keyless EXEC key = poll/stop on a process whose start was already approved. It
+  // short-circuits before the mode switch and must stay allowed.
+  expect(engine.decide({ tool: 'background_task' }).verdict).toBe('allow')
+})
+
+test('normal mode still asks rather than denying, so the fix did not widen the deny tier', () => {
+  const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })
+  expect(engine.decide({ tool: 'write_file', paths: ['a.ts'] }).verdict).toBe('ask')
+  expect(engine.decide({ tool: 'run_command', command: 'npm test' }).verdict).toBe('ask')
+})
