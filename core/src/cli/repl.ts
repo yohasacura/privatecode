@@ -83,7 +83,11 @@ function startAbortListening(onAbort: () => void): () => void {
  */
 export async function runRepl(opts: ReplOptions): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
-  const turnRenderer = createEventRenderer()
+  // `stream: true` opts the REPL into live rendering; createEventRenderer itself narrows
+  // that to a no-op on non-TTY stdout (piped input, the smoke harness) -- see its doc
+  // comment. cli.ts's one-shot path calls createEventRenderer() with no options at all,
+  // so it stays on the old whole-blob behavior regardless of this REPL's choice.
+  const turnRenderer = createEventRenderer({ stream: true })
 
   let currentAbort: AbortController | undefined
   let stopAbortListening: (() => void) | undefined
@@ -128,6 +132,12 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       }
     },
     write(text: string): void {
+      // Approval/askUser/todos prompts all funnel through here -- clear any pending
+      // in-place status line first (see EventRenderer.clearStatusLine's doc comment). A
+      // prompt can only arrive between steps, so nothing else could still be streaming
+      // when this runs; the status line from the JUST-finished step's thinking is exactly
+      // what this guards against.
+      turnRenderer.clearStatusLine()
       process.stdout.write(text)
     },
   }
@@ -363,12 +373,20 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     try {
       result = await session.send(text, currentAbort.signal)
     } catch (e) {
+      // A genuine transport error can land here mid-stream (thinking/content deltas were
+      // still being rendered when the connection died) -- clear before this prints, same
+      // as every other site that can interleave with the in-place status line.
+      turnRenderer.clearStatusLine()
       process.stdout.write(turnErrorMessage(opts.server, e))
     } finally {
       stopAbortListening?.()
       stopAbortListening = undefined
       currentAbort = undefined
     }
+    // Covers the success path (including 'aborted': a mid-stream abort can leave the
+    // status line pending with no onThinking/onAssistantText left to clear it -- see
+    // onStepDone's comment in render.ts) -- a no-op if the catch above already cleared it.
+    turnRenderer.clearStatusLine()
     for (const p of turnEngine.problems.slice(problemsBefore)) {
       process.stdout.write(`settings: ${p}\n`)
     }
