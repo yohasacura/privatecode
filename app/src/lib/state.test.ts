@@ -123,7 +123,8 @@ describe('reduceChat: tool calls', () => {
 
     const done = reduceChat(opened, { type: 'tool.result', name: 'read_file', ok: true, content: 'line one\nline two' })
     expect(done.items).toEqual([
-      { kind: 'tool', id: 1, name: 'read_file', args: '{"path":"a.ts"}', result: { ok: true, preview: 'line one' } },
+      { kind: 'tool', id: 1, name: 'read_file', args: '{"path":"a.ts"}',
+        result: { ok: true, preview: 'line one', content: 'line one\nline two' } },
     ])
   })
 

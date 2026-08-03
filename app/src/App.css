@@ -358,3 +358,110 @@ html, body, #root {
 }
 .approval-allow { color: #7fbf7f; }
 .approval-deny { color: #d98787; }
+
+/* File tree (Task 7) */
+
+.tree-panel {
+  font-size: 0.86em;
+}
+
+.tree-row {
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 3px;
+}
+.tree-row:hover { background: #2d2d2d; }
+.tree-dir { color: #d0d0d0; }
+.tree-file { color: #a8c7e8; }
+.tree-icon { display: inline-block; width: 1em; color: #7a7a7a; }
+
+.tree-loading, .tree-error {
+  color: #7a7a7a;
+  font-style: italic;
+  font-size: 0.9em;
+}
+.tree-error { color: #d98787; cursor: pointer; }
+
+/* Diffs (Task 7) */
+
+.diffs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  font-size: 0.86em;
+}
+
+.diffs-pinned {
+  border: 1px solid #4a4a4a;
+  border-left: 3px solid #d29922;
+  border-radius: 4px;
+  padding: 0.4em;
+  background: #262626;
+}
+.diffs-pinned-label {
+  color: #d29922;
+  font-size: 0.85em;
+  margin-bottom: 0.3em;
+}
+
+.file-preview {
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  background: #1c1c1c;
+}
+.file-preview-header {
+  padding: 0.3em 0.5em;
+  background: #262626;
+  color: #9a9a9a;
+  font-size: 0.85em;
+  border-bottom: 1px solid #3a3a3a;
+}
+.file-preview-body {
+  margin: 0;
+  padding: 0.4em 0.5em;
+  max-height: 16em;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.85em;
+}
+
+.diffs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+
+.diff-entry {
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.diff-entry-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+  padding: 0.3em 0.5em;
+  background: #262626;
+  font-size: 0.85em;
+}
+.diff-entry-ok .diff-entry-icon { color: #3fb950; }
+.diff-entry-fail .diff-entry-icon { color: #f85149; }
+.diff-entry-path { color: #9a9a9a; overflow: hidden; text-overflow: ellipsis; }
+
+.diff-body {
+  margin: 0;
+  padding: 0.3em 0.5em;
+  background: #1c1c1c;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.82em;
+  max-height: 14em;
+  overflow: auto;
+}
+.diff-line { white-space: pre-wrap; word-break: break-word; }
+.diff-add { color: #7ee787; background: rgba(46, 160, 67, 0.15); }
+.diff-remove { color: #ff9492; background: rgba(248, 81, 73, 0.15); }
+.diff-context { color: #8a8a8a; }

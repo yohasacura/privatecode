@@ -27,7 +27,12 @@ export type ChatItem =
   | { kind: 'user'; id: number; text: string }
   | { kind: 'assistant'; id: number; text: string; interrupted: boolean }
   | { kind: 'thinking'; id: number; step: number; chars: number }
-  | { kind: 'tool'; id: number; name: string; args: string; result?: { ok: boolean; preview: string } }
+  /** `result.content` is the FULL, untruncated tool result string (Task 7's diffs panel
+   * needs the whole rendered diff, not the one-line `preview` this row itself displays --
+   * see diffs.tsx's `toDiffEntry`). Keeping both on the same item is one source of truth
+   * for "which result came back for which call" instead of a second, independent
+   * call/result correlation living in diffs.tsx. */
+  | { kind: 'tool'; id: number; name: string; args: string; result?: { ok: boolean; preview: string; content: string } }
   /** A `send`/`abort` RPC call itself came back an error reply (e.g. "a turn is already
    * running", "no active session") -- rendered as a one-line note rather than silently
    * dropped, which is what a naive `.catch(() => {})` would otherwise do. */
@@ -214,7 +219,9 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'tool.result': {
       const pending = lastPendingTool(state.items)
       if (!pending) return state // a result with no matching pending call is a no-op, not a crash
-      const updated: ChatItem = { ...pending, result: { ok: action.ok, preview: preview(action.content) } }
+      const updated: ChatItem = {
+        ...pending, result: { ok: action.ok, preview: preview(action.content), content: action.content },
+      }
       return { ...state, items: [...state.items.slice(0, -1), updated] }
     }
 

@@ -1,58 +1,39 @@
-import { useEffect, useReducer, useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import type { AgentMode } from '@core/permissions/engine'
 import type { ProtocolClient } from '../lib/client'
-import { type ChatItem, initialChatState, reduceChat } from '../lib/state'
+import type { ChatAction, ChatItem, ChatState } from '../lib/state'
 import { ApprovalCard, QuestionCard, TodosWidget } from './approvals'
 
 const MODES: readonly AgentMode[] = ['normal', 'plan', 'auto-edit', 'autopilot']
 
 /**
- * The chat panel (Plan 4 Tasks 5-6): message list (user/assistant/thinking/tool/approval-
+ * The chat panel (Plan 4 Tasks 5-7): message list (user/assistant/thinking/tool/approval-
  * record/question-record rows) over `lib/state.ts`'s pure reducer, an input row (Enter
  * sends, Shift+Enter newlines, Esc aborts), a mode selector, a todo checklist in the
  * header area, a turn-status row (step counter + timeout countdown, then step.done
  * numbers), and -- ABOVE the input row -- the approval/question card while one is pending
  * (see `approvals.tsx`).
  *
+ * `state`/`dispatch` are owned by `App.tsx` via `lib/use-chat-session.ts` (Task 7), not
+ * this component -- tree.tsx and diffs.tsx need the SAME tool.call/tool.result history,
+ * so the reducer moved up to where all three siblings can read it.
+ *
  * Dirty-tree checking for autopilot (a `git_status` host round-trip before the mode
  * actually takes effect) is explicitly deferred to Task 8's status-bar wiring, per the
  * plan brief -- this task's autopilot guard is ONLY the red styling + confirm click-through
  * described below, nothing that touches the workspace.
  */
-export function ChatPanel({ client }: { client: ProtocolClient }) {
-  const [state, dispatch] = useReducer(reduceChat, undefined, initialChatState)
+export function ChatPanel({
+  client, state, dispatch,
+}: {
+  client: ProtocolClient
+  state: ChatState
+  dispatch: (action: ChatAction) => void
+}) {
   const [input, setInput] = useState('')
   const [mode, setMode] = useState<AgentMode>('normal')
   const [pendingAutopilot, setPendingAutopilot] = useState(false)
   const [now, setNow] = useState(() => Date.now())
-
-  useEffect(() => {
-    const unsubs = [
-      client.on('step.start', (d) =>
-        dispatch({ type: 'step.start', step: d.step, timeoutMs: d.timeoutMs, startedAtMs: Date.now() })),
-      client.on('thinking.delta', (d) => dispatch({ type: 'thinking.delta', text: d.text })),
-      client.on('text.delta', (d) => dispatch({ type: 'text.delta', text: d.text })),
-      client.on('assistant.text', (d) => dispatch({ type: 'assistant.text', text: d.text })),
-      client.on('tool.call', (d) => dispatch({ type: 'tool.call', name: d.name, args: d.args })),
-      client.on('tool.result', (d) => dispatch({ type: 'tool.result', name: d.name, ok: d.ok, content: d.content })),
-      client.on('step.done', (d) => dispatch({
-        type: 'step.done',
-        step: d.step,
-        seconds: d.seconds,
-        ...(d.tokensPerSecond !== undefined ? { tokensPerSecond: d.tokensPerSecond } : {}),
-      })),
-      client.on('turn.done', (d) => dispatch({ type: 'turn.done', stoppedBecause: d.stoppedBecause })),
-      client.on('approval.request', (d) => dispatch({
-        type: 'approval.request', requestId: d.requestId, tool: d.tool, summary: d.summary,
-        detail: d.detail, suggestedRules: d.suggestedRules,
-      })),
-      client.on('question.request', (d) => dispatch({
-        type: 'question.request', requestId: d.requestId, question: d.question, options: d.options,
-      })),
-      client.on('todos', (d) => dispatch({ type: 'todos', items: d.items })),
-    ]
-    return () => { for (const u of unsubs) u() }
-  }, [client])
 
   // Countdown ticker: only runs while a turn is actually in flight, so an idle panel does
   // not re-render on a timer for no reason.
