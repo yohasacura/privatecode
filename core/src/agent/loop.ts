@@ -61,6 +61,17 @@ export interface AgentEvents {
   onStepStart?(info: StepStartInfo): void
   onThinking?(text: string): void
   /**
+   * Incremental reasoning text, fired as the server streams it. Only ever fires when
+   * either this or `onTextDelta` is present on `events` — that presence is what switches
+   * the underlying call from `chat()` to `chatStream()`. `onThinking` above still fires
+   * once, with the whole assembled blob, after the step's call(s) finish; a host that
+   * wires both gets incremental text during generation and the same final callback it
+   * always got.
+   */
+  onThinkingDelta?(text: string): void
+  /** Incremental visible-text equivalent of `onThinkingDelta`; see there for when it fires. */
+  onTextDelta?(text: string): void
+  /**
    * The step ran out of room mid-thought and a forced continuation is starting *now*.
    * Without this the median hard step is silent across two full generations.
    */
@@ -414,14 +425,29 @@ export class Agent {
     const signal = this.opts.signal
       ? AbortSignal.any([this.opts.signal, deadline])
       : deadline
+    const events = this.opts.events
+    const request = {
+      messages: [...this.transcript.messages()] as ChatMessage[],
+      tools: schemas,
+      toolChoice,
+      maxTokens: this.opts.maxTokensPerStep,
+      signal,
+    }
     try {
-      const result = await this.opts.client.chat({
-        messages: [...this.transcript.messages()] as ChatMessage[],
-        tools: schemas,
-        toolChoice,
-        maxTokens: this.opts.maxTokensPerStep,
-        signal,
-      })
+      // Streaming is opt-in per host: only switched on when a host actually wired a delta
+      // callback. Integration tests and compaction never set one, so they keep calling
+      // chat() exactly as before. Everything below this call — truncation continuation,
+      // tool dispatch, transcript append, timeout/abort mapping — reads the ASSEMBLED
+      // ChatResult that both methods return in the same shape; nothing downstream knows
+      // which path produced it.
+      const result = events?.onThinkingDelta || events?.onTextDelta
+        ? await this.opts.client.chatStream(request, {
+          onDelta: (d) => {
+            if (d.reasoning) events?.onThinkingDelta?.(d.reasoning)
+            if (d.content) events?.onTextDelta?.(d.content)
+          },
+        })
+        : await this.opts.client.chat(request)
       return { kind: 'ok', result }
     } catch (e) {
       // The caller's cancel wins over our own deadline when both fired.
