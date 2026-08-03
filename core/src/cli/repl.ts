@@ -36,9 +36,25 @@ const HELP_TEXT =
   '  /sessions          list saved sessions in this workspace\n' +
   '  /resume <id>       resume a saved session\n' +
   '  /todos             show the current todo list\n' +
+  '  /compact           summarise and compact the context now\n' +
   '  /exit              save and quit\n\n' +
   'Anything else is sent to the model. Esc or Ctrl+C aborts a turn in progress; ' +
   'Ctrl+C twice at this prompt exits.\n'
+
+/** The two states `onCompaction` renders unconditionally per the brief, plus `'failed'`
+ * (an addition beyond the brief's exact strings -- see the Task 9 report -- so a
+ * background attempt that silently dies is not silently invisible to the user too).
+ * `'ready'` is deliberately left unrendered: it means a summary is waiting, not that
+ * anything changed about the session yet, and the very next `'applied'` line (fired by
+ * the following `send()`, or immediately after by `/compact`) is the one that matters. */
+function renderCompactionEvent(info: { state: string; droppedMessages?: number }): string | undefined {
+  switch (info.state) {
+    case 'started': return '\x1b[2m[compacting context in the background…]\x1b[0m'
+    case 'applied': return `\x1b[2m[context compacted: ${info.droppedMessages} earlier messages summarised]\x1b[0m`
+    case 'failed': return '\x1b[2m[context compaction failed; continuing uncompacted]\x1b[0m'
+    default: return undefined
+  }
+}
 
 /**
  * The REPL's post-turn "context ..." status segment, as a pure function of the numbers
@@ -188,9 +204,26 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       maxSteps: opts.maxSteps,
       events: turnRenderer.events,
       interaction: port,
+      onCompaction: (info) => {
+        const line = renderCompactionEvent(info)
+        if (line === undefined) return
+        // Same reasoning as repl.ts's other print sites: a compaction event can fire
+        // right after a step's own rendering (the auto-trigger, at the tail of send()) or
+        // right before the next turn's very first step (the swap, at the head of the
+        // next send()) -- neither should ever land on a live status line, but this call
+        // is free even when there is none to clear.
+        turnRenderer.clearStatusLine()
+        process.stdout.write(`${line}\n`)
+      },
     }
     if (explicitMode !== undefined) sessionOpts.mode = explicitMode
     if (resumeId !== undefined) sessionOpts.resume = resumeId
+    // Only known once printBanner()'s startup probe has run at least once (contextLength
+    // stays undefined for the very first session this process ever builds -- see
+    // printBanner) -- every LATER rebuild (/new, /resume) picks it up and gets the
+    // automatic 80%-fill trigger; triggerRatio/keepRecent are left at Session's own
+    // defaults (0.8 / 6) rather than repeated here.
+    if (contextLength !== undefined) sessionOpts.compaction = { contextLength }
     const newSession = new Session(sessionOpts)
     session = newSession
     engine = newEngine
@@ -346,6 +379,23 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     for (const t of todos) process.stdout.write(`  ${formatTodoLine(t)}\n`)
   }
 
+  /**
+   * The manual escape hatch: forces one compaction cycle right now, synchronously.
+   * `Session.forceCompact` itself emits the same `onCompaction` events the automatic
+   * path does (wired above, in `rebuild`), so the "visible status" the brief asks for is
+   * exactly those dim lines -- `'started'` prints immediately, then either `'applied'`
+   * or (an addition here) `'failed'` once the call settles. This function's own job is
+   * just to await it and report the one failure `Session` doesn't turn into an event
+   * itself: calling `/compact` while a turn is already running.
+   */
+  async function handleCompact(): Promise<void> {
+    try {
+      await session.forceCompact()
+    } catch (e) {
+      process.stdout.write(`Could not compact: ${e instanceof Error ? e.message : String(e)}\n`)
+    }
+  }
+
   async function handleCommand(line: string): Promise<void> {
     idleArmed = false
     const spaceIdx = line.indexOf(' ')
@@ -359,6 +409,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       case '/sessions': handleSessions(); return
       case '/resume': handleResume(arg); return
       case '/todos': handleTodos(); return
+      case '/compact': await handleCompact(); return
       case '/exit': await shutdown(); return
       default: process.stdout.write(`Unknown command "${cmd}". Type /help for the list.\n`); return
     }

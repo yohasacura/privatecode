@@ -13,10 +13,60 @@ export interface SessionMeta {
   mode: AgentMode
 }
 
+/** One compaction swap's audit-trail marker line -- see the class doc comment below. */
+export interface CompactionMarker {
+  __event: 'compaction'
+  summary: string
+  droppedMessages: number
+  at: string // ISO
+}
+
+function isCompactionMarker(parsed: unknown): parsed is CompactionMarker {
+  return typeof parsed === 'object' && parsed !== null &&
+    (parsed as { __event?: unknown }).__event === 'compaction'
+}
+
+/**
+ * The `.jsonl` file is the FULL audit trail, never trimmed -- but everything up to and
+ * including the LAST compaction marker is history, not live state. Only the lines after it
+ * are the transcript a resumed `Session` actually rebuilds. With no marker at all (the
+ * common case: most sessions never compact) this returns the whole text unchanged.
+ *
+ * A line that fails to parse as JSON, or parses but isn't a marker, is simply not a
+ * marker -- it is left for `Transcript.fromJSONL`'s own pass to validate (and to report,
+ * with a precise line number, if it turns out to be corrupt); this scan only ever needs
+ * to find markers, so it tolerates everything else silently.
+ */
+function liveTextAfterLastMarker(text: string): string {
+  const lines = text.split('\n')
+  let lastMarkerLine = -1
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    if (!line.trim()) continue
+    try {
+      if (isCompactionMarker(JSON.parse(line))) lastMarkerLine = i
+    } catch {
+      // Not a marker -- see doc comment above.
+    }
+  }
+  if (lastMarkerLine === -1) return text
+  return lines.slice(lastMarkerLine + 1).join('\n')
+}
+
 /**
  * On-disk home for multi-turn sessions: `<workspaceRoot>/.privatecode/sessions/`, one
  * `<id>.jsonl` (the transcript, one JSON message per line, appended incrementally as the
  * conversation grows) and one `<id>.meta.json` (pretty-printed) per session.
+ *
+ * Compaction (Task 9) adds one more kind of line to the `.jsonl`: a `CompactionMarker`,
+ * written by `appendCompactionMarker` at swap time, immediately followed by the ENTIRE
+ * new (post-swap) transcript's messages appended as ordinary fresh lines via
+ * `appendMessages`. The marker line is never a `ChatMessage` and is never fed to
+ * `Transcript.fromJSONL` -- `load()` strips everything up to and including the LAST
+ * marker before parsing, so the file keeps growing (nothing already written is ever
+ * edited or removed -- append-only, same law as `Transcript` itself) while `load()`
+ * always rebuilds exactly the live post-swap state, never the history a marker folded
+ * away.
  *
  * This directory is workspace-internal state, not a model-directed path -- tools may read
  * it freely and it is deliberately outside the `Workspace` jail (which exists to bound
@@ -131,7 +181,7 @@ export class SessionStore {
 
     const jsonlFile = this.jsonlPath(id)
     const text = existsSync(jsonlFile) ? readFileSync(jsonlFile, 'utf8') : ''
-    const transcript = Transcript.fromJSONL(text)
+    const transcript = Transcript.fromJSONL(liveTextAfterLastMarker(text))
     return { meta, transcript }
   }
 
@@ -150,5 +200,22 @@ export class SessionStore {
     this.ensureDir()
     const lines = messages.map((m) => `${JSON.stringify(m)}\n`).join('')
     appendFileSync(this.jsonlPath(id), lines)
+  }
+
+  /**
+   * Writes one compaction-swap marker line -- see the class doc comment. Always called
+   * (by `Session`) immediately before an `appendMessages` call carrying the entire
+   * swapped-in transcript, so the marker and its fresh lines land together, in order, in
+   * one uninterrupted block.
+   */
+  appendCompactionMarker(id: string, info: { summary: string; droppedMessages: number }): void {
+    this.ensureDir()
+    const marker: CompactionMarker = {
+      __event: 'compaction',
+      summary: info.summary,
+      droppedMessages: info.droppedMessages,
+      at: new Date().toISOString(),
+    }
+    appendFileSync(this.jsonlPath(id), `${JSON.stringify(marker)}\n`)
   }
 }

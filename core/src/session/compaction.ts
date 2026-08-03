@@ -123,3 +123,63 @@ export async function generateCompaction(
     wallSeconds,
   }
 }
+
+// --- Task 9: swap helpers -------------------------------------------------------------
+//
+// The generator above only produces the briefing text; everything below decides what a
+// post-compaction Transcript looks like. Kept in this file (not session.ts) because it is
+// pure array/string logic with no dependency on Agent, Transcript, or Session -- easy to
+// smoke-check in isolation, and this is where the plan's file structure puts "swap logic
+// helpers" for Task 9.
+
+/** Opens the one synthetic user message a swap inserts in place of the dropped history. */
+export const COMPACTION_BRIEFING_PREFIX =
+  'Session briefing from the earlier part of this conversation (auto-compacted):'
+/** The one synthetic assistant message that follows it, closing the round-trip. */
+export const COMPACTION_ACK_TEXT = 'Understood; continuing from the briefing.'
+
+export interface CompactionTail {
+  /** The old transcript's trailing messages, to be copied verbatim (still needs `structuredClone`
+   * at the point they're re-appended -- `Transcript.append` does that; this array itself
+   * is just a view, a `slice()` of the caller's own array). */
+  tail: readonly ChatMessage[]
+  /** How many of the OLD transcript's messages (from the very start, system prompt
+   * included) are NOT part of `tail` -- the count a host reports as "N earlier messages
+   * summarised". */
+  droppedMessages: number
+}
+
+/**
+ * A message a compacted tail may safely open on: a `user` message, or an `assistant`
+ * message that is not itself waiting on any `tool` replies. Anything else -- a bare
+ * `tool` reply, or an `assistant` message that still has `tool_calls` pending -- would
+ * leave the tail's first message dangling on a round-trip whose other half got cut.
+ */
+function isCleanTailStart(m: ChatMessage): boolean {
+  return m.role === 'user' || (m.role === 'assistant' && !(m.tool_calls && m.tool_calls.length > 0))
+}
+
+/**
+ * Selects the messages a compaction swap keeps verbatim from the OLD transcript: the last
+ * `keepRecent` of them, walked BACK (never forward -- only ever including MORE history,
+ * never less) until the slice opens on a clean boundary per `isCleanTailStart`.
+ *
+ * The walk never reaches back past index 1: index 0 is assumed to be the transcript's
+ * leading `system` message (true of every `Transcript` a live `Session` ever builds, via
+ * `Agent`'s constructor), and a swap always rebuilds its OWN fresh system message rather
+ * than copying the old one forward -- so index 0 itself is never a candidate, and the
+ * worst case is walking all the way back to index 1, the session's very first `user`
+ * message, which is clean by construction (the first thing `Agent.runTurn` ever appends).
+ * A `messages` array with no leading `system` message at all (not how `Session` ever
+ * builds one, but not assumed away either) falls back to floor 0 and trusts index 0
+ * as-is, since there is nothing more conservative to walk back to.
+ */
+export function selectCompactionTail(
+  messages: readonly ChatMessage[], keepRecent: number,
+): CompactionTail {
+  const floor = messages.length > 0 && messages[0]!.role === 'system' ? 1 : 0
+  const desiredStart = Math.max(floor, messages.length - keepRecent)
+  let start = desiredStart
+  while (start > floor && !isCleanTailStart(messages[start]!)) start--
+  return { tail: messages.slice(start), droppedMessages: start }
+}
