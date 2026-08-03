@@ -29,10 +29,18 @@ export interface CompactionOptions {
 }
 
 /** One compaction lifecycle event, for a host to render (the REPL dims a one-liner for
- * `'started'` and `'applied'`; see `repl.ts`). `droppedMessages` is only ever present on
- * `'applied'` -- the other three states have nothing to report yet. */
+ * `'started'`, `'applied'`, `'postponed'`, and `'failed'`; see `repl.ts`). `droppedMessages`
+ * is only ever present on `'applied'` -- the other four states have nothing to report yet.
+ *
+ * `'postponed'` covers two distinct causes, both non-failures the session recovers from on
+ * its own: (1) the background generation was aborted by a new `send()` arriving mid-attempt
+ * (or, for `/compact`, by the user cancelling it) -- see `runBackgroundCompaction` and
+ * `forceCompact`; (2) a completed summary would have produced a no-progress swap (the new
+ * transcript isn't meaningfully smaller than the old one) and was abandoned rather than
+ * applied -- see `applyCompactionSwap`'s `NO_PROGRESS_RATIO` guard. Neither case is a
+ * generation error, so neither uses `'failed'`. */
 export interface CompactionEvent {
-  state: 'started' | 'ready' | 'applied' | 'failed'
+  state: 'started' | 'ready' | 'applied' | 'postponed' | 'failed'
   droppedMessages?: number
 }
 
@@ -53,6 +61,15 @@ export interface SessionOptions {
 }
 
 const PLAN_MODE_NOTE = '(mode is now plan: investigate and propose; do not edit)'
+
+/** Important-5 guard (see `applyCompactionSwap`): a swap is abandoned, not applied, when
+ * the NEW transcript's `approxTokens()` is still at least this fraction of the OLD
+ * transcript's -- i.e. it didn't shrink by a meaningful margin (a `keepRecent` at or past
+ * the transcript's own length, or a clean-boundary walk-back that ate nearly the whole
+ * tail, both leave a swap that frees ~nothing). 0.9 rather than "any shrink at all
+ * counts": a swap that only trims a sliver isn't worth the generation cost or the
+ * audit-trail bloat of a marker + a barely-smaller transcript either. */
+const NO_PROGRESS_RATIO = 0.9
 
 function noteFor(mode: AgentMode): string {
   return mode === 'plan' ? PLAN_MODE_NOTE : `(mode is now ${mode})`
@@ -129,6 +146,13 @@ export class Session {
   private compactionInFlight: { controller: AbortController; promise: Promise<void> } | undefined
   /** A finished briefing waiting for the NEXT send() to swap in, before that turn runs. */
   private pendingSummary: string | undefined
+  /** Set when the in-flight background compaction was just aborted (a new `send()`
+   * arriving mid-attempt, not a genuine failure) -- consumed exactly once by the very
+   * next `maybeStartBackgroundCompaction` call, which is that SAME `send()`'s own tail
+   * call, so it doesn't immediately restart an attempt on the transcript it just finished
+   * aborting. A LATER `send()`, once this is cleared, re-triggers normally if still over
+   * threshold. */
+  private skipNextTrigger = false
 
   constructor(opts: SessionOptions) {
     this.opts = opts
@@ -362,9 +386,20 @@ export class Session {
           signal,
         )
         this.opts.onCompaction?.({ state: 'ready' })
-        this.applyCompactionSwap(result.summary)
+        const applied = this.applyCompactionSwap(result.summary)
+        // Only a genuine apply bumps updatedAt/saveMeta -- an abandoned (no-progress)
+        // swap changed nothing about the session worth persisting. send()'s own post-turn
+        // code does this unconditionally for the auto-trigger path; forceCompact has no
+        // such wrapper around it, so it must do so itself.
+        if (applied) {
+          this.meta.updatedAt = new Date().toISOString()
+          this.opts.store?.saveMeta(this.meta)
+        }
       } catch {
-        this.opts.onCompaction?.({ state: 'failed' })
+        // Same abort-is-not-failure reasoning as runBackgroundCompaction's catch below: a
+        // user cancelling /compact via Esc/Ctrl+C is not a generation error and should
+        // read as a calm 'postponed', not a scary 'failed'.
+        this.opts.onCompaction?.({ state: signal?.aborted ? 'postponed' : 'failed' })
       }
     } finally {
       this.sending = false
@@ -400,15 +435,25 @@ export class Session {
    * reassigns `this.transcript` to it. The old `Transcript` object itself is never
    * touched; this is a swap of the reference `this.transcript` holds, not an edit.
    *
-   * Persistence mirrors that: the marker line is written first, then the WHOLE new
-   * transcript's messages as fresh JSONL lines (never a diff against the old file) --
+   * Before reassigning, the Important-5 no-progress guard compares the NEW transcript's
+   * `approxTokens()` against the OLD's (see `NO_PROGRESS_RATIO`): a swap that doesn't
+   * meaningfully shrink the transcript is abandoned -- the summary is discarded, nothing
+   * is persisted, `this.transcript` is left exactly as it was, and `'postponed'` fires
+   * instead of `'applied'`. Returns `true` iff the swap actually applied (callers that
+   * need to know -- `forceCompact`, to decide whether to bump `updatedAt` -- check this).
+   *
+   * Persistence mirrors the swap: the marker line and the WHOLE new transcript's messages
+   * are written together via `appendCompactionSwap` -- ONE store call, ONE `appendFileSync`
+   * (never a marker write followed by a separate messages write: a crash between two such
+   * calls would leave a marker with no payload after it, which `load()` would read back as
+   * an empty or system-less session) -- rather than a diff against the old file. This is
    * the simpler, more robust form the brief calls for, over trying to replay a partial
-   * reconstruction. `persistedCount` is reset to match, so the very next persistence
-   * step (this same `send()`'s own, a few lines below where this is called from, or
+   * reconstruction. `persistedCount` is reset to match, so the very next persistence step
+   * (this same `send()`'s own, a few lines below where this is called from, or
    * `forceCompact`'s caller re-entering `send()` later) only ever writes what the NEW
    * transcript gains from here on.
    */
-  private applyCompactionSwap(summary: string): void {
+  private applyCompactionSwap(summary: string): boolean {
     const keepRecent = this.opts.compaction?.keepRecent ?? 6
     const { tail, droppedMessages } = selectCompactionTail(this.transcript.messages(), keepRecent)
 
@@ -421,15 +466,39 @@ export class Session {
     next.append({ role: 'assistant', content: COMPACTION_ACK_TEXT })
     for (const m of tail) next.append(m)
 
+    const oldApproxTokens = this.transcript.approxTokens()
+    if (next.approxTokens() >= oldApproxTokens * NO_PROGRESS_RATIO) {
+      // No-progress guard: applying anyway would write a marker + a same-size-or-bigger
+      // transcript on every over-threshold turn, forever, freeing no context. Discard the
+      // summary and touch nothing -- `this.transcript` (the OLD one) stays live.
+      //
+      // Nulling here mirrors the successful-swap path below for the same reason: without
+      // it, the very next fillRatio() check would still see the stale (already-over-
+      // threshold) prompt-token count that triggered this attempt and could re-fire
+      // immediately off nothing new. Nulling defers to the next real step's own usage
+      // numbers -- if none arrives before the next check (e.g. an aborted turn), the
+      // trigger simply stays quiet until one does; if the turn about to run DOES complete
+      // a step, that step's fresh number is what the next check sees, exactly as it
+      // should.
+      this.latestPromptTokens = null
+      this.opts.onCompaction?.({ state: 'postponed' })
+      return false
+    }
+
     const store = this.opts.store
     if (store) {
-      store.appendCompactionMarker(this.id, { summary, droppedMessages })
-      store.appendMessages(this.id, next.messages())
+      store.appendCompactionSwap(this.id, { summary, droppedMessages }, next.messages())
     }
 
     this.transcript = next
     this.persistedCount = next.messages().length
+    // fillRatio must wait for a real measurement against the NEW transcript -- the stale
+    // pre-swap prompt-token count would otherwise immediately look "still over threshold"
+    // against the just-shrunk transcript and re-trigger a pointless compaction of the
+    // transcript this very call just produced.
+    this.latestPromptTokens = null
     this.opts.onCompaction?.({ state: 'applied', droppedMessages })
+    return true
   }
 
   /**
@@ -440,6 +509,16 @@ export class Session {
    * resolves, find nothing left in flight and a ready summary waiting to swap in.
    */
   private maybeStartBackgroundCompaction(): void {
+    // Consumed exactly once, regardless of anything else below -- see the field's own
+    // doc comment. This is what makes the abort-caused postponement a one-send back-off
+    // rather than a standing suppression: the very next call after it's set (this same
+    // send()'s own tail call) clears it and skips, and every call after THAT behaves as
+    // if it had never been set.
+    if (this.skipNextTrigger) {
+      this.skipNextTrigger = false
+      return
+    }
+
     const cfg = this.opts.compaction
     if (!cfg) return
     if (this.compactionInFlight || this.pendingSummary !== undefined) return
@@ -456,13 +535,16 @@ export class Session {
   }
 
   /**
-   * The background worker itself. NEVER rejects: a genuine generation failure and a
-   * caller-initiated abort are both reported the same way, as one `'failed'` event --
-   * from a host's perspective both mean exactly the same thing ("no summary is coming
-   * from this attempt, the session carries on uncompacted, and the next `send()` may
-   * start a fresh attempt if it's still over threshold"), and collapsing them into one
-   * code path is simpler than distinguishing an abort as a non-failure that a host would
-   * need its own case for.
+   * The background worker itself. NEVER rejects: a genuine generation failure reports
+   * `'failed'`, while a caller-initiated abort (a new `send()` arriving mid-attempt, via
+   * `abortInFlightCompaction`) reports `'postponed'` instead -- these are NOT the same
+   * thing to a user. `'failed'` used to cover both, but an abort is the single-slot
+   * discipline working exactly as designed, not a broken generation; reporting it as
+   * "failed" every time is needlessly scary, and could even read as a livelock symptom
+   * (start -> abort -> restart -> immediately over threshold again -> start -> abort ...)
+   * to a user watching an active session. `skipNextTrigger` is this method's other half
+   * of that fix: set alongside `'postponed'` so the send() that just did the aborting
+   * doesn't also immediately restart a new attempt (see `maybeStartBackgroundCompaction`).
    */
   private async runBackgroundCompaction(messages: readonly ChatMessage[], signal: AbortSignal): Promise<void> {
     try {
@@ -474,7 +556,12 @@ export class Session {
       this.opts.onCompaction?.({ state: 'ready' })
     } catch {
       this.compactionInFlight = undefined
-      this.opts.onCompaction?.({ state: 'failed' })
+      if (signal.aborted) {
+        this.skipNextTrigger = true
+        this.opts.onCompaction?.({ state: 'postponed' })
+      } else {
+        this.opts.onCompaction?.({ state: 'failed' })
+      }
     }
   }
 

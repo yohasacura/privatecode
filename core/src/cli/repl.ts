@@ -43,7 +43,11 @@ const HELP_TEXT =
 
 /** The two states `onCompaction` renders unconditionally per the brief, plus `'failed'`
  * (an addition beyond the brief's exact strings -- see the Task 9 report -- so a
- * background attempt that silently dies is not silently invisible to the user too).
+ * background attempt that silently dies is not silently invisible to the user too) and
+ * `'postponed'` (added for the abort-is-not-failure and no-progress-guard fixes -- see
+ * `CompactionEvent`'s doc comment in `session.ts`): a calm, dim line, deliberately NOT the
+ * scarier `'failed'` wording, since neither of `'postponed'`'s causes (a cancelled
+ * attempt, or a swap that would not have shrunk anything) is a generation error.
  * `'ready'` is deliberately left unrendered: it means a summary is waiting, not that
  * anything changed about the session yet, and the very next `'applied'` line (fired by
  * the following `send()`, or immediately after by `/compact`) is the one that matters. */
@@ -51,6 +55,7 @@ function renderCompactionEvent(info: { state: string; droppedMessages?: number }
   switch (info.state) {
     case 'started': return '\x1b[2m[compacting context in the background…]\x1b[0m'
     case 'applied': return `\x1b[2m[context compacted: ${info.droppedMessages} earlier messages summarised]\x1b[0m`
+    case 'postponed': return '\x1b[2m[context compaction postponed]\x1b[0m'
     case 'failed': return '\x1b[2m[context compaction failed; continuing uncompacted]\x1b[0m'
     default: return undefined
   }
@@ -218,16 +223,48 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     }
     if (explicitMode !== undefined) sessionOpts.mode = explicitMode
     if (resumeId !== undefined) sessionOpts.resume = resumeId
-    // Only known once printBanner()'s startup probe has run at least once (contextLength
-    // stays undefined for the very first session this process ever builds -- see
-    // printBanner) -- every LATER rebuild (/new, /resume) picks it up and gets the
-    // automatic 80%-fill trigger; triggerRatio/keepRecent are left at Session's own
-    // defaults (0.8 / 6) rather than repeated here.
+    // Known before even the very first rebuild() call: probeContextLength() below runs
+    // BEFORE the startup rebuild, so the launch session -- the primary use case -- gets
+    // this wired exactly like every later /new or /resume rebuild does. Stays undefined
+    // only when the probe itself failed (server unreachable or timed out at startup),
+    // matching printBanner's own 'context length unknown' fallback; triggerRatio/
+    // keepRecent are left at Session's own defaults (0.8 / 6) rather than repeated here.
     if (contextLength !== undefined) sessionOpts.compaction = { contextLength }
     const newSession = new Session(sessionOpts)
     session = newSession
     engine = newEngine
   }
+
+  /**
+   * Probes the server's context length once, with its own short-timeout client -- exactly
+   * like the one-shot path's health probe: `opts.client` carries the 600 s turn timeout,
+   * right for a real generation but wrong for a startup probe (a black-holed server would
+   * hang this for ten minutes before anything ever printed). Any failure -- network,
+   * timeout, or a response missing the field -- resolves to `undefined`, never throws;
+   * `undefined` is the same "unknown" state both `printBanner`'s context line and
+   * `rebuild`'s `sessionOpts.compaction` wiring already treat as "off"/"approx only", so
+   * callers need no separate failure branch.
+   *
+   * Split out of (what used to be) `printBanner` and run BEFORE the startup `rebuild()`
+   * call below specifically so the very first session this process ever builds -- the
+   * launch session, the primary use case -- gets auto-compaction armed too, not only
+   * sessions built later by `/new`/`/resume` (which used to be the only ones that saw a
+   * non-undefined `contextLength`, since the probe previously ran inside `printBanner`,
+   * which itself only ever ran AFTER that first `rebuild()`).
+   */
+  async function probeContextLength(): Promise<number | undefined> {
+    const probeClient = new LlamaClient({
+      baseUrl: opts.server, model: opts.model, requestTimeoutMs: HEALTH_CHECK_TIMEOUT_MS,
+    })
+    try {
+      const props = await probeClient.props()
+      return props.contextLength
+    } catch {
+      return undefined
+    }
+  }
+
+  contextLength = await probeContextLength()
 
   if (opts.resume !== undefined) {
     try {
@@ -244,23 +281,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   }
 
   async function printBanner(): Promise<void> {
-    // A separate short-timeout client, exactly like the one-shot path's health probe:
-    // `opts.client` carries the 600 s turn timeout, which is right for a real generation
-    // but would mean a black-holed server left the banner hanging for ten minutes before
-    // ever printing anything.
-    const probeClient = new LlamaClient({
-      baseUrl: opts.server, model: opts.model, requestTimeoutMs: HEALTH_CHECK_TIMEOUT_MS,
-    })
-    let contextLine: string
-    try {
-      const props = await probeClient.props()
-      contextLength = props.contextLength
-      contextLine = props.contextLength !== undefined
-        ? `${props.contextLength} tokens`
-        : 'context length unknown'
-    } catch {
-      contextLine = 'context length unknown'
-    }
+    const contextLine = contextLength !== undefined ? `${contextLength} tokens` : 'context length unknown'
     process.stdout.write(
       'PrivateCode\n' +
       `  server: ${opts.server}\n` +
@@ -383,16 +404,30 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
    * The manual escape hatch: forces one compaction cycle right now, synchronously.
    * `Session.forceCompact` itself emits the same `onCompaction` events the automatic
    * path does (wired above, in `rebuild`), so the "visible status" the brief asks for is
-   * exactly those dim lines -- `'started'` prints immediately, then either `'applied'`
-   * or (an addition here) `'failed'` once the call settles. This function's own job is
-   * just to await it and report the one failure `Session` doesn't turn into an event
-   * itself: calling `/compact` while a turn is already running.
+   * exactly those dim lines -- `'started'` prints immediately, then `'applied'`,
+   * `'postponed'`, or (an addition here) `'failed'` once the call settles. This function's
+   * own job is just to await it and report the one failure `Session` doesn't turn into an
+   * event itself: calling `/compact` while a turn is already running.
+   *
+   * Cancellable exactly like `runTurn`'s own turns: `currentAbort` is set and
+   * `startAbortListening` armed BEFORE the call, torn down after, so Esc or Ctrl+C aborts
+   * the forced generation (`forceCompact`'s `signal.aborted` check reports `'postponed'`,
+   * not `'failed'` -- see `session.ts`) instead of falling through to raw stdin. Setting
+   * `currentAbort` here also means the SIGINT handler's "a turn is in flight" branch
+   * fires during `/compact` too, so a Ctrl+C press here aborts it cleanly rather than
+   * arming the idle double-Ctrl+C exit hint.
    */
   async function handleCompact(): Promise<void> {
+    currentAbort = new AbortController()
+    stopAbortListening = startAbortListening(() => currentAbort?.abort())
     try {
-      await session.forceCompact()
+      await session.forceCompact(currentAbort.signal)
     } catch (e) {
       process.stdout.write(`Could not compact: ${e instanceof Error ? e.message : String(e)}\n`)
+    } finally {
+      stopAbortListening?.()
+      stopAbortListening = undefined
+      currentAbort = undefined
     }
   }
 

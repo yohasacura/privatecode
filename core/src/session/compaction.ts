@@ -143,9 +143,10 @@ export interface CompactionTail {
    * at the point they're re-appended -- `Transcript.append` does that; this array itself
    * is just a view, a `slice()` of the caller's own array). */
   tail: readonly ChatMessage[]
-  /** How many of the OLD transcript's messages (from the very start, system prompt
-   * included) are NOT part of `tail` -- the count a host reports as "N earlier messages
-   * summarised". */
+  /** How many of the OLD transcript's messages were actually summarised away --
+   * EXCLUDING the old leading system message (it is rebuilt fresh by the swap either way,
+   * never fed to the summary, so counting it as "dropped" would overstate what the
+   * briefing covers). The count a host reports as "N earlier messages summarised". */
   droppedMessages: number
 }
 
@@ -181,5 +182,8 @@ export function selectCompactionTail(
   const desiredStart = Math.max(floor, messages.length - keepRecent)
   let start = desiredStart
   while (start > floor && !isCleanTailStart(messages[start]!)) start--
-  return { tail: messages.slice(start), droppedMessages: start }
+  // `start - floor` excludes the old leading system message from the count -- `floor` is
+  // 1 exactly when one was present, 0 otherwise, so this is a no-op subtraction when
+  // there was nothing to exclude.
+  return { tail: messages.slice(start), droppedMessages: start - floor }
 }

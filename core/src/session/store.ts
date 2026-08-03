@@ -36,8 +36,14 @@ function isCompactionMarker(parsed: unknown): parsed is CompactionMarker {
  * marker -- it is left for `Transcript.fromJSONL`'s own pass to validate (and to report,
  * with a precise line number, if it turns out to be corrupt); this scan only ever needs
  * to find markers, so it tolerates everything else silently.
+ *
+ * Also returns `lineOffset`: the number of FILE lines (0-based `lastMarkerLine + 1`, i.e.
+ * everything up to and including the marker) that sit before the returned `text` -- so a
+ * caller feeding `text` into `Transcript.fromJSONL` can report a corrupt line's number
+ * against the actual file, not just against this post-marker slice. Zero when there was
+ * no marker at all (the common case), since then `text` IS the whole file.
  */
-function liveTextAfterLastMarker(text: string): string {
+function liveTextAfterLastMarker(text: string): { text: string; lineOffset: number } {
   const lines = text.split('\n')
   let lastMarkerLine = -1
   for (let i = 0; i < lines.length; i++) {
@@ -49,8 +55,8 @@ function liveTextAfterLastMarker(text: string): string {
       // Not a marker -- see doc comment above.
     }
   }
-  if (lastMarkerLine === -1) return text
-  return lines.slice(lastMarkerLine + 1).join('\n')
+  if (lastMarkerLine === -1) return { text, lineOffset: 0 }
+  return { text: lines.slice(lastMarkerLine + 1).join('\n'), lineOffset: lastMarkerLine + 1 }
 }
 
 /**
@@ -59,14 +65,17 @@ function liveTextAfterLastMarker(text: string): string {
  * conversation grows) and one `<id>.meta.json` (pretty-printed) per session.
  *
  * Compaction (Task 9) adds one more kind of line to the `.jsonl`: a `CompactionMarker`,
- * written by `appendCompactionMarker` at swap time, immediately followed by the ENTIRE
- * new (post-swap) transcript's messages appended as ordinary fresh lines via
- * `appendMessages`. The marker line is never a `ChatMessage` and is never fed to
- * `Transcript.fromJSONL` -- `load()` strips everything up to and including the LAST
- * marker before parsing, so the file keeps growing (nothing already written is ever
- * edited or removed -- append-only, same law as `Transcript` itself) while `load()`
- * always rebuilds exactly the live post-swap state, never the history a marker folded
- * away.
+ * written by `appendCompactionSwap` at swap time, immediately followed by the ENTIRE new
+ * (post-swap) transcript's messages -- marker and messages built into ONE string and
+ * written with ONE `appendFileSync` call, never two, so a crash or throw mid-swap either
+ * lands the whole block or none of it (a marker line with no payload after it, from two
+ * separate writes torn apart by a crash, would make `load()` rebuild an empty session --
+ * see `appendCompactionSwap`'s doc comment). The marker line is never a `ChatMessage` and
+ * is never fed to `Transcript.fromJSONL` -- `load()` strips everything up to and
+ * including the LAST marker before parsing, so the file keeps growing (nothing already
+ * written is ever edited or removed -- append-only, same law as `Transcript` itself)
+ * while `load()` always rebuilds exactly the live post-swap state, never the history a
+ * marker folded away.
  *
  * This directory is workspace-internal state, not a model-directed path -- tools may read
  * it freely and it is deliberately outside the `Workspace` jail (which exists to bound
@@ -181,7 +190,8 @@ export class SessionStore {
 
     const jsonlFile = this.jsonlPath(id)
     const text = existsSync(jsonlFile) ? readFileSync(jsonlFile, 'utf8') : ''
-    const transcript = Transcript.fromJSONL(liveTextAfterLastMarker(text))
+    const live = liveTextAfterLastMarker(text)
+    const transcript = Transcript.fromJSONL(live.text, live.lineOffset)
     return { meta, transcript }
   }
 
@@ -203,19 +213,32 @@ export class SessionStore {
   }
 
   /**
-   * Writes one compaction-swap marker line -- see the class doc comment. Always called
-   * (by `Session`) immediately before an `appendMessages` call carrying the entire
-   * swapped-in transcript, so the marker and its fresh lines land together, in order, in
-   * one uninterrupted block.
+   * Writes one whole compaction swap -- the marker line immediately followed by the
+   * ENTIRE swapped-in transcript's messages -- built into ONE string and written with ONE
+   * `appendFileSync` call. This is the fix for a real hazard in the two-call form this
+   * replaced (marker via one `appendFileSync`, then messages via another): a crash, or a
+   * throw from the second call, between the two writes would leave a marker on disk with
+   * nothing (or only a LATER swap's messages, if this ever fired twice) after it --
+   * `load()`'s last-marker slicing would then rebuild an empty, or system-message-less,
+   * session from a file that looks superficially fine. Building one string first means
+   * the write either lands whole or (if `appendFileSync` itself throws, e.g. an
+   * unwritable path) not at all -- never half; a caller that catches the throw keeps
+   * running on the OLD in-memory transcript, which is exactly what `Session` does.
    */
-  appendCompactionMarker(id: string, info: { summary: string; droppedMessages: number }): void {
+  appendCompactionSwap(
+    id: string,
+    marker: { summary: string; droppedMessages: number },
+    messages: readonly ChatMessage[],
+  ): void {
     this.ensureDir()
-    const marker: CompactionMarker = {
+    const markerLine: CompactionMarker = {
       __event: 'compaction',
-      summary: info.summary,
-      droppedMessages: info.droppedMessages,
+      summary: marker.summary,
+      droppedMessages: marker.droppedMessages,
       at: new Date().toISOString(),
     }
-    appendFileSync(this.jsonlPath(id), `${JSON.stringify(marker)}\n`)
+    const block = `${JSON.stringify(markerLine)}\n` +
+      messages.map((m) => `${JSON.stringify(m)}\n`).join('')
+    appendFileSync(this.jsonlPath(id), block)
   }
 }
