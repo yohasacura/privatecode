@@ -282,7 +282,14 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       const items = assistant && action.stoppedBecause === 'aborted'
         ? [...state.items.slice(0, -1), { ...assistant, interrupted: true }]
         : state.items
-      return { ...state, items, turnRunning: false, currentStep: null }
+      // Pending interaction cards die with the turn: the host's abort()/switch already
+      // resolved them as denied on its side, so a card left visible here would be a ghost
+      // whose "Allow" authorizes nothing (the polish review's Important 2) -- clearing
+      // them on turn.done keeps the UI and the host telling the same story.
+      return {
+        ...state, items, turnRunning: false, currentStep: null,
+        pendingApproval: null, pendingQuestion: null,
+      }
     }
 
     case 'send-failed': {

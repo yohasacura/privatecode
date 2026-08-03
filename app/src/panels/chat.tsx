@@ -68,9 +68,24 @@ export function ChatPanel({
     return () => window.removeEventListener('keydown', onWindowKeyDown)
   }, [client])
 
+  // Well under protocol.ts's MAX_LINE_CHARS (1 MB): one request line above that cap makes
+  // stdio-main treat the stream as compromised and exit -- and the shell has no respawn
+  // path, so a single oversized paste would kill the whole app (polish review, Important
+  // 4). Refusing here, visibly, is the honest cheap guard.
+  const MAX_SEND_CHARS = 500_000
+
   function send(): void {
     const text = input.trim()
     if (text === '' || state.turnRunning) return
+    if (text.length > MAX_SEND_CHARS) {
+      dispatch({
+        type: 'send-failed',
+        message: `Message is ${text.length.toLocaleString()} characters; the limit is ` +
+          `${MAX_SEND_CHARS.toLocaleString()}. Save large content to a file in the ` +
+          'workspace and ask the agent to read it instead.',
+      })
+      return
+    }
     setInput('')
     dispatch({ type: 'user-message', text })
     dispatch({ type: 'turn-started' })

@@ -216,8 +216,13 @@ export class SessionHost {
    * -- and every field below is rebuilt from scratch, not reused.
    */
   async init(params: InitParams): Promise<InitResult> {
+    // Same teardown as switchSession, plus the old toolset's background tasks: init
+    // replaces the toolset object below, and an orphaned dev server would otherwise run
+    // until app exit (the polish review's Minor 6).
+    if (this.currentAbort && !this.currentAbort.signal.aborted) this.currentAbort.abort()
     if (this.session) await this.session.abortCompaction()
     this.denyAllPending()
+    if (this.toolset) await this.toolset.background.stopAll()
 
     this.workspaceRoot = params.workspaceRoot
     this.workspace = new Workspace(params.workspaceRoot)
@@ -264,17 +269,17 @@ export class SessionHost {
    * on would otherwise hang forever once nothing will ever reply to it from the UI's point
    * of view -- switching sessions is precisely the moment nothing else will.
    *
-   * Judgment call, worth stating plainly: this does NOT abort a turn currently running
-   * against the old session (only its compaction). If the UI switches sessions mid-turn,
-   * the old turn keeps running to completion against its own captured `Session` reference
-   * (see `send()`), and `this.sending` -- which is host-level, not per-session -- stays
-   * `true` until it does, so a `send` against the newly-switched session is refused in the
-   * meantime rather than racing it. The brief only calls for aborting compaction and
-   * denying pending interactions here; forcibly killing an in-flight turn on a session
-   * switch was judged out of scope for this task.
+   * The polish review overturned an earlier judgment call here: the old turn IS aborted
+   * on a session switch. Leaving it running let its deltas/step/turn.done events -- which
+   * carry no session id -- stream into the NEW session's freshly-reset view, while a user
+   * send was refused with "a turn is already running": ghost state in the exact first-hour
+   * path a user hits by clicking Resume mid-turn. Aborting at the same moment as
+   * `denyAllPending()` follows the same reasoning: switching sessions is precisely the
+   * moment nothing will ever consume that turn's output.
    */
   private async switchSession(resumeId: string | undefined): Promise<InitResult> {
     this.requireInitialized()
+    if (this.currentAbort && !this.currentAbort.signal.aborted) this.currentAbort.abort()
     if (this.session) await this.session.abortCompaction()
     this.denyAllPending()
     return this.buildSession(resumeId)
@@ -490,6 +495,7 @@ export class SessionHost {
         ...(info.tokensPerSecond !== undefined ? { tokensPerSecond: info.tokensPerSecond } : {}),
         ...(info.promptTokens !== undefined ? { promptTokens: info.promptTokens } : {}),
         ...(info.completionTokens !== undefined ? { completionTokens: info.completionTokens } : {}),
+        ...(info.draftAcceptance !== undefined ? { draftAcceptance: info.draftAcceptance } : {}),
       }),
       onThinkingDelta: (text) => this.emit('thinking.delta', { text }),
       onTextDelta: (text) => this.emit('text.delta', { text }),
