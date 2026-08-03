@@ -128,8 +128,24 @@ describe('reduceChat: interrupt', () => {
       { type: 'text.delta', text: 'partial resp' },
       { type: 'turn.done', stoppedBecause: 'aborted' },
     ])
-    expect(state.items).toEqual([{ kind: 'assistant', id: 1, text: 'partial resp', interrupted: true }])
+    expect(state.items).toEqual([
+      { kind: 'assistant', id: 1, text: 'partial resp', interrupted: true },
+      // An interrupted turn also gets an explicit note: a turn that ends for any reason
+      // other than the model finishing must say so, not just go quiet.
+      { kind: 'stopped', id: 2, reason: 'aborted' },
+    ])
     expect(state.turnRunning).toBe(false)
+  })
+
+  it('records why a turn stopped when the loop ended it, not the model', () => {
+    // The case the user actually hit: the agent goes quiet mid-task because it reached the
+    // 40-step ceiling, and nothing on screen said so.
+    const state = run([
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
+      { type: 'text.delta', text: 'working on it' },
+      { type: 'turn.done', stoppedBecause: 'max_steps' },
+    ])
+    expect(state.items[state.items.length - 1]).toEqual({ kind: 'stopped', id: 2, reason: 'max_steps' })
   })
 
   it('does not mark anything interrupted when the turn ends normally', () => {
@@ -147,8 +163,8 @@ describe('reduceChat: interrupt', () => {
       { type: 'turn.done', stoppedBecause: 'aborted', atMs: 700 },
     ])
     // Nothing to mark interrupted, and no empty reasoning card either: a step that never
-    // produced reasoning never opens a block.
-    expect(state.items).toEqual([])
+    // produced reasoning never opens a block. The stop note is still there.
+    expect(state.items).toEqual([{ kind: 'stopped', id: 1, reason: 'aborted' }])
     expect(state.turnRunning).toBe(false)
   })
 })

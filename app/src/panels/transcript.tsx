@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { memo } from 'preact/compat'
 import type { VNode } from 'preact'
+import type { StoppedBecause } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatAction, ChatItem, ChatState } from '../lib/state'
 import { Markdown } from '../lib/markdown'
@@ -200,8 +201,47 @@ const TranscriptRow = memo(function TranscriptRow({
           <span class="record-text">{item.question} — <b>{item.answer}</b></span>
         </div>
       )
+
+    case 'stopped': {
+      const explain = STOP_REASONS[item.reason]
+      return (
+        <div class="row row-stopped">
+          <span class="stopped-icon">{Icon.stop()}</span>
+          <span>
+            <b>{explain.title}</b> {explain.detail}
+          </span>
+        </div>
+      )
+    }
   }
 })
+
+/**
+ * Why a turn ended, in the user's terms, with what to do about it.
+ *
+ * This exists because the app used to show nothing at all here: a turn that hit the
+ * 40-step ceiling, timed out, or ran out of room simply went quiet, and the only way to
+ * find out was to ask the model — which costs another turn and can only guess, since the
+ * loop stops it from the outside.
+ */
+const STOP_REASONS: Record<Exclude<StoppedBecause, 'done'>, { title: string; detail: string }> = {
+  max_steps: {
+    title: 'Stopped at the step limit for one turn.',
+    detail: 'It was still working, not finished. Send “continue” and it picks up where it left off.',
+  },
+  timeout: {
+    title: 'Stopped — a step took longer than its time limit.',
+    detail: 'Usually a very large file or a command that hung. Everything before this is kept.',
+  },
+  truncated: {
+    title: 'Stopped — the model ran out of room to finish, twice in a row.',
+    detail: 'The conversation is probably too long; start a new session, or ask it to summarise first.',
+  },
+  aborted: {
+    title: 'Stopped by you.',
+    detail: 'Whatever had already arrived is kept, and the next message continues from here.',
+  },
+}
 
 // ---------------------------------------------------------------------------------------
 // Reasoning

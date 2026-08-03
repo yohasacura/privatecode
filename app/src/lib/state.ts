@@ -62,6 +62,11 @@ export type ChatItem =
    * card (rendered separately, above the input; see `approvals.tsx`) disappears. */
   | { kind: 'approval-record'; id: number; tool: string; summary: string; decision: ApprovalDecision }
   | { kind: 'question-record'; id: number; question: string; answer: string }
+  /** Why a turn ended, when it did NOT end by the model deciding it was finished.
+   * Appended for every `stoppedBecause` other than `'done'`, because the alternative --
+   * what this app used to do -- is that the agent simply goes quiet mid-task and the only
+   * honest description of the UI's behaviour is "it stopped for some reason". */
+  | { kind: 'stopped'; id: number; reason: Exclude<StoppedBecause, 'done'> }
 
 /** The turn-paused card `approvals.tsx` renders above the input while the sidecar awaits
  * a reply -- at most one at a time, matching the protocol: `SessionHost` awaits one
@@ -345,15 +350,19 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       // interrupting mid-thought is exactly the case that used to leave a pulsing row.
       const closed = closeThinking(state.items, action.atMs)
       const assistant = lastAssistantItem(closed)
-      const items = assistant && action.stoppedBecause === 'aborted'
+      const marked = assistant && action.stoppedBecause === 'aborted'
         ? [...closed.slice(0, -1), { ...assistant, interrupted: true }]
         : closed
+      const items = action.stoppedBecause === 'done'
+        ? marked
+        : [...marked, { kind: 'stopped' as const, id: state.nextId, reason: action.stoppedBecause }]
+      const nextId = action.stoppedBecause === 'done' ? state.nextId : state.nextId + 1
       // Pending interaction cards die with the turn: the host's abort()/switch already
       // resolved them as denied on its side, so a card left visible here would be a ghost
       // whose "Allow" authorizes nothing (the polish review's Important 2) -- clearing
       // them on turn.done keeps the UI and the host telling the same story.
       return {
-        ...state, items, turnRunning: false, currentStep: null,
+        ...state, items, nextId, turnRunning: false, currentStep: null,
         pendingApproval: null, pendingQuestion: null,
       }
     }
