@@ -68,6 +68,11 @@ function verifyManifest() {
     ...readdirSync(join(sidecarDir, 'vendor', 'tree-sitter')).map((f) =>
       join(sidecarDir, 'vendor', 'tree-sitter', f)),
   ]
+  // Once the runtime is vendored (Task 9), a bundle without it is broken -- releases
+  // launch sidecar/node.exe, so its absence must fail the build, not ship silently.
+  if (existsSync(join(coreRoot, '..', 'vendor', 'node', 'node.exe'))) {
+    manifest.push(join(sidecarDir, 'node.exe'))
+  }
   for (const path of manifest) {
     if (!existsSync(path)) throw new Error(`bundle.mjs: staging manifest failed -- missing ${path}`)
     const size = statSync(path).size
@@ -95,6 +100,14 @@ async function main() {
 
   stageVendor('ripgrep', ['rg.exe'])
   stageVendor('tree-sitter', null)
+  // The vendored Node runtime (Task 9) rides at the sidecar root, next to agent.cjs,
+  // so the release shell's launch line is simply `sidecar/node.exe sidecar/agent.cjs`.
+  // Optional until vendor/node exists (pre-Task-9 checkouts still bundle for dev use,
+  // where the developer's PATH node runs the bundle instead).
+  const vendoredNode = join(repoRoot, 'vendor', 'node', 'node.exe')
+  if (existsSync(vendoredNode)) {
+    copyFileSync(vendoredNode, join(sidecarDir, 'node.exe'))
+  }
 
   const manifest = verifyManifest()
   console.log(`bundle.mjs: staged sidecar at ${sidecarDir}`)
