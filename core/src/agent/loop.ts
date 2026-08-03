@@ -1,6 +1,6 @@
 import type { InteractionPort } from '../interaction.js'
 import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
-import type { ChatMessage, ChatResult } from '../llama/types.js'
+import type { ChatMessage, ChatResult, Timings } from '../llama/types.js'
 import type { AgentMode, PermissionEngine } from '../permissions/engine.js'
 import { suggestRules } from '../permissions/rules.js'
 import { Transcript } from '../transcript/transcript.js'
@@ -36,6 +36,20 @@ export const DEFAULT_STEP_TIMEOUT_MS = 90_000
  */
 export const DEFAULT_MAX_TOKENS_PER_STEP = 8_000
 
+/**
+ * `StepInfo.draftAcceptance` (Plan 4 Task 8's producer for the field the protocol
+ * reserved): `undefined` unless the server reports BOTH `draft_n` and `draft_n_accepted`
+ * AND `draft_n > 0` -- a step with no drafting attempted (no draft model configured, or a
+ * completion too short to draft against) has nothing to report a rate FOR, and `0/0`
+ * would misleadingly read as "0% accepted" rather than "not applicable this step".
+ */
+function computeDraftAcceptance(timings: Timings | undefined): number | undefined {
+  const draftN = timings?.draft_n
+  const accepted = timings?.draft_n_accepted
+  if (draftN === undefined || accepted === undefined || draftN <= 0) return undefined
+  return accepted / draftN
+}
+
 export interface StepStartInfo {
   /** 1-based index of this step within the turn. */
   step: number
@@ -60,6 +74,16 @@ export interface StepInfo {
    */
   promptTokens?: number
   tokensPerSecond?: number
+  /**
+   * Speculative-decoding draft-token acceptance rate for this step (`timings.
+   * draft_n_accepted / timings.draft_n`), present only when the server actually ran with
+   * a draft model AND drafted at least one token this step -- `draft_n === 0` (no
+   * speculative decoding attempted, e.g. a very short completion) reports no rate at all
+   * rather than a misleading `0/0`. Protocol 4's `step.done` event reserved this field
+   * ahead of this producer (host.ts's own StepDoneEvent doc comment); this is that
+   * producer.
+   */
+  draftAcceptance?: number
   continued: boolean
 }
 
@@ -405,6 +429,7 @@ export class Agent {
       if (again.result.finishReason === 'length') return { kind: 'truncated' }
       return { kind: 'message', message: again.result.message }
     } finally {
+      const draftAcceptance = computeDraftAcceptance(last?.timings)
       this.opts.events?.onStepDone?.({
         step,
         seconds: (performance.now() - started) / 1000,
@@ -414,6 +439,7 @@ export class Agent {
           ? { promptTokens: last.usage.prompt_tokens } : {}),
         ...(last?.timings?.predicted_per_second !== undefined
           ? { tokensPerSecond: last.timings.predicted_per_second } : {}),
+        ...(draftAcceptance !== undefined ? { draftAcceptance } : {}),
         continued,
       })
     }

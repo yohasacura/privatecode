@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+
+    /* Same strictness discipline as core/tsconfig.json -- a UI over a security-reviewed
+     * core is not the place to relax the checks that core itself is held to. */
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    /* Read-only cross-package import of core's protocol types (Plan 4 Task 4): app/ never
+     * gets its own copy of HostRequest/HostReply/HostEvent/etc., it imports the ones core
+     * already defines in core/src/host/protocol.ts. This is a TYPE-ONLY import path in
+     * every file that uses it (`import type { ... } from '@core/host/protocol'`) -- no
+     * core runtime code is meant to be pulled into the app bundle through this alias. */
+    "paths": {
+      "@core/*": ["../core/src/*"]
+    }
+  },
+  "include": ["src"],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}
