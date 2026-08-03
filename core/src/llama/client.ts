@@ -185,6 +185,11 @@ export class LlamaClient {
     let content = ''
     const toolCalls = new Map<number, { id: string; name: string; arguments: string }>()
     let finishReason = 'unknown'
+    // Distinct from `finishReason !== 'unknown'`: this tracks whether a finish_reason
+    // CHUNK was ever observed, not the value it carried. A loop that exits (reader
+    // `done`, no `[DONE]`) without ever seeing one means the connection dropped
+    // mid-generation — indistinguishable from success unless this is checked below.
+    let sawFinishReason = false
     let usage: ChatResult['usage']
     let timings: ChatResult['timings']
 
@@ -209,6 +214,7 @@ export class LlamaClient {
 
       if (choice.finish_reason) {
         finishReason = choice.finish_reason
+        sawFinishReason = true
         return
       }
 
@@ -274,9 +280,29 @@ export class LlamaClient {
       // The response had already arrived (2xx, headers read) before the stream broke, so
       // this is the server having answered and then the connection dropping mid-body —
       // not the "nothing is there" case.
+      //
+      // This throw did NOT come from the abort signal, so nothing is tearing the
+      // connection down on our behalf — reader.read() rejected for some other reason
+      // (malformed chunk, handleEvent/onDelta throwing, a raw socket error) and, left
+      // alone, the server keeps holding the request open. Cancel explicitly so the slot
+      // is released instead of sitting until the transport timeout.
+      await reader.cancel().catch(() => {})
       throw new LlamaRequestError(
         `llama.cpp request failed: stream read error (${String(cause)})`,
         { answered: true, body: String(cause).slice(0, MAX_ERROR_BODY_CHARS), partial },
+      )
+    }
+
+    if (!sawFinishReason) {
+      // The read loop ended (reader `done`, no exception) without ever seeing a
+      // finish_reason chunk — the peer closed the connection mid-generation. Left alone
+      // this assembles into a normal-looking ChatResult (finishReason 'unknown'),
+      // indistinguishable from a real completion and masking truncation. A stream that
+      // saw finish_reason but only lost the trailing usage chunk / `[DONE]` still falls
+      // through below and returns normally — that is a graceful degradation, not this.
+      throw new LlamaRequestError(
+        'llama.cpp stream ended before completion (connection dropped mid-generation)',
+        { answered: true, partial: { reasoning, content } },
       )
     }
 
