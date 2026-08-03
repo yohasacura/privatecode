@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import type { AgentMode } from '@core/permissions/engine'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatAction, ChatItem, ChatState } from '../lib/state'
+import { Markdown } from '../lib/markdown'
 import { ApprovalCard, QuestionCard, TodosWidget } from './approvals'
 
 const MODES: readonly AgentMode[] = ['normal', 'plan', 'auto-edit', 'autopilot']
@@ -152,7 +153,15 @@ export function ChatPanel({
       <TodosWidget todos={state.todos} />
 
       <div class="chat-transcript">
-        {state.items.map((item) => <ChatItemRow key={item.id} item={item} />)}
+        {state.items.length === 0 && !state.turnRunning
+          ? (
+            <div class="chat-empty">
+              <p>Ask for a change, a review, or an explanation.<br />
+                The agent reads and edits only this workspace.</p>
+              <p><kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline · <kbd>Esc</kbd> stop a turn</p>
+            </div>
+            )
+          : state.items.map((item) => <ChatItemRow key={item.id} item={item} />)}
       </div>
 
       <div class="chat-turn-status">
@@ -193,8 +202,8 @@ export function ChatPanel({
           placeholder="Message the model. Enter to send, Shift+Enter for a newline, Esc to abort."
         />
         <div class="chat-input-buttons">
-          <button onClick={send} disabled={state.turnRunning || input.trim() === ''}>Send</button>
-          <button class="stop-button" onClick={abort} disabled={!state.turnRunning}>Stop</button>
+          <button class="btn btn-primary send-button" onClick={send} disabled={state.turnRunning || input.trim() === ''}>Send</button>
+          <button class="btn btn-danger" onClick={abort} disabled={!state.turnRunning}>Stop</button>
         </div>
       </div>
     </div>
@@ -205,31 +214,27 @@ function ChatItemRow({ item }: { item: ChatItem }) {
   switch (item.kind) {
     case 'user':
       return (
-        <div class="chat-row chat-user">
-          <div class="chat-row-label">you</div>
-          <pre class="chat-text">{item.text}</pre>
+        <div class="chat-row chat-row-user">
+          <div class="chat-user-bubble">{item.text}</div>
         </div>
       )
     case 'assistant':
-      // Global Constraint 6: the model's output renders as PLAIN TEXT here, never through
-      // innerHTML or a markdown renderer -- `{item.text}` is a plain JSX text child (Preact
-      // escapes it like any other text node), and `.chat-text` is `white-space: pre-wrap`
-      // rather than HTML-interpreted. Markdown rendering is deliberately deferred; this
-      // WebView also holds Tauri IPC power, so treating model text as markup is exactly the
-      // injection seam the plan's security review is watching for.
+      // Global Constraint 6 still holds with markdown: lib/markdown.tsx tokenizes with
+      // marked and maps every token to JSX text nodes itself -- there is NO HTML sink
+      // (no innerHTML, no hrefs from model output; raw HTML tokens render as literal
+      // text). Preact escapes every string exactly as the old <pre> rendering did; the
+      // model gained formatting, not markup execution.
       return (
         <div class="chat-row chat-assistant">
-          <div class="chat-row-label">assistant</div>
-          <pre class="chat-text">
-            {item.text}
-            {item.interrupted ? <span class="interrupted-marker"> [interrupted]</span> : null}
-          </pre>
+          <Markdown text={item.text} />
+          {item.interrupted ? <div class="interrupted-marker">⏹ interrupted by you</div> : null}
         </div>
       )
     case 'thinking':
       return (
         <div class="chat-row chat-thinking">
-          [thinking… ~{Math.ceil(item.chars / 4)} tok]
+          <span class="thinking-pulse" aria-hidden="true" />
+          thinking… ~{Math.ceil(item.chars / 4)} tokens
         </div>
       )
     case 'tool': {
