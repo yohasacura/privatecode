@@ -1,5 +1,5 @@
 import type { InteractionPort } from '../interaction.js'
-import type { LlamaClient } from '../llama/client.js'
+import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ChatResult } from '../llama/types.js'
 import type { AgentMode, PermissionEngine } from '../permissions/engine.js'
 import { suggestRules } from '../permissions/rules.js'
@@ -52,6 +52,13 @@ export interface StepInfo {
   step: number
   seconds: number
   completionTokens?: number
+  /**
+   * The server's own count of this step's prompt (input) tokens -- the newest one is the
+   * best available estimate of the whole transcript's current size, since it already
+   * includes everything the model was actually shown, prior completions included. Used by
+   * `Session.contextUsage()`/`fillRatio()` for real (non-heuristic) context accounting.
+   */
+  promptTokens?: number
   tokensPerSecond?: number
   continued: boolean
 }
@@ -60,6 +67,17 @@ export interface AgentEvents {
   /** Every step emits exactly one of these, and exactly one matching onStepDone. */
   onStepStart?(info: StepStartInfo): void
   onThinking?(text: string): void
+  /**
+   * Incremental reasoning text, fired as the server streams it. Only ever fires when
+   * either this or `onTextDelta` is present on `events` — that presence is what switches
+   * the underlying call from `chat()` to `chatStream()`. `onThinking` above still fires
+   * once, with the whole assembled blob, after the step's call(s) finish; a host that
+   * wires both gets incremental text during generation and the same final callback it
+   * always got.
+   */
+  onThinkingDelta?(text: string): void
+  /** Incremental visible-text equivalent of `onThinkingDelta`; see there for when it fires. */
+  onTextDelta?(text: string): void
   /**
    * The step ran out of room mid-thought and a forced continuation is starting *now*.
    * Without this the median hard step is silent across two full generations.
@@ -392,6 +410,8 @@ export class Agent {
         seconds: (performance.now() - started) / 1000,
         ...(last?.usage?.completion_tokens !== undefined
           ? { completionTokens: last.usage.completion_tokens } : {}),
+        ...(last?.usage?.prompt_tokens !== undefined
+          ? { promptTokens: last.usage.prompt_tokens } : {}),
         ...(last?.timings?.predicted_per_second !== undefined
           ? { tokensPerSecond: last.timings.predicted_per_second } : {}),
         continued,
@@ -414,18 +434,36 @@ export class Agent {
     const signal = this.opts.signal
       ? AbortSignal.any([this.opts.signal, deadline])
       : deadline
+    const events = this.opts.events
+    const request = {
+      messages: [...this.transcript.messages()] as ChatMessage[],
+      tools: schemas,
+      toolChoice,
+      maxTokens: this.opts.maxTokensPerStep,
+      signal,
+    }
     try {
-      const result = await this.opts.client.chat({
-        messages: [...this.transcript.messages()] as ChatMessage[],
-        tools: schemas,
-        toolChoice,
-        maxTokens: this.opts.maxTokensPerStep,
-        signal,
-      })
+      // Streaming is opt-in per host: only switched on when a host actually wired a delta
+      // callback. Integration tests and compaction never set one, so they keep calling
+      // chat() exactly as before. Everything below this call — truncation continuation,
+      // tool dispatch, transcript append, timeout/abort mapping — reads the ASSEMBLED
+      // ChatResult that both methods return in the same shape; nothing downstream knows
+      // which path produced it.
+      const result = events?.onThinkingDelta || events?.onTextDelta
+        ? await this.opts.client.chatStream(request, {
+          onDelta: (d) => {
+            if (d.reasoning) events?.onThinkingDelta?.(d.reasoning)
+            if (d.content) events?.onTextDelta?.(d.content)
+          },
+        })
+        : await this.opts.client.chat(request)
       return { kind: 'ok', result }
     } catch (e) {
       // The caller's cancel wins over our own deadline when both fired.
-      if (this.opts.signal?.aborted) return { kind: 'aborted' }
+      if (this.opts.signal?.aborted) {
+        this.appendInterrupted(e)
+        return { kind: 'aborted' }
+      }
       if (deadline.aborted) return { kind: 'timeout' }
       throw e
     }
@@ -494,7 +532,13 @@ export class Agent {
             tool: name,
             summary: preview.summary,
             detail: preview.detail,
-            suggestedRules: suggestRules(key),
+            // An explicit ask RULE (decision.source === 'rule') was written specifically to
+            // require asking every time this key matches; suggesting "always allow" here
+            // would be a lie, since decide() consults the ask tier before ever looking at
+            // sessionAllow, so no allow rule could ever win over it for the same key. A
+            // mode-default ask (source: 'mode') carries no such conflict and still offers
+            // its normal suggestions.
+            suggestedRules: decision.source === 'rule' ? [] : suggestRules(key),
           })
           // The dialog can resolve after the turn was cancelled — a step lasts 35-40 s, an
           // Esc press can land at any point in that window, and "pending approval" is no
@@ -605,6 +649,32 @@ export class Agent {
     if (!m.content && !m.reasoning_content) return
     const out: ChatMessage = { role: 'assistant', content: m.content ?? null }
     if (m.reasoning_content) out.reasoning_content = m.reasoning_content
+    this.transcript.append(out)
+  }
+
+  /**
+   * User-initiated abort (Esc), never the step deadline or a transport error: the caller
+   * only reaches here after confirming `this.opts.signal.aborted` itself, so a timeout or
+   * a genuine connection failure never runs this. DESIGN.md's interrupt row: the stream's
+   * partial is KEPT in the transcript, marked interrupted, so the prefix it already built
+   * stays warm and resuming costs seconds instead of a fresh generation.
+   *
+   * `err.partial` is only ever set by `chatStream` for a failure that occurred mid-stream
+   * (Task 3) -- absent entirely for an abort that fired before the first byte, and present
+   * but both fields empty for an abort between the response arriving and the first delta.
+   * Either way there is nothing worth keeping, so nothing is appended.
+   *
+   * No tool_calls, ever -- same principle as appendTruncated: a call cut off mid-stream may
+   * be malformed JSON, and an assistant turn carrying a tool_call with no matching tool
+   * reply is invalid on the next request anyway.
+   */
+  private appendInterrupted(e: unknown): void {
+    const partial = e instanceof LlamaRequestError ? e.partial : undefined
+    if (!partial || (!partial.reasoning && !partial.content)) return
+    const marker = '[interrupted by the user before this reply finished]'
+    const content = partial.content ? `${partial.content}\n${marker}` : marker
+    const out: ChatMessage = { role: 'assistant', content }
+    if (partial.reasoning) out.reasoning_content = partial.reasoning
     this.transcript.append(out)
   }
 

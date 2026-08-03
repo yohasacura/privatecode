@@ -15,6 +15,24 @@ export interface Decision {
   verdict: 'allow' | 'ask' | 'deny'
   /** Human-and-model-readable one-liner: which rule or mode default decided. */
   reason: string
+  /**
+   * Which tier of the engine produced this decision: `'builtin'` (the hard-deny table),
+   * `'rule'` (a layer's allow/ask/deny list), `'session'` (an `addSessionRule` /
+   * `remember(rule, 'session')` grant), or `'mode'` (the mode-default fallback, including
+   * the control-op shortcut and the fail-closed unknown-mode branch).
+   *
+   * The gate in `agent/loop.ts` reads this to keep an "always allow" offer honest: an
+   * `ask` verdict whose `source` is `'rule'` came from a rule the user (or settings author)
+   * wrote specifically to require asking every single time, and `decide()` consults that
+   * ask tier before ever looking at `sessionAllow` -- so offering "always allow" alongside
+   * such a decision would be a lie, since a session/layer allow rule can never override an
+   * explicit ask rule for the same key. An `ask` verdict from `source: 'mode'` (a mode
+   * default, not an explicit rule) carries no such conflict and may still offer one.
+   *
+   * Additive field: every existing caller of `decide()` that only reads `verdict`/`reason`
+   * is unaffected.
+   */
+  source: 'builtin' | 'rule' | 'session' | 'mode'
 }
 
 /** Tools whose grantable act is writing to the workspace. */
@@ -129,6 +147,15 @@ export class PermissionEngine {
   // know about. Command-keyed tools are exempt from that second check: a command spec
   // legitimately contains `//` (a URL in `git clone https://...`), so the same syntax that
   // is a red flag for a path rule is unremarkable for a command rule.
+  //
+  // A rule with a spec bound to a tool that is neither `FILE_WRITE_TOOLS` nor `EXEC_TOOLS`
+  // (`read_file(docs/**)`, `git_status(x)`, ...) is a different, stronger case: those tools'
+  // `PermissionKey` never carries `command` or `paths` at all (see tools/types.ts), so
+  // `ruleMatches` can never match the spec regardless of whether its syntax is canonical --
+  // there is no path or command to check it against, full stop. That is reported instead
+  // of (not in addition to) the non-canonical-syntax check above, which assumes the spec
+  // was at least attempting to describe a path; here the whole notion of a spec is moot for
+  // this tool. The rule still stays in the list (inert, matching the non-canonical case).
   private parseRuleList(rules: string[], scope: SettingsLayer['scope']): ParsedRule[] {
     const result: ParsedRule[] = []
     for (const raw of rules) {
@@ -137,7 +164,11 @@ export class PermissionEngine {
         this.problems.push(`ignored malformed rule "${raw}" in ${scopeLabel(scope)}`)
         continue
       }
-      if (!EXEC_TOOLS.has(parsed.tool) && parsed.spec !== undefined && specHasNonCanonicalSyntax(parsed.spec)) {
+      if (parsed.spec !== undefined && !FILE_WRITE_TOOLS.has(parsed.tool) && !EXEC_TOOLS.has(parsed.tool)) {
+        this.problems.push(
+          `rule "${parsed.raw}" in ${scopeLabel(scope)} has a (${parsed.spec}) qualifier, but ${parsed.tool} calls carry no command or paths to match it; the rule can never fire — use the bare tool name`,
+        )
+      } else if (!EXEC_TOOLS.has(parsed.tool) && parsed.spec !== undefined && specHasNonCanonicalSyntax(parsed.spec)) {
         this.problems.push(
           `rule "${parsed.raw}" in ${scopeLabel(scope)} can never match a workspace path (non-canonical syntax); rewrite it without ./ .. // or an absolute prefix`,
         )
@@ -155,6 +186,7 @@ export class PermissionEngine {
         return {
           verdict: 'deny',
           reason: `Blocked by built-in protection (${hard.why}). This cannot be allowed by any rule; ask the user to run it themselves.`,
+          source: 'builtin',
         }
       }
     }
@@ -163,11 +195,12 @@ export class PermissionEngine {
       const rule = layer.deny.find((r) => ruleMatches(r, key) || denyMatchesUncanonicalizablePath(r, key))
       if (rule) {
         if (ruleMatches(rule, key)) {
-          return { verdict: 'deny', reason: `Denied by rule "${rule.raw}" (${scopeLabel(layer.scope)}).` }
+          return { verdict: 'deny', reason: `Denied by rule "${rule.raw}" (${scopeLabel(layer.scope)}).`, source: 'rule' }
         }
         return {
           verdict: 'deny',
           reason: `Denied by rule "${rule.raw}" (${scopeLabel(layer.scope)}) — path could not be resolved to a workspace-relative form, failing closed.`,
+          source: 'rule',
         }
       }
     }
@@ -175,18 +208,18 @@ export class PermissionEngine {
     for (const layer of this.layers) {
       const rule = layer.ask.find((r) => ruleMatches(r, key))
       if (rule) {
-        return { verdict: 'ask', reason: `Ask required by rule "${rule.raw}" (${scopeLabel(layer.scope)}).` }
+        return { verdict: 'ask', reason: `Ask required by rule "${rule.raw}" (${scopeLabel(layer.scope)}).`, source: 'rule' }
       }
     }
 
     const sessionRule = this.sessionAllow.find((r) => ruleMatches(r, key))
     if (sessionRule) {
-      return { verdict: 'allow', reason: `Allowed by rule "${sessionRule.raw}" (session).` }
+      return { verdict: 'allow', reason: `Allowed by rule "${sessionRule.raw}" (session).`, source: 'session' }
     }
     for (const layer of this.layers) {
       const rule = layer.allow.find((r) => ruleMatches(r, key))
       if (rule) {
-        return { verdict: 'allow', reason: `Allowed by rule "${rule.raw}" (${scopeLabel(layer.scope)}).` }
+        return { verdict: 'allow', reason: `Allowed by rule "${rule.raw}" (${scopeLabel(layer.scope)}).`, source: 'rule' }
       }
     }
 
@@ -201,7 +234,7 @@ export class PermissionEngine {
     // already caught it earlier in `decide()` if the user wrote one; this is only the
     // fallback once no rule matched at all.
     if (EXEC_TOOLS.has(key.tool) && key.command === undefined) {
-      return { verdict: 'allow', reason: 'control operation' }
+      return { verdict: 'allow', reason: 'control operation', source: 'mode' }
     }
 
     switch (this.mode) {
@@ -209,25 +242,25 @@ export class PermissionEngine {
         // Agent already restricts the offered tools to read-only in plan mode; the engine
         // never sees a write tool here, and if it somehow does, the loop's allowedTools
         // refusal fires first.
-        return { verdict: 'allow', reason: 'plan mode' }
+        return { verdict: 'allow', reason: 'plan mode', source: 'mode' }
       case 'autopilot':
-        return { verdict: 'allow', reason: 'autopilot mode' }
+        return { verdict: 'allow', reason: 'autopilot mode', source: 'mode' }
       case 'auto-edit':
-        if (FILE_WRITE_TOOLS.has(key.tool)) return { verdict: 'allow', reason: 'auto-edit mode' }
-        if (EXEC_TOOLS.has(key.tool)) return { verdict: 'ask', reason: 'auto-edit mode' }
-        return { verdict: 'allow', reason: 'auto-edit mode' }
+        if (FILE_WRITE_TOOLS.has(key.tool)) return { verdict: 'allow', reason: 'auto-edit mode', source: 'mode' }
+        if (EXEC_TOOLS.has(key.tool)) return { verdict: 'ask', reason: 'auto-edit mode', source: 'mode' }
+        return { verdict: 'allow', reason: 'auto-edit mode', source: 'mode' }
       case 'normal':
         if (FILE_WRITE_TOOLS.has(key.tool) || EXEC_TOOLS.has(key.tool)) {
-          return { verdict: 'ask', reason: 'normal mode' }
+          return { verdict: 'ask', reason: 'normal mode', source: 'mode' }
         }
-        return { verdict: 'allow', reason: 'normal mode' }
+        return { verdict: 'allow', reason: 'normal mode', source: 'mode' }
       default:
         // Fail closed on a mode value this switch doesn't recognize -- `AgentMode`'s type
         // rules this out statically, but `mode` is a mutable public field, so a bad value
         // reaching here at runtime (a bug elsewhere, a bad deserialize, ...) must not fall
         // through to `undefined` (which every caller would then have to guard against
         // separately); it asks instead of silently doing nothing or crashing.
-        return { verdict: 'ask', reason: 'unknown mode' }
+        return { verdict: 'ask', reason: 'unknown mode', source: 'mode' }
     }
   }
 
@@ -246,6 +279,12 @@ export class PermissionEngine {
     const parsed = parseRule(rule)
     if (parsed === null) {
       this.problems.push(`ignored malformed rule "${rule}" from an approval`)
+      return
+    }
+    if (parsed.spec !== undefined && !FILE_WRITE_TOOLS.has(parsed.tool) && !EXEC_TOOLS.has(parsed.tool)) {
+      this.problems.push(
+        `rule "${parsed.raw}" from an approval has a (${parsed.spec}) qualifier, but ${parsed.tool} calls carry no command or paths to match it; the rule can never fire — use the bare tool name`,
+      )
       return
     }
     if (!EXEC_TOOLS.has(parsed.tool) && parsed.spec !== undefined && specHasNonCanonicalSyntax(parsed.spec)) {
@@ -298,6 +337,12 @@ export class PermissionEngine {
     const parsed = parseRule(rule)
     if (parsed === null) {
       this.problems.push(`ignored malformed rule "${rule}" from an approval`)
+      return
+    }
+    if (parsed.spec !== undefined && !FILE_WRITE_TOOLS.has(parsed.tool) && !EXEC_TOOLS.has(parsed.tool)) {
+      this.problems.push(
+        `rule "${parsed.raw}" from an approval has a (${parsed.spec}) qualifier, but ${parsed.tool} calls carry no command or paths to match it; the rule can never fire — use the bare tool name`,
+      )
       return
     }
     if (!EXEC_TOOLS.has(parsed.tool) && parsed.spec !== undefined && specHasNonCanonicalSyntax(parsed.spec)) {

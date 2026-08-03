@@ -61,6 +61,19 @@ export interface ChatResult {
   wallSeconds: number
 }
 
+export interface StreamDelta {
+  /** Incremental reasoning text, when this chunk carried any. */
+  reasoning?: string
+  /** Incremental visible text. */
+  content?: string
+  /** True when the server signalled a tool call is being emitted (first fragment). */
+  toolCallStarted?: boolean
+}
+
+export interface StreamCallbacks {
+  onDelta?(d: StreamDelta): void
+}
+
 export interface ServerProps {
   buildInfo?: string
   modelPath?: string

@@ -64,8 +64,17 @@ export class Transcript {
    * Parses one message per line. A line that fails to parse throws immediately, naming
    * its 1-based line number, rather than silently dropping a corrupt entry or letting a
    * raw SyntaxError (with no indication of *where*) escape to the caller.
+   *
+   * `lineOffset` (default 0) is for a caller -- `SessionStore.load`, after slicing off
+   * everything up to the last compaction marker -- whose `text` is not the whole file:
+   * without it, a corrupt line would be reported by its position within the SLICE, which
+   * silently disagrees with the line a human opening the actual `.jsonl` file would count
+   * to. When non-zero, the message gains a `(file line N)` suffix naming the true file
+   * line (`lineOffset` + the slice-local 1-based line number); the slice-local number
+   * alone stays first so existing callers/output shape are unchanged when `lineOffset`
+   * is its default 0.
    */
-  static fromJSONL(text: string): Transcript {
+  static fromJSONL(text: string, lineOffset = 0): Transcript {
     const t = new Transcript()
     const lines = text.split('\n')
     for (let i = 0; i < lines.length; i++) {
@@ -74,8 +83,11 @@ export class Transcript {
       try {
         t.append(JSON.parse(line) as ChatMessage)
       } catch (e) {
+        const localLine = i + 1
+        const fileNote = lineOffset > 0 ? ` (file line ${localLine + lineOffset})` : ''
         throw new Error(
-          `corrupt transcript at line ${i + 1}: ${e instanceof Error ? e.message : String(e)}`,
+          `corrupt transcript at line ${localLine}${fileNote}: ` +
+          `${e instanceof Error ? e.message : String(e)}`,
         )
       }
     }
