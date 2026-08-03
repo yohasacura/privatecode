@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { memo } from 'preact/compat'
-import type { VNode } from 'preact'
+import type { ComponentChildren, VNode } from 'preact'
 import type { StoppedBecause } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatAction, ChatItem, ChatState } from '../lib/state'
@@ -69,6 +69,14 @@ export function Transcript({
   const waiting = state.turnRunning && isQuiet(lastItem) &&
     !state.pendingApproval && !state.pendingQuestion
 
+  // While an approval is open, the call it is asking about is already announced -- in more
+  // detail, with the diff or the command text -- by the card itself. Rendering the bare
+  // pending stub above it says the same thing twice. It comes back the moment the decision
+  // is made, carrying the outcome.
+  const suppressedId = state.pendingApproval !== null && lastItem?.kind === 'tool' && lastItem.result === undefined
+    ? lastItem.id
+    : null
+
   return (
     <div class="transcript-wrap">
       <TodosCard todos={state.todos} />
@@ -77,29 +85,40 @@ export function Transcript({
         {state.items.length === 0 && !state.turnRunning
           ? <EmptyState />
           : state.items.map((item) => (
-            <TranscriptRow key={item.id} item={item} onOpenFile={onOpenFile} />
+            item.id === suppressedId
+              ? null
+              : <TranscriptRow key={item.id} item={item} onOpenFile={onOpenFile} />
           ))}
 
         {waiting && (
           <div class="row row-waiting">
-            <span class="pulse-dot" aria-hidden="true" />
-            <span>working…{state.currentStep ? ` step ${state.currentStep.step}` : ''}</span>
+            <div class="row-gutter" aria-hidden="true"><span class="pulse-dot" /></div>
+            <div class="row-body">
+              working{state.currentStep ? ` · step ${state.currentStep.step}` : ''}
+            </div>
           </div>
         )}
 
+        {/* Wrapped in a Row like everything else: a card that ignored the gutter sat 28px
+            left of the whole conversation, which is exactly the sort of thing that makes a
+            UI look assembled rather than designed. */}
         {state.pendingApproval && (
-          <ApprovalCard
-            client={client}
-            approval={state.pendingApproval}
-            onAnswered={(decision) => dispatch({ type: 'approval.answered', decision })}
-          />
+          <Row kind="card-row" marker={Icon.shield()}>
+            <ApprovalCard
+              client={client}
+              approval={state.pendingApproval}
+              onAnswered={(decision) => dispatch({ type: 'approval.answered', decision })}
+            />
+          </Row>
         )}
         {state.pendingQuestion && (
-          <QuestionCard
-            client={client}
-            question={state.pendingQuestion}
-            onAnswered={(answer) => dispatch({ type: 'question.answered', answer })}
-          />
+          <Row kind="card-row" marker={Icon.chat()}>
+            <QuestionCard
+              client={client}
+              question={state.pendingQuestion}
+              onAnswered={(answer) => dispatch({ type: 'question.answered', answer })}
+            />
+          </Row>
         )}
       </div>
 
@@ -136,6 +155,28 @@ function EmptyState(): VNode {
   )
 }
 
+/**
+ * Every row has the same shape: a narrow marker gutter and a content column.
+ *
+ * That gutter is what turns a pile of differently-shaped cards into a single readable
+ * column. Everything lines up on one text edge, and the left rail carries the status —
+ * who spoke, whether a call succeeded — so the content itself does not have to repeat it.
+ */
+function Row({
+  kind, marker, children,
+}: {
+  kind: string
+  marker?: VNode | null
+  children: ComponentChildren
+}): VNode {
+  return (
+    <div class={`row row-${kind}`}>
+      <div class="row-gutter" aria-hidden="true">{marker}</div>
+      <div class="row-body">{children}</div>
+    </div>
+  )
+}
+
 /** See the file header: the reference comparison on `item` is what keeps a streamed token
  * from re-rendering (and re-parsing) the entire transcript. `onOpenFile` is stable — it is
  * created once in `App.tsx` — so the default shallow comparison is enough. */
@@ -147,10 +188,13 @@ const TranscriptRow = memo(function TranscriptRow({
 }): VNode {
   switch (item.kind) {
     case 'user':
+      // Not a right-aligned bubble: a long instruction is the most important thing on the
+      // screen and should get the full reading width, marked as input rather than boxed
+      // off in a corner the way a messaging app would.
       return (
-        <div class="row row-user">
-          <div class="user-bubble">{item.text}</div>
-        </div>
+        <Row kind="user" marker={<span class="marker-caret">›</span>}>
+          <div class="user-text">{item.text}</div>
+        </Row>
       )
 
     case 'assistant':
@@ -158,10 +202,10 @@ const TranscriptRow = memo(function TranscriptRow({
       // is no HTML sink anywhere in that path, so model output gained formatting, never
       // markup execution.
       return (
-        <div class="row row-assistant">
+        <Row kind="assistant">
           <Markdown text={item.text} />
           {item.interrupted && <div class="interrupted">stopped by you</div>}
-        </div>
+        </Row>
       )
 
     case 'thinking':
@@ -172,10 +216,9 @@ const TranscriptRow = memo(function TranscriptRow({
 
     case 'error':
       return (
-        <div class="row row-error">
-          <span class="row-error-icon">{Icon.alert()}</span>
-          <span>{item.message}</span>
-        </div>
+        <Row kind="error" marker={Icon.alert()}>
+          <div class="notice-title">{item.message}</div>
+        </Row>
       )
 
     case 'approval-record': {
@@ -183,34 +226,30 @@ const TranscriptRow = memo(function TranscriptRow({
       const comment = item.decision.verdict === 'deny' ? item.decision.comment : undefined
       const remember = item.decision.verdict === 'allow' ? item.decision.remember : undefined
       return (
-        <div class={`row row-record record-${item.decision.verdict}`}>
-          <span class="record-icon">{allowed ? Icon.check() : Icon.x()}</span>
+        <Row kind={`record record-${item.decision.verdict}`} marker={allowed ? Icon.check() : Icon.x()}>
           <span class="record-text">
             <b>{item.tool}</b> {allowed ? 'allowed' : 'denied'} — {item.summary}
             {remember && <em> · always: {remember.rule} ({remember.layer})</em>}
             {comment && <em> · “{comment}”</em>}
           </span>
-        </div>
+        </Row>
       )
     }
 
     case 'question-record':
       return (
-        <div class="row row-record">
-          <span class="record-icon">{Icon.check()}</span>
+        <Row kind="record" marker={Icon.check()}>
           <span class="record-text">{item.question} — <b>{item.answer}</b></span>
-        </div>
+        </Row>
       )
 
     case 'stopped': {
       const explain = STOP_REASONS[item.reason]
       return (
-        <div class="row row-stopped">
-          <span class="stopped-icon">{Icon.stop()}</span>
-          <span>
-            <b>{explain.title}</b> {explain.detail}
-          </span>
-        </div>
+        <Row kind="stopped" marker={Icon.stop()}>
+          <div class="notice-title">{explain.title}</div>
+          <div class="notice-detail">{explain.detail}</div>
+        </Row>
       )
     }
   }
@@ -271,15 +310,17 @@ function ReasoningBlock({ item }: { item: ChatItem & { kind: 'thinking' } }): VN
     : now - item.startedAtMs
 
   return (
-    <div class={`row reasoning ${item.done ? 'reasoning-done' : 'reasoning-live'}`}>
+    <Row
+      kind={`reasoning ${item.done ? 'reasoning-done' : 'reasoning-live'}`}
+      marker={<span class="marker-brain">{Icon.brain()}</span>}
+    >
       <button class="reasoning-head" onClick={() => setOpen((o) => !o)}>
+        <span class="reasoning-label">{item.done ? 'Reasoned' : 'Reasoning'}</span>
+        {elapsed !== null && elapsed >= 0 && (
+          <span class="reasoning-meta">{formatDuration(elapsed)}</span>
+        )}
+        <span class="reasoning-meta">~{estimateTokens(item.text.length)} tok</span>
         <span class="reasoning-chevron">{open ? Icon.chevronDown() : Icon.chevronRight()}</span>
-        <span class="reasoning-icon">{Icon.brain()}</span>
-        <span class="reasoning-title">
-          {item.done ? 'Thought' : 'Thinking'}
-          {elapsed !== null && elapsed >= 0 && <> for {formatDuration(elapsed)}</>}
-        </span>
-        <span class="reasoning-meta">~{estimateTokens(item.text.length)} tokens</span>
       </button>
       {open && (
         <div class="reasoning-body">
@@ -287,7 +328,7 @@ function ReasoningBlock({ item }: { item: ChatItem & { kind: 'thinking' } }): VN
           {!item.done && <span class="caret" aria-hidden="true" />}
         </div>
       )}
-    </div>
+    </Row>
   )
 }
 
@@ -327,41 +368,51 @@ function ToolCard({
   const isOpen = open ?? (result ? defaultOpen(p.kind, result.ok, content) : false)
   const stat = p.kind === 'diff' && result?.ok ? diffStat(content) : null
 
+  // The success/failure glyph lives in the shared gutter, not inside the card: that is the
+  // whole point of the gutter, and it buys the header the room to show the actual target.
   return (
-    <div class={`row tool-card tool-${pending ? 'pending' : result.ok ? 'ok' : 'fail'}`}>
-      <div class="tool-head">
-        <span class="tool-status">
-          {pending
-            ? <span class="pulse-dot" aria-hidden="true" />
-            : result.ok ? Icon.check() : Icon.x()}
-        </span>
-        <span class="tool-icon">{KIND_ICON[p.kind]()}</span>
-        <span class="tool-verb">{p.verb}</span>
-        {p.path !== null
-          ? (
-            <button class="tool-target tool-target-link" onClick={() => onOpenFile(p.path as string)} title={p.target}>
-              {p.target}
-            </button>
-            )
-          : <span class="tool-target" title={p.target}>{p.target}</span>}
-        {stat && <DiffStatBadge stat={stat} />}
-        {!pending && (
-          <button class="tool-toggle" onClick={() => setOpen(!isOpen)}>
-            {isOpen ? Icon.chevronDown() : Icon.chevronRight()}
+    <Row
+      kind={`tool tool-${pending ? 'pending' : result.ok ? 'ok' : 'fail'}`}
+      marker={pending
+        ? <span class="pulse-dot" />
+        : result.ok ? Icon.check() : Icon.x()}
+    >
+      <div class="tool-card">
+        <button
+          class="tool-head"
+          onClick={() => { if (!pending) setOpen(!isOpen) }}
+          disabled={pending}
+        >
+          <span class="tool-icon">{KIND_ICON[p.kind]()}</span>
+          <span class="tool-verb">{p.verb}</span>
+          <span class="tool-target" title={p.target}>{p.target}</span>
+          {stat && <DiffStatBadge stat={stat} />}
+          {!pending && (
+            <span class="tool-toggle">{isOpen ? Icon.chevronDown() : Icon.chevronRight()}</span>
+          )}
+        </button>
+
+        {/* Opening the file is its own control rather than the whole header, so clicking
+            the row to expand a diff can never navigate somewhere unexpected instead. */}
+        {p.path !== null && (
+          <button class="tool-open" onClick={() => onOpenFile(p.path as string)} title={`Open ${p.path}`}>
+            {Icon.file()}
           </button>
         )}
-      </div>
 
-      {!pending && isOpen && (
-        <div class="tool-body">
-          {p.kind === 'diff' && result.ok
-            ? <DiffView content={content} />
-            : <pre class="tool-output">{content}</pre>}
-        </div>
-      )}
-      {!pending && !isOpen && result.preview !== '' && (
-        <div class="tool-preview">{result.preview}</div>
-      )}
-    </div>
+        {!pending && isOpen && (
+          <div class="tool-body">
+            {p.kind === 'diff' && result.ok
+              ? <DiffView content={content} />
+              : <pre class="tool-output">{content}</pre>}
+          </div>
+        )}
+        {/* A preview that merely repeats the target ("src/app.ts (32 lines)" under a header
+            already reading "Read src/app.ts") is a second line that says nothing. */}
+        {!pending && !isOpen && result.preview !== '' && !result.preview.includes(p.target) && (
+          <div class="tool-preview">{result.preview}</div>
+        )}
+      </div>
+    </Row>
   )
 }

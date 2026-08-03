@@ -51,10 +51,11 @@ function toRows(content: string): { rows: Row[]; numbered: boolean } {
   for (const line of lines) {
     const hunk = /^@@ line (\d+) @@/.exec(line)
     if (hunk) {
+      // Consumed, not rendered: it only says where the change starts, which the line
+      // gutters below then say on every single row.
       oldNo = Number(hunk[1])
       newNo = Number(hunk[1])
       numbered = true
-      rows.push({ kind: 'meta', text: line })
       continue
     }
     if (line.startsWith('---') || line.startsWith('+++')) {

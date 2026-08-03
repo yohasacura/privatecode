@@ -16,10 +16,10 @@ import { Icon } from '../components/icons'
  */
 
 const MODES: readonly { value: AgentMode; label: string; hint: string }[] = [
-  { value: 'normal', label: 'Normal', hint: 'asks before editing files or running commands' },
-  { value: 'plan', label: 'Plan', hint: 'read-only: investigates and proposes, changes nothing' },
-  { value: 'auto-edit', label: 'Auto-edit', hint: 'edits freely, still asks before commands' },
-  { value: 'autopilot', label: 'Autopilot', hint: 'acts unattended; built-in protections still apply' },
+  { value: 'normal', label: 'Normal', hint: 'Asks before editing files or running commands.' },
+  { value: 'plan', label: 'Plan', hint: 'Read-only. Investigates and proposes, changes nothing.' },
+  { value: 'auto-edit', label: 'Auto-edit', hint: 'Edits freely. Still asks before running commands.' },
+  { value: 'autopilot', label: 'Autopilot', hint: 'Acts unattended. Built-in protections still apply.' },
 ]
 
 /** Well under `protocol.ts`'s 1 MB line cap: one oversized request line makes the sidecar
@@ -123,46 +123,41 @@ export function Composer({
   const lastItem = state.items[state.items.length - 1]
   const runningTool = lastItem?.kind === 'tool' && lastItem.result === undefined ? lastItem.name : null
 
+  /**
+   * The one line of live state, shown INSIDE the control rather than on a strip above it.
+   * `currentStep` is null for the whole stretch between a step's model call ending and the
+   * next starting -- exactly when a tool is running or an approval is open -- so that case
+   * gets its own wording instead of a blank.
+   */
+  function statusLine(): VNode | null {
+    if (waitingOnYou) return <span class="status-live">waiting on you · nothing generating</span>
+    if (state.turnRunning) {
+      if (!step) return <span class="status-live">{runningTool ? `running ${runningTool}` : 'working'}</span>
+      return (
+        <span class="status-live">
+          step {step.step} · {formatDuration(now - step.startedAtMs)}
+          {remainingMs !== null && remainingMs < 20_000 && (
+            <span class="warn"> · {Math.ceil(remainingMs / 1000)}s to timeout</span>
+          )}
+        </span>
+      )
+    }
+    if (last) {
+      return (
+        <span class="status-idle">
+          {last.seconds.toFixed(1)}s
+          {last.tokensPerSecond !== undefined && ` · ${last.tokensPerSecond.toFixed(1)} tok/s`}
+        </span>
+      )
+    }
+    return <span class="status-idle"><kbd>↵</kbd> send · <kbd>⇧↵</kbd> newline</span>
+  }
+
   return (
     <div class="composer">
-      {/* Never blank while a turn is alive. `currentStep` is null for the whole stretch
-          between a step's model call ending and the next one starting -- which is exactly
-          when a tool is executing or an approval is open -- and the original version showed
-          nothing at all for that entire window. */}
-      <div class="composer-status">
-        {waitingOnYou && (
-          <>
-            <span class="pulse-dot" aria-hidden="true" />
-            <span>waiting for your answer — nothing is generating</span>
-          </>
-        )}
-        {!waitingOnYou && state.turnRunning && (
-          <>
-            <span class="pulse-dot" aria-hidden="true" />
-            {step
-              ? (
-                <>
-                  <span>step {step.step}</span>
-                  <span class="dim">· {formatDuration(now - step.startedAtMs)} elapsed</span>
-                  {remainingMs !== null && remainingMs < 20_000 && (
-                    <span class="warn">· {Math.ceil(remainingMs / 1000)}s until this step times out</span>
-                  )}
-                </>
-                )
-              : <span>{runningTool ? `running ${runningTool}…` : 'working…'}</span>}
-          </>
-        )}
-        {!state.turnRunning && last && (
-          <span class="dim">
-            step {last.step} finished in {last.seconds.toFixed(1)}s
-            {last.tokensPerSecond !== undefined && ` · ${last.tokensPerSecond.toFixed(1)} tok/s`}
-          </span>
-        )}
-      </div>
-
       {pendingAutopilot && (
         <div class="autopilot-confirm">
-          <span>Autopilot lets it edit files and run commands with no further prompts.</span>
+          <span>Autopilot edits files and runs commands with no further prompts.</span>
           <button class="btn btn-danger" onClick={() => { setPendingAutopilot(false); applyMode('autopilot') }}>
             Turn it on
           </button>
@@ -170,7 +165,12 @@ export function Composer({
         </div>
       )}
 
-      <div class="composer-box">
+      {/* One bordered surface holding the input and everything that acts on it. The three
+          separate strips this replaced -- a status line above, the box, a row of pills
+          below -- read as three unrelated widgets stacked around a text field. */}
+      <div class={`composer-shell ${state.turnRunning ? 'composer-shell-live' : ''}`}>
+        <div class="composer-activity" aria-hidden="true" />
+
         <textarea
           ref={textareaRef}
           class="composer-input"
@@ -184,32 +184,36 @@ export function Composer({
             }
           }}
           placeholder={state.turnRunning
-            ? 'Working… type your next message, or press Esc to stop'
+            ? 'Queue your next message, or press Esc to stop'
             : 'Ask for a change, a review, or an explanation'}
         />
-        <button
-          class={`composer-send ${state.turnRunning ? 'composer-send-stop' : ''}`}
-          onClick={state.turnRunning ? abort : send}
-          disabled={!state.turnRunning && input.trim() === ''}
-          title={state.turnRunning ? 'Stop this turn (Esc)' : 'Send (Enter)'}
-        >
-          {state.turnRunning ? Icon.stop() : Icon.send()}
-        </button>
-      </div>
 
-      <div class="composer-modes">
-        {MODES.map((m) => (
+        <div class="composer-bar">
+          <div class="mode-group" role="group" aria-label="How much the agent may do without asking">
+            {MODES.map((m) => (
+              <button
+                key={m.value}
+                class={`mode-chip ${mode === m.value ? 'mode-chip-active' : ''} mode-${m.value}`}
+                title={m.hint}
+                disabled={!state.session}
+                onClick={() => requestMode(m.value)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+
+          <div class="composer-meta">{statusLine()}</div>
+
           <button
-            key={m.value}
-            class={`mode-pill ${mode === m.value ? 'mode-pill-active' : ''} mode-${m.value}`}
-            title={m.hint}
-            disabled={!state.session}
-            onClick={() => requestMode(m.value)}
+            class={`composer-send ${state.turnRunning ? 'composer-send-stop' : ''}`}
+            onClick={state.turnRunning ? abort : send}
+            disabled={!state.turnRunning && input.trim() === ''}
+            title={state.turnRunning ? 'Stop this turn (Esc)' : 'Send (Enter)'}
           >
-            {m.label}
+            {state.turnRunning ? Icon.stop() : Icon.send()}
           </button>
-        ))}
-        <span class="composer-hint">{MODES.find((m) => m.value === mode)?.hint}</span>
+        </div>
       </div>
     </div>
   )

@@ -100,7 +100,7 @@ export function ApprovalCard({
           class="input deny-comment"
           value={denyComment}
           onInput={(e) => setDenyComment(e.currentTarget.value)}
-          placeholder="tell it what to do instead (optional)"
+          placeholder="do what instead? (optional)"
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               reply({ verdict: 'deny', ...(denyComment.trim() !== '' ? { comment: denyComment.trim() } : {}) })
