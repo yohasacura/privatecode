@@ -196,6 +196,10 @@ kbd {
 .shell {
   display: grid;
   grid-template-rows: 38px minmax(0, 1fr) 26px;
+  /* Explicit, and `minmax(0, 1fr)` rather than the implicit `auto`: an auto-sized grid
+     column takes the max-content width of its widest row, so one long session title in the
+     title bar widened the whole window past the viewport. */
+  grid-template-columns: minmax(0, 1fr);
   height: 100%;
 }
 
@@ -207,24 +211,37 @@ kbd {
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border-soft);
   user-select: none;
+  /* Backstop: nothing in a fixed-height bar may widen the window. The `min-width: 0`
+     below is what actually lets the two text chips shrink -- a flex item defaults to
+     `min-width: auto`, so `text-overflow: ellipsis` alone never engages and the bar just
+     grows past the viewport instead (caught at 1120px: body scrollWidth 1209). */
+  overflow: hidden;
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 7px;
+  flex: none;
   font-weight: 600;
   font-size: 13px;
 }
 .brand-mark { color: var(--accent); display: flex; }
 .titlebar-workspace {
+  flex: 0 1 auto;
+  min-width: 0;
   padding: 2px 8px;
   border-radius: 5px;
   background: var(--bg-raised);
   color: var(--text-dim);
   font-size: 12px;
   font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .titlebar-session {
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--text-faint);
   font-size: 12px;
   max-width: 340px;
@@ -944,7 +961,7 @@ kbd {
   white-space: nowrap;
 }
 .tree-row:hover { background: var(--bg-raised); color: var(--text); }
-.tree-chevron { display: flex; width: 12px; color: var(--text-faint); }
+.tree-chevron { display: flex; flex: none; width: 16px; color: var(--text-faint); }
 .tree-icon { display: flex; color: var(--text-faint); }
 .tree-dir .tree-icon { color: var(--blue); opacity: 0.75; }
 .tree-name { overflow: hidden; text-overflow: ellipsis; }

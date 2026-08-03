@@ -219,15 +219,26 @@ function lastAssistantItem(items: ChatItem[]): (ChatItem & { kind: 'assistant' }
   return last?.kind === 'assistant' ? last : undefined
 }
 
-/** The most recent tool item still awaiting its result -- matched by recency, not by
- * name: tool calls run one at a time in this architecture (no concurrent tool execution,
- * per host.ts's own event-ordering contract: step.start -> deltas -> tool.call ->
- * [approval] -> tool.result, always before the NEXT tool.call or step.start), so "the
- * last item, if it's an unresolved tool call" is always the right one to patch -- and
- * stays correct even when the same tool is called twice in a row within one turn. */
+/**
+ * The most recent tool item still awaiting its result, found by scanning BACKWARDS rather
+ * than by looking only at the last item.
+ *
+ * The scan matters: the event order is `tool.call -> [approval.request ->
+ * approval.answered] -> tool.result`, and answering an approval appends an
+ * `approval-record` item. So by the time the result arrives, the tool call is no longer
+ * last, and a last-item-only check silently dropped the result — leaving an approved edit
+ * displaying as "still running" forever, with no diff. (Found by driving a real edit
+ * through the approval flow; it had been wrong since the card was introduced.)
+ *
+ * Recency alone is still the right match: tools run strictly one at a time here, so there
+ * is never more than one unresolved call, even when the same tool is called twice in a row.
+ */
 function lastPendingTool(items: ChatItem[]): (ChatItem & { kind: 'tool' }) | undefined {
-  const last = items[items.length - 1]
-  return last?.kind === 'tool' && last.result === undefined ? last : undefined
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    if (item?.kind === 'tool' && item.result === undefined) return item
+  }
+  return undefined
 }
 
 export function reduceChat(state: ChatState, action: ChatAction): ChatState {
@@ -309,7 +320,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       const updated: ChatItem = {
         ...pending, result: { ok: action.ok, preview: preview(action.content), content: action.content },
       }
-      return { ...state, items: [...state.items.slice(0, -1), updated] }
+      return { ...state, items: state.items.map((i) => (i.id === pending.id ? updated : i)) }
     }
 
     case 'step.done':

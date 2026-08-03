@@ -154,6 +154,25 @@ describe('reduceChat: interrupt', () => {
 })
 
 describe('reduceChat: tool calls', () => {
+  it('attaches the result to the call even when an approval record came between them', () => {
+    // The real event order for a gated edit: tool.call -> approval.request ->
+    // approval.answered (which APPENDS a record) -> tool.result. Matching only the last
+    // item dropped the result and left the card spinning forever.
+    const state = run([
+      { type: 'tool.call', name: 'edit_file', args: '{"path":"a.ts"}' },
+      {
+        type: 'approval.request', requestId: 'r1', tool: 'edit_file',
+        summary: 'edit a.ts', detail: 'detail', suggestedRules: [],
+      },
+      { type: 'approval.answered', decision: { verdict: 'allow' } },
+      { type: 'tool.result', name: 'edit_file', ok: true, content: '--- a.ts\n+++ a.ts\n@@ line 1 @@\n+new' },
+    ])
+    const toolItem = state.items.find((i) => i.kind === 'tool')
+    expect(toolItem?.kind === 'tool' && toolItem.result?.ok).toBe(true)
+    // The record still sits after the call, where it happened.
+    expect(state.items.map((i) => i.kind)).toEqual(['tool', 'approval-record'])
+  })
+
   it('opens a tool row on tool.call and patches it in place on tool.result', () => {
     const opened = run([{ type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' }])
     expect(opened.items).toEqual([{ kind: 'tool', id: 1, name: 'read_file', args: '{"path":"a.ts"}' }])

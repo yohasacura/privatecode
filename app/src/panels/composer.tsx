@@ -119,18 +119,37 @@ export function Composer({
   const step = state.currentStep
   const remainingMs = step ? Math.max(0, step.timeoutMs - (now - step.startedAtMs)) : null
   const last = state.lastStepDone
+  const waitingOnYou = state.pendingApproval !== null || state.pendingQuestion !== null
+  const lastItem = state.items[state.items.length - 1]
+  const runningTool = lastItem?.kind === 'tool' && lastItem.result === undefined ? lastItem.name : null
 
   return (
     <div class="composer">
+      {/* Never blank while a turn is alive. `currentStep` is null for the whole stretch
+          between a step's model call ending and the next one starting -- which is exactly
+          when a tool is executing or an approval is open -- and the original version showed
+          nothing at all for that entire window. */}
       <div class="composer-status">
-        {state.turnRunning && step && (
+        {waitingOnYou && (
           <>
             <span class="pulse-dot" aria-hidden="true" />
-            <span>step {step.step}</span>
-            <span class="dim">· {formatDuration(now - step.startedAtMs)} elapsed</span>
-            {remainingMs !== null && remainingMs < 20_000 && (
-              <span class="warn">· {Math.ceil(remainingMs / 1000)}s until this step times out</span>
-            )}
+            <span>waiting for your answer — nothing is generating</span>
+          </>
+        )}
+        {!waitingOnYou && state.turnRunning && (
+          <>
+            <span class="pulse-dot" aria-hidden="true" />
+            {step
+              ? (
+                <>
+                  <span>step {step.step}</span>
+                  <span class="dim">· {formatDuration(now - step.startedAtMs)} elapsed</span>
+                  {remainingMs !== null && remainingMs < 20_000 && (
+                    <span class="warn">· {Math.ceil(remainingMs / 1000)}s until this step times out</span>
+                  )}
+                </>
+                )
+              : <span>{runningTool ? `running ${runningTool}…` : 'working…'}</span>}
           </>
         )}
         {!state.turnRunning && last && (
