@@ -16,7 +16,10 @@ const MODES: readonly AgentMode[] = ['normal', 'plan', 'auto-edit', 'autopilot']
  *
  * `state`/`dispatch` are owned by `App.tsx` via `lib/use-chat-session.ts` (Task 7), not
  * this component -- tree.tsx and diffs.tsx need the SAME tool.call/tool.result history,
- * so the reducer moved up to where all three siblings can read it.
+ * so the reducer moved up to where all three siblings can read it. As of Task 8, the
+ * CURRENT mode is `state.session?.mode` (shared with the status bar's read-only mode
+ * badge) rather than this component's own local state -- `applyMode` below dispatches
+ * `mode-changed` alongside the `setMode` RPC, so both readers agree.
  *
  * Dirty-tree checking for autopilot (a `git_status` host round-trip before the mode
  * actually takes effect) is explicitly deferred to Task 8's status-bar wiring, per the
@@ -31,9 +34,9 @@ export function ChatPanel({
   dispatch: (action: ChatAction) => void
 }) {
   const [input, setInput] = useState('')
-  const [mode, setMode] = useState<AgentMode>('normal')
   const [pendingAutopilot, setPendingAutopilot] = useState(false)
   const [now, setNow] = useState(() => Date.now())
+  const mode: AgentMode = state.session?.mode ?? 'normal'
 
   // Countdown ticker: only runs while a turn is actually in flight, so an idle panel does
   // not re-render on a timer for no reason.
@@ -103,7 +106,7 @@ export function ChatPanel({
   }
 
   function applyMode(next: AgentMode): void {
-    setMode(next)
+    dispatch({ type: 'mode-changed', mode: next })
     client.call('setMode', { mode: next }).catch((e: unknown) => {
       dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
     })
@@ -119,6 +122,7 @@ export function ChatPanel({
         <select
           class="mode-select"
           value={mode}
+          disabled={!state.session}
           onChange={(e) => requestModeChange(e.currentTarget.value as AgentMode)}
         >
           {MODES.map((m) => <option key={m} value={m}>{m}</option>)}

@@ -3,16 +3,18 @@ import { createClient, wsUrlFromSearch, type ConnectionState, type ProtocolClien
 import { useChatSession } from './lib/use-chat-session'
 import { ChatPanel } from './panels/chat'
 import { DiffsPanel } from './panels/diffs'
+import { StatusBar } from './panels/status'
 import { TreePanel } from './panels/tree'
 import './App.css'
 
 /**
  * The app shell: header (title + connection dot), the ONE shared `ProtocolClient` (created
  * once here and handed down to every panel -- there is exactly one sidecar/session per
- * running app, so there must be exactly one client), the ONE shared chat/tool-call session
- * state (`useChatSession`, Task 7 -- tree and diffs both read the same tool.call/
- * tool.result history the chat transcript tracks), and three panel slots -- file tree,
- * chat, diffs, all real as of Task 7. The status bar (Task 8) is still a placeholder.
+ * running app, so there must be exactly one client), the ONE shared chat/tool-call/session
+ * state (`useChatSession`, Task 7 -- tree, diffs, and the status bar all read the same
+ * tool.call/tool.result/session history the chat transcript tracks), and four panel slots:
+ * file tree, chat, diffs (Task 7), and the bottom status bar / sessions drawer / settings
+ * modal (Task 8) -- all real as of Task 8.
  *
  * `previewPath` is the one other piece of state shared across panel boundaries: clicking a
  * file in the tree sets it, and the diffs panel is what actually calls `fs.read` and
@@ -22,7 +24,10 @@ import './App.css'
  * WebSocket bridge (so the controller can drive this same frontend from a plain browser
  * tab with no Tauri window at all); its absence means real Tauri IPC, the only transport a
  * release build's window ever has a URL for. See `lib/client.ts`'s header comment for the
- * full transport design.
+ * full transport design. `isDevBridge` is that same `?ws=` presence, re-read here (not
+ * hoisted into a ref or module state) because `status.tsx`'s settings modal needs it too,
+ * to choose between a text-field workspace picker (dev bridge -- there is no Tauri window
+ * behind it to own a native dialog) and the real folder-picker dialog (release).
  */
 function App() {
   const [client, setClient] = useState<ProtocolClient | null>(null)
@@ -30,6 +35,7 @@ function App() {
   const [statusText, setStatusText] = useState('checking...')
   const [previewPath, setPreviewPath] = useState<string | null>(null)
   const [chatState, dispatch] = useChatSession(client)
+  const isDevBridge = wsUrlFromSearch(window.location.search) !== undefined
 
   useEffect(() => {
     const wsUrl = wsUrlFromSearch(window.location.search)
@@ -95,9 +101,14 @@ function App() {
             : <div class="panel-placeholder">connecting…</div>}
         </section>
       </div>
-      <footer class="shell-status" aria-label="status bar">
-        <div class="panel-placeholder">status bar (Task 8)</div>
-      </footer>
+      {client && (
+        <StatusBar
+          client={client}
+          chatState={chatState}
+          isDevBridge={isDevBridge}
+          onSessionSwitched={(info) => dispatch({ type: 'session-switched', ...info })}
+        />
+      )}
     </div>
   )
 }

@@ -221,6 +221,10 @@ fn shutdown_sidecar(state: &SidecarState) {
 
 fn main() {
     let app = tauri::Builder::default()
+        // The workspace-picker's native folder dialog (Task 8's settings modal, release
+        // builds only -- the dev-bridge transport has no Tauri window behind it and uses
+        // a plain text field instead; see status.tsx's `pickWorkspaceDialog`).
+        .plugin(tauri_plugin_dialog::init())
         .manage(SidecarState::new())
         .invoke_handler(tauri::generate_handler![sidecar_send, sidecar_stderr])
         .setup(|app| {

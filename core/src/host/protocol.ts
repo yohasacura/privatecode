@@ -125,6 +125,26 @@ export type StatusParams = Empty
 export interface StatusResult { serverUp: boolean; model?: string }
 
 /**
+ * The UI's own small preferences -- last-used server URL and a short recent-workspaces
+ * list -- persisted to `%APPDATA%/PrivateCode/ui.json` (see `host/ui-config.ts`). NOT the
+ * permissions settings file (`permissions/settings.ts`'s `userSettingsPath()`,
+ * `settings.json`): that file holds security-relevant allow/ask/deny rules, audited and
+ * layered three ways; this one holds nothing security-relevant at all, so it is a
+ * deliberately separate file with no layering.
+ */
+export type ConfigGetParams = Empty
+export interface ConfigGetResult { serverUrl?: string; recentWorkspaces: string[] }
+
+export interface ConfigSetParams {
+  serverUrl?: string
+  /** Records this workspace path as most-recently-used (most-recent-first, deduplicated,
+   * capped) -- the UI's own concern, not something `init` does implicitly, so a workspace
+   * is only ever remembered when the UI explicitly asks to. */
+  recentWorkspace?: string
+}
+export type ConfigSetResult = Empty
+
+/**
  * Every method this protocol defines, method name -> {params, result}. Nothing in this
  * module reads it -- it exists so a typed RPC client/dispatcher elsewhere can look up both
  * shapes for one method name without importing a chain of individual types.
@@ -143,6 +163,8 @@ export interface HostMethodMap {
   'fs.tree': { params: FsTreeParams; result: FsTreeResult }
   'fs.read': { params: FsReadParams; result: FsReadResult }
   status: { params: StatusParams; result: StatusResult }
+  'config.get': { params: ConfigGetParams; result: ConfigGetResult }
+  'config.set': { params: ConfigSetParams; result: ConfigSetResult }
 }
 export type HostMethodName = keyof HostMethodMap
 
@@ -158,10 +180,10 @@ export interface StepDoneEvent {
   promptTokens?: number
   completionTokens?: number
   /**
-   * Speculative-decoding draft-token acceptance rate for this step, when the server ran
-   * with a draft model. No producer in core emits this yet (`agent/loop.ts`'s `StepInfo`
-   * has no such field) -- it is reserved here because the method/event table names it
-   * explicitly, ahead of the draft-model work that will populate it.
+   * Speculative-decoding draft-token acceptance rate for this step, present only when the
+   * server ran with a draft model and drafted at least one token this step. Produced by
+   * `agent/loop.ts`'s `StepInfo.draftAcceptance` (Plan 4 Task 8) and forwarded verbatim by
+   * `host.ts`'s `onStepDone` handler.
    */
   draftAcceptance?: number
 }

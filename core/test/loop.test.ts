@@ -672,3 +672,67 @@ test('sub-second timeout budget formats correctly (not 0 s)', async () => {
   expect(last.content).toMatch(/400 ms/)
   expect(last.content).not.toMatch(/\b0\s+s\b/)
 })
+
+// ---------------------------------------------------------------------------
+// Plan 4 Task 8: StepInfo.draftAcceptance
+// ---------------------------------------------------------------------------
+
+test('draftAcceptance is draft_n_accepted / draft_n when the server drafted at least one token', async () => {
+  const fake = await startFakeServer(() => ({
+    choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }],
+    usage: { completion_tokens: 10 },
+    timings: { draft_n: 20, draft_n_accepted: 15 },
+  }))
+  stop = fake.close
+  const rec = recorder()
+  const agent = makeAgent(fake.url, { events: rec.handlers })
+
+  await agent.runTurn('go')
+
+  const [stepDone] = rec.of('stepDone') as any[]
+  expect(stepDone.draftAcceptance).toBeCloseTo(0.75)
+})
+
+test('draftAcceptance is absent when draft_n is 0 (no drafting attempted this step)', async () => {
+  const fake = await startFakeServer(() => ({
+    choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }],
+    usage: { completion_tokens: 10 },
+    timings: { draft_n: 0, draft_n_accepted: 0 },
+  }))
+  stop = fake.close
+  const rec = recorder()
+  const agent = makeAgent(fake.url, { events: rec.handlers })
+
+  await agent.runTurn('go')
+
+  const [stepDone] = rec.of('stepDone') as any[]
+  expect(stepDone.draftAcceptance).toBeUndefined()
+})
+
+test('draftAcceptance is absent when the server reports no timings at all', async () => {
+  const fake = await startFakeServer(() => textResponse('done'))
+  stop = fake.close
+  const rec = recorder()
+  const agent = makeAgent(fake.url, { events: rec.handlers })
+
+  await agent.runTurn('go')
+
+  const [stepDone] = rec.of('stepDone') as any[]
+  expect(stepDone.draftAcceptance).toBeUndefined()
+})
+
+test('draftAcceptance is absent when only one of draft_n/draft_n_accepted is present', async () => {
+  const fake = await startFakeServer(() => ({
+    choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }],
+    usage: { completion_tokens: 10 },
+    timings: { draft_n: 20 }, // draft_n_accepted missing
+  }))
+  stop = fake.close
+  const rec = recorder()
+  const agent = makeAgent(fake.url, { events: rec.handlers })
+
+  await agent.runTurn('go')
+
+  const [stepDone] = rec.of('stepDone') as any[]
+  expect(stepDone.draftAcceptance).toBeUndefined()
+})

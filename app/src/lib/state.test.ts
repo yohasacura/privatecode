@@ -218,3 +218,63 @@ describe('reduceChat: todos', () => {
     ])
   })
 })
+
+describe('reduceChat: step.done stats used by the status bar', () => {
+  it('carries promptTokens and draftAcceptance into lastStepDone', () => {
+    const state = reduceChat(initialChatState(), {
+      type: 'step.done', step: 1, seconds: 2, tokensPerSecond: 40, promptTokens: 1234, draftAcceptance: 0.8,
+    })
+    expect(state.lastStepDone).toEqual({
+      step: 1, seconds: 2, tokensPerSecond: 40, promptTokens: 1234, draftAcceptance: 0.8,
+    })
+  })
+
+  it('leaves promptTokens/draftAcceptance undefined when the event did not carry them', () => {
+    const state = reduceChat(initialChatState(), { type: 'step.done', step: 1, seconds: 2 })
+    expect(state.lastStepDone?.promptTokens).toBeUndefined()
+    expect(state.lastStepDone?.draftAcceptance).toBeUndefined()
+  })
+})
+
+describe('reduceChat: session switching', () => {
+  it('sets session info on session-switched', () => {
+    const state = reduceChat(initialChatState(), {
+      type: 'session-switched', sessionId: 's1', mode: 'normal', contextLength: 131072, title: 'my session',
+    })
+    expect(state.session).toEqual({ sessionId: 's1', mode: 'normal', contextLength: 131072, title: 'my session' })
+  })
+
+  it('wipes the transcript, pending cards, and todos on session-switched', () => {
+    const busy = run([
+      { type: 'user-message', text: 'hi' },
+      { type: 'todos', items: [{ text: 'x', status: 'pending' }] },
+      { type: 'approval.request', requestId: 'r1', tool: 'edit_file', summary: 's', detail: 'd', suggestedRules: [] },
+    ])
+    expect(busy.items).not.toEqual([])
+    expect(busy.pendingApproval).not.toBeNull()
+    expect(busy.todos).not.toEqual([])
+
+    const switched = reduceChat(busy, {
+      type: 'session-switched', sessionId: 's2', mode: 'plan', contextLength: null, title: 'fresh',
+    })
+    expect(switched.items).toEqual([])
+    expect(switched.pendingApproval).toBeNull()
+    expect(switched.todos).toEqual([])
+    expect(switched.session).toEqual({ sessionId: 's2', mode: 'plan', contextLength: null, title: 'fresh' })
+  })
+
+  it('mode-changed updates the session mode badge without touching anything else', () => {
+    const withSession = reduceChat(initialChatState(), {
+      type: 'session-switched', sessionId: 's1', mode: 'normal', contextLength: 1000, title: 't',
+    })
+    const withMessage = reduceChat(withSession, { type: 'user-message', text: 'hi' })
+    const changed = reduceChat(withMessage, { type: 'mode-changed', mode: 'autopilot' })
+    expect(changed.session?.mode).toBe('autopilot')
+    expect(changed.items).toEqual(withMessage.items) // untouched
+  })
+
+  it('mode-changed before any session exists is a harmless no-op', () => {
+    const state = reduceChat(initialChatState(), { type: 'mode-changed', mode: 'plan' })
+    expect(state.session).toBeNull()
+  })
+})

@@ -1,5 +1,6 @@
 import type { ApprovalDecision, TodoItem } from '@core/interaction'
-import type { StoppedBecause } from '@core/host/protocol'
+import type { CompactionState, StoppedBecause } from '@core/host/protocol'
+import type { AgentMode } from '@core/permissions/engine'
 
 /**
  * The chat panel's pure transcript reducer (Plan 4 Task 5): every protocol event that
@@ -76,6 +77,26 @@ export interface LastStepStats {
   step: number
   seconds: number
   tokensPerSecond: number | undefined
+  /** The server's own count of this step's prompt tokens -- Task 8's status bar divides
+   * this by `SessionInfo.contextLength` for the `42.3k/131.1k (32%)` context-fill line. */
+  promptTokens: number | undefined
+  /** Speculative-decoding draft-acceptance rate for this step, when the server reports
+   * one -- Task 8's status bar's "MTP %". */
+  draftAcceptance: number | undefined
+}
+
+/**
+ * What `init`/`sessions.new`/`sessions.resume` established about the CURRENT session --
+ * Task 8's status bar (mode badge, session title) and context-fill line (`contextLength`)
+ * both read this. Set by whoever calls one of those three RPCs (there is no protocol
+ * EVENT for "a session became active" -- init is a request/reply, not a broadcast), via
+ * `session-ready`/`session-switched` below.
+ */
+export interface SessionInfo {
+  sessionId: string
+  mode: AgentMode
+  contextLength: number | null
+  title: string
 }
 
 export interface ChatState {
@@ -93,12 +114,20 @@ export interface ChatState {
    * "the current list", matching `TodoStore`'s own set()-replaces-wholesale semantics on
    * the core side. */
   todos: TodoItem[]
+  session: SessionInfo | null
+  /** The most recent `compaction` event, plus a monotonic `seq` -- Task 8's status bar
+   * renders this as a subtle, self-clearing flash ('compacting…', 'compacted: N messages
+   * summarised', 'postponed'). Never cleared BY the reducer itself (there is no action
+   * for "hide the flash now"; that is a timer, an impure concern status.tsx owns) -- `seq`
+   * is what lets that timer's effect notice a SECOND event carrying the same `state`
+   * string (e.g. two `'postponed'`s in a row) as a fresh occurrence worth re-flashing. */
+  lastCompaction: { state: CompactionState; droppedMessages: number | undefined; seq: number } | null
 }
 
 export function initialChatState(): ChatState {
   return {
     items: [], turnRunning: false, currentStep: null, lastStepDone: null, nextId: 1,
-    pendingApproval: null, pendingQuestion: null, todos: [],
+    pendingApproval: null, pendingQuestion: null, todos: [], session: null, lastCompaction: null,
   }
 }
 
@@ -111,9 +140,17 @@ export type ChatAction =
   | { type: 'assistant.text'; text: string }
   | { type: 'tool.call'; name: string; args: string }
   | { type: 'tool.result'; name: string; ok: boolean; content: string }
-  | { type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number }
+  | { type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number; promptTokens?: number; draftAcceptance?: number }
   | { type: 'turn.done'; stoppedBecause: StoppedBecause }
   | { type: 'send-failed'; message: string }
+  /** Dispatched after every successful `init`/`sessions.new`/`sessions.resume` call --
+   * every one of those is either this app run's first session or a deliberate switch to a
+   * different one, so this always resets the whole transcript/turn/pending-card/todos
+   * state alongside the new session info: an old session's messages and pending cards
+   * have no business surviving into a new one's view. */
+  | { type: 'session-switched'; sessionId: string; mode: AgentMode; contextLength: number | null; title: string }
+  | { type: 'mode-changed'; mode: AgentMode }
+  | { type: 'compaction'; state: CompactionState; droppedMessages?: number }
   | { type: 'approval.request'; requestId: string; tool: string; summary: string; detail: string; suggestedRules: string[] }
   /** Fired locally by `approvals.tsx` the instant the user clicks Allow/Deny -- BEFORE the
    * `approval.reply` RPC even resolves. This is what makes "pending -> answered" a
@@ -229,7 +266,13 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       return {
         ...state,
         currentStep: null,
-        lastStepDone: { step: action.step, seconds: action.seconds, tokensPerSecond: action.tokensPerSecond },
+        lastStepDone: {
+          step: action.step,
+          seconds: action.seconds,
+          tokensPerSecond: action.tokensPerSecond,
+          promptTokens: action.promptTokens,
+          draftAcceptance: action.draftAcceptance,
+        },
       }
 
     case 'turn.done': {
@@ -289,6 +332,30 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 
     case 'todos':
       return { ...state, todos: action.items }
+
+    case 'session-switched':
+      // A full reset, deliberately: see this action's own doc comment for why an old
+      // session's transcript/pending cards must not survive into a new one's view.
+      return {
+        ...initialChatState(),
+        session: {
+          sessionId: action.sessionId, mode: action.mode, contextLength: action.contextLength, title: action.title,
+        },
+      }
+
+    case 'mode-changed':
+      return {
+        ...state,
+        session: state.session ? { ...state.session, mode: action.mode } : state.session,
+      }
+
+    case 'compaction':
+      return {
+        ...state,
+        lastCompaction: {
+          state: action.state, droppedMessages: action.droppedMessages, seq: (state.lastCompaction?.seq ?? 0) + 1,
+        },
+      }
 
     default: {
       const _exhaustive: never = action

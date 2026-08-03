@@ -308,6 +308,38 @@ test('fs.read refuses a path that escapes the workspace or names a denylisted fi
   expect((envReply as { error: { message: string } }).error.message).toMatch(/access denied/)
 })
 
+test('config.get/config.set round-trip through SessionHost.handle, available before init', async () => {
+  // ui-config.ts's uiConfigPath() reads process.env.APPDATA at call time; redirected here
+  // so this test writes to a throwaway temp dir instead of the real machine's
+  // %APPDATA%/PrivateCode/ui.json (host.ts's configGet/configSet call the default path,
+  // not the test-only override parameter ui-config.test.ts uses directly).
+  const previousAppData = process.env['APPDATA']
+  const tempAppData = newWorkspace()
+  process.env['APPDATA'] = tempAppData
+  try {
+    const transport = makeTransport()
+    const host = new SessionHost({ transport })
+
+    // No init() call anywhere above -- config.get/config.set must work standalone, since
+    // a settings modal or workspace picker needs them before any session exists.
+    await host.handle({ id: 1, method: 'config.set', params: { serverUrl: 'http://127.0.0.1:8080' } })
+    expect(reply(transport, 1)).toEqual({ id: 1, result: {} })
+
+    await host.handle({ id: 2, method: 'config.set', params: { recentWorkspace: 'C:/proj' } })
+    expect(reply(transport, 2)).toEqual({ id: 2, result: {} })
+
+    await host.handle({ id: 3, method: 'config.get', params: {} })
+    const getReply = reply(transport, 3)
+    expect(getReply && 'result' in getReply).toBe(true)
+    expect((getReply as { result: unknown }).result).toEqual({
+      serverUrl: 'http://127.0.0.1:8080',
+      recentWorkspaces: ['C:/proj'],
+    })
+  } finally {
+    process.env['APPDATA'] = previousAppData
+  }
+})
+
 test('switching sessions aborts an in-flight background compaction instead of hanging on it', async () => {
   const fake = await makeServer((_body, streaming) => {
     if (streaming) {

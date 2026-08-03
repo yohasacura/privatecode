@@ -15,6 +15,9 @@ import type {
   ApprovalReplyParams,
   ApprovalReplyResult,
   CompactResult,
+  ConfigGetResult,
+  ConfigSetParams,
+  ConfigSetResult,
   FsReadParams,
   FsReadResult,
   FsTreeEntry,
@@ -39,6 +42,7 @@ import type {
   StatusResult,
   TurnSummary,
 } from './protocol.js'
+import { loadUiConfig, saveUiConfig } from './ui-config.js'
 
 /**
  * What `SessionHost` needs from whatever carries its messages to the UI: fire-and-forget
@@ -188,6 +192,8 @@ export class SessionHost {
       case 'fs.tree': return this.fsTree((params ?? {}) as FsTreeParams)
       case 'fs.read': return this.fsRead(params as FsReadParams)
       case 'status': return this.status()
+      case 'config.get': return this.configGet()
+      case 'config.set': return this.configSet(params as ConfigSetParams)
       default: throw new Error(`unknown method: "${method}"`)
     }
   }
@@ -578,6 +584,33 @@ export class SessionHost {
     if (!this.client) return { serverUp: false }
     const serverUp = await this.client.health()
     return { serverUp, model: MODEL }
+  }
+
+  // -----------------------------------------------------------------------------------
+  // UI config (ui.json -- see ui-config.ts's own doc comment for why this is NOT the
+  // permissions settings file)
+  // -----------------------------------------------------------------------------------
+
+  /** Available before `init` -- reading the last-used server URL/recent workspaces is
+   * exactly what a settings modal or a workspace picker needs to do BEFORE a session
+   * exists yet. Any problem `loadUiConfig` found in a corrupt `ui.json` is surfaced as a
+   * `settings.problem` event, the same channel `buildSession`'s own settings problems use,
+   * rather than silently swallowed. */
+  private configGet(): ConfigGetResult {
+    const { config, problems } = loadUiConfig()
+    for (const p of problems) this.emit('settings.problem', { text: p })
+    return {
+      recentWorkspaces: config.recentWorkspaces,
+      ...(config.serverUrl !== undefined ? { serverUrl: config.serverUrl } : {}),
+    }
+  }
+
+  private configSet(params: ConfigSetParams): ConfigSetResult {
+    saveUiConfig({
+      ...(params.serverUrl !== undefined ? { serverUrl: params.serverUrl } : {}),
+      ...(params.recentWorkspace !== undefined ? { recentWorkspace: params.recentWorkspace } : {}),
+    })
+    return {}
   }
 
   // -----------------------------------------------------------------------------------

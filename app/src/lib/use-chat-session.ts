@@ -37,6 +37,8 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         step: d.step,
         seconds: d.seconds,
         ...(d.tokensPerSecond !== undefined ? { tokensPerSecond: d.tokensPerSecond } : {}),
+        ...(d.promptTokens !== undefined ? { promptTokens: d.promptTokens } : {}),
+        ...(d.draftAcceptance !== undefined ? { draftAcceptance: d.draftAcceptance } : {}),
       })),
       client.on('turn.done', (d) => dispatch({ type: 'turn.done', stoppedBecause: d.stoppedBecause })),
       client.on('approval.request', (d) => dispatch({
@@ -47,6 +49,9 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         type: 'question.request', requestId: d.requestId, question: d.question, options: d.options,
       })),
       client.on('todos', (d) => dispatch({ type: 'todos', items: d.items })),
+      client.on('compaction', (d) => dispatch({
+        type: 'compaction', state: d.state, ...(d.droppedMessages !== undefined ? { droppedMessages: d.droppedMessages } : {}),
+      })),
     ]
     return () => { for (const u of unsubs) u() }
   }, [client])
