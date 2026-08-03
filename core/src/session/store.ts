@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { PRIVATE_DIR, ensurePrivateDir } from '../private-dir.js'
 import type { ChatMessage } from '../llama/types.js'
 import type { AgentMode } from '../permissions/engine.js'
 import { Transcript } from '../transcript/transcript.js'
@@ -93,12 +94,14 @@ export class SessionStore {
 
   private readonly dir: string
 
-  constructor(workspaceRoot: string) {
-    this.dir = join(workspaceRoot, '.privatecode', 'sessions')
+  constructor(private readonly workspaceRoot: string) {
+    this.dir = join(workspaceRoot, PRIVATE_DIR, 'sessions')
   }
 
   private ensureDir(): void {
-    mkdirSync(this.dir, { recursive: true })
+    // Not a bare mkdir: `.privatecode/` also gets a self-ignore so this tool's state never
+    // shows up in the user's `git status`. See private-dir.ts.
+    ensurePrivateDir(this.workspaceRoot, 'sessions')
   }
 
   private metaPath(id: string): string {
