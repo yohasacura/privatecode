@@ -1,37 +1,25 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import type { AgentMode } from '@core/permissions/engine'
+import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatState } from '../lib/state'
+import { formatTokenCount } from '../lib/format'
+import { Icon } from '../components/icons'
+import type { SessionSwitch } from './sessions-rail'
 
 /**
- * The status bar, sessions drawer, and settings modal (Plan 4 Task 8): everything here
- * reads `ChatState` (via `App.tsx`'s shared `useChatSession`) rather than owning its own
- * copy of session/turn state -- the same one-source-of-truth reasoning Task 7 already
- * applied to tree/diffs. `onSessionSwitched`/`onModeChanged` are the two write paths back
- * into that shared state; everything else here is read-only against it plus its own
- * local UI state (drawer/modal open or closed, form field values).
+ * The status bar and the settings modal.
+ *
+ * The sessions drawer that used to live here moved to the left rail — a conversation list
+ * is navigation, not a dialog. What is left is genuinely status: is the server answering,
+ * how full is the context, how fast is it going.
  */
-
-/** Wire shape of one `sessions.list` entry -- pulled from `HostMethodMap` rather than
- * importing `SessionMeta` from `core/src/session/store.ts` directly, so this file's only
- * cross-package dependency is the SAME protocol-types alias every other panel already
- * uses (see client.ts's header comment). */
-type SessionMeta = { id: string; title: string; createdAt: string; updatedAt: string; workspaceRoot: string; mode: AgentMode }
-
-/** `42.3k` / `1.2M` / `487` -- large-number formatting for the context-fill line; never
- * more than one decimal place, and never a unit suffix under 1000. */
-function formatTokenCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(Math.round(n))
-}
 
 function compactionFlashText(c: ChatState['lastCompaction']): string | null {
   if (!c) return null
   switch (c.state) {
-    case 'started': return 'compacting…'
+    case 'started': return 'compacting the conversation…'
     case 'ready': return 'compaction ready'
-    case 'applied': return `compacted: ${c.droppedMessages ?? 0} messages summarised`
+    case 'applied': return `compacted · ${c.droppedMessages ?? 0} earlier messages summarised`
     case 'postponed': return 'compaction postponed'
     case 'failed': return 'compaction failed'
     default: return null
@@ -39,30 +27,20 @@ function compactionFlashText(c: ChatState['lastCompaction']): string | null {
 }
 
 export function StatusBar({
-  client, chatState, isDevBridge, onSessionSwitched,
+  client, chatState,
 }: {
   client: ProtocolClient
   chatState: ChatState
-  /** Dev-bridge mode (a `?ws=` URL) means the workspace picker is a plain text field; a
-   * release build (real Tauri IPC) uses the native folder-picker dialog instead -- see
-   * `pickWorkspaceDialog` below. */
-  isDevBridge: boolean
-  onSessionSwitched: (info: { sessionId: string; mode: AgentMode; contextLength: number | null; title: string }) => void
-}) {
+}): VNode {
   const [serverUp, setServerUp] = useState<boolean | null>(null)
   const [model, setModel] = useState<string | null>(null)
-  const [sessionsOpen, setSessionsOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [flash, setFlash] = useState<string | null>(null)
   const turnRunningRef = useRef(chatState.turnRunning)
   turnRunningRef.current = chatState.turnRunning
 
-  // Server dot: polls `status` every 10s while idle, NEVER while a turn is running --
-  // the single-slot server discipline (Global Constraint 5) means a status poll firing
-  // mid-generation would be a second concurrent request against a server that can only
-  // ever serve one. The interval itself keeps ticking regardless (so it does not need to
-  // be re-subscribed every time a turn starts/ends); the in-flight guard is what actually
-  // enforces "never during a turn".
+  // Polls `status` every 10s while IDLE and never during a turn: the server runs with a
+  // single slot (`-np 1`), so a health probe fired mid-generation would be a second
+  // concurrent request against a server that can only ever serve one.
   useEffect(() => {
     let cancelled = false
     function poll(): void {
@@ -78,129 +56,70 @@ export function StatusBar({
     return () => { cancelled = true; clearInterval(id) }
   }, [client])
 
-  // Compaction flash: shows the latest event's text for a few seconds, then clears --
-  // `seq` (not just `state`) is the dependency, so a SECOND event with the same state
-  // string (two 'postponed's in a row) re-triggers the timer instead of being a no-op.
+  // `seq`, not `state`, is the dependency: two 'postponed' events in a row carry the same
+  // state string and must still re-flash.
   useEffect(() => {
     const text = compactionFlashText(chatState.lastCompaction)
     setFlash(text)
     if (text === null) return
-    const id = setTimeout(() => setFlash(null), 4_000)
+    const id = setTimeout(() => setFlash(null), 5_000)
     return () => clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on seq, not the object
   }, [chatState.lastCompaction?.seq])
 
   const session = chatState.session
   const lastStep = chatState.lastStepDone
-
-  const contextLine = (() => {
-    if (!session || session.contextLength === null || lastStep?.promptTokens === undefined) return null
-    const used = lastStep.promptTokens
-    const total = session.contextLength
-    const pct = total > 0 ? Math.round((used / total) * 100) : 0
-    return `${formatTokenCount(used)}/${formatTokenCount(total)} (${pct}%)`
-  })()
+  const used = lastStep?.promptTokens
+  const total = session?.contextLength ?? null
+  const fillPct = used !== undefined && total !== null && total > 0
+    ? Math.min(100, Math.round((used / total) * 100))
+    : null
 
   return (
-    <>
-      <footer class="shell-status" aria-label="status bar">
-        <span class={`status-dot ${serverUp === null ? 'status-unknown' : serverUp ? 'status-up' : 'status-down'}`} />
-        <span class="status-item">{model ?? 'model unknown'}</span>
-        {session && <span class="status-badge">{session.mode}</span>}
-        {lastStep?.tokensPerSecond !== undefined && (
-          <span class="status-item">{lastStep.tokensPerSecond.toFixed(1)} tok/s</span>
-        )}
-        {contextLine && <span class="status-item">{contextLine}</span>}
-        {lastStep?.draftAcceptance !== undefined && (
-          <span class="status-item">MTP {(lastStep.draftAcceptance * 100).toFixed(0)}%</span>
-        )}
-        {session && <span class="status-item status-title">{session.title || '(untitled session)'}</span>}
-        {flash && <span class="status-flash">{flash}</span>}
-        <span class="status-spacer" />
-        <button class="status-button" disabled={!session} onClick={() => setSessionsOpen(true)}>Sessions</button>
-        <button class="status-button" onClick={() => setSettingsOpen(true)}>Settings</button>
-      </footer>
+    <footer class="statusbar">
+      <span
+        class={`status-dot ${serverUp === null ? 'dot-unknown' : serverUp ? 'dot-up' : 'dot-down'}`}
+        title={serverUp === null ? 'checking the model server…' : serverUp ? 'model server is answering' : 'model server is not answering'}
+      />
+      <span class="status-model">{model ?? 'no model'}</span>
 
-      {sessionsOpen && session && (
-        <SessionsDrawer
-          client={client}
-          onClose={() => setSessionsOpen(false)}
-          onSessionSwitched={(info) => { onSessionSwitched(info); setSessionsOpen(false) }}
-        />
+      {session && <span class={`status-mode mode-${session.mode}`}>{session.mode}</span>}
+
+      {fillPct !== null && used !== undefined && total !== null && (
+        <span class="status-context" title="context used by the last step">
+          <span class="ctx-bar"><span class={`ctx-fill ${fillPct >= 80 ? 'ctx-high' : ''}`} style={{ width: `${fillPct}%` }} /></span>
+          {formatTokenCount(used)}/{formatTokenCount(total)}
+        </span>
       )}
-      {settingsOpen && (
-        <SettingsModal
-          client={client}
-          isDevBridge={isDevBridge}
-          onClose={() => setSettingsOpen(false)}
-          onSessionSwitched={(info) => { onSessionSwitched(info); setSettingsOpen(false) }}
-        />
+
+      {lastStep?.tokensPerSecond !== undefined && (
+        <span class="status-item">{lastStep.tokensPerSecond.toFixed(1)} tok/s</span>
       )}
-    </>
+      {lastStep?.draftAcceptance !== undefined && (
+        <span class="status-item" title="speculative-decoding draft acceptance">
+          MTP {(lastStep.draftAcceptance * 100).toFixed(0)}%
+        </span>
+      )}
+
+      {flash && <span class="status-flash">{flash}</span>}
+      <span class="status-spacer" />
+      <span class="status-item status-private" title="Nothing leaves this machine.">
+        {Icon.shield()} offline
+      </span>
+    </footer>
   )
 }
 
-function SessionsDrawer({
-  client, onClose, onSessionSwitched,
-}: {
-  client: ProtocolClient
-  onClose: () => void
-  onSessionSwitched: (info: { sessionId: string; mode: AgentMode; contextLength: number | null; title: string }) => void
-}) {
-  const [sessions, setSessions] = useState<SessionMeta[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    client.call('sessions.list', {})
-      .then((r) => setSessions(r.sessions))
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-  }, [client])
-
-  function resume(id: string): void {
-    client.call('sessions.resume', { id })
-      .then((r) => onSessionSwitched({ sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title }))
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-  }
-
-  function startNew(): void {
-    client.call('sessions.new', {})
-      .then((r) => onSessionSwitched({ sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title }))
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-  }
-
-  return (
-    <div class="drawer-overlay" onClick={onClose}>
-      <div class="drawer" onClick={(e) => e.stopPropagation()}>
-        <div class="drawer-header">
-          <b>Sessions</b>
-          <button onClick={startNew}>New session</button>
-          <button class="drawer-close" onClick={onClose}>×</button>
-        </div>
-        {error && <div class="chat-error">⚠ {error}</div>}
-        {sessions === null && !error && <div class="panel-placeholder">loading…</div>}
-        {sessions && sessions.length === 0 && <div class="panel-placeholder">no saved sessions yet</div>}
-        <div class="drawer-list">
-          {sessions?.map((s) => (
-            <div key={s.id} class="drawer-row">
-              <div class="drawer-row-title">{s.title || '(untitled)'}</div>
-              <div class="drawer-row-meta">{s.mode} · updated {s.updatedAt}</div>
-              <button onClick={() => resume(s.id)}>Resume</button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function SettingsModal({
+export function SettingsModal({
   client, isDevBridge, onClose, onSessionSwitched,
 }: {
   client: ProtocolClient
+  /** Dev-bridge mode (a `?ws=` URL) has no Tauri window behind it to own a native folder
+   * dialog, so it gets a plain text field instead. */
   isDevBridge: boolean
   onClose: () => void
-  onSessionSwitched: (info: { sessionId: string; mode: AgentMode; contextLength: number | null; title: string }) => void
-}) {
+  onSessionSwitched: (info: SessionSwitch & { workspaceRoot: string }) => void
+}): VNode {
   const [serverUrl, setServerUrl] = useState('http://127.0.0.1:8080')
   const [workspace, setWorkspace] = useState('')
   const [recent, setRecent] = useState<string[]>([])
@@ -212,80 +131,96 @@ function SettingsModal({
       .then((r) => {
         if (r.serverUrl !== undefined) setServerUrl(r.serverUrl)
         setRecent(r.recentWorkspaces)
+        if (r.recentWorkspaces[0]) setWorkspace(r.recentWorkspaces[0])
       })
-      .catch(() => { /* config.get degrading to defaults is already handled host-side; nothing more to do here */ })
+      .catch(() => { /* host-side defaults already cover this */ })
   }, [client])
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   async function pickWorkspaceDialog(): Promise<void> {
-    // Release-only: the dev-bridge transport has no Tauri window behind it to own a
-    // native dialog, so that mode uses the plain text field below instead.
     const { open } = await import('@tauri-apps/plugin-dialog')
     const result = await open({ directory: true, multiple: false })
     if (typeof result === 'string') setWorkspace(result)
   }
 
   function connect(): void {
-    if (workspace.trim() === '' || serverUrl.trim() === '') return
+    const root = workspace.trim()
+    const url = serverUrl.trim()
+    if (root === '' || url === '') return
     setConnecting(true)
     setError(null)
-    client.call('init', { workspaceRoot: workspace.trim(), serverUrl: serverUrl.trim() })
+    client.call('init', { workspaceRoot: root, serverUrl: url })
       .then((r) => {
-        client.call('config.set', { serverUrl: serverUrl.trim(), recentWorkspace: workspace.trim() }).catch(() => {})
-        onSessionSwitched({ sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title })
+        client.call('config.set', { serverUrl: url, recentWorkspace: root }).catch(() => {})
+        onSessionSwitched({
+          sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
+          workspaceRoot: root,
+        })
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setConnecting(false))
   }
 
   return (
-    <div class="drawer-overlay" onClick={onClose}>
-      <div class="drawer settings-modal" onClick={(e) => e.stopPropagation()}>
-        <div class="drawer-header">
+    <div class="modal-overlay" onClick={onClose}>
+      <div class="modal" onClick={(e) => e.stopPropagation()}>
+        <div class="modal-head">
           <b>Settings</b>
-          <button class="drawer-close" onClick={onClose}>×</button>
+          <button class="icon-button" onClick={onClose} title="Close">{Icon.x()}</button>
         </div>
 
-        <label class="settings-label">Server URL</label>
+        <label class="field-label" for="set-url">Model server</label>
         <input
-          class="settings-input"
+          id="set-url"
+          class="input"
           value={serverUrl}
           onInput={(e) => setServerUrl(e.currentTarget.value)}
           placeholder="http://127.0.0.1:8080"
         />
+        <div class="field-hint">Your llama.cpp server. Nothing is ever sent anywhere else.</div>
 
-        <label class="settings-label">Workspace</label>
-        {isDevBridge ? (
+        <label class="field-label" for="set-ws">Workspace</label>
+        <div class="field-row">
           <input
-            class="settings-input"
+            id="set-ws"
+            class="input"
             value={workspace}
+            readOnly={!isDevBridge}
             onInput={(e) => setWorkspace(e.currentTarget.value)}
-            placeholder="C:/path/to/project"
+            placeholder={isDevBridge ? 'C:/path/to/project' : '(none picked)'}
           />
-        ) : (
-          <div class="settings-workspace-row">
-            <input class="settings-input" value={workspace} readOnly placeholder="(none picked)" />
-            <button onClick={() => void pickWorkspaceDialog()}>Browse…</button>
-          </div>
-        )}
+          {!isDevBridge && <button class="btn" onClick={() => void pickWorkspaceDialog()}>Browse…</button>}
+        </div>
+        <div class="field-hint">Everything the agent may read or change is bounded by this folder.</div>
 
         {recent.length > 0 && (
-          <div class="settings-recent">
-            <div class="settings-label">Recent workspaces</div>
-            {recent.map((w) => (
-              <div key={w} class="settings-recent-row" onClick={() => setWorkspace(w)}>{w}</div>
-            ))}
-          </div>
+          <>
+            <div class="field-label">Recent</div>
+            <div class="recent-list">
+              {recent.map((w) => (
+                <button key={w} class={`recent-item ${w === workspace ? 'recent-item-active' : ''}`} onClick={() => setWorkspace(w)}>
+                  {w}
+                </button>
+              ))}
+            </div>
+          </>
         )}
 
-        {error && <div class="chat-error">⚠ {error}</div>}
+        {error && <div class="panel-error">{error}</div>}
 
         <button
-          class="settings-connect"
+          class="btn btn-primary modal-primary"
           disabled={connecting || workspace.trim() === '' || serverUrl.trim() === ''}
           onClick={connect}
         >
-          {connecting ? 'Connecting…' : 'Connect'}
+          {connecting ? 'Opening…' : 'Open workspace'}
         </button>
+        <div class="field-hint">Opening a workspace starts a fresh session in it.</div>
       </div>
     </div>
   )

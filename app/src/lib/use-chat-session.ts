@@ -28,19 +28,22 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
       client.on('step.start', (d) =>
         dispatch({ type: 'step.start', step: d.step, timeoutMs: d.timeoutMs, startedAtMs: Date.now() })),
       client.on('thinking.delta', (d) => dispatch({ type: 'thinking.delta', text: d.text })),
-      client.on('text.delta', (d) => dispatch({ type: 'text.delta', text: d.text })),
-      client.on('assistant.text', (d) => dispatch({ type: 'assistant.text', text: d.text })),
-      client.on('tool.call', (d) => dispatch({ type: 'tool.call', name: d.name, args: d.args })),
+      // `atMs` is the wall clock at which this event arrived; the reducer uses it only to
+      // stamp the end of the reasoning block each of these closes (see state.ts).
+      client.on('text.delta', (d) => dispatch({ type: 'text.delta', text: d.text, atMs: Date.now() })),
+      client.on('assistant.text', (d) => dispatch({ type: 'assistant.text', text: d.text, atMs: Date.now() })),
+      client.on('tool.call', (d) => dispatch({ type: 'tool.call', name: d.name, args: d.args, atMs: Date.now() })),
       client.on('tool.result', (d) => dispatch({ type: 'tool.result', name: d.name, ok: d.ok, content: d.content })),
       client.on('step.done', (d) => dispatch({
         type: 'step.done',
         step: d.step,
         seconds: d.seconds,
+        atMs: Date.now(),
         ...(d.tokensPerSecond !== undefined ? { tokensPerSecond: d.tokensPerSecond } : {}),
         ...(d.promptTokens !== undefined ? { promptTokens: d.promptTokens } : {}),
         ...(d.draftAcceptance !== undefined ? { draftAcceptance: d.draftAcceptance } : {}),
       })),
-      client.on('turn.done', (d) => dispatch({ type: 'turn.done', stoppedBecause: d.stoppedBecause })),
+      client.on('turn.done', (d) => dispatch({ type: 'turn.done', stoppedBecause: d.stoppedBecause, atMs: Date.now() })),
       client.on('approval.request', (d) => dispatch({
         type: 'approval.request', requestId: d.requestId, tool: d.tool, summary: d.summary,
         detail: d.detail, suggestedRules: d.suggestedRules,

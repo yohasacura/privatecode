@@ -10,24 +10,43 @@ import type { AgentMode } from '@core/permissions/engine'
  * transport, or Preact at all. `chat.tsx` owns the impure half: subscribing to
  * `ProtocolClient` events, calling `dispatch`, and rendering `state.items` in order.
  *
- * Two behaviors mirror `core/src/cli/render.ts`'s streaming REPL renderer on purpose (the
- * plan calls this out explicitly):
- * - A step's `thinking` item grows (one line, a running token-count estimate) for as long
- *   as only `thinking.delta` events arrive. The instant a `text.delta` arrives for that
- *   step, the thinking item is REMOVED (not just stopped) and a growing `assistant` item
- *   takes its place -- `render.ts`'s `onThinking` guard (`if (streaming && textStreamed)
- *   return`) is the same suppression rule, adapted from "don't print a summary line" to
- *   "don't leave a stale thinking row sitting above the content".
- * - `assistant.text` (the non-streaming, whole-string event that always follows a step)
- *   is IGNORED when that step's content already streamed via `text.delta` -- appending it
- *   too would duplicate the same prose, matching `render.ts`'s `textStreamed` check in
- *   `onAssistantText`.
+ * REASONING (rewritten in the UI rework -- the original behavior is why the user could not
+ * see what the model was thinking, and why "thinking…" animations hung forever):
+ * - A `thinking` item accumulates the reasoning TEXT, not just a character count. The text
+ *   is the point; a token estimate is not an answer to "what is it doing right now".
+ * - The item is CLOSED, never removed. `done: true` is set by whatever ends the reasoning
+ *   for that step -- the first `text.delta`, an `assistant.text`, a `tool.call`, or, as a
+ *   backstop, `step.done` / `turn.done` / `send-failed`. The original code removed the
+ *   item on `text.delta` alone, so a tool-calling step (which never emits `text.delta`)
+ *   left a live, pulsing "thinking…" row in the transcript forever.
+ * - `endedAtMs` is filled from the closing action's optional `atMs`. The reducer still
+ *   never reads a clock itself (see above); callers that want a "thought for 12s" line
+ *   pass the timestamp in, callers that don't simply get `null` and no duration.
+ *
+ * One behavior still mirrors `core/src/cli/render.ts`'s streaming REPL renderer:
+ * `assistant.text` (the non-streaming, whole-string event that always follows a step) is
+ * IGNORED when that step's content already streamed via `text.delta` -- appending it too
+ * would duplicate the same prose, matching `render.ts`'s `textStreamed` check in
+ * `onAssistantText`.
  */
 
 export type ChatItem =
   | { kind: 'user'; id: number; text: string }
   | { kind: 'assistant'; id: number; text: string; interrupted: boolean }
-  | { kind: 'thinking'; id: number; step: number; chars: number }
+  /** The model's reasoning for one step: the full text, plus whether it is still being
+   * produced. `done` drives BOTH the live animation and the header wording, so a closed
+   * item can never animate. */
+  | {
+    kind: 'thinking'
+    id: number
+    step: number
+    text: string
+    done: boolean
+    startedAtMs: number
+    /** Set from the closing action's `atMs` when the caller supplied one; `null` means
+     * "closed, duration unknown" -- never "still running" (that is `done: false`). */
+    endedAtMs: number | null
+  }
   /** `result.content` is the FULL, untruncated tool result string (Task 7's diffs panel
    * needs the whole rendered diff, not the one-line `preview` this row itself displays --
    * see diffs.tsx's `toDiffEntry`). Keeping both on the same item is one source of truth
@@ -136,13 +155,17 @@ export type ChatAction =
   | { type: 'turn-started' }
   | { type: 'step.start'; step: number; timeoutMs: number; startedAtMs: number }
   | { type: 'thinking.delta'; text: string }
-  | { type: 'text.delta'; text: string }
-  | { type: 'assistant.text'; text: string }
-  | { type: 'tool.call'; name: string; args: string }
+  /** `atMs` on this and the four actions below is the wall clock at which the caller saw
+   * the event, used only to stamp `endedAtMs` on the reasoning item this action closes.
+   * Optional throughout: a caller with no clock (a test) gets the same transcript, minus
+   * the "thought for 12s" duration. */
+  | { type: 'text.delta'; text: string; atMs?: number }
+  | { type: 'assistant.text'; text: string; atMs?: number }
+  | { type: 'tool.call'; name: string; args: string; atMs?: number }
   | { type: 'tool.result'; name: string; ok: boolean; content: string }
-  | { type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number; promptTokens?: number; draftAcceptance?: number }
-  | { type: 'turn.done'; stoppedBecause: StoppedBecause }
-  | { type: 'send-failed'; message: string }
+  | { type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number; promptTokens?: number; draftAcceptance?: number; atMs?: number }
+  | { type: 'turn.done'; stoppedBecause: StoppedBecause; atMs?: number }
+  | { type: 'send-failed'; message: string; atMs?: number }
   /** Dispatched after every successful `init`/`sessions.new`/`sessions.resume` call --
    * every one of those is either this app run's first session or a deliberate switch to a
    * different one, so this always resets the whole transcript/turn/pending-card/todos
@@ -170,12 +193,25 @@ function preview(content: string): string {
   return firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine
 }
 
-/** The current step's thinking item, if the LAST item in the transcript is one -- thinking
- * deltas only ever accumulate onto the most recently opened step's own line, never an
- * older one further back in the transcript. */
-function lastThinkingItem(items: ChatItem[]): (ChatItem & { kind: 'thinking' }) | undefined {
+/** The still-open reasoning item, if the LAST item in the transcript is one -- reasoning
+ * deltas only ever accumulate onto the most recently opened step's own block, never an
+ * older one further back in the transcript, and never one already closed. */
+function openThinking(items: ChatItem[]): (ChatItem & { kind: 'thinking' }) | undefined {
   const last = items[items.length - 1]
-  return last?.kind === 'thinking' ? last : undefined
+  return last?.kind === 'thinking' && !last.done ? last : undefined
+}
+
+/**
+ * Closes the open reasoning item, if there is one. This replaces the original code's
+ * "remove the thinking row" -- the text stays in the transcript (the user asked to see it)
+ * and only the live state ends, which is what stops the animation. A no-op when nothing is
+ * open, so every action that could possibly end reasoning can call it unconditionally.
+ */
+function closeThinking(items: ChatItem[], atMs: number | undefined): ChatItem[] {
+  const open = openThinking(items)
+  if (!open) return items
+  const closed: ChatItem = { ...open, done: true, endedAtMs: atMs ?? null }
+  return [...items.slice(0, -1), closed]
 }
 
 function lastAssistantItem(items: ChatItem[]): (ChatItem & { kind: 'assistant' }) | undefined {
@@ -208,35 +244,45 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'step.start':
       return {
         ...state,
+        // A step does NOT open a reasoning block here: the block is created lazily by the
+        // first `thinking.delta` that actually arrives, so a step that goes straight to a
+        // tool call or an answer leaves no empty "Thought" card behind. That a step is
+        // running at all is `currentStep`/`turnRunning`, which the composer renders.
         currentStep: { step: action.step, timeoutMs: action.timeoutMs, startedAtMs: action.startedAtMs },
-        // A NEW step's thinking line always starts at 0 chars -- growing it from
-        // whatever the PREVIOUS step's thinking item happened to reach would misreport
-        // this step's own token estimate (the "step-reset" behavior the plan's unit
-        // tests ask for by name).
-        items: [...state.items, { kind: 'thinking', id: state.nextId, step: action.step, chars: 0 }],
-        nextId: state.nextId + 1,
       }
 
     case 'thinking.delta': {
-      const thinking = lastThinkingItem(state.items)
-      if (!thinking) return state // a delta arriving with no open thinking line is a no-op, not a crash
-      const updated: ChatItem = { ...thinking, chars: thinking.chars + action.text.length }
-      return { ...state, items: [...state.items.slice(0, -1), updated] }
+      const open = openThinking(state.items)
+      if (open) {
+        const updated: ChatItem = { ...open, text: open.text + action.text }
+        return { ...state, items: [...state.items.slice(0, -1), updated] }
+      }
+      // First reasoning of this step: open its OWN block. Continuing the previous step's
+      // block across a tool round-trip would merge two separate trains of thought into
+      // one unreadable wall.
+      const item: ChatItem = {
+        kind: 'thinking',
+        id: state.nextId,
+        step: state.currentStep?.step ?? 0,
+        text: action.text,
+        done: false,
+        startedAtMs: state.currentStep?.startedAtMs ?? 0,
+        endedAtMs: null,
+      }
+      return { ...state, items: [...state.items, item], nextId: state.nextId + 1 }
     }
 
     case 'text.delta': {
-      const thinking = lastThinkingItem(state.items)
       const assistant = lastAssistantItem(state.items)
       if (assistant) {
         const updated: ChatItem = { ...assistant, text: assistant.text + action.text }
         return { ...state, items: [...state.items.slice(0, -1), updated] }
       }
-      // First text.delta of this step: the REPL's suppression rule, restated for a
-      // transcript -- the thinking line is REPLACED (removed, not merely frozen) by a
-      // fresh assistant item that starts accumulating streamed content.
-      const withoutThinking = thinking ? state.items.slice(0, -1) : state.items
+      // First text.delta of this step: reasoning is over, so close its block (keeping the
+      // text visible) and open a fresh assistant item to accumulate streamed content.
+      const items = closeThinking(state.items, action.atMs)
       const item: ChatItem = { kind: 'assistant', id: state.nextId, text: action.text, interrupted: false }
-      return { ...state, items: [...withoutThinking, item], nextId: state.nextId + 1 }
+      return { ...state, items: [...items, item], nextId: state.nextId + 1 }
     }
 
     case 'assistant.text': {
@@ -244,13 +290,17 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       // text.delta (there is already an assistant item open), the whole-string event
       // duplicates it -- ignored rather than appended again.
       if (lastAssistantItem(state.items)) return state
+      const items = closeThinking(state.items, action.atMs)
       const item: ChatItem = { kind: 'assistant', id: state.nextId, text: action.text, interrupted: false }
-      return { ...state, items: [...state.items, item], nextId: state.nextId + 1 }
+      return { ...state, items: [...items, item], nextId: state.nextId + 1 }
     }
 
     case 'tool.call': {
+      // The other way a step's reasoning ends -- and the one the original code missed,
+      // which is why every tool-calling step used to leave a live "thinking…" row behind.
+      const items = closeThinking(state.items, action.atMs)
       const item: ChatItem = { kind: 'tool', id: state.nextId, name: action.name, args: action.args }
-      return { ...state, items: [...state.items, item], nextId: state.nextId + 1 }
+      return { ...state, items: [...items, item], nextId: state.nextId + 1 }
     }
 
     case 'tool.result': {
@@ -265,6 +315,9 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'step.done':
       return {
         ...state,
+        // Backstop: a step that emitted reasoning and then nothing else (no text, no tool
+        // call -- e.g. it hit its timeout) still has to stop animating.
+        items: closeThinking(state.items, action.atMs),
         currentStep: null,
         lastStepDone: {
           step: action.step,
@@ -277,11 +330,13 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 
     case 'turn.done': {
       // An aborted turn's partial assistant text (if any) is marked `interrupted` so the
-      // UI can show the "[interrupted]" marker next to it -- see chat.tsx.
-      const assistant = lastAssistantItem(state.items)
+      // UI can show the "[interrupted]" marker next to it. Reasoning is closed first:
+      // interrupting mid-thought is exactly the case that used to leave a pulsing row.
+      const closed = closeThinking(state.items, action.atMs)
+      const assistant = lastAssistantItem(closed)
       const items = assistant && action.stoppedBecause === 'aborted'
-        ? [...state.items.slice(0, -1), { ...assistant, interrupted: true }]
-        : state.items
+        ? [...closed.slice(0, -1), { ...assistant, interrupted: true }]
+        : closed
       // Pending interaction cards die with the turn: the host's abort()/switch already
       // resolved them as denied on its side, so a card left visible here would be a ghost
       // whose "Allow" authorizes nothing (the polish review's Important 2) -- clearing
@@ -293,8 +348,9 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     }
 
     case 'send-failed': {
+      const items = closeThinking(state.items, action.atMs)
       const item: ChatItem = { kind: 'error', id: state.nextId, message: action.message }
-      return { ...state, items: [...state.items, item], turnRunning: false, currentStep: null, nextId: state.nextId + 1 }
+      return { ...state, items: [...items, item], turnRunning: false, currentStep: null, nextId: state.nextId + 1 }
     }
 
     case 'approval.request':

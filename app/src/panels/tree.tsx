@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatItem } from '../lib/state'
+import { Icon } from '../components/icons'
 
 /**
  * The file tree panel (Plan 4 Task 7): lazy-loaded directories over `fs.tree`, refreshed
@@ -175,10 +176,15 @@ function DirChildren({
           <div key={childPath}>
             <div
               class={`tree-row ${entry.dir ? 'tree-dir' : 'tree-file'}`}
-              style={{ paddingLeft: `${depth * 12 + 4}px` }}
+              style={{ paddingLeft: `${depth * 12 + 6}px` }}
               onClick={() => (entry.dir ? onToggle(childPath) : onOpenFile(childPath))}
+              title={childPath}
             >
-              <span class="tree-icon">{entry.dir ? (isExpanded ? '▾' : '▸') : '·'}</span> {entry.name}
+              <span class="tree-chevron">
+                {entry.dir ? (isExpanded ? Icon.chevronDown() : Icon.chevronRight()) : null}
+              </span>
+              <span class="tree-icon">{entry.dir ? Icon.folder() : Icon.file()}</span>
+              <span class="tree-name">{entry.name}</span>
             </div>
             {entry.dir && isExpanded && (
               <DirChildren

@@ -1,33 +1,57 @@
 import { useState } from 'preact/hooks'
+import type { VNode } from 'preact'
 import type { ApprovalDecision, RememberLayer, TodoItem } from '@core/interaction'
 import type { ProtocolClient } from '../lib/client'
 import type { PendingApproval, PendingQuestion } from '../lib/state'
-
-const LAYERS: readonly RememberLayer[] = ['session', 'local', 'project', 'user']
+import { DiffView } from '../lib/diff'
+import { Icon } from '../components/icons'
 
 /**
- * Approval/question cards and the todo checklist (Plan 4 Task 6). Both cards render
- * ABOVE the input row in `chat.tsx` while the turn is genuinely paused -- `SessionHost`
- * is awaiting exactly this reply before the turn's next step runs (see host.ts's own
- * doc comment), so the caption below is not just decorative copy, it states a real
- * property: nothing is being billed while the card sits open.
+ * The two cards that pause a turn, plus the task-list card.
  *
- * Each card's own state machine is pending -> answered, single-fire, enforced TWICE:
- * `answered` (component-local `useState`) disables every button the instant one is
- * clicked, before the RPC round-trip even starts; `onAnswered` also dispatches
- * `approval.answered`/`question.answered` into `lib/state.ts`'s reducer immediately,
- * which clears `pendingApproval`/`pendingQuestion` and unmounts this card from
- * `chat.tsx`'s tree on the very next render. The SERVER'S single-use requestId guarantee
- * (host.ts) is the real security boundary; both of these are defense in depth against a
- * confusing double-reply, not what makes a replay unable to authorize anything.
+ * They render INLINE in the transcript, at the point in the conversation where the agent
+ * asked — not pinned to the bottom of the window as a separate strip. An approval is part
+ * of the conversation ("may I do this?" / "no, do that instead") and reads as one; it also
+ * means the transcript record that replaces the card afterwards appears in exactly the
+ * place the card was.
+ *
+ * Each card's pending → answered transition is single-fire, enforced twice: `answered`
+ * disables the buttons before the RPC round-trip starts, and `onAnswered` clears the
+ * pending state in the reducer immediately, unmounting the card. The host's single-use
+ * requestId is the actual security boundary (`core/src/host/host.ts`); both of these are
+ * defence in depth against a confusing double-click, not what makes a replay harmless.
  */
+
+const LAYERS: readonly { value: RememberLayer; label: string }[] = [
+  { value: 'session', label: 'this session' },
+  { value: 'local', label: 'this project (just me)' },
+  { value: 'project', label: 'this project (shared)' },
+  { value: 'user', label: 'all my projects' },
+]
+
+/**
+ * `edit_file`'s approval detail is a SEARCH/REPLACE block (see its `approvalPreview`).
+ * Shown verbatim it is a wall of markers; the two halves are exactly a before and an after,
+ * so they turn into a real coloured diff with no information invented. Returns `null` for
+ * any detail that is not that shape, and the caller falls back to plain text.
+ */
+function searchReplaceToDiff(detail: string): string | null {
+  const m = /<<<<<<< SEARCH\n([\s\S]*?)\n=======\n([\s\S]*?)\n>>>>>>> REPLACE/.exec(detail)
+  const before = m?.[1]
+  const after = m?.[2]
+  if (before === undefined || after === undefined) return null
+  const removed = before.split('\n').map((l) => `-${l}`)
+  const added = after.split('\n').map((l) => `+${l}`)
+  return [...removed, ...added].join('\n')
+}
+
 export function ApprovalCard({
   client, approval, onAnswered,
 }: {
   client: ProtocolClient
   approval: PendingApproval
   onAnswered: (decision: ApprovalDecision) => void
-}) {
+}): VNode | null {
   const [showAlways, setShowAlways] = useState(false)
   const [selectedRule, setSelectedRule] = useState(approval.suggestedRules[0] ?? '')
   const [layer, setLayer] = useState<RememberLayer>('session')
@@ -39,50 +63,70 @@ export function ApprovalCard({
     setAnswered(true)
     onAnswered(decision)
     client.call('approval.reply', { requestId: approval.requestId, decision }).catch(() => {
-      // The transcript record (from onAnswered, already dispatched) shows what the user
-      // chose regardless of whether this round-trip itself succeeded; nothing more to do
-      // client-side for a reply the server may or may not have received.
+      // The transcript record (already dispatched by onAnswered) shows what was chosen
+      // regardless of whether this round-trip landed; nothing more to do client-side.
     })
   }
 
   if (answered) return null
 
+  const diff = searchReplaceToDiff(approval.detail)
+
   return (
-    <div class="approval-card">
-      <div class="approval-caption">Turn paused — no tokens burn while you decide.</div>
-      <div class="approval-summary"><b class="approval-tool">{approval.tool}</b>: {approval.summary}</div>
-      <pre class="approval-detail">{approval.detail}</pre>
-      <div class="approval-buttons">
-        <button onClick={() => reply({ verdict: 'allow' })}>Allow once</button>
-        {/* Rule-honesty contract: HIDDEN entirely (not just disabled) when there is
-            nothing to remember -- an "Always…" button that opens to an empty list would
-            promise a capability the engine cannot actually offer for this call. */}
+    <div class="card card-approval">
+      <div class="card-head">
+        <span class="card-icon card-icon-warn">{Icon.shield()}</span>
+        <span class="card-title">{approval.summary}</span>
+        <span class="card-tag">{approval.tool}</span>
+      </div>
+      <div class="card-note">Paused, waiting for you. Nothing is generating while this is open.</div>
+
+      <div class="card-detail">
+        {diff !== null ? <DiffView content={diff} dense /> : <pre class="card-detail-pre">{approval.detail}</pre>}
+      </div>
+
+      <div class="card-actions">
+        <button class="btn btn-primary" onClick={() => reply({ verdict: 'allow' })}>Allow</button>
+        {/* Hidden entirely, not disabled, when there is nothing to remember: an "Always"
+            button opening onto an empty list would promise a capability the permission
+            engine cannot offer for this call. */}
         {approval.suggestedRules.length > 0 && (
-          <button class="always-toggle" onClick={() => setShowAlways((s) => !s)}>Always…</button>
+          <button class="btn" onClick={() => setShowAlways((s) => !s)}>
+            Always… {showAlways ? Icon.chevronDown() : Icon.chevronRight()}
+          </button>
         )}
+        <span class="card-actions-gap" />
         <input
-          class="deny-comment"
+          class="input deny-comment"
           value={denyComment}
           onInput={(e) => setDenyComment(e.currentTarget.value)}
-          placeholder="tell the model what to do instead"
+          placeholder="tell it what to do instead (optional)"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              reply({ verdict: 'deny', ...(denyComment.trim() !== '' ? { comment: denyComment.trim() } : {}) })
+            }
+          }}
         />
         <button
-          class="deny-button"
+          class="btn btn-danger"
           onClick={() => reply({ verdict: 'deny', ...(denyComment.trim() !== '' ? { comment: denyComment.trim() } : {}) })}
         >
           Deny
         </button>
       </div>
+
       {showAlways && approval.suggestedRules.length > 0 && (
         <div class="always-panel">
-          <select value={selectedRule} onChange={(e) => setSelectedRule(e.currentTarget.value)}>
+          <label>Remember</label>
+          <select class="select" value={selectedRule} onChange={(e) => setSelectedRule(e.currentTarget.value)}>
             {approval.suggestedRules.map((rule) => <option key={rule} value={rule}>{rule}</option>)}
           </select>
-          <select value={layer} onChange={(e) => setLayer(e.currentTarget.value as RememberLayer)}>
-            {LAYERS.map((l) => <option key={l} value={l}>{l}</option>)}
+          <label>for</label>
+          <select class="select" value={layer} onChange={(e) => setLayer(e.currentTarget.value as RememberLayer)}>
+            {LAYERS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
           </select>
-          <button onClick={() => reply({ verdict: 'allow', remember: { rule: selectedRule, layer } })}>
-            Confirm always-allow
+          <button class="btn btn-primary" onClick={() => reply({ verdict: 'allow', remember: { rule: selectedRule, layer } })}>
+            Allow always
           </button>
         </div>
       )}
@@ -96,7 +140,7 @@ export function QuestionCard({
   client: ProtocolClient
   question: PendingQuestion
   onAnswered: (answer: string) => void
-}) {
+}): VNode | null {
   const [freeText, setFreeText] = useState('')
   const [answered, setAnswered] = useState(false)
 
@@ -104,53 +148,74 @@ export function QuestionCard({
     if (answered || answer.trim() === '') return
     setAnswered(true)
     onAnswered(answer)
-    client.call('question.reply', { requestId: question.requestId, answer }).catch(() => { /* see ApprovalCard's reply() */ })
+    client.call('question.reply', { requestId: question.requestId, answer }).catch(() => { /* see ApprovalCard */ })
   }
 
   if (answered) return null
 
   return (
-    <div class="question-card">
-      <div class="approval-caption">Turn paused — no tokens burn while you decide.</div>
-      <div class="question-text">{question.question}</div>
-      <div class="question-options">
-        {/* The host always ALSO accepts free text (interaction.ts's own UserQuestion
-            comment) -- these buttons are a shortcut for the common answers, not the only
-            way to reply. */}
-        {question.options.map((option) => (
-          <button key={option} onClick={() => reply(option)}>{option}</button>
-        ))}
+    <div class="card card-question">
+      <div class="card-head">
+        <span class="card-icon">{Icon.chat()}</span>
+        <span class="card-title">{question.question}</span>
       </div>
-      <div class="question-freetext">
+      <div class="card-note">Paused, waiting for you.</div>
+      {question.options.length > 0 && (
+        <div class="question-options">
+          {/* The host always accepts free text too (interaction.ts's `UserQuestion`) --
+              these are shortcuts for the likely answers, not the only way to reply. */}
+          {question.options.map((option) => (
+            <button key={option} class="btn" onClick={() => reply(option)}>{option}</button>
+          ))}
+        </div>
+      )}
+      <div class="card-actions">
         <input
+          class="input"
           value={freeText}
           onInput={(e) => setFreeText(e.currentTarget.value)}
-          placeholder="or type your own answer"
+          onKeyDown={(e) => { if (e.key === 'Enter') reply(freeText) }}
+          placeholder="or answer in your own words"
         />
-        <button onClick={() => reply(freeText)} disabled={freeText.trim() === ''}>Answer</button>
+        <button class="btn btn-primary" onClick={() => reply(freeText)} disabled={freeText.trim() === ''}>
+          Answer
+        </button>
       </div>
     </div>
   )
 }
 
-const TODO_MARK: Record<TodoItem['status'], string> = {
-  pending: '[ ]',
-  in_progress: '[>]',
-  completed: '[x]',
-}
-
-/** The compact checklist in the chat panel's header area -- renders nothing at all when
- * there are no todos, rather than an empty box, so a task that never calls todo_write
- * costs the layout nothing. */
-export function TodosWidget({ todos }: { todos: TodoItem[] }) {
+/**
+ * The current task list, pinned above the transcript. Renders nothing at all when the model
+ * never called `todo_write`, so a one-shot question costs no layout.
+ */
+export function TodosCard({ todos }: { todos: TodoItem[] }): VNode | null {
+  const [open, setOpen] = useState(true)
   if (todos.length === 0) return null
+  const done = todos.filter((t) => t.status === 'completed').length
+  const current = todos.find((t) => t.status === 'in_progress')
+
   return (
-    <div class="todos-widget">
-      {todos.map((t, i) => (
-        <div key={i} class={`todo-item todo-${t.status}`}>
-          <span class="todo-mark">{TODO_MARK[t.status]}</span> {t.text}
-        </div>
-      ))}
+    <div class="todos">
+      <button class="todos-head" onClick={() => setOpen((o) => !o)}>
+        <span class="todos-chevron">{open ? Icon.chevronDown() : Icon.chevronRight()}</span>
+        <span class="todos-title">Plan</span>
+        <span class="todos-count">{done}/{todos.length}</span>
+        {!open && current && <span class="todos-current">{current.text}</span>}
+        <span class="todos-bar"><span class="todos-bar-fill" style={{ width: `${(done / todos.length) * 100}%` }} /></span>
+      </button>
+      {open && (
+        <ul class="todos-list">
+          {todos.map((t, i) => (
+            <li key={i} class={`todo todo-${t.status}`}>
+              <span class="todo-mark">
+                {t.status === 'completed' ? Icon.check() : t.status === 'in_progress' ? Icon.play() : null}
+              </span>
+              <span class="todo-text">{t.text}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
