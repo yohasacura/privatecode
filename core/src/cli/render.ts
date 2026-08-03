@@ -160,6 +160,11 @@ export function createEventRenderer(opts?: { stream?: boolean }): EventRenderer 
     },
     onThinking: (t) => {
       clearStatusLine()
+      // In streaming mode with streamed content, the live status line already showed thinking
+      // progress and the text is already displayed — the summary would glue to the last line
+      // with no separator. Non-streaming/non-TTY paths have textStreamed=false always,
+      // so this guard proves they print the summary unchanged.
+      if (streaming && textStreamed) return
       console.log(`\x1b[90m[thinking, ~${Math.ceil(t.length / 4)} tok]\x1b[0m`)
     },
     onContinuation: (s) => {
