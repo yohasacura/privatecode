@@ -1,5 +1,5 @@
 import type { InteractionPort } from '../interaction.js'
-import type { LlamaClient } from '../llama/client.js'
+import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ChatResult } from '../llama/types.js'
 import type { AgentMode, PermissionEngine } from '../permissions/engine.js'
 import { suggestRules } from '../permissions/rules.js'
@@ -451,7 +451,10 @@ export class Agent {
       return { kind: 'ok', result }
     } catch (e) {
       // The caller's cancel wins over our own deadline when both fired.
-      if (this.opts.signal?.aborted) return { kind: 'aborted' }
+      if (this.opts.signal?.aborted) {
+        this.appendInterrupted(e)
+        return { kind: 'aborted' }
+      }
       if (deadline.aborted) return { kind: 'timeout' }
       throw e
     }
@@ -637,6 +640,32 @@ export class Agent {
     if (!m.content && !m.reasoning_content) return
     const out: ChatMessage = { role: 'assistant', content: m.content ?? null }
     if (m.reasoning_content) out.reasoning_content = m.reasoning_content
+    this.transcript.append(out)
+  }
+
+  /**
+   * User-initiated abort (Esc), never the step deadline or a transport error: the caller
+   * only reaches here after confirming `this.opts.signal.aborted` itself, so a timeout or
+   * a genuine connection failure never runs this. DESIGN.md's interrupt row: the stream's
+   * partial is KEPT in the transcript, marked interrupted, so the prefix it already built
+   * stays warm and resuming costs seconds instead of a fresh generation.
+   *
+   * `err.partial` is only ever set by `chatStream` for a failure that occurred mid-stream
+   * (Task 3) -- absent entirely for an abort that fired before the first byte, and present
+   * but both fields empty for an abort between the response arriving and the first delta.
+   * Either way there is nothing worth keeping, so nothing is appended.
+   *
+   * No tool_calls, ever -- same principle as appendTruncated: a call cut off mid-stream may
+   * be malformed JSON, and an assistant turn carrying a tool_call with no matching tool
+   * reply is invalid on the next request anyway.
+   */
+  private appendInterrupted(e: unknown): void {
+    const partial = e instanceof LlamaRequestError ? e.partial : undefined
+    if (!partial || (!partial.reasoning && !partial.content)) return
+    const marker = '[interrupted by the user before this reply finished]'
+    const content = partial.content ? `${partial.content}\n${marker}` : marker
+    const out: ChatMessage = { role: 'assistant', content }
+    if (partial.reasoning) out.reasoning_content = partial.reasoning
     this.transcript.append(out)
   }
 

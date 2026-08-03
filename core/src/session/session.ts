@@ -168,12 +168,24 @@ export class Session {
       const userText = note ? `${note}\n${text}` : text
 
       const agent = this.buildAgent(signal)
+      // Captured AFTER buildAgent() (which may append the system prompt on a fresh
+      // transcript) and BEFORE runTurn(), so a length comparison after the call tells us,
+      // directly, whether the user message actually reached the transcript.
+      const beforeCount = this.transcript.messages().length
       const result = await agent.runTurn(userText)
 
-      // Early abort (signal already aborted before runTurn appended the user message):
-      // the note was consumed but never made it to the transcript. Restore it so it
-      // prefixes the next send(), allowing the mode change to eventually reach the model.
-      if (result.stoppedBecause === 'aborted' && result.steps === 0 && note !== undefined) {
+      // Restore the note only when the user message itself never reached the transcript --
+      // checked directly against the transcript rather than via `result.steps`, which counts
+      // completed model-call rounds, not appends. `steps === 0` used to stand in for this,
+      // but it is also what an abort mid-step-1 reports (runTurn: `steps: step - 1`), and
+      // that case's user message DID make it in before the step ran -- and, since Task 5,
+      // that step may ALSO have appended a partial assistant message marked interrupted.
+      // Re-prefixing the note onto the next send() in either of those cases would duplicate
+      // it: once already sitting in the transcript on the aborted turn's user message, once
+      // again on the next one. Only runTurn's very first check -- signal already aborted
+      // before the user message is appended at all -- truly leaves the transcript untouched.
+      if (result.stoppedBecause === 'aborted' && note !== undefined &&
+          this.transcript.messages().length === beforeCount) {
         this.pendingModeNote = note
       }
 
