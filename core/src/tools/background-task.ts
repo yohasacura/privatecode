@@ -25,6 +25,11 @@ type ExecaChild = ResultPromise<any>
 interface Entry {
   id: string
   command: string
+  /** Who started this process. `'agent'` is a `background_task` tool call, which passed the
+   * permission engine; `'user'` is a command typed into the app's own terminal, which did
+   * not, because the user running a command in their own workspace is not the model acting.
+   * Only the UI reads this -- nothing here behaves differently by origin. */
+  origin: JobOrigin
   child: ExecaChild
   buffer: string
   dropped: number
@@ -33,6 +38,29 @@ interface Entry {
   ready: ReadyWhen | null
   startedAt: number
   exit: { code: number | null; stopped: boolean } | null
+}
+
+export type JobOrigin = 'agent' | 'user'
+
+/**
+ * One process as the UI sees it. Deliberately NOT the same read as the tool's own `poll`:
+ * `describe()` returns output *since the last poll* and advances `cursor`, which is right
+ * for the model (it must not re-read what it already saw) and wrong for a panel (which
+ * re-renders constantly and must never consume the model's unread output). `snapshot()`
+ * reads the tail without touching `cursor`, so the two readers cannot interfere.
+ */
+export interface JobSnapshot {
+  id: string
+  command: string
+  origin: JobOrigin
+  startedAt: number
+  running: boolean
+  exitCode: number | null
+  stopped: boolean
+  /** Tail of the output buffer, newest content kept. */
+  output: string
+  /** True when older output has been dropped from the front of the ring. */
+  clipped: boolean
 }
 
 /** Ring ceiling per task. Output beyond it drops from the FRONT (old lines go first). */
@@ -59,7 +87,7 @@ export class BackgroundTasks {
   private readonly entries = new Map<string, Entry>()
   private nextId = 1
 
-  start(command: string, ready: ReadyWhen | null, cwd: string): Entry {
+  start(command: string, ready: ReadyWhen | null, cwd: string, origin: JobOrigin = 'agent'): Entry {
     const id = `task-${this.nextId++}`
     const child = execa(
       'powershell.exe',
@@ -67,7 +95,7 @@ export class BackgroundTasks {
       { cwd, reject: false, windowsHide: true, all: true, buffer: false },
     ) as unknown as ExecaChild
     const entry: Entry = {
-      id, command, child, buffer: '', dropped: 0, cursor: 0, markerSeen: false,
+      id, command, origin, child, buffer: '', dropped: 0, cursor: 0, markerSeen: false,
       ready, startedAt: Date.now(), exit: null,
     }
     child.all?.on('data', (chunk: Buffer) => {
@@ -121,6 +149,35 @@ export class BackgroundTasks {
 
   async stopAll(): Promise<void> {
     for (const entry of this.entries.values()) await this.stop(entry)
+  }
+
+  /** Stop one process by id. Unknown or already-exited ids are a no-op, not an error --
+   * the UI's Stop button races the process exiting on its own. */
+  async stopById(id: string): Promise<void> {
+    const entry = this.entries.get(id)
+    if (entry) await this.stop(entry)
+  }
+
+  /**
+   * Every process this registry knows about, oldest first, WITHOUT advancing any poll
+   * cursor -- see `JobSnapshot`. `tailChars` bounds what one snapshot can cost the caller;
+   * the ring itself is already capped at `MAX_BUFFER`.
+   */
+  snapshot(tailChars = 20_000): JobSnapshot[] {
+    return [...this.entries.values()].map((e) => {
+      const clippedHere = e.buffer.length > tailChars
+      return {
+        id: e.id,
+        command: e.command,
+        origin: e.origin,
+        startedAt: e.startedAt,
+        running: e.exit === null,
+        exitCode: e.exit?.code ?? null,
+        stopped: e.exit?.stopped ?? false,
+        output: clippedHere ? e.buffer.slice(e.buffer.length - tailChars) : e.buffer,
+        clipped: clippedHere || e.dropped > 0,
+      }
+    })
   }
 }
 

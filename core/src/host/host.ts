@@ -29,6 +29,9 @@ import type {
   HostRequest,
   InitParams,
   InitResult,
+  JobsListResult,
+  JobsStopParams,
+  JobsStopResult,
   QuestionReplyParams,
   QuestionReplyResult,
   SendParams,
@@ -40,6 +43,8 @@ import type {
   SetModeParams,
   SetModeResult,
   StatusResult,
+  TerminalRunParams,
+  TerminalRunResult,
   TurnSummary,
 } from './protocol.js'
 import { loadUiConfig, saveUiConfig } from './ui-config.js'
@@ -192,6 +197,9 @@ export class SessionHost {
       case 'fs.tree': return this.fsTree((params ?? {}) as FsTreeParams)
       case 'fs.read': return this.fsRead(params as FsReadParams)
       case 'status': return this.status()
+      case 'jobs.list': return this.jobsList()
+      case 'jobs.stop': return this.jobsStop(params as JobsStopParams)
+      case 'terminal.run': return this.terminalRun(params as TerminalRunParams)
       case 'config.get': return this.configGet()
       case 'config.set': return this.configSet(params as ConfigSetParams)
       default: throw new Error(`unknown method: "${method}"`)
@@ -590,6 +598,37 @@ export class SessionHost {
     if (!this.client) return { serverUp: false }
     const serverUp = await this.client.health()
     return { serverUp, model: MODEL }
+  }
+
+  // -----------------------------------------------------------------------------------
+  // Long-running processes (Jobs + Terminal panels)
+  // -----------------------------------------------------------------------------------
+
+  /** No toolset yet (before `init`) means no processes, which is an empty list, not an
+   * error -- the panel polls this on a timer and must not spew failures while the app is
+   * still on its welcome screen. */
+  private jobsList(): JobsListResult {
+    if (!this.toolset) return { jobs: [] }
+    return { jobs: this.toolset.background.snapshot() }
+  }
+
+  private async jobsStop(params: JobsStopParams): Promise<JobsStopResult> {
+    if (!this.toolset) return {}
+    await this.toolset.background.stopById(params.id)
+    return {}
+  }
+
+  /**
+   * Runs a command the user typed in the terminal panel. See `TerminalRunParams` for why
+   * this is not permission-gated. It reuses the background-task registry rather than
+   * growing a second process manager, which also means `shutdown()`'s `stopAll()` already
+   * covers it -- a terminal command cannot outlive the app.
+   */
+  private terminalRun(params: TerminalRunParams): TerminalRunResult {
+    const { toolset, workspaceRoot } = this.requireInitialized()
+    const command = params.command.trim()
+    if (command === '') throw new Error('terminal.run needs a non-empty command')
+    return { id: toolset.background.start(command, null, workspaceRoot, 'user').id }
   }
 
   // -----------------------------------------------------------------------------------

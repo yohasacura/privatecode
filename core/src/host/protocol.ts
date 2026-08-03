@@ -125,6 +125,45 @@ export type StatusParams = Empty
 export interface StatusResult { serverUp: boolean; model?: string }
 
 /**
+ * One long-running process, as the UI's Jobs and Terminal panels see it. Mirrors
+ * `tools/background-task.ts`'s `JobSnapshot` intentionally but is redeclared here rather
+ * than imported, for the same reason as `ToolResultEvent` and `TurnSummary`: an internal
+ * refactor of the tool must not silently change the wire contract. Must be kept in sync by
+ * hand if that snapshot shape changes.
+ */
+export interface JobInfo {
+  id: string
+  command: string
+  /** `'agent'` = started by a `background_task` tool call (permission-gated);
+   * `'user'` = started from the app's own terminal by the person sitting at it. */
+  origin: 'agent' | 'user'
+  /** Epoch milliseconds. */
+  startedAt: number
+  running: boolean
+  exitCode: number | null
+  stopped: boolean
+  output: string
+  clipped: boolean
+}
+
+/** Never errors before `init`: with no session there are simply no jobs. */
+export type JobsListParams = Empty
+export interface JobsListResult { jobs: JobInfo[] }
+
+export interface JobsStopParams { id: string }
+export type JobsStopResult = Empty
+
+/**
+ * Runs a command the USER typed into the app's terminal panel, in the workspace root, as a
+ * background job. Deliberately not permission-gated: the permission engine exists to bound
+ * what the MODEL may do unattended, and this path has no model in it -- the user typed the
+ * command themselves, in their own workspace, in an app they launched. It is also never
+ * added to the model's transcript, so a command run here cannot silently become context.
+ */
+export interface TerminalRunParams { command: string }
+export interface TerminalRunResult { id: string }
+
+/**
  * The UI's own small preferences -- last-used server URL and a short recent-workspaces
  * list -- persisted to `%APPDATA%/PrivateCode/ui.json` (see `host/ui-config.ts`). NOT the
  * permissions settings file (`permissions/settings.ts`'s `userSettingsPath()`,
@@ -163,6 +202,9 @@ export interface HostMethodMap {
   'fs.tree': { params: FsTreeParams; result: FsTreeResult }
   'fs.read': { params: FsReadParams; result: FsReadResult }
   status: { params: StatusParams; result: StatusResult }
+  'jobs.list': { params: JobsListParams; result: JobsListResult }
+  'jobs.stop': { params: JobsStopParams; result: JobsStopResult }
+  'terminal.run': { params: TerminalRunParams; result: TerminalRunResult }
   'config.get': { params: ConfigGetParams; result: ConfigGetResult }
   'config.set': { params: ConfigSetParams; result: ConfigSetResult }
 }

@@ -1,5 +1,7 @@
 import { Lexer, type Token, type Tokens } from 'marked'
 import type { ComponentChildren, VNode } from 'preact'
+import { useState } from 'preact/hooks'
+import { highlight } from './highlight'
 
 /**
  * Markdown -> Preact VNodes, with NO HTML pass-through anywhere.
@@ -82,12 +84,7 @@ function renderBlock(t: Token, key: string): ComponentChildren {
     }
     case 'code': {
       const c = t as Tokens.Code
-      return (
-        <div key={key}>
-          {c.lang && <div class="md-lang">{c.lang}</div>}
-          <pre><code>{c.text}</code></pre>
-        </div>
-      )
+      return <CodeBlock key={key} code={c.text} lang={c.lang ?? ''} />
     }
     case 'blockquote':
       return <blockquote key={key}>{renderTokens((t as Tokens.Blockquote).tokens, key)}</blockquote>
@@ -138,6 +135,36 @@ function renderBlock(t: Token, key: string): ComponentChildren {
     default:
       return 'raw' in t ? <p key={key}>{(t as { raw: string }).raw}</p> : null
   }
+}
+
+/**
+ * A fenced block: language label, copy button, and `highlight()`'s VNodes. The copy button
+ * exists because the single most common thing anyone does with a code block a model wrote
+ * is take it — and hand-selecting text inside a scrolling transcript is miserable.
+ */
+function CodeBlock({ code, lang }: { code: string; lang: string }): VNode {
+  const [copied, setCopied] = useState(false)
+
+  function copy(): void {
+    // Best-effort: no clipboard permission (or an old WebView) simply leaves the button
+    // un-ticked rather than throwing into the render tree.
+    void navigator.clipboard?.writeText(code).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 1200) },
+      () => { /* nothing sensible to show; the text is still selectable */ },
+    )
+  }
+
+  return (
+    <div class="md-code">
+      <div class="md-code-bar">
+        <span class="md-lang">{lang}</span>
+        <button class="md-copy" onClick={copy} title="Copy this block">
+          {copied ? 'copied' : 'copy'}
+        </button>
+      </div>
+      <pre><code>{highlight(code, lang)}</code></pre>
+    </div>
+  )
 }
 
 function renderTokens(tokens: Token[], keyBase: string): ComponentChildren[] {
