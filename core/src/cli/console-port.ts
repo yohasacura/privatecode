@@ -48,8 +48,20 @@ export function formatTodoLine(item: TodoItem): string {
   return `${todoBox(item.status)} ${item.text}`
 }
 
-const ALLOW_PROMPT =
+/** Offered only when `req.suggestedRules` is non-empty -- see `requestApproval`. */
+const ALLOW_PROMPT_WITH_RULES =
   'Allow? [y] yes once  [a] always...  [n] no  [n <comment>] no with comment: '
+
+/**
+ * Used whenever `req.suggestedRules` is empty -- no `[a]` offered at all, and (see
+ * `requestApproval`) an `a` answer is treated as unrecognized rather than as a pick. An
+ * empty `suggestedRules` means the engine's `decide()` reached this `ask` via an explicit
+ * ask RULE (`Decision.source === 'rule'`, see `agent/loop.ts`), which was written
+ * specifically to require asking every time; offering "always allow" here would be a lie,
+ * since no allow rule or session grant could ever win over that ask rule for the same key.
+ */
+const ALLOW_PROMPT_NO_RULES =
+  'Allow? [y] yes once  [n] no  [n <comment>] no with comment: '
 
 /**
  * Asks which of `rules` to remember, numbered starting at 1, default 1 on an empty
@@ -57,9 +69,12 @@ const ALLOW_PROMPT =
  * `MAX_ATTEMPTS` times, then falls back to the default -- unlike the top-level Allow?
  * question, there is no sane "deny" to fail closed to here: the user already said "always",
  * this step only narrows which rule text and is safe to default rather than discard.
+ *
+ * Only ever called with a non-empty `rules` -- `requestApproval` only reaches the `[a]`
+ * branch when `req.suggestedRules` is non-empty, so there is no "no suggested rule"
+ * placeholder to fall back to here.
  */
-async function pickRule(rl: ReadlineLike, suggestedRules: string[]): Promise<string> {
-  const rules = suggestedRules.length > 0 ? suggestedRules : ['(no suggested rule)']
+async function pickRule(rl: ReadlineLike, rules: string[]): Promise<string> {
   rl.write('Always allow which rule?\n')
   rules.forEach((r, i) => rl.write(`  [${i + 1}] ${r}\n`))
   const prompt = `Pick [1..${rules.length}, default 1]: `
@@ -102,8 +117,15 @@ async function requestApproval(rl: ReadlineLike, req: ApprovalRequest): Promise<
   rl.write(`\n${req.tool}: ${req.summary}\n`)
   if (req.detail) rl.write(`${clipDetail(req.detail)}\n`)
 
+  // No suggested rule means the ask came from a rule specifically requiring it every time
+  // (see the doc comment on ALLOW_PROMPT_NO_RULES) -- so `[a]` is not offered, and (below)
+  // an `a` answer is not treated as the "always allow" pick either; it just falls through
+  // to "unrecognized", the same as any other garbled answer.
+  const canRemember = req.suggestedRules.length > 0
+  const prompt = canRemember ? ALLOW_PROMPT_WITH_RULES : ALLOW_PROMPT_NO_RULES
+
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const raw = (await rl.question(ALLOW_PROMPT)).trim()
+    const raw = (await rl.question(prompt)).trim()
 
     if (raw === '' || /^y$/i.test(raw)) return { verdict: 'allow' }
 
@@ -112,13 +134,15 @@ async function requestApproval(rl: ReadlineLike, req: ApprovalRequest): Promise<
       ? { verdict: 'deny', comment: denied.comment }
       : { verdict: 'deny' }
 
-    if (/^a$/i.test(raw)) {
+    if (canRemember && /^a$/i.test(raw)) {
       const rule = await pickRule(rl, req.suggestedRules)
       const layer = await pickLayer(rl)
       return { verdict: 'allow', remember: { rule, layer } }
     }
 
-    rl.write('Unrecognized answer. Enter y, a, n, or n <comment>.\n')
+    rl.write(canRemember
+      ? 'Unrecognized answer. Enter y, a, n, or n <comment>.\n'
+      : 'Unrecognized answer. Enter y, n, or n <comment>.\n')
   }
   return { verdict: 'deny', comment: 'unrecognized answer' }
 }

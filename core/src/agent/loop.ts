@@ -494,7 +494,13 @@ export class Agent {
             tool: name,
             summary: preview.summary,
             detail: preview.detail,
-            suggestedRules: suggestRules(key),
+            // An explicit ask RULE (decision.source === 'rule') was written specifically to
+            // require asking every time this key matches; suggesting "always allow" here
+            // would be a lie, since decide() consults the ask tier before ever looking at
+            // sessionAllow, so no allow rule could ever win over it for the same key. A
+            // mode-default ask (source: 'mode') carries no such conflict and still offers
+            // its normal suggestions.
+            suggestedRules: decision.source === 'rule' ? [] : suggestRules(key),
           })
           // The dialog can resolve after the turn was cancelled — a step lasts 35-40 s, an
           // Esc press can land at any point in that window, and "pending approval" is no
