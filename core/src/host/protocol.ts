@@ -31,6 +31,11 @@ export type HostReply =
 export interface HostEvent { event: string; data: unknown }
 export type HostOutbound = HostReply | HostEvent
 
+/** Discriminates a `HostOutbound` message as a `HostEvent` (has 'event' field). */
+export function isHostEvent(msg: HostOutbound): msg is HostEvent {
+  return 'event' in msg
+}
+
 // ---------------------------------------------------------------------------------------
 // Shared shapes.
 // ---------------------------------------------------------------------------------------
@@ -44,11 +49,11 @@ export type Empty = Record<string, never>
 
 /**
  * How one turn ended, shared verbatim between `send`'s result (nested under `turn`) and
- * the `turn.done` event (the same three fields, flat). Deliberately not imported from
- * `agent/loop.ts`'s `TurnResult` -- that file sits outside this module's four allowed
- * import sources (`llama/types`, `session/store`, `interaction`, `permissions/engine`), so
- * the shape is redeclared here and must be kept in sync by hand if the agent loop's ever
- * changes.
+ * the `turn.done` event (the same three fields, flat). Deliberately redeclared here rather
+ * than imported from `agent/loop.ts`'s `TurnResult` to decouple the wire contract from
+ * internal execution-layer types: an internal refactor to agent/loop.ts cannot silently
+ * change the UI protocol. Must be kept in sync by hand if the agent loop's values ever
+ * change.
  */
 export type StoppedBecause = 'done' | 'max_steps' | 'aborted' | 'timeout' | 'truncated'
 
@@ -171,9 +176,10 @@ export interface ToolCallEvent {
   args: string
 }
 /**
- * Not imported from `tools/types.ts`'s `ToolResult` -- that file sits outside this module's
- * four allowed import sources, so the two overlapping fields (`ok`, `content`) are
- * redeclared here alongside `name`.
+ * Mirrors `tools/types.ts`'s `ToolResult` intentionally but is redeclared here rather than
+ * imported to decouple the wire contract from internal execution-layer types: an internal
+ * refactor to tools/types.ts cannot silently change the UI protocol. Must be kept in sync
+ * by hand if the tool result shape ever changes.
  */
 export interface ToolResultEvent { name: string; ok: boolean; content: string }
 
@@ -188,10 +194,10 @@ export interface QuestionRequestEvent extends UserQuestion { requestId: string }
 export interface TodosEvent { items: TodoItem[] }
 
 /**
- * Mirrors `Session`'s own `CompactionEvent` (`session/session.ts`) one-for-one, but is not
- * imported from it -- `session/session.ts` sits outside this module's four allowed import
- * sources, so the state union is redeclared here and must be kept in sync by hand if the
- * session's ever changes.
+ * Mirrors `session/session.ts`'s `CompactionEvent` intentionally but is redeclared here
+ * rather than imported to decouple the wire contract from internal execution-layer types:
+ * an internal refactor to session/session.ts cannot silently change the UI protocol. Must be
+ * kept in sync by hand if the compaction event shape ever changes.
  */
 export type CompactionState = 'started' | 'ready' | 'applied' | 'postponed' | 'failed'
 export interface CompactionEvent {
@@ -259,6 +265,8 @@ export function encodeLine(msg: HostOutbound | HostRequest): string {
  */
 export class LineDecoder {
   private buffer = ''
+  /** Maximum bytes a single line can reach before a newline. Caps untrusted-peer growth. */
+  private static readonly MAX_LINE_CHARS = 1_000_000
 
   /**
    * Feeds one chunk of raw text in and returns every JSON value the accumulated buffer now
@@ -270,6 +278,11 @@ export class LineDecoder {
    */
   push(chunk: string): unknown[] {
     this.buffer += chunk
+    if (this.buffer.length > LineDecoder.MAX_LINE_CHARS) {
+      throw new Error(
+        `LineDecoder: line buffer exceeded ${LineDecoder.MAX_LINE_CHARS} chars without a newline (untrusted peer growth bound)`
+      )
+    }
     const lines = this.buffer.split('\n')
     // The last split element is whatever follows the final '\n' seen so far -- a
     // not-yet-terminated partial line, or '' if the buffer ended exactly on a newline --

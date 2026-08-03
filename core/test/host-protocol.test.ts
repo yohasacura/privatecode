@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { encodeLine, LineDecoder } from '../src/host/protocol.js'
+import { encodeLine, LineDecoder, isHostEvent } from '../src/host/protocol.js'
 import type { HostEvent, HostReply, HostRequest } from '../src/host/protocol.js'
 
 describe('LineDecoder', () => {
@@ -42,6 +42,14 @@ describe('LineDecoder', () => {
     const decoder = new LineDecoder()
     expect(() => decoder.push('{not valid json}\n')).toThrow(/\{not valid json\}/)
   })
+
+  test('throws when a single line exceeds MAX_LINE_CHARS without a newline (untrusted peer growth bound)', () => {
+    const decoder = new LineDecoder()
+    const hugeChunk = 'x'.repeat(1_000_001)
+    expect(() => decoder.push(hugeChunk)).toThrow(
+      /line buffer exceeded.*1000000 chars without a newline/
+    )
+  })
 })
 
 describe('encodeLine / LineDecoder round-trip', () => {
@@ -75,5 +83,18 @@ describe('encodeLine / LineDecoder round-trip', () => {
     expect(line.slice(0, -1)).not.toMatch(/[\r\n]/)
     // and it still decodes back to the original multi-line text
     expect(new LineDecoder().push(line)).toEqual([{ event: 'assistant.text', data: { text: 'line one\nline two' } }])
+  })
+})
+
+describe('isHostEvent', () => {
+  test('discriminates HostEvent from HostReply correctly', () => {
+    const event: HostEvent = { event: 'step.done', data: { step: 1, seconds: 0.5 } }
+    expect(isHostEvent(event)).toBe(true)
+
+    const replyResult: HostReply = { id: 1, result: 'ok' }
+    expect(isHostEvent(replyResult)).toBe(false)
+
+    const replyError: HostReply = { id: 1, error: { message: 'failed' } }
+    expect(isHostEvent(replyError)).toBe(false)
   })
 })
