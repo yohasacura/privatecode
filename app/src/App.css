@@ -100,3 +100,146 @@ html, body, #root {
   color: #9a9a9a;
   font-size: 0.85em;
 }
+
+/* Chat panel (Task 5) */
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  flex: 0 0 auto;
+  margin-bottom: 0.4em;
+}
+
+.mode-select {
+  background: #2d2d2d;
+  color: #e6e6e6;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  padding: 0.2em 0.4em;
+  font-size: 0.85em;
+}
+
+.autopilot-confirm {
+  background: #5a1d1d;
+  color: #ffb4b4;
+  border: 1px solid #b33a3a;
+  border-radius: 4px;
+  padding: 0.2em 0.6em;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.chat-transcript {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+}
+
+.chat-row {
+  font-size: 0.88em;
+  line-height: 1.35;
+}
+
+.chat-row-label {
+  font-size: 0.75em;
+  color: #7a7a7a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chat-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  color: #e6e6e6;
+}
+
+.interrupted-marker {
+  color: #d29922;
+  font-style: italic;
+}
+
+.chat-thinking {
+  color: #6a6a6a;
+  font-style: italic;
+}
+
+.chat-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.82em;
+}
+.tool-icon { width: 1em; }
+.tool-pending .tool-icon { color: #d29922; }
+.tool-ok .tool-icon { color: #3fb950; }
+.tool-fail .tool-icon { color: #f85149; }
+.tool-name { color: #79c0ff; }
+.tool-detail {
+  color: #9a9a9a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-error {
+  color: #f85149;
+  font-size: 0.85em;
+}
+
+.chat-turn-status {
+  flex: 0 0 auto;
+  color: #7a7a7a;
+  font-size: 0.78em;
+  min-height: 1.2em;
+  padding: 0.2em 0;
+}
+
+.chat-input-row {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0.4em;
+  align-items: stretch;
+}
+
+.chat-input {
+  flex: 1 1 auto;
+  resize: vertical;
+  min-height: 2.6em;
+  max-height: 10em;
+  background: #2d2d2d;
+  color: #e6e6e6;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  padding: 0.4em;
+  font-family: inherit;
+  font-size: 0.88em;
+}
+.chat-input:disabled {
+  opacity: 0.6;
+}
+
+.chat-input-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+}
+
+.stop-button {
+  background: #5a1d1d;
+  color: #ffb4b4;
+  border: 1px solid #b33a3a;
+}
