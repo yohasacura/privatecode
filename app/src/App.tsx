@@ -257,6 +257,14 @@ export default function App() {
     setPreviewPath(null)
   }
 
+  // Stable by construction, and it has to be: `TranscriptRow` is memoised on its props, so
+  // an inline arrow recreated on every render would make every row look changed on every
+  // streamed token and defeat the memoisation entirely (see transcript.tsx's header).
+  const openFileFromTranscript = useCallback((path: string) => {
+    setPreviewPath(path)
+    setContextOpen(true)
+  }, [])
+
   const ready = phase.kind === 'ready'
   const workspaceRoot = phase.kind === 'ready' ? phase.workspace : ''
 
@@ -317,7 +325,7 @@ export default function App() {
                 client={client}
                 state={chatState}
                 dispatch={dispatch}
-                onOpenFile={(path) => { setPreviewPath(path); setContextOpen(true) }}
+                onOpenFile={openFileFromTranscript}
               />
               <Composer client={client} state={chatState} dispatch={dispatch} />
             </main>

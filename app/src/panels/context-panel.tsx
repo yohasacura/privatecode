@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks'
+import { useMemo, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatItem } from '../lib/state'
@@ -33,7 +33,18 @@ export function ContextPanel({
   // Polled at the panel level so the Jobs badge is live on every tab, not only its own.
   const { jobs } = useJobs(client, hasSession, 2000)
   const runningJobs = jobs.filter((j) => j.running).length
-  const changeCount = collectChanges(items).length
+
+  // `items` is a new array on every streamed token, so memoising on it directly would
+  // never hit. The change list can only move when an item is ADDED or when a tool call
+  // gets its result -- neither of which a token does -- so those two counts are an exact
+  // key, and they cost a loop instead of a JSON.parse per write call per token.
+  const resolvedTools = items.reduce((n, i) => n + (i.kind === 'tool' && i.result !== undefined ? 1 : 0), 0)
+  const changes = useMemo(
+    () => collectChanges(items),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the two counts above
+    [items.length, resolvedTools],
+  )
+  const changeCount = changes.length
 
   const tabs: { id: ContextTab; label: string; icon: () => VNode; badge?: number }[] = [
     { id: 'files', label: 'Files', icon: Icon.files },
@@ -64,7 +75,7 @@ export function ContextPanel({
           <FilesTab client={client} toolItems={items} openPath={openPath} onOpenFile={onOpenFile} />
         )}
         {tab === 'changes' && (
-          <ChangesTab items={items} onOpenFile={(p) => { onOpenFile(p); setTab('files') }} />
+          <ChangesTab changes={changes} onOpenFile={(p) => { onOpenFile(p); setTab('files') }} />
         )}
         {tab === 'jobs' && <JobsTab client={client} active={tab === 'jobs'} />}
         {tab === 'terminal' && (

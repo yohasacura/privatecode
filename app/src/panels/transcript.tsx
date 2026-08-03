@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
+import { memo } from 'preact/compat'
 import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatAction, ChatItem, ChatState } from '../lib/state'
@@ -26,6 +27,18 @@ import { ApprovalCard, QuestionCard, TodosCard } from './approvals'
  * 3. **A change shows as a change.** `edit_file`/`write_file` render an inline coloured
  *    diff at the point in the conversation where the model made it — not as a summary line
  *    pointing at a panel somewhere else.
+ *
+ * **Rows are memoised, and that is load-bearing, not a micro-optimisation.** A streamed
+ * token replaces one item and produces a new `items` array, so without `memo` every row in
+ * the transcript re-rendered on every token: every diff re-parsed into a VNode per line,
+ * every fenced block re-highlighted, every answer re-lexed by marked. On a long session
+ * that is hundreds of megabytes of garbage per second, and it crashed the WebView renderer
+ * with "Out of Memory" during real use. The reducer replaces item objects instead of
+ * mutating them, so a reference comparison is exactly right: only the item that actually
+ * changed re-renders.
+ *
+ * For the same reason nothing here passes a ticking clock down to every row. A live
+ * reasoning block owns its own timer; a finished one has nothing to animate.
  */
 
 export function Transcript({
@@ -37,14 +50,6 @@ export function Transcript({
   onOpenFile: (path: string) => void
 }): VNode {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const [now, setNow] = useState(() => Date.now())
-
-  // One ticker for every live duration on screen, and only while something is live.
-  useEffect(() => {
-    if (!state.turnRunning) return
-    const id = setInterval(() => setNow(Date.now()), 200)
-    return () => clearInterval(id)
-  }, [state.turnRunning])
 
   // Streaming appends to the LAST item rather than adding one, so item count alone would
   // not re-pin the view while a long answer streams; the tail's own length would not move
@@ -71,7 +76,7 @@ export function Transcript({
         {state.items.length === 0 && !state.turnRunning
           ? <EmptyState />
           : state.items.map((item) => (
-            <TranscriptRow key={item.id} item={item} now={now} onOpenFile={onOpenFile} />
+            <TranscriptRow key={item.id} item={item} onOpenFile={onOpenFile} />
           ))}
 
         {waiting && (
@@ -130,11 +135,13 @@ function EmptyState(): VNode {
   )
 }
 
-function TranscriptRow({
-  item, now, onOpenFile,
+/** See the file header: the reference comparison on `item` is what keeps a streamed token
+ * from re-rendering (and re-parsing) the entire transcript. `onOpenFile` is stable — it is
+ * created once in `App.tsx` — so the default shallow comparison is enough. */
+const TranscriptRow = memo(function TranscriptRow({
+  item, onOpenFile,
 }: {
   item: ChatItem
-  now: number
   onOpenFile: (path: string) => void
 }): VNode {
   switch (item.kind) {
@@ -157,7 +164,7 @@ function TranscriptRow({
       )
 
     case 'thinking':
-      return <ReasoningBlock item={item} now={now} />
+      return <ReasoningBlock item={item} />
 
     case 'tool':
       return <ToolCard item={item} onOpenFile={onOpenFile} />
@@ -194,7 +201,7 @@ function TranscriptRow({
         </div>
       )
   }
-}
+})
 
 // ---------------------------------------------------------------------------------------
 // Reasoning
@@ -205,14 +212,20 @@ function estimateTokens(chars: number): number {
   return Math.max(1, Math.round(chars / 4))
 }
 
-function ReasoningBlock({
-  item, now,
-}: {
-  item: ChatItem & { kind: 'thinking' }
-  now: number
-}): VNode {
+function ReasoningBlock({ item }: { item: ChatItem & { kind: 'thinking' } }): VNode {
   // Always expanded by default -- the user asked to see the reasoning, not to click for it.
   const [open, setOpen] = useState(true)
+  const [now, setNow] = useState(() => Date.now())
+
+  // The timer lives HERE, not in the transcript: a clock passed down as a prop ticks every
+  // row and defeats the memoisation the file header explains. Only a block that is still
+  // being written has anything to count.
+  useEffect(() => {
+    if (item.done) return
+    const id = setInterval(() => setNow(Date.now()), 200)
+    return () => clearInterval(id)
+  }, [item.done])
+
   const elapsed = item.done
     ? (item.endedAtMs !== null ? item.endedAtMs - item.startedAtMs : null)
     : now - item.startedAtMs

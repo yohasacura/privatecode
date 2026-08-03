@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks'
+import { useMemo, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 
 /**
@@ -83,7 +83,10 @@ const COLLAPSE_AFTER = 28
 
 export function DiffView({ content, dense = false }: { content: string; dense?: boolean }): VNode {
   const [expanded, setExpanded] = useState(false)
-  const { rows, numbered } = toRows(content)
+  // A diff's text never changes once its tool call completed, so parsing it more than once
+  // is pure waste -- and it used to be re-parsed on every streamed token of every later
+  // message, which is a large part of what exhausted the renderer's memory.
+  const { rows, numbered } = useMemo(() => toRows(content), [content])
   // Header lines carry no information the card's own title doesn't already show.
   const body = rows.filter((r) => !(r.kind === 'meta' && (r.text.startsWith('---') || r.text.startsWith('+++'))))
   const overflows = body.length > COLLAPSE_AFTER

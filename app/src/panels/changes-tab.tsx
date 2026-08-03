@@ -45,13 +45,15 @@ export function collectChanges(items: ChatItem[]): ChangeEntry[] {
   return [...byPath.values()].sort((a, b) => b.id - a.id)
 }
 
+/** Takes an already-collected list rather than the raw transcript: `context-panel.tsx`
+ * memoises `collectChanges` so it does not re-run (and re-parse every write call's args)
+ * on every streamed token. */
 export function ChangesTab({
-  items, onOpenFile,
+  changes: entries, onOpenFile,
 }: {
-  items: ChatItem[]
+  changes: ChangeEntry[]
   onOpenFile: (path: string) => void
 }): VNode {
-  const entries = collectChanges(items)
   if (entries.length === 0) {
     return <div class="panel-placeholder">No files changed in this session yet.</div>
   }

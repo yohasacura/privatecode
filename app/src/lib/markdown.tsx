@@ -1,6 +1,7 @@
 import { Lexer, type Token, type Tokens } from 'marked'
 import type { ComponentChildren, VNode } from 'preact'
-import { useState } from 'preact/hooks'
+import { useMemo, useState } from 'preact/hooks'
+import { memo } from 'preact/compat'
 import { highlight } from './highlight'
 
 /**
@@ -144,6 +145,9 @@ function renderBlock(t: Token, key: string): ComponentChildren {
  */
 function CodeBlock({ code, lang }: { code: string; lang: string }): VNode {
   const [copied, setCopied] = useState(false)
+  // Re-tokenising a finished block on every render of an unrelated streaming message was
+  // one of the allocation sources behind the renderer running out of memory.
+  const parts = useMemo(() => highlight(code, lang), [code, lang])
 
   function copy(): void {
     // Best-effort: no clipboard permission (or an old WebView) simply leaves the button
@@ -162,7 +166,7 @@ function CodeBlock({ code, lang }: { code: string; lang: string }): VNode {
           {copied ? 'copied' : 'copy'}
         </button>
       </div>
-      <pre><code>{highlight(code, lang)}</code></pre>
+      <pre><code>{parts}</code></pre>
     </div>
   )
 }
@@ -171,8 +175,14 @@ function renderTokens(tokens: Token[], keyBase: string): ComponentChildren[] {
   return tokens.map((t, i) => renderBlock(t, `${keyBase}-${i}`))
 }
 
-/** The one public entry: markdown text in, a styled VNode out. Safe for any input. */
-export function Markdown({ text }: { text: string }): VNode {
+/**
+ * The one public entry: markdown text in, a styled VNode out. Safe for any input.
+ *
+ * Memoised on `text`. The message currently streaming genuinely has to be re-lexed as it
+ * grows, but every message ABOVE it does not, and re-lexing all of them on every token is
+ * how a long conversation used to exhaust the renderer's memory.
+ */
+export const Markdown = memo(function Markdown({ text }: { text: string }): VNode {
   let tokens: Token[]
   try {
     tokens = new Lexer({ gfm: true, breaks: false }).lex(text)
@@ -181,4 +191,4 @@ export function Markdown({ text }: { text: string }): VNode {
     return <div class="md"><p>{text}</p></div>
   }
   return <div class="md">{renderTokens(tokens, 'md')}</div>
-}
+})
