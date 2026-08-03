@@ -12,14 +12,19 @@
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
-    "agent": "tsx src/cli.ts"
+    "agent": "tsx src/cli.ts",
+    "bundle": "node scripts/bundle.mjs",
+    "host:dev": "tsx src/host/ws-bridge.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.21.5",
     "tree-sitter-wasms": "^0.1.13",
     "tsx": "^4.23.4",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "vitest": "^2.1.0",
+    "ws": "^8.21.1"
   },
   "dependencies": {
     "execa": "^9.5.0",
