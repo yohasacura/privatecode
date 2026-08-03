@@ -8,6 +8,8 @@ export interface SearchCodeArgs {
   pattern: string
   glob?: string
   max_results?: number
+  /** Workspace-relative file or directory to search instead of the whole workspace. */
+  path?: string
 }
 
 const DEFAULT_MAX = 80
@@ -323,6 +325,12 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
       pattern: { type: 'string', description: 'Rust-flavoured regular expression.' },
       glob: { type: 'string', description: 'Optional file filter, e.g. "*.ts".' },
       max_results: { type: 'integer', description: `Cap on matches, default ${DEFAULT_MAX}.` },
+      path: {
+        type: 'string',
+        description:
+          'Workspace-relative file or directory to search instead of the whole workspace. ' +
+          'Use this to search a saved output log, or to scope a search to one subtree.',
+      },
     },
     required: ['pattern'],
   },
@@ -336,6 +344,7 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
     if (Number.isInteger(r.max_results) && (r.max_results as number) > 0) {
       args.max_results = r.max_results as number
     }
+    if (typeof r.path === 'string' && r.path.trim() !== '') args.path = r.path.trim()
     return { ok: true, args }
   },
   async execute(args, ctx) {
@@ -355,6 +364,13 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
     const max = args.max_results ?? DEFAULT_MAX
     const argv = [
       '--line-number', '--no-heading', '--color', 'never',
+      // `--with-filename` is load-bearing, not cosmetic. Given a single FILE to search,
+      // ripgrep omits the path and prints `777:text` instead of `path:777:text` — and
+      // `lineStaysInsideWorkspace` (the actual jail boundary for results) drops every line
+      // it cannot parse as `path:line:`. So a scoped search of one file silently returned
+      // "no matches" for a file that plainly contained the pattern. Forcing the filename on
+      // keeps ripgrep's output shape invariant, which is exactly what that filter assumes.
+      '--with-filename',
       // Determinism. `--max-count` is ripgrep's *per-file* cap and ripgrep walks
       // directories in parallel, so which matches survive the cap was whichever worker
       // threads finished first: eight identical calls with `max_results: 2` over five
@@ -376,9 +392,23 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
       '--max-columns', String(MAX_COLUMNS), '--max-columns-preview',
       '--glob', '!node_modules', '--glob', '!.git',
     ]
+    // Naming a location explicitly means you want what is IN it, so a scoped search also
+    // looks inside dot-directories -- which is what makes a saved output log under
+    // `.privatecode/logs/` searchable at all. An unscoped search keeps ripgrep's default
+    // (hidden paths skipped), so nothing about existing whole-workspace searches changes.
+    let target = '.'
+    if (args.path !== undefined) {
+      try {
+        ctx.workspace.resolve(args.path)
+      } catch (e) {
+        return { ok: false, content: (e as Error).message }
+      }
+      target = args.path
+      argv.push('--hidden')
+    }
     for (const g of DENIED_GLOBS) argv.push('--iglob', g)
     if (args.glob) argv.push('--glob', args.glob)
-    argv.push('--regexp', args.pattern, '.')
+    argv.push('--regexp', args.pattern, target)
 
     // A local wrapper, spawned with concrete literal options, so `ReturnType<typeof spawn>`
     // below resolves to the exact narrowed result shape (numeric exitCode, string stdout).

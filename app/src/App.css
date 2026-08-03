@@ -646,6 +646,28 @@ kbd {
   user-select: text;
 }
 
+/* Only appears when the tool clipped what it gave the model, which is the only time the
+   distinction exists at all. */
+.copy-switch {
+  display: flex;
+  gap: 2px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg);
+}
+.copy-switch button {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.copy-switch button:hover { color: var(--text-dim); }
+.copy-switch-active { background: var(--bg-active); color: var(--text) !important; }
+
 .cmd-output-wrap { position: relative; }
 .cmd-output {
   margin: 0;

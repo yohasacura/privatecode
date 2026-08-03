@@ -559,3 +559,33 @@ test('resolves the vendored ripgrep when PRIVATECODE_RG is unset', async () => {
     else process.env.PATH = savedPath
   }
 })
+
+/**
+ * Scoping a search to one FILE. Regression: ripgrep omits the filename when given a
+ * single file, printing `12:text` instead of `path:12:text`, and `lineStaysInsideWorkspace`
+ * — the jail check every result line passes through — drops whatever it cannot parse as
+ * `path:line:`. So a scoped search over a file that plainly contained the pattern came
+ * back "no matches". `--with-filename` keeps the output shape invariant.
+ */
+test('a search scoped to a single file finds matches in it', async () => {
+  const r = await searchCodeTool.execute({ pattern: 'validateToken', path: 'src/auth.ts' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(r.content).toMatch(/src[\/]auth\.ts:1/)
+  expect(r.content).not.toMatch(/no matches/i)
+})
+
+/** A scoped search reaches into dot-directories: naming a location explicitly means you
+ * want what is in it, and it is what makes a saved output log searchable at all. */
+test('a scoped search looks inside a hidden directory', async () => {
+  const logDir = join(ctx.workspace.root, '.privatecode', 'logs')
+  mkdirSync(logDir, { recursive: true })
+  writeFileSync(join(logDir, 'run.log'), 'noise\nNEEDLE_IN_LOG here\nnoise\n')
+
+  const unscoped = await searchCodeTool.execute({ pattern: 'NEEDLE_IN_LOG' }, ctx)
+  expect(unscoped.content).toMatch(/no matches/i)
+
+  const scoped = await searchCodeTool.execute(
+    { pattern: 'NEEDLE_IN_LOG', path: '.privatecode/logs' }, ctx)
+  expect(scoped.ok).toBe(true)
+  expect(scoped.content).toMatch(/run\.log:2:NEEDLE_IN_LOG here/)
+})

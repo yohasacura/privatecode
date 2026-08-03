@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises'
 import { execa } from 'execa'
+import { countLines, headLines, overflowNotice, spillToLog } from './output-log.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
 
 export interface RunCommandArgs {
@@ -17,7 +18,12 @@ const MAX_OUTPUT_CHARS = 8_000
  * unbounded. */
 const MAX_DISPLAY_CHARS = 400_000
 
-/** Head-and-tail clip: the head names what ran, the tail carries the error that matters. */
+/** Lines of the head shown inline when the rest went to a log file. Enough that a short
+ * failure is answered without a second call, small enough to stay cheap. */
+const HEAD_LINES = 60
+
+/** Head-and-tail clip: the head names what ran, the tail carries the error that matters.
+ * Still used for the UI copy and as the fallback when a log file cannot be written. */
 export function clipOutput(text: string, limit = MAX_OUTPUT_CHARS): string {
   if (text.length <= limit) return text
   const head = Math.floor(limit * 0.6)
@@ -114,11 +120,22 @@ export const runCommandTool: Tool<RunCommandArgs> = {
     )
     const seconds = ((performance.now() - started) / 1000).toFixed(1)
     const raw = (result.all ?? '').trim()
-    const out = clipOutput(raw)
     // What a person sees. Still bounded -- a runaway build log must not be able to grow
     // the app's transcript without limit -- but two orders of magnitude above what the
     // model's permanent transcript can afford.
     const full = clipOutput(raw, MAX_DISPLAY_CHARS)
+
+    // What the MODEL sees. When the output does not fit, it is not elided into a dead end:
+    // the whole thing goes to a log file and the model is told how to page and filter it
+    // (see output-log.ts). Falls back to the old head-and-tail clip only if the file
+    // cannot be written.
+    let out = raw
+    if (raw.length > MAX_OUTPUT_CHARS) {
+      const log = await spillToLog(ctx.workspace, 'run', raw)
+      out = log === null
+        ? clipOutput(raw)
+        : `${headLines(raw, HEAD_LINES)}${overflowNotice(log, Math.min(HEAD_LINES, countLines(raw)))}`
+    }
 
     if (result.isCanceled) {
       return { ok: false, content: 'Command cancelled by the user before it finished.' }

@@ -23,6 +23,10 @@ const MAX_LINES = 2000
  */
 const MAX_CHARS = 60_000
 
+/** Ceiling on the copy the APP shows (`ToolResult.display`). The model's budget bounds what
+ * becomes permanent context; this one only bounds what one transcript card can weigh. */
+const MAX_DISPLAY_CHARS = 400_000
+
 /** Above this a file is refused outright, before it is read into memory. */
 const MAX_FILE_BYTES = 10 * 1024 * 1024
 
@@ -246,6 +250,18 @@ export const readFileTool: Tool<ReadFileArgs> = {
       next = i + 1
     }
 
+    // What the app shows: the whole range that was asked for, not the part that fitted in
+    // the model's budget. Bounded independently -- a 10 MB file's full text still must not
+    // land in the transcript -- but far above MAX_CHARS.
+    const displayRows: string[] = []
+    let displayUsed = 0
+    for (let i = from; i < to; i++) {
+      const row = `${i + 1}\t${lines[i] ?? ''}`
+      if (displayUsed + row.length + 1 > MAX_DISPLAY_CHARS) break
+      displayRows.push(row)
+      displayUsed += row.length + 1
+    }
+
     let notice = ''
     if (stop === 'mid-line') {
       notice =
@@ -258,6 +274,12 @@ export const readFileTool: Tool<ReadFileArgs> = {
         `call read_file again with start_line=${next + 1}`
     }
 
-    return { ok: true, content: `${header}\n${rows.join('\n')}${notice}` }
+    const content = `${header}\n${rows.join('\n')}${notice}`
+    const display = `${header}\n${displayRows.join('\n')}`
+    return {
+      ok: true,
+      content,
+      ...(display !== content ? { display } : {}),
+    }
   },
 }

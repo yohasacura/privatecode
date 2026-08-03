@@ -410,6 +410,12 @@ function ToolCard({
   const isOpen = open ?? (result ? defaultOpen(p.kind, result.ok) : false)
   const stat = p.kind === 'diff' && result?.ok ? diffStat(content) : null
   const isCommand = p.kind === 'command'
+  // The tool clipped what it handed the model. Being able to see EXACTLY that is not a
+  // curiosity: when the agent then behaves as if it never saw something, this is the only
+  // place that answers whether it actually did.
+  const clipped = result !== undefined && result.display !== result.content
+  const [showModelCopy, setShowModelCopy] = useState(false)
+  const shownText = result === undefined ? '' : showModelCopy ? result.content : result.display
 
   // The success/failure glyph lives in the shared gutter, not inside the card: that is the
   // whole point of the gutter, and it buys the header the room to show the actual target.
@@ -458,11 +464,29 @@ function ToolCard({
 
         {!pending && isOpen && (
           <div class="tool-body">
+            {clipped && (
+              <div class="copy-switch">
+                <button
+                  class={showModelCopy ? '' : 'copy-switch-active'}
+                  onClick={() => setShowModelCopy(false)}
+                  title="Everything the tool produced"
+                >
+                  Full
+                </button>
+                <button
+                  class={showModelCopy ? 'copy-switch-active' : ''}
+                  onClick={() => setShowModelCopy(true)}
+                  title="Exactly what went into the model's context — the rest never reached it"
+                >
+                  What the model got
+                </button>
+              </div>
+            )}
             {p.kind === 'diff' && result.ok
-              ? <DiffView content={content} />
+              ? <DiffView content={shownText} />
               : isCommand
-                ? <OutputBlock text={result.display} />
-                : <pre class="tool-output">{result.display}</pre>}
+                ? <OutputBlock text={shownText} />
+                : <pre class="tool-output">{shownText}</pre>}
           </div>
         )}
         {/* A preview that merely repeats the target ("src/app.ts (32 lines)" under a header

@@ -24,6 +24,14 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     'Prefer the smallest change that satisfies the request.',
     '',
     'Prefer a targeted search over a broad one.',
+    '',
+    // Qwen3.6 is trained predominantly on Chinese and, with no language pinned, drifts
+    // into it mid-sentence -- observed in a Russian answer that finished a clause in
+    // Chinese. The model has no way to know this is unwanted unless told; nothing else in
+    // this prompt mentions language at all.
+    'Reply in the same language the user writes in. Never switch languages inside an',
+    'answer, and never mix scripts in one sentence. Keep code, identifiers, paths and',
+    'command output exactly as they are, in whatever language they are already in.',
   ]
 
   if (opts.mode === 'plan') {
