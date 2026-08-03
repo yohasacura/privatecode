@@ -204,6 +204,8 @@ export function createEventRenderer(opts?: { stream?: boolean }): EventRenderer 
       steps = i.step
       if (i.completionTokens !== undefined) totalTokens += i.completionTokens
       totalSeconds += i.seconds
+      // Streamed content ends without a newline; suppressed thinking summary used to provide one by accident.
+      if (streaming && textStreamed) process.stdout.write('\n')
       console.log(
         `\x1b[90m  ${i.seconds.toFixed(1)}s` +
         `${i.tokensPerSecond ? `, ${i.tokensPerSecond.toFixed(1)} tok/s` : ''}` +
