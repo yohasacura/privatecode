@@ -1,0 +1,102 @@
+/* PrivateCode's window is forced dark (tauri.conf.json's `windows[0].theme: "Dark"`), so
+ * this stylesheet commits to one dark palette rather than following prefers-color-scheme --
+ * there is no light window to match. */
+
+:root {
+  font-family: 'Segoe UI', Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #e6e6e6;
+  background-color: #1e1e1e;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #1e1e1e;
+}
+
+.shell-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.4em 0.8em;
+  background: #252526;
+  border-bottom: 1px solid #3a3a3a;
+  flex: 0 0 auto;
+}
+
+.shell-header h1 {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0;
+  margin-right: 0.6em;
+  color: #f0f0f0;
+}
+
+.conn-dot {
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  display: inline-block;
+  background: #888;
+}
+.conn-dot.conn-open { background: #3fb950; }
+.conn-dot.conn-connecting { background: #d29922; }
+.conn-dot.conn-closed { background: #f85149; }
+
+.conn-label {
+  text-transform: capitalize;
+  color: #9a9a9a;
+  font-size: 0.85em;
+}
+
+.status-text {
+  margin-left: auto;
+  color: #9a9a9a;
+  font-size: 0.85em;
+}
+
+.shell-body {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 220px 1fr 320px;
+  min-height: 0;
+}
+
+.panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid #3a3a3a;
+  padding: 0.6em;
+}
+.panel-diffs { border-right: none; }
+
+.panel-placeholder {
+  color: #6a6a6a;
+  font-style: italic;
+  font-size: 0.9em;
+}
+
+.shell-status {
+  flex: 0 0 auto;
+  padding: 0.3em 0.8em;
+  background: #252526;
+  border-top: 1px solid #3a3a3a;
+  color: #9a9a9a;
+  font-size: 0.85em;
+}

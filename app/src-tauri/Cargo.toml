@@ -1,0 +1,20 @@
+[package]
+name = "app"
+version = "0.1.0"
+description = "PrivateCode desktop shell"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+# No [lib] target: this is a single-binary desktop app (Windows only, no mobile targets),
+# so the generated lib.rs/app_lib indirection the scaffold ships for mobile support was
+# removed -- everything lives in src/main.rs, the file Plan 4 Task 4 names directly.
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+

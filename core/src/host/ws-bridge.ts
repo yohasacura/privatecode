@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import { parseArgs } from 'node:util'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { SessionHost, type HostTransport } from './host.js'
-import { encodeLine, LineDecoder, type HostOutbound, type HostRequest } from './protocol.js'
+import { encodeLine, type HostOutbound, type HostRequest } from './protocol.js'
 
 /**
  * DEV-ONLY WebSocket wrapper around `SessionHost`, exposing the exact same ndjson
@@ -98,7 +98,6 @@ async function main(): Promise<void> {
 
   wss.on('connection', (ws: WebSocket) => {
     activeClient = ws
-    const decoder = new LineDecoder()
     const transport: HostTransport = {
       send(msg: HostOutbound): void {
         if (ws.readyState === ws.OPEN) ws.send(encodeLine(msg))
@@ -106,23 +105,36 @@ async function main(): Promise<void> {
     }
     const host = new SessionHost({ transport })
 
+    // NOT routed through `LineDecoder`, deliberately, unlike stdio-main.ts: a WebSocket
+    // message already IS one complete application-level frame -- the `ws` library never
+    // splits one `ws.send()` call across multiple 'message' events, or coalesces several
+    // into one, the way a raw stdio byte stream can split or merge arbitrarily mid-line.
+    // `LineDecoder` exists specifically to reassemble THAT kind of stream and requires a
+    // trailing '\n' terminator to ever emit anything; the frontend's `WsTransport.send()`
+    // (app/src/lib/client.ts) sends a bare `JSON.stringify(request)` with no trailing
+    // newline at all (only the Tauri-IPC path's Rust side appends one, for its own stdin
+    // pipe). Reusing `LineDecoder` here silently swallowed every incoming request into its
+    // internal buffer, waiting forever for a '\n' that would never arrive -- caught while
+    // verifying Task 4's dev-bridge round trip (a `status` call hung indefinitely; the
+    // request was provably received, by console log, but never dispatched to `host.handle`
+    // at all). Parsing each message directly is not just a workaround: it is the correct
+    // rule for this transport, matching the reasoning `client.ts`'s own header comment
+    // already states for the other end of this exact connection.
     ws.on('message', (data, isBinary) => {
       const text = isBinary ? data.toString('utf8') : data.toString()
-      let messages: unknown[]
+      let msg: unknown
       try {
-        messages = decoder.push(text)
+        msg = JSON.parse(text)
       } catch (e) {
-        process.stderr.write(`ws-bridge: ${e instanceof Error ? e.message : String(e)}\n`)
-        ws.close(1011, 'malformed frame')
+        process.stderr.write(`ws-bridge: malformed JSON message (${e instanceof Error ? e.message : String(e)}): ${text}\n`)
+        ws.close(1011, 'malformed message')
         return
       }
-      for (const msg of messages) {
-        if (!isHostRequest(msg)) {
-          process.stderr.write(`ws-bridge: ignoring a message that is not a request: ${JSON.stringify(msg)}\n`)
-          continue
-        }
-        void host.handle(msg)
+      if (!isHostRequest(msg)) {
+        process.stderr.write(`ws-bridge: ignoring a message that is not a request: ${JSON.stringify(msg)}\n`)
+        return
       }
+      void host.handle(msg)
     })
 
     ws.on('close', () => {
