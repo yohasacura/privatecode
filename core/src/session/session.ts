@@ -481,6 +481,8 @@ export class Session {
       // a step, that step's fresh number is what the next check sees, exactly as it
       // should.
       this.latestPromptTokens = null
+      // same one-send back-off as the abort path: retrying immediately would regenerate the same unusable summary
+      this.skipNextTrigger = true
       this.opts.onCompaction?.({ state: 'postponed' })
       return false
     }
