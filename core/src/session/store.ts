@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PRIVATE_DIR, ensurePrivateDir } from '../private-dir.js'
 import type { ChatMessage } from '../llama/types.js'

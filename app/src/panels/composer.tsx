@@ -35,6 +35,15 @@ export function Composer({
   dispatch: (action: ChatAction) => void
 }): VNode {
   const [input, setInput] = useState('')
+  /**
+   * Text typed while a turn was running, held until it ends.
+   *
+   * The placeholder promised this ("Queue your next message") and `send()` simply returned
+   * early when `turnRunning`, so pressing Enter mid-turn did nothing at all — silently.
+   * Typing a follow-up while the agent works is the normal thing to do on a long run, so
+   * the promise is the part worth keeping.
+   */
+  const [queued, setQueued] = useState<string | null>(null)
   const [pendingAutopilot, setPendingAutopilot] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -74,9 +83,36 @@ export function Composer({
     if (!state.turnRunning) textareaRef.current?.focus()
   }, [state.turnRunning])
 
+  // The queue drains on ANY turn ending, including one you stopped yourself: pressing Stop
+  // ends the agent's work, not your message, and the queued text is usually the new
+  // direction. It is visible and cancellable the whole time it waits, so this is never a
+  // surprise.
+  useEffect(() => {
+    if (state.turnRunning || queued === null) return
+    setQueued(null)
+    submit(queued)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- submit is recreated per render
+  }, [state.turnRunning, queued])
+
+  // A queued message belongs to the conversation it was typed into. Switching sessions
+  // must not deliver it to a different one.
+  const sessionId = state.session?.sessionId
+  useEffect(() => { setQueued(null) }, [sessionId])
+
   function send(): void {
     const text = input.trim()
-    if (text === '' || state.turnRunning) return
+    if (text === '') return
+    if (state.turnRunning) {
+      // Appended, not replaced: two thoughts typed during one long turn are both worth
+      // keeping, and losing one silently is the bug this whole thing exists to fix.
+      setQueued((q) => (q === null ? text : `${q}\n${text}`))
+      setInput('')
+      return
+    }
+    submit(text)
+  }
+
+  function submit(text: string): void {
     if (text.length > MAX_SEND_CHARS) {
       dispatch({
         type: 'send-failed',
@@ -165,6 +201,23 @@ export function Composer({
         </div>
       )}
 
+      {queued !== null && (
+        <div class="queued-note">
+          <span class="queued-label">Queued</span>
+          <span class="queued-text" title={queued}>{queued}</span>
+          <button
+            class="queued-edit"
+            onClick={() => { setInput((i) => (i === '' ? queued : `${queued}\n${i}`)); setQueued(null) }}
+            title="Put it back in the box"
+          >
+            edit
+          </button>
+          <button class="icon-button" onClick={() => setQueued(null)} title="Discard it">
+            {Icon.x()}
+          </button>
+        </div>
+      )}
+
       {/* One bordered surface holding the input and everything that acts on it. The three
           separate strips this replaced -- a status line above, the box, a row of pills
           below -- read as three unrelated widgets stacked around a text field. */}
@@ -184,7 +237,7 @@ export function Composer({
             }
           }}
           placeholder={state.turnRunning
-            ? 'Queue your next message, or press Esc to stop'
+            ? 'Type your next message — it is sent when this turn ends. Esc stops.'
             : 'Ask for a change, a review, or an explanation'}
         />
 
@@ -205,6 +258,13 @@ export function Composer({
 
           <div class="composer-meta">{statusLine()}</div>
 
+          {/* While a turn runs the button is Stop -- but typed text still has somewhere to
+              go, so it queues rather than being swallowed. Enter does the same. */}
+          {state.turnRunning && input.trim() !== '' && (
+            <button class="composer-queue" onClick={send} title="Queue this for when the turn ends">
+              {Icon.plus()}
+            </button>
+          )}
           <button
             class={`composer-send ${state.turnRunning ? 'composer-send-stop' : ''}`}
             onClick={state.turnRunning ? abort : send}
