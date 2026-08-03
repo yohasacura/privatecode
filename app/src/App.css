@@ -481,9 +481,10 @@ kbd {
   display: flex;
   justify-content: center;
   color: var(--accent);
-  transform: scale(2.1);
-  margin-bottom: 26px;
+  margin-bottom: 24px;
 }
+/* Sized on the svg, not via transform -- see .welcome-logo. */
+.empty-mark .icon { width: 34px; height: 34px; }
 .empty-state h2 { margin: 0 0 6px; font-size: 16px; font-weight: 550; color: var(--text); }
 .empty-state p { margin: 0; font-size: 13px; }
 .empty-keys {
@@ -1163,10 +1164,31 @@ kbd {
   border-radius: 16px;
   background: var(--bg-panel);
 }
-.welcome-logo { display: flex; color: var(--accent); transform: scale(1.7); margin: 4px 0 22px 6px; }
+/* `transform: scale()` on a block-level flex container scales the BOX, not just the glyph:
+   at full card width that pushed the icon's left edge ~150px outside the card. Sizing the
+   svg itself keeps the icon where it is drawn. */
+.welcome-logo { display: flex; color: var(--accent); margin: 0 0 20px; }
+.welcome-logo .icon { width: 28px; height: 28px; }
+.welcome-logo-bad { color: var(--red); }
 .welcome-card h1 { margin: 0; font-size: 20px; font-weight: 600; }
 .welcome-sub { margin: 6px 0 8px; color: var(--text-dim); font-size: 13px; }
 .welcome-wait { color: var(--text-faint); font-size: 12.5px; }
+
+.agent-stderr {
+  margin: 0;
+  padding: 9px 11px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--red);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .welcome-connect { width: 100%; justify-content: center; margin-top: 18px; height: 32px; }
 
 .recent-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }

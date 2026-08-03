@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
-import { createClient, wsUrlFromSearch, type ConnectionState, type ProtocolClient } from './lib/client'
+import type { VNode } from 'preact'
+import {
+  createClient, restartSidecar, sidecarStderr, withTimeout, wsUrlFromSearch,
+  type ConnectionState, type ProtocolClient,
+} from './lib/client'
 import { useChatSession } from './lib/use-chat-session'
 import { baseName } from './lib/format'
 import { Icon } from './components/icons'
@@ -33,8 +37,17 @@ type Phase =
   | { kind: 'welcome'; error: string | null }
   | { kind: 'initializing'; workspace: string }
   | { kind: 'ready'; workspace: string }
+  /** The agent process is not answering at all -- distinct from `welcome` with an error,
+   * which means the agent answered and refused. Nothing the welcome screen offers can help
+   * here, so this screen offers the two things that can: what the agent printed on its way
+   * out, and a restart. */
+  | { kind: 'unreachable'; reason: string; stderr: string[] }
 
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:8080'
+/** How long the first request may take before the agent counts as unreachable. Generous:
+ * on a cold start Node has to load a 600 kB bundle and the process may be competing with
+ * the model server for cores. */
+const BOOT_TIMEOUT_MS = 12_000
 const RAIL_DEFAULT = 232
 const CONTEXT_DEFAULT = 380
 
@@ -51,6 +64,66 @@ function loadLayout<T>(key: string, fallback: T): T {
 
 function saveLayout(key: string, value: unknown): void {
   try { localStorage.setItem(`pc.layout.${key}`, JSON.stringify(value)) } catch { /* private mode */ }
+}
+
+/**
+ * The agent-unreachable screen: what went wrong, what the agent printed on its way out, and
+ * a way back. This replaces the state the app was actually in the first time it was run for
+ * real — "starting the agent…" forever, with no error, no diagnostics and no recovery.
+ */
+function AgentDown({
+  phase, isDevBridge,
+}: {
+  phase: { kind: 'unreachable'; reason: string; stderr: string[] }
+  isDevBridge: boolean
+}): VNode {
+  const [restarting, setRestarting] = useState(false)
+
+  function restart(): void {
+    setRestarting(true)
+    // A fresh sidecar means a fresh SessionHost; reloading is the honest way to get this
+    // window's own state back in step with it rather than patching around a half-live one.
+    restartSidecar()
+      .then(() => window.location.reload())
+      .catch(() => setRestarting(false))
+  }
+
+  return (
+    <div class="welcome">
+      <div class="welcome-card">
+        <div class="welcome-logo welcome-logo-bad" aria-hidden="true">{Icon.alert()}</div>
+        <h1>The agent isn’t running</h1>
+        <p class="welcome-sub">{phase.reason}.</p>
+
+        {phase.stderr.length > 0
+          ? (
+            <>
+              <div class="field-label">What it printed</div>
+              <pre class="agent-stderr">{phase.stderr.slice(-40).join('\n')}</pre>
+            </>
+            )
+          : (
+            <p class="field-hint">
+              It left no output, which usually means the process was killed rather than that
+              it failed on its own.
+            </p>
+            )}
+
+        {isDevBridge
+          ? (
+            <p class="field-hint">
+              This window is running against the dev bridge. Restart it with
+              {' '}<code>npm run host:dev</code> and reload.
+            </p>
+            )
+          : (
+            <button class="btn btn-primary welcome-connect" disabled={restarting} onClick={restart}>
+              {restarting ? 'Restarting…' : 'Restart the agent'}
+            </button>
+            )}
+      </div>
+    </div>
+  )
 }
 
 export default function App() {
@@ -111,11 +184,18 @@ export default function App() {
     }
   }, [dispatch])
 
-  // Boot: learn the saved config, then auto-connect or show the welcome screen.
+  // Boot: learn the saved config, then auto-connect or show the welcome screen. The
+  // timeout is what makes "the agent died" a screen you can act on instead of a spinner
+  // that never resolves -- see `withTimeout`'s comment for why every failure looks the same
+  // from here.
   useEffect(() => {
     if (!client || bootStarted.current) return
     bootStarted.current = true
-    client.call('config.get', {})
+    withTimeout(
+      client.call('config.get', {}),
+      BOOT_TIMEOUT_MS,
+      'the agent process did not answer within 12 seconds',
+    )
       .then((cfg) => {
         const savedUrl = cfg.serverUrl ?? DEFAULT_SERVER_URL
         setServerInput(savedUrl)
@@ -129,12 +209,24 @@ export default function App() {
         }
       })
       .catch((e: unknown) => {
-        setPhase({
-          kind: 'welcome',
-          error: `The agent process did not answer (${e instanceof Error ? e.message : String(e)}).`,
-        })
+        const reason = e instanceof Error ? e.message : String(e)
+        void sidecarStderr().then((stderr) => setPhase({ kind: 'unreachable', reason, stderr }))
       })
   }, [client, connect])
+
+  // The agent dying MID-SESSION is the same dead end as it dying at boot, and it is
+  // reported by exactly one signal: the transport going 'closed'. (At boot that signal is
+  // unreliable -- a Tauri event fired before the WebView registered its listener is lost --
+  // which is what the boot timeout above is for.)
+  useEffect(() => {
+    if (connState !== 'closed') return
+    setPhase((current) => (current.kind === 'unreachable' ? current : { kind: 'unreachable', reason: 'the agent process stopped', stderr: [] }))
+    void sidecarStderr().then((stderr) => {
+      if (stderr.length > 0) {
+        setPhase((current) => (current.kind === 'unreachable' ? { ...current, stderr } : current))
+      }
+    })
+  }, [connState])
 
   // A finished turn may have written the session title, so the rail is refreshed then --
   // there is no protocol event for "a session's metadata changed".
@@ -199,7 +291,9 @@ export default function App() {
         </button>
       </header>
 
-      {ready && client
+      {phase.kind === 'unreachable'
+        ? <AgentDown phase={phase} isDevBridge={isDevBridge} />
+        : ready && client
         ? (
           <div class="body">
             {railOpen && (
@@ -305,7 +399,7 @@ export default function App() {
           </div>
           )}
 
-      {client && ready && <StatusBar client={client} chatState={chatState} />}
+      {client && ready && phase.kind === 'ready' && <StatusBar client={client} chatState={chatState} />}
 
       {settingsOpen && client && (
         <SettingsModal

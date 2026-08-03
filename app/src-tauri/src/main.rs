@@ -51,6 +51,28 @@ impl SidecarState {
 /// `(node_exe, agent_cjs, rg_exe, ts_wasm_dir)` -- everything needed to spawn and configure
 /// the sidecar, resolved for whichever build this is. See this file's module doc comment
 /// for the dev/release rationale.
+/// Strips Windows' extended-length (`\\?\`) prefix that `Path::canonicalize` always adds.
+///
+/// This is not cosmetic. Node cannot load a MAIN MODULE given as a verbatim path: passing
+/// `\\?\D:\...\agent.cjs` as argv[1] made it fail inside `resolveMainPath` with
+/// `EISDIR: illegal operation on a directory, lstat 'D:'` and exit immediately — so the
+/// dev build's sidecar died the instant it was spawned, every time. (Only the release
+/// build had ever been driven end to end; it resolves its paths from `resource_dir()` and
+/// never calls `canonicalize`, which is why this stayed hidden.)
+///
+/// `\\?\UNC\server\share` is converted back to `\\server\share` rather than left as a
+/// path no ordinary API accepts.
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy().into_owned();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path,
+    }
+}
+
 fn sidecar_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf), String> {
     if cfg!(debug_assertions) {
         // CARGO_MANIFEST_DIR is .../app/src-tauri at compile time -- walking up two levels
@@ -58,10 +80,12 @@ fn sidecar_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)
         // (search-code.ts's own vendoredRgPath comment: "core/src/tools -> core/src ->
         // core -> repo root -> vendor/ripgrep/rg.exe").
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let repo_root = manifest_dir
-            .join("..").join("..") // app/src-tauri -> app -> repo root
-            .canonicalize()
-            .map_err(|e| format!("cannot resolve repo root from {manifest_dir:?}: {e}"))?;
+        let repo_root = strip_verbatim_prefix(
+            manifest_dir
+                .join("..").join("..") // app/src-tauri -> app -> repo root
+                .canonicalize()
+                .map_err(|e| format!("cannot resolve repo root from {manifest_dir:?}: {e}"))?,
+        );
         let sidecar_dir = repo_root.join("core").join("dist").join("sidecar");
         Ok((
             PathBuf::from("node"), // resolved against PATH by Command itself
@@ -143,6 +167,12 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
             let Ok(l) = line else { break };
+            // In a dev build the ring alone is a blind spot: if the sidecar dies during
+            // startup the window never gets far enough to call `sidecar_stderr()`, so the
+            // one message explaining why is written to a buffer nobody can reach. Echoing
+            // to the console costs nothing and is where a developer is already looking.
+            #[cfg(debug_assertions)]
+            eprintln!("sidecar stderr: {l}");
             let state = stderr_app.state::<SidecarState>();
             let mut ring = state.stderr_ring.lock().unwrap();
             ring.push_back(l);
@@ -150,9 +180,29 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
                 ring.pop_front();
             }
         }
+        #[cfg(debug_assertions)]
+        eprintln!("sidecar stderr: (stream closed)");
     });
 
     Ok(RunningSidecar { child, stdin })
+}
+
+/// Stops the current sidecar (if any) and starts a fresh one, replacing what
+/// `SidecarState` holds.
+///
+/// This exists because a dead agent used to be an unrecoverable dead end: the window's
+/// only options were "sit there" or "close the app". The frontend calls this from its
+/// agent-unreachable screen and then reloads itself, so a crashed or killed agent costs a
+/// button press instead of a restart.
+#[tauri::command]
+fn restart_sidecar(app: AppHandle, state: State<SidecarState>) -> Result<(), String> {
+    shutdown_sidecar(&state);
+    state.stderr_ring.lock().unwrap().clear();
+    let running = spawn_sidecar(&app)?;
+    let pid = running.child.id();
+    *state.inner.lock().unwrap() = Some(running);
+    eprintln!("main.rs: sidecar restarted, pid={pid}");
+    Ok(())
 }
 
 /// Writes one already-framed protocol line (no trailing `\n` -- this command appends
@@ -226,7 +276,7 @@ fn main() {
         // a plain text field instead; see status.tsx's `pickWorkspaceDialog`).
         .plugin(tauri_plugin_dialog::init())
         .manage(SidecarState::new())
-        .invoke_handler(tauri::generate_handler![sidecar_send, sidecar_stderr])
+        .invoke_handler(tauri::generate_handler![sidecar_send, sidecar_stderr, restart_sidecar])
         .setup(|app| {
             let handle = app.handle().clone();
             let running = spawn_sidecar(&handle).map_err(std::io::Error::other)?;

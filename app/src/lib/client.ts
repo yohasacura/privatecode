@@ -133,6 +133,48 @@ class WsTransport implements RawTransport {
   close(): void { this.ws.close() }
 }
 
+/**
+ * The agent process's recent stderr, newest last. Tauri builds only.
+ *
+ * This is the only channel that can explain WHY the agent is not answering, and the
+ * unreachable-agent screen shows it verbatim rather than paraphrasing: a Node stack trace
+ * or a missing-file path is worth more than any message this app could invent.
+ */
+export async function sidecarStderr(): Promise<string[]> {
+  try {
+    return await invoke<string[]>('sidecar_stderr')
+  } catch {
+    return []
+  }
+}
+
+/** Stops and restarts the agent process. Tauri builds only. The caller reloads the window
+ * afterwards: a fresh sidecar means a fresh `SessionHost`, and reloading is the honest way
+ * to get the frontend's own state back in step with it. */
+export async function restartSidecar(): Promise<void> {
+  await invoke('restart_sidecar')
+}
+
+/**
+ * Resolves `promise`, or rejects with `message` after `ms`.
+ *
+ * Used for the very first request of a run. Every failure mode of the agent process --
+ * spawned-then-killed, crashed before the WebView registered its `sidecar-exit` listener
+ * (a Tauri event fired before a listener exists is simply lost), a pipe that never
+ * connects -- looks identical from here: a promise that never settles. Without this the
+ * window sat on "starting the agent…" forever with no way out, which is exactly what it
+ * did the first time it was run for real.
+ */
+export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms)
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      (e: unknown) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))) },
+    )
+  })
+}
+
 /** `?ws=<url>` selects the dev WebSocket bridge; its absence means "real Tauri IPC". Read
  * from `window.location.search` by the caller (kept out of this module so it stays
  * testable without a DOM `location`). */
