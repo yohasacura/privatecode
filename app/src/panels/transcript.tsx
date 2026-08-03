@@ -52,19 +52,17 @@ export function Transcript({
 }): VNode {
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // Streaming appends to the LAST item rather than adding one, so item count alone would
-  // not re-pin the view while a long answer streams; the tail's own length would not move
-  // when a new item is pushed. Both together do.
   const lastItem = state.items[state.items.length - 1]
-  const tailSize = lastItem === undefined
-    ? 0
-    : lastItem.kind === 'assistant' ? lastItem.text.length
-      : lastItem.kind === 'thinking' ? lastItem.text.length
-        : 0
-  const { stuck, scrollToBottom } = useStickToBottom(
-    scrollRef,
-    `${state.items.length}:${tailSize}:${state.pendingApproval?.requestId ?? ''}`,
-  )
+  // No signal to compute: the hook watches the container itself, which is the only thing
+  // that knows about a tool result arriving, a card being expanded, or "show more lines".
+  const { stuck, scrollToBottom } = useStickToBottom(scrollRef)
+
+  // Sending always returns you to the bottom. If you were reading back through the
+  // transcript and then typed, you want to watch the answer, not stay where you were.
+  const lastUserId = [...state.items].reverse().find((i) => i.kind === 'user')?.id ?? 0
+  useEffect(() => {
+    if (lastUserId !== 0) scrollToBottom()
+  }, [lastUserId, scrollToBottom])
 
   const waiting = state.turnRunning && isQuiet(lastItem) &&
     !state.pendingApproval && !state.pendingQuestion
