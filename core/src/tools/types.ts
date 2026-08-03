@@ -12,6 +12,17 @@ export interface ToolResult {
   ok: boolean
   /** Text handed back to the model as the tool message. Keep it short: it is permanent. */
   content: string
+  /**
+   * The same result, untruncated, for a HUMAN reader — the app's transcript, never the
+   * model. Optional: only tools that deliberately clip `content` to protect the context
+   * window set it.
+   *
+   * The two audiences have opposite requirements and used to share one string, which meant
+   * the person watching a build got the same middle-elided 8 KB the model did. A model
+   * cannot afford a 200 KB test log in its permanent transcript; a person debugging that
+   * build cannot work without it.
+   */
+  display?: string
 }
 
 export type Validation<A> = { ok: true; args: A } | { ok: false; error: string }

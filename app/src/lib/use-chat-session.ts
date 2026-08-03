@@ -33,7 +33,10 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
       client.on('text.delta', (d) => dispatch({ type: 'text.delta', text: d.text, atMs: Date.now() })),
       client.on('assistant.text', (d) => dispatch({ type: 'assistant.text', text: d.text, atMs: Date.now() })),
       client.on('tool.call', (d) => dispatch({ type: 'tool.call', name: d.name, args: d.args, atMs: Date.now() })),
-      client.on('tool.result', (d) => dispatch({ type: 'tool.result', name: d.name, ok: d.ok, content: d.content })),
+      client.on('tool.result', (d) => dispatch({
+        type: 'tool.result', name: d.name, ok: d.ok, content: d.content,
+        ...(d.display !== undefined ? { display: d.display } : {}),
+      })),
       client.on('step.done', (d) => dispatch({
         type: 'step.done',
         step: d.step,

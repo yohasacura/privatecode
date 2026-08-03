@@ -508,7 +508,12 @@ export class SessionHost {
       onThinkingDelta: (text) => this.emit('thinking.delta', { text }),
       onTextDelta: (text) => this.emit('text.delta', { text }),
       onToolCall: (name, args) => this.emit('tool.call', { name, args }),
-      onToolResult: (name, result) => this.emit('tool.result', { name, ok: result.ok, content: result.content }),
+      onToolResult: (name, result) => this.emit('tool.result', {
+        name,
+        ok: result.ok,
+        content: result.content,
+        ...(result.display !== undefined ? { display: result.display } : {}),
+      }),
       onAssistantText: (text) => this.emit('assistant.text', { text }),
     }
   }

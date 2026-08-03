@@ -624,6 +624,74 @@ kbd {
   color: var(--text-dim);
 }
 .tool-toggle { display: flex; color: var(--text-faint); }
+.tool-spacer { flex: 1; }
+
+/* A command, whole. Wrapped, never ellipsised, selectable, and shown even while it runs. */
+.cmd-line {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 8px 10px;
+  align-items: flex-start;
+}
+.cmd-prompt { color: var(--accent); font-family: var(--mono); font-size: 12px; line-height: 1.55; }
+.cmd-text {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.cmd-output-wrap { position: relative; }
+.cmd-output {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  /* No inner scroller on purpose: a nested scroll area inside a scrolling transcript is
+     the worst way to read a log. Length is bounded by line count instead. */
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+.cmd-copy {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-raised);
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 110ms ease;
+}
+.cmd-output-wrap:hover .cmd-copy { opacity: 1; }
+.cmd-copy:hover { color: var(--text); background: var(--bg-hover); }
+
+.cmd-more {
+  display: block;
+  width: 100%;
+  padding: 5px 12px;
+  border: none;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.cmd-more:hover { background: var(--bg-hover); color: var(--text); }
 
 /* Opening the file is deliberately its own control, pinned to the corner, so expanding a
    diff and navigating away are never the same click. */

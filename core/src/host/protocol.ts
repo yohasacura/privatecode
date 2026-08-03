@@ -245,7 +245,15 @@ export interface ToolCallEvent {
  * refactor to tools/types.ts cannot silently change the UI protocol. Must be kept in sync
  * by hand if the tool result shape ever changes.
  */
-export interface ToolResultEvent { name: string; ok: boolean; content: string }
+export interface ToolResultEvent {
+  name: string
+  ok: boolean
+  /** Exactly what the model was given. */
+  content: string
+  /** The untruncated result for display, when the tool clipped `content` to protect the
+   * model's context window. Absent when the two are the same. See `ToolResult.display`. */
+  display?: string
+}
 
 /** `ApprovalRequest` (tool/summary/detail/suggestedRules) plus the id the UI's reply must
  * echo back via `approval.reply`. */

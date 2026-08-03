@@ -12,6 +12,10 @@ const DEFAULT_TIMEOUT_S = 120
 const MAX_TIMEOUT_S = 600
 /** Output cap. Everything returned is permanent transcript; a build log can be megabytes. */
 const MAX_OUTPUT_CHARS = 8_000
+/** Ceiling on the untruncated copy sent to the UI (see `ToolResult.display`). Large enough
+ * for a real build or test log, small enough that one command cannot make the transcript
+ * unbounded. */
+const MAX_DISPLAY_CHARS = 400_000
 
 /** Head-and-tail clip: the head names what ran, the tail carries the error that matters. */
 export function clipOutput(text: string, limit = MAX_OUTPUT_CHARS): string {
@@ -109,22 +113,32 @@ export const runCommandTool: Tool<RunCommandArgs> = {
       },
     )
     const seconds = ((performance.now() - started) / 1000).toFixed(1)
-    const out = clipOutput((result.all ?? '').trim())
+    const raw = (result.all ?? '').trim()
+    const out = clipOutput(raw)
+    // What a person sees. Still bounded -- a runaway build log must not be able to grow
+    // the app's transcript without limit -- but two orders of magnitude above what the
+    // model's permanent transcript can afford.
+    const full = clipOutput(raw, MAX_DISPLAY_CHARS)
+
     if (result.isCanceled) {
       return { ok: false, content: 'Command cancelled by the user before it finished.' }
     }
     if (result.timedOut) {
+      const head = `Command killed after ${timeoutS} s (timeout). Partial output:\n`
+      const tail = '\nIf it legitimately needs longer, re-run with a larger ' +
+        'timeout_seconds, or use background_task for something long-running.'
       return {
         ok: false,
-        content: `Command killed after ${timeoutS} s (timeout). Partial output:\n` +
-          `${out || '(none)'}\nIf it legitimately needs longer, re-run with a larger ` +
-          'timeout_seconds, or use background_task for something long-running.',
+        content: `${head}${out || '(none)'}${tail}`,
+        display: `${head}${full || '(none)'}${tail}`,
       }
     }
     const code = result.exitCode ?? -1
+    const header = `exit ${code} in ${seconds} s\n`
     return {
       ok: code === 0,
-      content: `exit ${code} in ${seconds} s\n${out || '(no output)'}`,
+      content: `${header}${out || '(no output)'}`,
+      display: `${header}${full || '(no output)'}`,
     }
   },
 }

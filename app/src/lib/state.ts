@@ -52,7 +52,21 @@ export type ChatItem =
    * see diffs.tsx's `toDiffEntry`). Keeping both on the same item is one source of truth
    * for "which result came back for which call" instead of a second, independent
    * call/result correlation living in diffs.tsx. */
-  | { kind: 'tool'; id: number; name: string; args: string; result?: { ok: boolean; preview: string; content: string } }
+  | {
+    kind: 'tool'
+    id: number
+    name: string
+    args: string
+    result?: {
+      ok: boolean
+      preview: string
+      /** Exactly what the model was given. */
+      content: string
+      /** What to SHOW: the untruncated result when the tool clipped `content` for the
+       * model's context, otherwise the same string. See core's `ToolResult.display`. */
+      display: string
+    }
+  }
   /** A `send`/`abort` RPC call itself came back an error reply (e.g. "a turn is already
    * running", "no active session") -- rendered as a one-line note rather than silently
    * dropped, which is what a naive `.catch(() => {})` would otherwise do. */
@@ -167,7 +181,7 @@ export type ChatAction =
   | { type: 'text.delta'; text: string; atMs?: number }
   | { type: 'assistant.text'; text: string; atMs?: number }
   | { type: 'tool.call'; name: string; args: string; atMs?: number }
-  | { type: 'tool.result'; name: string; ok: boolean; content: string }
+  | { type: 'tool.result'; name: string; ok: boolean; content: string; display?: string }
   | { type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number; promptTokens?: number; draftAcceptance?: number; atMs?: number }
   | { type: 'turn.done'; stoppedBecause: StoppedBecause; atMs?: number }
   | { type: 'send-failed'; message: string; atMs?: number }
@@ -323,7 +337,13 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       const pending = lastPendingTool(state.items)
       if (!pending) return state // a result with no matching pending call is a no-op, not a crash
       const updated: ChatItem = {
-        ...pending, result: { ok: action.ok, preview: preview(action.content), content: action.content },
+        ...pending,
+        result: {
+          ok: action.ok,
+          preview: preview(action.content),
+          content: action.content,
+          display: action.display ?? action.content,
+        },
       }
       return { ...state, items: state.items.map((i) => (i.id === pending.id ? updated : i)) }
     }

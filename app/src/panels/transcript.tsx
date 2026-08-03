@@ -345,13 +345,55 @@ const KIND_ICON: Record<ToolKind, () => VNode> = {
   other: Icon.chat,
 }
 
-/** Whether a completed call's body is worth showing without asking. A diff is the point of
- * the card; a 400-line directory listing is not. */
-function defaultOpen(kind: ToolKind, ok: boolean, content: string): boolean {
+/** Whether a completed call's body is worth showing without asking. A diff and a command
+ * are the point of their card; a 400-line directory listing is not. */
+function defaultOpen(kind: ToolKind, ok: boolean): boolean {
   if (!ok) return true
-  if (kind === 'diff') return true
-  if (kind === 'command') return content.split('\n').length <= 24
-  return false
+  return kind === 'diff' || kind === 'command'
+}
+
+/** Lines shown before the "show the rest" control appears. Generous: the point of this
+ * block is that the whole log is readable, and an inner scrollbar inside a scrolling
+ * transcript is the worst of both. */
+const OUTPUT_HEAD_LINES = 160
+
+/**
+ * Command output, in full.
+ *
+ * Text is never ellipsised or hidden behind an inner scroller here -- a build log you can
+ * only see the first 24 lines of is not evidence of anything. Very long output is cut at a
+ * line count with an explicit control that says how much is left, so the default is bounded
+ * but nothing is silently lost.
+ */
+function OutputBlock({ text }: { text: string }): VNode {
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const lines = text.split('\n')
+  const overflows = lines.length > OUTPUT_HEAD_LINES
+  const shown = overflows && !expanded ? lines.slice(0, OUTPUT_HEAD_LINES).join('\n') : text
+
+  function copy(): void {
+    void navigator.clipboard?.writeText(text).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 1200) },
+      () => { /* still selectable */ },
+    )
+  }
+
+  return (
+    <div class="cmd-output-wrap">
+      <button class="cmd-copy" onClick={copy} title="Copy the whole output">
+        {copied ? 'copied' : 'copy'}
+      </button>
+      <pre class="cmd-output">{shown}</pre>
+      {overflows && (
+        <button class="cmd-more" onClick={() => setExpanded((e) => !e)}>
+          {expanded
+            ? 'show less'
+            : `show ${(lines.length - OUTPUT_HEAD_LINES).toLocaleString()} more lines`}
+        </button>
+      )}
+    </div>
+  )
 }
 
 function ToolCard({
@@ -365,8 +407,9 @@ function ToolCard({
   const pending = result === undefined
   const content = result?.content ?? ''
   const [open, setOpen] = useState<boolean | null>(null)
-  const isOpen = open ?? (result ? defaultOpen(p.kind, result.ok, content) : false)
+  const isOpen = open ?? (result ? defaultOpen(p.kind, result.ok) : false)
   const stat = p.kind === 'diff' && result?.ok ? diffStat(content) : null
+  const isCommand = p.kind === 'command'
 
   // The success/failure glyph lives in the shared gutter, not inside the card: that is the
   // whole point of the gutter, and it buys the header the room to show the actual target.
@@ -385,7 +428,11 @@ function ToolCard({
         >
           <span class="tool-icon">{KIND_ICON[p.kind]()}</span>
           <span class="tool-verb">{p.verb}</span>
-          <span class="tool-target" title={p.target}>{p.target}</span>
+          {/* A command is NOT summarised in the header -- it goes in the body below, whole
+              and wrapped. Squeezing a real shell line into one ellipsised row is how you
+              end up unable to tell what was actually executed. */}
+          {!isCommand && <span class="tool-target" title={p.target}>{p.target}</span>}
+          {isCommand && <span class="tool-spacer" />}
           {stat && <DiffStatBadge stat={stat} />}
           {!pending && (
             <span class="tool-toggle">{isOpen ? Icon.chevronDown() : Icon.chevronRight()}</span>
@@ -400,11 +447,22 @@ function ToolCard({
           </button>
         )}
 
+        {/* The command itself is always visible, whole, wrapped -- even while it is still
+            running, which is exactly when you most want to know what was launched. */}
+        {isCommand && (
+          <div class="cmd-line">
+            <span class="cmd-prompt">$</span>
+            <code class="cmd-text">{p.target}</code>
+          </div>
+        )}
+
         {!pending && isOpen && (
           <div class="tool-body">
             {p.kind === 'diff' && result.ok
               ? <DiffView content={content} />
-              : <pre class="tool-output">{content}</pre>}
+              : isCommand
+                ? <OutputBlock text={result.display} />
+                : <pre class="tool-output">{result.display}</pre>}
           </div>
         )}
         {/* A preview that merely repeats the target ("src/app.ts (32 lines)" under a header

@@ -196,8 +196,23 @@ describe('reduceChat: tool calls', () => {
     const done = reduceChat(opened, { type: 'tool.result', name: 'read_file', ok: true, content: 'line one\nline two' })
     expect(done.items).toEqual([
       { kind: 'tool', id: 1, name: 'read_file', args: '{"path":"a.ts"}',
-        result: { ok: true, preview: 'line one', content: 'line one\nline two' } },
+        // No `display` on the wire means the tool did not clip anything, so what the
+        // person sees and what the model saw are the same string.
+        result: { ok: true, preview: 'line one', content: 'line one\nline two', display: 'line one\nline two' } },
     ])
+  })
+
+  it('keeps the untruncated display copy separate from what the model was given', () => {
+    // run_command hands the model a middle-elided 8 KB and the UI the whole log; showing
+    // the model's copy is why a build log used to be unreadable in the transcript.
+    const state = run([
+      { type: 'tool.call', name: 'run_command', args: '{"command":"dotnet test"}' },
+      { type: 'tool.result', name: 'run_command', ok: true, content: 'exit 0\nclipped…', display: 'exit 0\nevery single line' },
+    ])
+    const item = state.items[0]
+    expect(item?.kind === 'tool' && item.result).toEqual({
+      ok: true, preview: 'exit 0', content: 'exit 0\nclipped…', display: 'exit 0\nevery single line',
+    })
   })
 
   it('a tool.result with no pending call is a harmless no-op', () => {

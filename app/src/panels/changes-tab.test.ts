@@ -3,7 +3,7 @@ import type { ChatItem } from '../lib/state'
 import { collectChanges } from './changes-tab'
 
 function tool(id: number, name: string, args: string, content = 'diff body', ok = true): ChatItem {
-  return { kind: 'tool', id, name, args, result: { ok, preview: 'p', content } }
+  return { kind: 'tool', id, name, args, result: { ok, preview: 'p', content, display: content } }
 }
 
 describe('collectChanges', () => {
