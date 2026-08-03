@@ -419,6 +419,33 @@ export class Session {
     await inFlight.promise
   }
 
+  /**
+   * The PUBLIC half of single-slot discipline: hosts MUST call this before discarding a
+   * `Session` outright -- a `/new`/`/resume` rebuild that replaces it with a fresh one, or
+   * process shutdown -- never just let it fall out of scope. A background compaction has
+   * no owner to notice the `Session` is gone; left running, it keeps occupying the
+   * server's one concurrency slot (`-np 1`) and would still be in flight when a
+   * replacement session's very first turn tries to send, queueing behind a generation
+   * whose result nothing will ever use.
+   *
+   * Reuses the same private abort machinery `send()`'s own single-slot discipline calls
+   * (`abortInFlightCompaction`): aborts the in-flight generation and awaits its settling,
+   * so the slot is genuinely free by the time this resolves, not just marked for future
+   * cleanup. Also discards any `pendingSummary` already waiting to swap in -- a summary
+   * generated off a transcript this call means to stop relying on is not worth applying
+   * on some later turn.
+   *
+   * A no-op when nothing is in flight and nothing is pending (the common case: most
+   * sessions are discarded well under the compaction trigger). Leaves the session itself
+   * fully usable afterward -- only in-flight/pending compaction state is discarded, never
+   * the transcript -- so a caller that does NOT go on to discard the `Session` can keep
+   * sending turns on it exactly as before.
+   */
+  async abortCompaction(): Promise<void> {
+    await this.abortInFlightCompaction()
+    this.pendingSummary = undefined
+  }
+
   /** Applies a ready summary, if one is waiting, before the turn about to run. A no-op
    * otherwise (the common case: most turns run with no compaction pending at all). */
   private swapInCompactionIfReady(): void {

@@ -169,6 +169,11 @@ export function createEventRenderer(opts?: { stream?: boolean }): EventRenderer 
     },
     onContinuation: (s) => {
       clearStatusLine()
+      // Mirrors onStepDone's own guard just below: onContinuation fires mid-step, after
+      // the CONTENT phase already streamed verbatim via onTextDelta with no trailing
+      // newline -- printing the yellow line straight after would glue it onto the last
+      // streamed character. Must run BEFORE textStreamed is reset for the next call.
+      if (streaming && textStreamed) process.stdout.write('\n')
       thinkingChars = 0
       contentStarted = false
       textStreamed = false

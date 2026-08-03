@@ -184,6 +184,9 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
 
   let session!: Session
   let engine!: PermissionEngine
+  /** Guards rebuild()'s abortCompaction call below: false only before the very first
+   * rebuild() (startup), when there is no old session yet to abort anything on. */
+  let sessionBuilt = false
 
   /**
    * Loads settings layers fresh, builds a new PermissionEngine around them, and builds a
@@ -194,8 +197,17 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
    * `explicitMode` distinguishes "the user asked for this mode" from "nothing was said":
    * passed through to Session only when defined, so a resumed session's own stored mode
    * wins when the caller (a bare /resume, or REPL startup with no --mode) has no opinion.
+   *
+   * Whole-branch-review fix: awaits the OLD session's `abortCompaction()` first, before
+   * building anything new. Without this, a background compaction in flight on the OLD
+   * session (about to be replaced below) is orphaned -- nothing ever aborts it, and it
+   * keeps running against the single-slot server (`-np 1`) concurrently with the NEW
+   * session's very first turn. See `Session.abortCompaction`'s own doc comment for the
+   * full single-slot reasoning.
    */
-  function rebuild(explicitMode: AgentMode | undefined, resumeId: string | undefined): void {
+  async function rebuild(explicitMode: AgentMode | undefined, resumeId: string | undefined): Promise<void> {
+    if (sessionBuilt) await session.abortCompaction()
+
     const { layers, problems } = loadLayers(opts.workspaceRoot)
     const newEngine = new PermissionEngine({
       layers, mode: explicitMode ?? 'normal', workspaceRoot: opts.workspaceRoot, problems,
@@ -233,6 +245,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     const newSession = new Session(sessionOpts)
     session = newSession
     engine = newEngine
+    sessionBuilt = true
   }
 
   /**
@@ -268,16 +281,16 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
 
   if (opts.resume !== undefined) {
     try {
-      rebuild(opts.mode, opts.resume)
+      await rebuild(opts.mode, opts.resume)
     } catch (e) {
       process.stdout.write(
         `Could not resume session "${opts.resume}": ${e instanceof Error ? e.message : String(e)}\n` +
         'Starting a new session instead.\n',
       )
-      rebuild(opts.mode, undefined)
+      await rebuild(opts.mode, undefined)
     }
   } else {
-    rebuild(opts.mode, undefined)
+    await rebuild(opts.mode, undefined)
   }
 
   async function printBanner(): Promise<void> {
@@ -300,6 +313,12 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     exiting = true
     stopAbortListening?.()
     stopAbortListening = undefined
+    // Whole-branch-review fix: same orphaned-compaction reasoning as rebuild() above --
+    // exiting must not leave a background compaction running past the process's own
+    // lifetime. Before stopAll() (which tears down background shell tasks, a different
+    // concern) so the compaction's own abort has already settled by the time anything
+    // else starts shutting down.
+    await session.abortCompaction()
     await opts.toolset.background.stopAll()
     process.stdout.write(
       `\nGoodbye. Session ${session.id} saved.\n` +
@@ -373,13 +392,13 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     for (const p of opts.store.problems) process.stdout.write(`(skipped) ${p}\n`)
   }
 
-  function handleResume(id: string): void {
+  async function handleResume(id: string): Promise<void> {
     if (id === '') {
       process.stdout.write('usage: /resume <id>\n')
       return
     }
     try {
-      rebuild(undefined, id)
+      await rebuild(undefined, id)
       process.stdout.write(`Resumed session ${session.id} (mode: ${session.mode}).\n`)
       for (const p of engine.problems) process.stdout.write(`settings: ${p}\n`)
     } catch (e) {
@@ -440,9 +459,9 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     switch (cmd) {
       case '/help': process.stdout.write(HELP_TEXT); return
       case '/mode': await handleMode(arg); return
-      case '/new': rebuild(undefined, undefined); process.stdout.write(`Started a new session: ${session.id}\n`); for (const p of engine.problems) process.stdout.write(`settings: ${p}\n`); return
+      case '/new': await rebuild(undefined, undefined); process.stdout.write(`Started a new session: ${session.id}\n`); for (const p of engine.problems) process.stdout.write(`settings: ${p}\n`); return
       case '/sessions': handleSessions(); return
-      case '/resume': handleResume(arg); return
+      case '/resume': await handleResume(arg); return
       case '/todos': handleTodos(); return
       case '/compact': await handleCompact(); return
       case '/exit': await shutdown(); return
