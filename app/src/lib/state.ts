@@ -1,3 +1,4 @@
+import type { ApprovalDecision, TodoItem } from '@core/interaction'
 import type { StoppedBecause } from '@core/host/protocol'
 
 /**
@@ -31,6 +32,30 @@ export type ChatItem =
    * running", "no active session") -- rendered as a one-line note rather than silently
    * dropped, which is what a naive `.catch(() => {})` would otherwise do. */
   | { kind: 'error'; id: number; message: string }
+  /** What an `approval.request` card COLLAPSES INTO once answered -- the plan's own
+   * phrase for it -- so the transcript keeps a permanent one-line record after the live
+   * card (rendered separately, above the input; see `approvals.tsx`) disappears. */
+  | { kind: 'approval-record'; id: number; tool: string; summary: string; decision: ApprovalDecision }
+  | { kind: 'question-record'; id: number; question: string; answer: string }
+
+/** The turn-paused card `approvals.tsx` renders above the input while the sidecar awaits
+ * a reply -- at most one at a time, matching the protocol: `SessionHost` awaits one
+ * `requestApproval`/`askUser` call to resolve before the turn's next step can run, so a
+ * second `approval.request`/`question.request` can never arrive while one is already
+ * pending. */
+export interface PendingApproval {
+  requestId: string
+  tool: string
+  summary: string
+  detail: string
+  suggestedRules: string[]
+}
+
+export interface PendingQuestion {
+  requestId: string
+  question: string
+  options: string[]
+}
 
 export interface StepTiming {
   step: number
@@ -57,10 +82,19 @@ export interface ChatState {
    * (not a module-level global) so two independent `reduceChat` call chains in the same
    * test file never collide on ids. */
   nextId: number
+  pendingApproval: PendingApproval | null
+  pendingQuestion: PendingQuestion | null
+  /** The most recent `todos` event's items, verbatim -- there is no history here, only
+   * "the current list", matching `TodoStore`'s own set()-replaces-wholesale semantics on
+   * the core side. */
+  todos: TodoItem[]
 }
 
 export function initialChatState(): ChatState {
-  return { items: [], turnRunning: false, currentStep: null, lastStepDone: null, nextId: 1 }
+  return {
+    items: [], turnRunning: false, currentStep: null, lastStepDone: null, nextId: 1,
+    pendingApproval: null, pendingQuestion: null, todos: [],
+  }
 }
 
 export type ChatAction =
@@ -75,6 +109,16 @@ export type ChatAction =
   | { type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number }
   | { type: 'turn.done'; stoppedBecause: StoppedBecause }
   | { type: 'send-failed'; message: string }
+  | { type: 'approval.request'; requestId: string; tool: string; summary: string; detail: string; suggestedRules: string[] }
+  /** Fired locally by `approvals.tsx` the instant the user clicks Allow/Deny -- BEFORE the
+   * `approval.reply` RPC even resolves. This is what makes "pending -> answered" a
+   * single-fire transition on the UI side too (not just server-side, where a stale
+   * requestId is already refused): once this reducer has cleared `pendingApproval`, a
+   * second click on a since-unmounted/disabled card has nothing left to dispatch against. */
+  | { type: 'approval.answered'; decision: ApprovalDecision }
+  | { type: 'question.request'; requestId: string; question: string; options: string[] }
+  | { type: 'question.answered'; answer: string }
+  | { type: 'todos'; items: TodoItem[] }
 
 /** First line only, capped -- the same "one-line result preview" the plan asks the tool
  * row to show; a multi-line tool result (a diff, a directory listing) would otherwise
@@ -195,6 +239,49 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       const item: ChatItem = { kind: 'error', id: state.nextId, message: action.message }
       return { ...state, items: [...state.items, item], turnRunning: false, currentStep: null, nextId: state.nextId + 1 }
     }
+
+    case 'approval.request':
+      return {
+        ...state,
+        pendingApproval: {
+          requestId: action.requestId,
+          tool: action.tool,
+          summary: action.summary,
+          detail: action.detail,
+          suggestedRules: action.suggestedRules,
+        },
+      }
+
+    case 'approval.answered': {
+      // No pending card to answer is a no-op, not a crash -- e.g. a card whose
+      // `pendingApproval` was already cleared (a stray second dispatch cannot fire twice).
+      if (!state.pendingApproval) return state
+      const item: ChatItem = {
+        kind: 'approval-record',
+        id: state.nextId,
+        tool: state.pendingApproval.tool,
+        summary: state.pendingApproval.summary,
+        decision: action.decision,
+      }
+      return { ...state, items: [...state.items, item], pendingApproval: null, nextId: state.nextId + 1 }
+    }
+
+    case 'question.request':
+      return {
+        ...state,
+        pendingQuestion: { requestId: action.requestId, question: action.question, options: action.options },
+      }
+
+    case 'question.answered': {
+      if (!state.pendingQuestion) return state
+      const item: ChatItem = {
+        kind: 'question-record', id: state.nextId, question: state.pendingQuestion.question, answer: action.answer,
+      }
+      return { ...state, items: [...state.items, item], pendingQuestion: null, nextId: state.nextId + 1 }
+    }
+
+    case 'todos':
+      return { ...state, todos: action.items }
 
     default: {
       const _exhaustive: never = action

@@ -2,15 +2,17 @@ import { useEffect, useReducer, useState } from 'preact/hooks'
 import type { AgentMode } from '@core/permissions/engine'
 import type { ProtocolClient } from '../lib/client'
 import { type ChatItem, initialChatState, reduceChat } from '../lib/state'
+import { ApprovalCard, QuestionCard, TodosWidget } from './approvals'
 
 const MODES: readonly AgentMode[] = ['normal', 'plan', 'auto-edit', 'autopilot']
 
 /**
- * The chat panel (Plan 4 Task 5): message list (user/assistant/thinking/tool rows) over
- * `lib/state.ts`'s pure reducer, an input row (Enter sends, Shift+Enter newlines, Esc
- * aborts), a mode selector, and a turn-status row (step counter + timeout countdown, then
- * step.done numbers). Approval/question cards and the todo list are Task 6's addition,
- * layered into this same panel above the input; this task does not render them.
+ * The chat panel (Plan 4 Tasks 5-6): message list (user/assistant/thinking/tool/approval-
+ * record/question-record rows) over `lib/state.ts`'s pure reducer, an input row (Enter
+ * sends, Shift+Enter newlines, Esc aborts), a mode selector, a todo checklist in the
+ * header area, a turn-status row (step counter + timeout countdown, then step.done
+ * numbers), and -- ABOVE the input row -- the approval/question card while one is pending
+ * (see `approvals.tsx`).
  *
  * Dirty-tree checking for autopilot (a `git_status` host round-trip before the mode
  * actually takes effect) is explicitly deferred to Task 8's status-bar wiring, per the
@@ -40,6 +42,14 @@ export function ChatPanel({ client }: { client: ProtocolClient }) {
         ...(d.tokensPerSecond !== undefined ? { tokensPerSecond: d.tokensPerSecond } : {}),
       })),
       client.on('turn.done', (d) => dispatch({ type: 'turn.done', stoppedBecause: d.stoppedBecause })),
+      client.on('approval.request', (d) => dispatch({
+        type: 'approval.request', requestId: d.requestId, tool: d.tool, summary: d.summary,
+        detail: d.detail, suggestedRules: d.suggestedRules,
+      })),
+      client.on('question.request', (d) => dispatch({
+        type: 'question.request', requestId: d.requestId, question: d.question, options: d.options,
+      })),
+      client.on('todos', (d) => dispatch({ type: 'todos', items: d.items })),
     ]
     return () => { for (const u of unsubs) u() }
   }, [client])
@@ -139,6 +149,8 @@ export function ChatPanel({ client }: { client: ProtocolClient }) {
         )}
       </div>
 
+      <TodosWidget todos={state.todos} />
+
       <div class="chat-transcript">
         {state.items.map((item) => <ChatItemRow key={item.id} item={item} />)}
       </div>
@@ -155,6 +167,21 @@ export function ChatPanel({ client }: { client: ProtocolClient }) {
           </span>
         )}
       </div>
+
+      {state.pendingApproval && (
+        <ApprovalCard
+          client={client}
+          approval={state.pendingApproval}
+          onAnswered={(decision) => dispatch({ type: 'approval.answered', decision })}
+        />
+      )}
+      {state.pendingQuestion && (
+        <QuestionCard
+          client={client}
+          question={state.pendingQuestion}
+          onAnswered={(answer) => dispatch({ type: 'question.answered', answer })}
+        />
+      )}
 
       <div class="chat-input-row">
         <textarea
@@ -219,5 +246,23 @@ function ChatItemRow({ item }: { item: ChatItem }) {
     }
     case 'error':
       return <div class="chat-row chat-error">⚠ {item.message}</div>
+    case 'approval-record': {
+      const verdict = item.decision.verdict
+      const comment = verdict === 'deny' ? item.decision.comment : undefined
+      const remember = verdict === 'allow' ? item.decision.remember : undefined
+      return (
+        <div class={`chat-row chat-approval-record approval-${verdict}`}>
+          {verdict === 'allow' ? '✓' : '✗'} <b>{item.tool}</b>: {item.summary} — {verdict}
+          {remember ? ` (always: ${remember.rule} @ ${remember.layer})` : ''}
+          {comment ? ` — "${comment}"` : ''}
+        </div>
+      )
+    }
+    case 'question-record':
+      return (
+        <div class="chat-row chat-question-record">
+          ? {item.question} → <b>{item.answer}</b>
+        </div>
+      )
   }
 }

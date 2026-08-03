@@ -139,3 +139,81 @@ describe('reduceChat: user messages', () => {
     expect(state.items).toEqual([{ kind: 'user', id: 1, text: 'do the thing' }])
   })
 })
+
+describe('reduceChat: approval card state machine (pending -> answered, single-fire)', () => {
+  it('opens a pending approval on approval.request', () => {
+    const state = reduceChat(initialChatState(), {
+      type: 'approval.request', requestId: 'r1', tool: 'edit_file', summary: 'change a.ts',
+      detail: '- old\n+ new', suggestedRules: ['edit_file(a.ts)'],
+    })
+    expect(state.pendingApproval).toEqual({
+      requestId: 'r1', tool: 'edit_file', summary: 'change a.ts', detail: '- old\n+ new',
+      suggestedRules: ['edit_file(a.ts)'],
+    })
+    expect(state.items).toEqual([])
+  })
+
+  it('collapses the pending card into a one-line record on approval.answered, exactly once', () => {
+    const opened = reduceChat(initialChatState(), {
+      type: 'approval.request', requestId: 'r1', tool: 'edit_file', summary: 'change a.ts',
+      detail: '- old\n+ new', suggestedRules: [],
+    })
+    const answered = reduceChat(opened, { type: 'approval.answered', decision: { verdict: 'allow' } })
+    expect(answered.pendingApproval).toBeNull()
+    expect(answered.items).toEqual([
+      { kind: 'approval-record', id: 1, tool: 'edit_file', summary: 'change a.ts', decision: { verdict: 'allow' } },
+    ])
+
+    // Single-fire: a SECOND answer (e.g. a stale double-click) with nothing pending must
+    // not append a second record.
+    const secondAnswer = reduceChat(answered, { type: 'approval.answered', decision: { verdict: 'deny' } })
+    expect(secondAnswer.items).toEqual(answered.items)
+  })
+
+  it('records a deny decision with its comment', () => {
+    const opened = reduceChat(initialChatState(), {
+      type: 'approval.request', requestId: 'r1', tool: 'run_command', summary: 'npm test',
+      detail: 'npm test', suggestedRules: [],
+    })
+    const denied = reduceChat(opened, {
+      type: 'approval.answered', decision: { verdict: 'deny', comment: 'use vitest instead' },
+    })
+    expect(denied.items).toEqual([
+      { kind: 'approval-record', id: 1, tool: 'run_command', summary: 'npm test',
+        decision: { verdict: 'deny', comment: 'use vitest instead' } },
+    ])
+  })
+})
+
+describe('reduceChat: question card state machine', () => {
+  it('opens a pending question and collapses it into a record on answer, exactly once', () => {
+    const opened = reduceChat(initialChatState(), {
+      type: 'question.request', requestId: 'q1', question: 'which file?', options: ['a.ts', 'b.ts'],
+    })
+    expect(opened.pendingQuestion).toEqual({ requestId: 'q1', question: 'which file?', options: ['a.ts', 'b.ts'] })
+
+    const answered = reduceChat(opened, { type: 'question.answered', answer: 'a.ts' })
+    expect(answered.pendingQuestion).toBeNull()
+    expect(answered.items).toEqual([{ kind: 'question-record', id: 1, question: 'which file?', answer: 'a.ts' }])
+
+    const secondAnswer = reduceChat(answered, { type: 'question.answered', answer: 'b.ts' })
+    expect(secondAnswer.items).toEqual(answered.items)
+  })
+})
+
+describe('reduceChat: todos', () => {
+  it('replaces the todo list wholesale on every todos event', () => {
+    const first = reduceChat(initialChatState(), {
+      type: 'todos', items: [{ text: 'step one', status: 'pending' }],
+    })
+    expect(first.todos).toEqual([{ text: 'step one', status: 'pending' }])
+
+    const second = reduceChat(first, {
+      type: 'todos', items: [{ text: 'step one', status: 'completed' }, { text: 'step two', status: 'in_progress' }],
+    })
+    expect(second.todos).toEqual([
+      { text: 'step one', status: 'completed' },
+      { text: 'step two', status: 'in_progress' },
+    ])
+  })
+})
