@@ -21,13 +21,15 @@ import { useJobs } from '../lib/use-jobs'
 export type ContextTab = 'files' | 'changes' | 'jobs' | 'terminal'
 
 export function ContextPanel({
-  client, items, openPath, onOpenFile, hasSession,
+  client, items, openPath, onOpenFile, hasSession, workspaceRoot,
 }: {
   client: ProtocolClient
   items: ChatItem[]
   openPath: string | null
   onOpenFile: (path: string | null) => void
   hasSession: boolean
+  /** Which workspace these paths belong to; see `TreePanel`. */
+  workspaceRoot: string
 }): VNode {
   const [tab, setTab] = useState<ContextTab>('files')
   // Polled at the panel level so the Jobs badge is live on every tab, not only its own.
@@ -72,7 +74,13 @@ export function ContextPanel({
 
       <div class="tab-body">
         {tab === 'files' && (
-          <FilesTab client={client} toolItems={items} openPath={openPath} onOpenFile={onOpenFile} />
+          <FilesTab
+            client={client}
+            toolItems={items}
+            openPath={openPath}
+            onOpenFile={onOpenFile}
+            workspaceRoot={workspaceRoot}
+          />
         )}
         {tab === 'changes' && (
           <ChangesTab changes={changes} onOpenFile={(p) => { onOpenFile(p); setTab('files') }} />

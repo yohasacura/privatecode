@@ -35,12 +35,14 @@ function PreviewBody({ lines, ext }: { lines: string[]; ext: string }): VNode {
 }
 
 export function FilesTab({
-  client, toolItems, openPath, onOpenFile,
+  client, toolItems, openPath, onOpenFile, workspaceRoot,
 }: {
   client: ProtocolClient
   toolItems: ChatItem[]
   openPath: string | null
   onOpenFile: (path: string | null) => void
+  /** Passed through to `TreePanel`, which uses it as its reset signal. */
+  workspaceRoot: string
 }): VNode {
   const [preview, setPreview] = useState<Preview | null>(null)
 
@@ -69,7 +71,12 @@ export function FilesTab({
   return (
     <div class="files-tab">
       <div class="files-tree">
-        <TreePanel client={client} toolItems={toolItems} onOpenFile={onOpenFile} />
+        <TreePanel
+          client={client}
+          toolItems={toolItems}
+          onOpenFile={onOpenFile}
+          workspaceRoot={workspaceRoot}
+        />
       </div>
 
       {preview && (

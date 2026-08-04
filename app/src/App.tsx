@@ -379,6 +379,7 @@ export default function App() {
                     openPath={previewPath}
                     onOpenFile={setPreviewPath}
                     hasSession={chatState.session !== null}
+                    workspaceRoot={workspaceRoot}
                   />
                 </aside>
               </>

@@ -6,7 +6,7 @@ import type { ProtocolClient } from '../lib/client'
 import type { ChatAction, ChatItem, ChatState } from '../lib/state'
 import { Markdown } from '../lib/markdown'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
-import { presentTool, type ToolKind } from '../lib/tools'
+import { presentTool, screenshotPathOf, type ToolKind } from '../lib/tools'
 import { formatDuration } from '../lib/format'
 import { useStickToBottom } from '../lib/sticky-scroll'
 import { Icon } from '../components/icons'
@@ -396,9 +396,6 @@ function OutputBlock({ text }: { text: string }): VNode {
   )
 }
 
-/** What the browser tool's screenshot action puts in `display`, and nothing else. */
-const SCREENSHOT_PATH = /^\.privatecode\/browser\/shot-\d+\.png$/
-
 /**
  * A screenshot, fetched through the same jailed `fs.read` the file preview uses.
  *
@@ -458,9 +455,7 @@ function ToolCard({
   // A screenshot's only audience is the person reading this: the model has no vision tower,
   // so the tool hands it a path and says so. Rendering the image here is what makes taking
   // one worth anything at all.
-  const shotPath = item.name === 'browser' && result?.ok === true
-    ? SCREENSHOT_PATH.exec(result.display ?? '')?.[0] ?? null
-    : null
+  const shotPath = result?.ok === true ? screenshotPathOf(item.name, result.display) : null
 
   // The success/failure glyph lives in the shared gutter, not inside the card: that is the
   // whole point of the gutter, and it buys the header the room to show the actual target.
@@ -527,7 +522,11 @@ function ToolCard({
                 </button>
               </div>
             )}
-            {shotPath !== null
+            {/* `!showModelCopy` is the point, not a detail: the switch exists to answer
+                "what did the model actually see", and a screenshot is the one result it
+                never saw. Rendering the image under "What the model got" would make the
+                one affordance built for honesty the one that lies. */}
+            {shotPath !== null && !showModelCopy
               ? <Screenshot path={shotPath} client={client} />
               : p.kind === 'diff' && result.ok
                 ? <DiffView content={shownText} />

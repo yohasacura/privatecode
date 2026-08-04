@@ -87,6 +87,19 @@ function str(o: Record<string, unknown>, key: string): string | null {
   return typeof v === 'string' && v !== '' ? v : null
 }
 
+/**
+ * The screenshot a `browser` call saved, or `null`.
+ *
+ * Anchored to the exact shape the tool writes, and that strictness is the point: the
+ * tool's own prose mentions the path too ("Screenshot saved to …"), and so does the
+ * model's answer. Matching loosely would turn any message that merely NAMES a screenshot
+ * into an image, including one the model wrote about a file that no longer exists.
+ */
+export function screenshotPathOf(name: string, display: string | undefined): string | null {
+  if (name !== 'browser' || display === undefined) return null
+  return /^\.privatecode\/browser\/shot-\d+\.png$/.test(display) ? display : null
+}
+
 /** `mcp__sqlite__query` → `sqlite / query`. Which server answered is the part a person
  * reading the transcript needs; the `mcp__` prefix exists for the rule language, not them. */
 function presentMcp(name: string, args: Record<string, unknown>): ToolPresentation {

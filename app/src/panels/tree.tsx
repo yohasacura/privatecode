@@ -61,11 +61,22 @@ export function affectedDirectories(name: string, argsJson: string): string[] {
 }
 
 export function TreePanel({
-  client, toolItems, onOpenFile,
+  client, toolItems, onOpenFile, workspaceRoot,
 }: {
   client: ProtocolClient
   toolItems: ChatItem[]
   onOpenFile: (path: string) => void
+  /**
+   * The workspace these paths belong to. Not displayed — it is the reset signal.
+   *
+   * Opening a different workspace does NOT replace `client` (the same socket serves every
+   * workspace this process ever opens), so an effect keyed on `client` alone never re-runs
+   * and the panel goes on showing the previous project's files under the new project's
+   * name. Found by opening a second workspace in the running app: the tree still listed
+   * `src/`, `tests/` and `AGENTS.md` from the workspace before it, none of which existed
+   * in the new one. Clicking one would have asked the host for a path outside the jail.
+   */
+  workspaceRoot: string
 }) {
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']))
@@ -91,7 +102,16 @@ export function TreePanel({
       })
   }
 
-  useEffect(() => { loadDir('') }, [client])
+  // Every piece of state here is about ONE workspace: which directories were loaded, which
+  // were expanded, and which tool results have already been folded in. On a switch they are
+  // all wrong at once, so they are all discarded together and the root is re-fetched.
+  useEffect(() => {
+    setDirs({})
+    setExpanded(new Set(['']))
+    processedToolIds.current = new Set()
+    loadDir('')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadDir is stable per client
+  }, [client, workspaceRoot])
 
   // Refresh: a write-family tool succeeding against a directory the tree ALREADY has
   // loaded gets that one directory re-fetched. `processedToolIds` guards against handling
