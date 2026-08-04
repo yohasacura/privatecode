@@ -28,6 +28,9 @@ const MODES: readonly { value: AgentMode; label: string; hint: string }[] = [
  * here, visibly, is the cheap honest guard. */
 const MAX_SEND_CHARS = 500_000
 
+/** The one window-owned slash command; see `send()`. */
+const COMPACT_COMMAND = '/compact'
+
 export function Composer({
   client, state, dispatch, modalOpen, onAdoptViewed,
 }: {
@@ -169,7 +172,8 @@ export function Composer({
   useEffect(() => {
     if (state.turnRunning || queued === null) return
     setQueued(null)
-    submit(queued.text, queued.attach)
+    if (queued.text === COMPACT_COMMAND) runCompact()
+    else submit(queued.text, queued.attach)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- submit is recreated per render
   }, [state.turnRunning, queued])
 
@@ -213,12 +217,19 @@ export function Composer({
     // context-overflow message has advised "compact it" since Plan 2 while the window had no
     // way to do it, and waiting for the automatic trigger means waiting for a long turn to
     // end first. Handled here rather than sent, because it is not a message to anyone.
-    if (text === '/compact') {
+    //
+    // While a turn runs it QUEUES, exactly as typed text does. The server has one slot, so
+    // compacting now is not something the session can honour — and the first version simply
+    // called it anyway and put "a turn is already running in this session" in the transcript,
+    // which is a refusal dressed up as an error.
+    if (text === COMPACT_COMMAND) {
       setInput('')
       setMention(null)
-      client.call('compact', {}).catch((e: unknown) => {
-        dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
-      })
+      if (state.turnRunning) {
+        setQueued({ text: COMPACT_COMMAND, attach: [] })
+        return
+      }
+      runCompact()
       return
     }
 
@@ -258,6 +269,12 @@ export function Composer({
     submit(text, attach)
   }
 
+  function runCompact(): void {
+    client.call('compact', {}).catch((e: unknown) => {
+      dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
+    })
+  }
+
   function submit(text: string, attach: string[] = []): void {
     if (text.length > MAX_SEND_CHARS) {
       dispatch({
@@ -274,7 +291,19 @@ export function Composer({
     dispatch({ type: 'user-message', text })
     dispatch({ type: 'turn-started' })
     client.call('send', { text, ...(attach.length > 0 ? { attach } : {}) }).catch((e: unknown) => {
-      dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
+      const message = e instanceof Error ? e.message : String(e)
+      // The host still had a turn running while this window believed it did not. Whatever
+      // caused the disagreement, the one thing that must not happen is losing what someone
+      // typed: seen in a screenshot as a red "a turn is already running in this session"
+      // where a message used to be, with the box already emptied. Queued instead, which is
+      // what the composer promises for anything typed mid-turn.
+      if (message.includes('a turn is already running')) {
+        setQueued((q) => (q === null
+          ? { text, attach }
+          : { text: `${q.text}\n${text}`, attach: [...new Set([...q.attach, ...attach])] }))
+        return
+      }
+      dispatch({ type: 'send-failed', message })
     })
   }
 
