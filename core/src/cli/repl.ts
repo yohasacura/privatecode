@@ -21,6 +21,9 @@ export interface ReplOptions {
   model: string
   workspaceRoot: string
   toolset: Toolset
+  /** Tear down every external process the caller started (background tasks, the
+   * browser, MCP servers). Falls back to stopping background tasks alone. */
+  stopExternal?: () => Promise<void>
   /** Omit to let a resumed session keep its own stored mode, or a fresh one default to
    * 'normal' -- see buildSession's `explicitMode` parameter for why this must stay
    * distinguishable from "the user asked for normal mode". */
@@ -335,7 +338,9 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     // concern) so the compaction's own abort has already settled by the time anything
     // else starts shutting down.
     await session.abortCompaction()
-    await opts.toolset.background.stopAll()
+    // Everything external this run owns: background tasks, the browser, MCP servers.
+    // The caller owns the list because the caller built them.
+    await (opts.stopExternal ? opts.stopExternal() : opts.toolset.background.stopAll())
     process.stdout.write(
       `\nGoodbye. Session ${session.id} saved.\n` +
       `Resume with: npm run agent -- --workspace "${opts.workspaceRoot}" --resume ${session.id}\n`,

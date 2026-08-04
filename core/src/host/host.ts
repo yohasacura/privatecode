@@ -13,6 +13,9 @@ import { expandCommand, listCommands } from '../commands/custom.js'
 import { Session, type SessionOptions } from '../session/session.js'
 import { SessionStore } from '../session/store.js'
 import { createToolset, type Toolset } from '../tools/default-set.js'
+import { loadBrowserSettings } from '../browser/settings.js'
+import { loadServers } from '../mcp/config.js'
+import { McpManager } from '../mcp/manager.js'
 import { Workspace } from '../workspace.js'
 import type {
   AbortResult,
@@ -131,6 +134,18 @@ export class SessionHost {
   private session: Session | undefined
   private engine: PermissionEngine | undefined
 
+  /**
+   * The workspace's MCP servers. Belongs to the WORKSPACE, not the session: a session
+   * switch must not restart a set of server processes, so this is built in `init` and torn
+   * down only by `init` or `shutdown`.
+   */
+  private mcp: McpManager | undefined
+
+  /** Problems from loading MCP servers and browser settings, gathered once in `init` and
+   * reported by every `buildSession` — including the ones a later session switch triggers,
+   * which never re-reads them. */
+  private externalProblems: string[] = []
+
   /** Guards `send()`: refuses a second call while one is already running, and -- just as
    * important -- stops a refused second call from clobbering `currentAbort` out from under
    * the turn that IS legitimately running (see `send()`'s own doc comment). */
@@ -186,7 +201,25 @@ export class SessionHost {
     if (this.currentAbort && !this.currentAbort.signal.aborted) this.currentAbort.abort()
     this.denyAllPending()
     if (this.session) await this.session.abortCompaction()
-    if (this.toolset) await this.toolset.background.stopAll()
+    await this.stopExternal()
+  }
+
+  /**
+   * Every process this host owns beyond the model: background tasks, MCP servers, the
+   * browser. Each is independently guarded, because shutdown runs on paths that are already
+   * failing and one manager throwing must not leave the other two running.
+   *
+   * An orphaned Edge window or a stdio server outliving the app is the same defect the
+   * polish review already caught once as an orphaned dev server.
+   */
+  private async stopExternal(): Promise<void> {
+    const toolset = this.toolset
+    await Promise.all([
+      toolset ? toolset.background.stopAll().catch(() => {}) : Promise.resolve(),
+      toolset ? toolset.browser.close().catch(() => {}) : Promise.resolve(),
+      this.mcp ? this.mcp.closeAll().catch(() => {}) : Promise.resolve(),
+    ])
+    this.mcp = undefined
   }
 
   // -----------------------------------------------------------------------------------
@@ -243,16 +276,39 @@ export class SessionHost {
     await this.currentTurn?.catch(() => {})
     if (this.session) await this.session.abortCompaction()
     this.denyAllPending()
-    if (this.toolset) await this.toolset.background.stopAll()
+    // Everything the OLD workspace owned, including its MCP servers and its browser: init
+    // replaces the toolset below, and an orphan would otherwise run until app exit.
+    await this.stopExternal()
 
     this.workspaceRoot = params.workspaceRoot
     this.workspace = new Workspace(params.workspaceRoot)
     this.client = new LlamaClient({ baseUrl: params.serverUrl, model: MODEL })
-    this.toolset = createToolset()
+    const browserSettings = loadBrowserSettings(params.workspaceRoot)
+    this.toolset = createToolset({ browser: browserSettings.options })
     this.store = new SessionStore(params.workspaceRoot)
     this.contextLength = await this.probeContextLength(params.serverUrl)
+    this.externalProblems = [
+      ...browserSettings.problems,
+      ...await this.connectMcpServers(params.workspaceRoot),
+    ]
 
     return this.buildSession(params.resume)
+  }
+
+  /**
+   * Connects the workspace's MCP servers and registers their tools.
+   *
+   * Done HERE, in `init`, and not in `buildSession`: the servers belong to the WORKSPACE.
+   * A session switch rebuilds the session, the settings layers and the permission engine —
+   * restarting a set of server processes on every click of Resume would be slow, visible,
+   * and would drop whatever state those servers were holding.
+   */
+  private async connectMcpServers(workspaceRoot: string): Promise<string[]> {
+    const { servers, problems } = loadServers(workspaceRoot)
+    if (servers.length === 0) return problems
+    const manager = new McpManager()
+    this.mcp = manager
+    return [...problems, ...await manager.connectAll(servers, this.requireInitialized().toolset.registry)]
   }
 
   /**
@@ -356,8 +412,14 @@ export class SessionHost {
     this.session = session
     this.engine = engine
 
-    // Memory problems ride the channel settings problems already use -- no new event.
-    const problems = [...engine.problems, ...memory.problems, ...formatting.problems, ...hooking.problems]
+    // Memory, MCP and browser problems all ride the channel settings problems already use --
+    // no new event, and the app already renders it. `externalProblems` is repeated on every
+    // session switch rather than only on the init that produced it: a user who switches
+    // sessions must not lose the notice that one of their MCP servers failed to start.
+    const problems = [
+      ...engine.problems, ...memory.problems, ...formatting.problems, ...hooking.problems,
+      ...this.externalProblems,
+    ]
     if (this.contextLength === null) {
       problems.push(
         'the server did not report a context length (GET /props); automatic compaction is disabled for this session',
@@ -663,7 +725,15 @@ export class SessionHost {
   private async status(): Promise<StatusResult> {
     if (!this.client) return { serverUp: false }
     const serverUp = await this.client.health()
-    return { serverUp, model: MODEL }
+    const result: StatusResult = { serverUp, model: MODEL }
+    if (this.mcp) result.mcpServers = this.mcp.servers()
+    if (this.toolset) {
+      const url = this.toolset.browser.currentUrl()
+      result.browser = url === null
+        ? { running: this.toolset.browser.isRunning() }
+        : { running: true, url }
+    }
+    return result
   }
 
   // -----------------------------------------------------------------------------------

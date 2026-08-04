@@ -4,6 +4,9 @@ import { parseArgs } from 'node:util'
 import { LlamaClient } from './llama/client.js'
 import { Workspace } from './workspace.js'
 import { createToolset, READ_ONLY_TOOLS } from './tools/default-set.js'
+import { loadBrowserSettings } from './browser/settings.js'
+import { loadServers } from './mcp/config.js'
+import { McpManager } from './mcp/manager.js'
 import { PermissionEngine, type AgentMode } from './permissions/engine.js'
 import { loadLayers } from './permissions/settings.js'
 import { loadProjectMemory } from './memory/project-memory.js'
@@ -138,7 +141,29 @@ async function main() {
 
   const server = values.server ?? DEFAULT_SERVER
   const client = new LlamaClient({ baseUrl: server, model: MODEL })
-  const toolset = createToolset()
+  const browserSettings = loadBrowserSettings(values.workspace)
+  for (const p of browserSettings.problems) console.error(`settings: ${p}`)
+  const toolset = createToolset({ browser: browserSettings.options })
+
+  // The CLI gets the same MCP servers the app does. Two products that quietly differ in
+  // which tools exist is the kind of difference nobody thinks to check until a script that
+  // works in the window fails on the command line.
+  const mcpConfig = loadServers(values.workspace)
+  for (const p of mcpConfig.problems) console.error(`mcp: ${p}`)
+  const mcp = new McpManager()
+  if (mcpConfig.servers.length > 0) {
+    for (const p of await mcp.connectAll(mcpConfig.servers, toolset.registry)) {
+      console.error(`mcp: ${p}`)
+    }
+  }
+  // Every external process this CLI owns, torn down on every exit path.
+  const stopExternal = async (): Promise<void> => {
+    await Promise.all([
+      toolset.background.stopAll().catch(() => {}),
+      toolset.browser.close().catch(() => {}),
+      mcp.closeAll().catch(() => {}),
+    ])
+  }
 
   if (values.task === undefined) {
     // Interactive REPL: its own store-backed sessions, its own banner, its own health
@@ -153,6 +178,7 @@ async function main() {
     }
     if (modeParsed.value !== undefined) replOpts.mode = modeParsed.value
     if (values.resume !== undefined) replOpts.resume = values.resume
+    replOpts.stopExternal = stopExternal
     await runRepl(replOpts)
     return
   }
@@ -236,7 +262,7 @@ async function main() {
     }
     process.exitCode = result.stoppedBecause === 'done' ? 0 : 1
   } finally {
-    await toolset.background.stopAll()
+    await stopExternal()
   }
 }
 

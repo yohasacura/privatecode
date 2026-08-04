@@ -122,7 +122,23 @@ export interface FsReadParams { path: string }
 export interface FsReadResult { lines: string[]; truncated: boolean }
 
 export type StatusParams = Empty
-export interface StatusResult { serverUp: boolean; model?: string }
+/** One configured MCP server, as the app's settings panel sees it. A server that silently
+ * contributes nothing is worse than one that fails loudly, so `failed` carries its reason. */
+export interface McpServerInfo {
+  name: string
+  state: 'connected' | 'failed'
+  toolCount: number
+  problem?: string
+}
+
+export interface StatusResult {
+  serverUp: boolean
+  model?: string
+  /** Absent before `init`. Empty means none are configured, which is the normal case. */
+  mcpServers?: McpServerInfo[]
+  /** Whether a browser is currently open, and where it is. */
+  browser?: { running: boolean; url?: string }
+}
 
 /**
  * One long-running process, as the UI's Jobs and Terminal panels see it. Mirrors
