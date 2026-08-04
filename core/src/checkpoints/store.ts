@@ -31,6 +31,16 @@ export interface Checkpoint {
   /** Which turn this captures the result of. Absent for the session baseline. */
   sessionId?: string
   turn?: number
+  /**
+   * Which step of that turn, for a snapshot taken while the turn was STILL RUNNING; absent
+   * on the one taken when it ended.
+   *
+   * This is what tells them apart in a list. A turn used to contribute exactly one
+   * checkpoint, so `turn 3` identified a point; now a long turn contributes several, and
+   * without this they would all read as "turn 3" — several identical-looking rows to choose
+   * a rewind from, which is worse than not offering the choice.
+   */
+  step?: number
   /** One line for a list: `3 files, +42 -7`, or `baseline`. */
   summary: string
 }
@@ -127,12 +137,17 @@ export class CheckpointStore {
    * `null` is not a failure and callers must treat it as ordinary: a turn that only read
    * files changes nothing, and the previous checkpoint already describes that state exactly.
    */
-  async take(label: { sessionId?: string; turn?: number } = {}): Promise<Checkpoint | null> {
+  async take(label: { sessionId?: string; turn?: number; step?: number } = {}): Promise<Checkpoint | null> {
     if (!(await this.available())) return null
 
+    // `step` names a snapshot taken WHILE a turn is still running. A turn used to be at most
+    // forty steps, so one checkpoint at the end of it was never more than a few minutes of
+    // work; now a turn can run for hours, and a single point to come back to across all of
+    // it is not an undo. See `Session`'s mid-turn checkpoint.
     const message = label.turn === undefined
       ? 'baseline'
-      : `turn ${label.turn}${label.sessionId ? ` (${label.sessionId})` : ''}`
+      : `turn ${label.turn}${label.step !== undefined ? ` step ${label.step}` : ''}` +
+        `${label.sessionId ? ` (${label.sessionId})` : ''}`
 
     const added = await this.git(['add', '-A'])
     if (added === null) return null
@@ -184,10 +199,12 @@ export class CheckpointStore {
       const [id, at, subject] = (header ?? '').split('')
       if (!id || !at) continue
       const turn = /^turn (\d+)/.exec(subject ?? '')
+      const step = /^turn \d+ step (\d+)/.exec(subject ?? '')
       entries.push({
         id,
         at,
         ...(turn ? { turn: Number(turn[1]) } : {}),
+        ...(step ? { step: Number(step[1]) } : {}),
         summary: shortstatLabel(rest.join('\n')),
       })
     }

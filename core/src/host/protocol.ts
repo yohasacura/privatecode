@@ -614,6 +614,10 @@ export interface CheckpointInfo {
   id: string
   at: string
   turn?: number
+  /** Present when the snapshot was taken while the turn was still running. A long turn
+   * contributes several checkpoints, and without this they all read as the same turn --
+   * several identical rows to choose a rewind from. */
+  step?: number
   summary: string
 }
 

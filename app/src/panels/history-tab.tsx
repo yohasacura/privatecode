@@ -88,7 +88,7 @@ export function HistoryTab({
           <PanelEmpty
             icon={Icon.history()}
             title="No checkpoints yet"
-            hint="One is taken before the first turn, and after any turn that changes a file."
+            hint="One is taken before the first turn, after any turn that changes a file, and as a long turn works."
           />
           )
         : (
@@ -100,7 +100,7 @@ export function HistoryTab({
                 label={
                   <>
                     <span class="ckpt-when">{timeOf(c.at)}</span>
-                    {c.turn !== undefined ? `after turn ${c.turn}` : 'before anything changed'}
+                    {c.turn === undefined ? 'before anything changed' : c.step === undefined ? `after turn ${c.turn}` : `during turn ${c.turn}, at step ${c.step}`}
                   </>
                 }
                 title={`checkpoint ${c.id}`}
@@ -125,7 +125,7 @@ export function HistoryTab({
               >
                 <div class="ckpt-confirm">
                   <p>
-                    Put every file back as it was {c.turn !== undefined ? `after turn ${c.turn}` : 'at the start'}.
+                    Put every file back as it was {c.turn === undefined ? 'at the start' : c.step === undefined ? `after turn ${c.turn}` : `at step ${c.step} of turn ${c.turn}`}.
                     Files created since are <b>deleted</b>. Ignored files — <code>node_modules</code>,
                     build output — are left alone, so this costs no rebuild.
                   </p>

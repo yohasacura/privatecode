@@ -106,6 +106,15 @@ export interface SessionOptions {
   store?: SessionStore // omit -> in-memory only (tests, one-shot CLI)
   resume?: string // session id to load
   maxSteps?: number
+  /**
+   * How often a still-running turn may snapshot the work tree. Defaults to
+   * `MID_TURN_CHECKPOINT_MS`; `0` snapshots after every step that wrote.
+   *
+   * The trade is between what a rewind can cost you and what the snapshots cost to take —
+   * a checkpoint is a real commit over the whole tree. Two minutes suits a workspace of
+   * ordinary size; a small one can afford to be tighter.
+   */
+  checkpointIntervalMs?: number
   events?: AgentEvents
   /**
    * Project memory, ALREADY LOADED by the host (mirroring how `engine` is handed
@@ -225,6 +234,11 @@ const MIN_COMPACTABLE_TOKENS = 6_000
  * when to compact, it is the backstop for a conversation that is already at the edge.
  */
 const PRE_TURN_HEADROOM = 4_000
+
+/** How often a still-running turn may snapshot the work tree. Two minutes bounds what a
+ * rewind can cost you at two minutes of work, and bounds the price at one commit per two
+ * minutes however long the turn runs. See `Session.checkpointLongTurn`. */
+const MID_TURN_CHECKPOINT_MS = 120_000
 
 /**
  * Prefill cost per token, with margin.
@@ -945,6 +959,14 @@ export class Session {
       if (this.checkpoints && this.lastCheckpoint === null) {
         this.lastCheckpoint = await this.checkpoints.take({})
       }
+      // The mid-turn clock runs from the last snapshot of any kind, so a turn that starts
+      // right after one does not immediately take another.
+      this.lastCheckpointAtMs = Date.now()
+      this.writesAtLastCheckpoint = this.writeCount
+      // What the work log's diff for THIS turn is measured against. It cannot be
+      // `lastCheckpoint` any more: mid-turn snapshots move that forward, so the entry would
+      // describe only what happened since the last one instead of the whole turn.
+      this.turnStartCheckpoint = this.lastCheckpoint
 
       const agent = this.buildAgent(signal)
       // Captured AFTER buildAgent() (which may append the system prompt on a fresh
@@ -1025,6 +1047,43 @@ export class Session {
   }
 
   /**
+   * A point to come back to from INSIDE a long turn.
+   *
+   * `recordTurn` snapshots once, after the turn ends. While a turn was at most forty steps
+   * that was never more than a few minutes of work; with the ceiling gone a turn can run for
+   * hours, and one checkpoint across all of it is not an undo — it is a single "throw the
+   * whole thing away". This is the regression that removing the ceiling introduced, and it
+   * would only ever have been noticed by someone who needed to rewind.
+   *
+   * Two conditions, and both matter. Something must have been WRITTEN since the last
+   * snapshot — `take` returns null for an unchanged tree anyway, but asking git costs a
+   * process, and most steps in a long turn read. And enough time must have passed, because
+   * the cost is a real commit over the whole work tree (measured in this repo's own
+   * checkpoint tests: hundreds of milliseconds to a few seconds), which is worth paying
+   * every few minutes and not every few seconds.
+   *
+   * Never throws, for `recordTurn`'s reason: a failed snapshot must not take the turn down
+   * with it.
+   */
+  private async checkpointLongTurn(step: number): Promise<void> {
+    if (!this.checkpoints) return
+    if (this.writeCount === this.writesAtLastCheckpoint) return
+    const now = Date.now()
+    if (now - this.lastCheckpointAtMs < (this.opts.checkpointIntervalMs ?? MID_TURN_CHECKPOINT_MS)) return
+    try {
+      const taken = await this.checkpoints.take({ sessionId: this.id, turn: this.turnNumber, step })
+      // Recorded even when nothing was committed: the tree was unchanged after all, and
+      // re-asking git on the very next step would spend the same process to learn the same
+      // thing.
+      this.writesAtLastCheckpoint = this.writeCount
+      this.lastCheckpointAtMs = now
+      if (taken) this.lastCheckpoint = taken
+    } catch {
+      // See the doc comment.
+    }
+  }
+
+  /**
    * Snapshots what the turn changed and writes one work-log entry.
    *
    * Runs after persistence and before the compaction trigger, and never throws: a session
@@ -1034,9 +1093,14 @@ export class Session {
   private async recordTurn(ask: string, result: TurnResult): Promise<void> {
     if (!this.checkpoints || !this.workLog) return
     try {
-      const previous = this.lastCheckpoint
+      // The state this turn STARTED from, not the newest snapshot: a long turn takes its own
+      // checkpoints as it goes, and diffing against the last of those would report the tail
+      // of the turn as though it were the whole of it.
+      const previous = this.turnStartCheckpoint ?? this.lastCheckpoint
       const taken = await this.checkpoints.take({ sessionId: this.id, turn: this.turnNumber })
       if (taken) this.lastCheckpoint = taken
+      this.lastCheckpointAtMs = Date.now()
+      this.writesAtLastCheckpoint = this.writeCount
 
       // Only when something actually changed: `take` returns null for a read-only turn, and
       // diffing a checkpoint against itself would print an empty stat that reads as an
@@ -1440,6 +1504,12 @@ export class Session {
   private unattendedActive: boolean
   /** The checkpoint the last turn ended on, so the next one can diff against it. */
   private lastCheckpoint: Checkpoint | null = null
+  /** `writeCount` as it stood at the last snapshot, and when that was — the two halves of
+   * "is there anything new to snapshot, and is it time". See `checkpointLongTurn`. */
+  private writesAtLastCheckpoint = 0
+  private lastCheckpointAtMs = 0
+  /** Where the current turn began, for the work log's own diff. See `recordTurn`. */
+  private turnStartCheckpoint: Checkpoint | null = null
   /** 1-based, counted by this session rather than read off the transcript: a compaction
    * swap changes the message count and must not renumber the log. */
   private turnNumber = 0
@@ -1538,7 +1608,8 @@ export class Session {
     // Comparing the object identity is what tells us a swap actually happened: a compaction
     // that was postponed (nothing to gain) or failed leaves it untouched, and neither is a
     // reason to make the next step pay a cold-cache budget.
-    agentOpts.beforeStep = async (): Promise<StepPreamble | undefined> => {
+    agentOpts.beforeStep = async (step): Promise<StepPreamble | undefined> => {
+      await this.checkpointLongTurn(step)
       const before = this.transcript
       await this.compactIfOverWindow(signal)
       if (this.transcript === before) return undefined

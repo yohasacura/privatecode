@@ -73,7 +73,7 @@ export class CheckpointSet {
    * contribute their existing head, so the set describes the state of the WORKSPACE and a
    * rewind to it puts every folder back where it was.
    */
-  async take(label: { sessionId?: string; turn?: number } = {}): Promise<Checkpoint | null> {
+  async take(label: { sessionId?: string; turn?: number; step?: number } = {}): Promise<Checkpoint | null> {
     if (this.single) return this.single.take(label)
 
     const taken = await Promise.all(this.stores.map((s) => s.take(label)))

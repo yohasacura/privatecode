@@ -25,7 +25,11 @@ Ordered by value to "very stable, very efficient, large development processes".
    time a large `edit_file` argument is generated. Needs the tool-call fragments carried from
    the llama client through the agent events and the protocol into the window — four layers.
 
-2. **Long-run hardening** — after the step ceiling came off (commit 6d2e7aa), a turn can now
+2. **Long-run hardening** — IN PROGRESS. Mid-turn checkpoints DONE. Still to look at:
+   memory growth across thousands of steps, the work log on a turn that never ends, and
+   whether repeated compaction inside one turn degrades the briefing.
+
+   (original note) — after the step ceiling came off (commit 6d2e7aa), a turn can now
    run for hours. Everything that was only ever exercised for ~40 steps is newly load-bearing:
    repeated mid-turn compaction, the work log, checkpoints per turn, memory growth.
 
@@ -33,6 +37,12 @@ Ordered by value to "very stable, very efficient, large development processes".
    where does the time actually go on a long turn.
 
 ## Done
+
+- **Mid-turn checkpoints.** Removing the step ceiling silently made the undo useless for
+  long turns: recordTurn snapshots once, AFTER the turn, so hours of work had one point to
+  come back to. A running turn now snapshots every 2 min if it has written (configurable,
+  0 = every writing step), the work log still diffs the WHOLE turn (turnStartCheckpoint),
+  and History names the step so a long turn s several points are told apart.
 
 - **Streaming tool-call arguments.** The client accumulated the fragments and reported
   none of them. Now carried through all four layers: StreamDelta -> AgentEvents.onToolCallDelta
