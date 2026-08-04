@@ -7,6 +7,7 @@ import { Transcript } from '../transcript/transcript.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } from '../tools/types.js'
 import { buildSystemPrompt } from './prompt.js'
+import type { HookRunner } from '../hooks/hooks.js'
 
 /**
  * Default per-step wall-clock ceiling.
@@ -122,6 +123,8 @@ export interface AgentOptions {
    * re-read: it lands in the system message, which is message 0 of an append-only
    * transcript. */
   memory?: string
+  /** User-configured after-tool hooks. Absent means none, the normal case. */
+  hooks?: HookRunner
   /**
    * Tool names the model may use this turn. Omit for all of them.
    *
@@ -616,7 +619,17 @@ export class Agent {
                  'treated as a denial.',
       }
     }
-    return this.opts.registry.executePrepared(prepared, this.toolContext())
+    const result = await this.opts.registry.executePrepared(prepared, this.toolContext())
+
+    // After-tool hooks fire HERE: after the tool ran, before `runTurn` appends the tool
+    // message. A hook's note is therefore folded into the result the transcript records,
+    // so nothing is ever rewritten and the append-only law holds. A hook cannot veto --
+    // the action already happened, and vetoing after the fact is what the permission
+    // engine does properly, before.
+    const hooks = this.opts.hooks
+    if (!hooks) return result
+    const key: PermissionKey = prepared.tool.permissionKey?.(prepared.args) ?? { tool: name }
+    return hooks.afterTool(key, result, this.opts.context.signal)
   }
 
   /**

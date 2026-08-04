@@ -5,6 +5,7 @@ import { buildSystemPrompt } from '../agent/prompt.js'
 import type { LoadedMemory } from '../memory/project-memory.js'
 import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
+import { createHookRunner, type HookRunner, type HookSpec } from '../hooks/hooks.js'
 import type { InteractionPort } from '../interaction.js'
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage } from '../llama/types.js'
@@ -68,6 +69,8 @@ export interface SessionOptions {
   /** Formatter rules from the settings layers, already parsed by the host. Empty or absent
    * means no formatting, which is the normal case. */
   formatRules?: FormatRule[]
+  /** After-tool hooks from the settings layers, already parsed by the host. */
+  hooks?: HookSpec[]
   /** Absent -> the feature is off; see `CompactionOptions`. */
   compaction?: CompactionOptions
   onCompaction?(info: CompactionEvent): void
@@ -147,6 +150,8 @@ export class Session {
   private readonly memoryText: string | undefined
   /** The project's formatter, when `.privatecode/settings.json` configures one. */
   private readonly formatRunner: FormatRunner | undefined
+  /** Built once per Session so a hook's failure counter spans the session, not one turn. */
+  private readonly hookRunner: HookRunner | undefined
   /** Guard against concurrent send() calls. persistedCount and pendingModeNote are not concurrency-safe. */
   private sending = false
   /** The newest server-reported `usage.prompt_tokens`, from the latest completed step
@@ -181,6 +186,9 @@ export class Session {
     this.memoryText = opts.memory && opts.memory.text !== '' ? opts.memory.text : undefined
     this.formatRunner = opts.formatRules && opts.formatRules.length > 0
       ? createFormatRunner(opts.formatRules, this.workspace)
+      : undefined
+    this.hookRunner = opts.hooks && opts.hooks.length > 0
+      ? createHookRunner(opts.hooks, this.workspace)
       : undefined
 
     if (opts.resume !== undefined) {
@@ -650,6 +658,7 @@ export class Session {
       agentOpts.mode = this.meta.mode
     }
     if (this.opts.interaction) agentOpts.interaction = this.opts.interaction
+    if (this.hookRunner) agentOpts.hooks = this.hookRunner
     // Always composed, even when no host events were supplied: Session must keep tapping
     // onStepDone for contextUsage()/fillRatio() on every turn, host renderer or not (a
     // one-shot CLI call, or a test, may never pass `events` at all).
