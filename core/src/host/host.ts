@@ -431,6 +431,13 @@ export class SessionHost {
     }
     this.sending = true
     this.currentAbort = new AbortController()
+    // Declared out here so the `finally` can read it: anything `remember()` could not write
+    // reaches `engine.problems` and nowhere else, so an "always allow" that failed to
+    // persist was recorded in the transcript as remembered at the chosen layer while
+    // actually being session-only -- gone at the next launch, with the one message
+    // explaining why never leaving the engine object. The REPL already drains this; the
+    // app had no equivalent until now.
+    const problemsBefore = this.engine?.problems.length ?? 0
     try {
       // A custom slash command expands HERE, not in the app: the same expansion then
       // serves every front end, and the app's transcript keeps showing what the user
@@ -447,6 +454,9 @@ export class SessionHost {
       this.emit('turn.done', turn)
       return { turn }
     } finally {
+      for (const text of this.engine?.problems.slice(problemsBefore) ?? []) {
+        this.emit('settings.problem', { text })
+      }
       this.sending = false
       this.currentAbort = undefined
       this.currentTurn = undefined

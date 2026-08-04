@@ -1,6 +1,7 @@
 # PrivateCode — Design Decisions
 
-**Status:** design agreed 2026-08-02. No code written yet.
+**Status:** built. Design agreed 2026-08-02; the feature set in §6 is complete as of
+2026-08-04. Where the built thing differs from what was planned, §6 records why.
 **Goal:** a fully offline coding agent with Claude Code's feature set, purpose-built for
 one model — Qwen3.6-35B-A3B-UD-Q4_K_XL served by llama.cpp — instead of being
 model-agnostic like Cline / KiloCode.
@@ -142,12 +143,29 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 
 Chat with streaming and interrupt · the 14 tools · permission system with all four modes ·
 plan mode · per-file diff review · session persistence and resume · auto-compaction ·
-`PROJECT.md` project memory (hierarchical, auto-loaded) · custom slash commands ·
-todo list · event hooks · auto-formatter after edits · MCP client for local servers ·
-live server status.
+`AGENTS.md` project memory (three layers, auto-loaded) · custom slash commands ·
+todo list · after-tool hooks · auto-formatter after edits · live server status.
+
+**All of the above is built** as of 2026-08-04. Two decisions worth recording, because the
+original list was wrong about both:
+
+- **The auto-formatter is NOT a second mechanism beside hooks.** It lives INSIDE the write
+  tools, and that is the whole reason it exists separately: the model anchors its next
+  SEARCH block on the diff `edit_file` just returned, so formatting has to happen before
+  that diff is rendered or the anchor describes bytes no longer on disk. An after-tool hook
+  fires too late to buy that.
+- **Project memory is `AGENTS.md`, not `PROJECT.md`** — the cross-tool convention, so one
+  file serves this tool and others.
 
 **Reserved, not in the first build:** web fetch / search (one tool + one permission rule —
-drops in without rework), sub-agents, LSP integration.
+drops in without rework), sub-agents, LSP integration, **MCP client for local servers**.
+MCP was specced and cut: it is the only planned feature whose purpose is to WIDEN the
+constraint grammar §4 deliberately narrows, its permission key carries neither a command
+nor paths (so it would fall through both gate families and be auto-allowed in normal mode —
+the least trustworthy tools would be the least gated), and the servers that would justify
+it — GitHub, Linear, Sentry — are network servers §4 refuses to reach. The local ones
+duplicate `read_file` / `search_code` / `git_status` in already-jailed, permission-keyed
+form.
 
 **Impossible with the current setup:** images and screenshots. Qwen3.6 is natively
 image-text, but this GGUF has **no vision tower**; it would need a separate mmproj file
