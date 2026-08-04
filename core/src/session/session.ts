@@ -711,7 +711,19 @@ export class Session {
     }
     this.sending = true
     try {
-      await this.abortInFlightCompaction()
+      // WAITS for a background compaction rather than killing it.
+      //
+      // Killing it was the old behaviour and it is exactly backwards. A compaction is only
+      // ever running because the context is over the line, so the room it is making is the
+      // room this very message needs: aborting it discarded the summary, ran the turn
+      // against the same over-full transcript, and llama.cpp answered HTTP 400. Reported
+      // from the running app — filled the context, saw "compacting", sent a message, got
+      // the 400.
+      //
+      // The cost is that a message sent during a compaction waits for it. That is seconds,
+      // it is visible (the window is already showing the compaction), and Escape still
+      // works: an abort on the turn's own signal aborts the compaction too.
+      await this.settleInFlightCompaction(signal)
       this.swapInCompactionIfReady()
 
       const note = this.pendingModeNote
@@ -882,6 +894,33 @@ export class Session {
     if (!inFlight) return
     inFlight.controller.abort()
     await inFlight.promise
+  }
+
+  /**
+   * Lets a background compaction finish, so its summary is there to swap in.
+   *
+   * Distinct from `abortInFlightCompaction`, which `forceCompact` still wants: that path
+   * regenerates from the current transcript and a half-finished older attempt is worth
+   * nothing to it. `send()` wants the opposite — whatever room is being made, it needs.
+   *
+   * The caller's signal still cuts it short, so Escape during "compacting…" stops the wait
+   * AND the compaction, rather than leaving someone watching a spinner they cannot cancel.
+   */
+  private async settleInFlightCompaction(signal?: AbortSignal): Promise<void> {
+    const inFlight = this.compactionInFlight
+    if (!inFlight) return
+    if (signal?.aborted) {
+      inFlight.controller.abort()
+      await inFlight.promise
+      return
+    }
+    const onAbort = (): void => inFlight.controller.abort()
+    signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+      await inFlight.promise
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+    }
   }
 
   /**

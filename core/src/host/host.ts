@@ -4,7 +4,7 @@ import { extname, join, relative, sep } from 'node:path'
 import type { AgentEvents } from '../agent/loop.js'
 import { HEALTH_CHECK_TIMEOUT_MS } from '../cli/render.js'
 import type { ApprovalDecision, InteractionPort } from '../interaction.js'
-import { LlamaClient } from '../llama/client.js'
+import { LlamaClient, LlamaRequestError } from '../llama/client.js'
 import { PermissionEngine } from '../permissions/engine.js'
 import { loadLayers } from '../permissions/settings.js'
 import { loadFormatRules } from '../format/config.js'
@@ -107,6 +107,30 @@ import { searchSessions } from './session-search.js'
  * one-method interface with no ndjson involved at all).
  */
 export interface HostTransport { send(msg: HostOutbound): void }
+
+/**
+ * What to put in front of someone when a request fails.
+ *
+ * `LlamaRequestError` carries the server's own response body, and the window was throwing it
+ * away: a context overflow reached the user as the bare line `llama.cpp request failed:
+ * HTTP 400`, which says nothing about what happened or what to do. The CLI has shown the body
+ * and the overflow hint since Plan 2 — this is the same information, reaching the other
+ * front end.
+ *
+ * Deliberately not the CLI's own `serverErrorMessage`: that one ends with advice about
+ * `--server <url>` and a `.bat` file, which is a terminal's vocabulary, not a window's.
+ */
+function describeFailure(e: unknown): string {
+  if (!(e instanceof LlamaRequestError)) return e instanceof Error ? e.message : String(e)
+  if (!e.answered) return e.message
+  const body = e.body ? `\n${e.body}` : ''
+  const overflow = e.status === 400 || e.status === 500
+    ? '\nThe server is running and answered, so restarting it will not help. On a local ' +
+      'model this is most often the conversation outgrowing the context window: compact it, ' +
+      'or start a new session.'
+    : ''
+  return `${e.message}${body}${overflow}`
+}
 
 /** Same hardcoded model id `cli.ts` uses -- the wire protocol's `InitParams` carries a
  * `serverUrl` but no model name, so this host resolves it the same way the CLI does rather
@@ -270,7 +294,7 @@ export class SessionHost {
       const result = await this.dispatch(req.method, req.params)
       this.safeSend({ id: req.id, result })
     } catch (e) {
-      this.safeSend({ id: req.id, error: { message: e instanceof Error ? e.message : String(e) } })
+      this.safeSend({ id: req.id, error: { message: describeFailure(e) } })
     }
   }
 

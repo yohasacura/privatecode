@@ -392,6 +392,56 @@ test('switching sessions aborts an in-flight background compaction instead of ha
 })
 
 /**
+ * Sending while a compaction is running.
+ *
+ * Reported from the running app: the context filled, the window said it was compacting, a
+ * message sent at that moment came back `llama.cpp request failed: HTTP 400`. The cause was
+ * that `send()` ABORTED the in-flight compaction — and a compaction is only ever running
+ * because the context is over the line, so the room it was making was the room that very
+ * message needed. The turn then ran against the same over-full transcript and the server
+ * refused it.
+ *
+ * `ready` is the assertion that matters: it is emitted only when the summary generation was
+ * allowed to FINISH. Under the old behaviour the abort landed first and the lifecycle went
+ * straight from `started` to `postponed`, with no `ready` in between.
+ */
+test('a message sent during a compaction waits for it instead of killing it', async () => {
+  let compactions = 0
+  const fake = await makeServer((_body, streaming) => {
+    if (streaming) return textSSE('all done', { completion_tokens: 10, prompt_tokens: 900 })
+    compactions++
+    // Slow enough that the second send() below lands while it is still in flight, which is
+    // the whole situation under test.
+    return new Promise((resolve) => setTimeout(
+      () => resolve({ choices: [{ message: { content: 'a summary' }, finish_reason: 'stop' }] }),
+      120,
+    ))
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+
+  // The first turn reports 900 of 1000 prompt tokens, which trips the auto-trigger; the
+  // background compaction starts off the end of this same call.
+  await host.handle({ id: 2, method: 'send', params: { text: 'go' } })
+  const states = (): string[] =>
+    eventsNamed(transport, 'compaction').map((e) => (e.data as { state: string }).state)
+  expect(states()).toContain('started')
+  expect(states()).not.toContain('ready')
+
+  // Sent while it is still generating — exactly what the user did.
+  await host.handle({ id: 3, method: 'send', params: { text: 'and one more thing' } })
+
+  expect(compactions).toBe(1)
+  expect(states()).toContain('ready')
+  const second = reply(transport, 3)
+  expect(second && 'result' in second && second.result).toMatchObject({
+    turn: { stoppedBecause: 'done' },
+  })
+  await host.shutdown()
+}, 30_000)
+
+/**
  * Closing the window used to throw away the conversation you were in the middle of: every
  * launch called `init` with no resume and got a fresh session. Now that a resumed session
  * can actually be SHOWN, continuing the last one is what a launch should do.
