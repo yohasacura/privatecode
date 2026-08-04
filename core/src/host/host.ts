@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { readFile, readdir, stat } from 'node:fs/promises'
+import { extname } from 'node:path'
 import type { AgentEvents } from '../agent/loop.js'
 import { HEALTH_CHECK_TIMEOUT_MS } from '../cli/render.js'
 import type { ApprovalDecision, InteractionPort } from '../interaction.js'
@@ -81,6 +82,25 @@ const MODEL = 'Qwen3.6-35B-A3B'
  * disagree about "how much of this file is a lot". */
 const FS_READ_MAX_LINES = 2000
 const FS_READ_MAX_CHARS = 60_000
+
+/**
+ * Extensions the preview renders as an image rather than as text, and the MIME type each
+ * becomes in its `data:` URL. Kept to the formats a screenshot or a checked-in asset
+ * actually uses — an extension not listed here is read as text, which is the old behaviour.
+ */
+const IMAGE_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+}
+
+/** Base64 inflates by a third and this rides the ndjson protocol as one line. A browser
+ * screenshot is ~200 KB; anything past this is not a preview, it is a transfer. */
+const FS_READ_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 /** One `approval.request` or `question.request` this process minted a fresh `requestId` for
  * and is still waiting on. Removed from the map the instant it is resolved (by a matching
@@ -695,6 +715,21 @@ export class SessionHost {
     if (!info.isFile()) throw new Error(`${params.path} is not a regular file`)
 
     const buffer = await readFile(abs)
+
+    const imageType = IMAGE_TYPES[extname(params.path).toLowerCase()]
+    if (imageType !== undefined) {
+      if (buffer.byteLength > FS_READ_MAX_IMAGE_BYTES) {
+        throw new Error(
+          `${params.path} is ${Math.round(buffer.byteLength / 1024)} KB, too large to preview`,
+        )
+      }
+      return {
+        lines: [],
+        truncated: false,
+        image: { dataUrl: `data:${imageType};base64,${buffer.toString('base64')}`, bytes: buffer.byteLength },
+      }
+    }
+
     const text = buffer.toString('utf8')
     const allLines = text.split(/\r?\n/)
     if (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop()

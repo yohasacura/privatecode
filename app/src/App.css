@@ -1562,3 +1562,57 @@ kbd {
 .hl-string { color: #b9d4a0; }
 .hl-number { color: #d9b25e; }
 .hl-keyword { color: #c093d8; }
+
+/* --- the browser's screenshots, and the MCP server list ------------------------------ */
+
+/* A screenshot is the one tool result the MODEL cannot read: it exists entirely for the
+   person watching, so it gets shown at a size worth looking at rather than as a filename. */
+.shot {
+  margin: 0;
+  padding: 8px;
+}
+.shot img {
+  display: block;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+.shot figcaption {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.mcp-item {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--bg-raised);
+}
+.mcp-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mcp-name { font-weight: 600; }
+.mcp-state { font-size: 11px; color: var(--text-dim); }
+.mcp-failed { border-color: var(--danger); }
+.mcp-failed .mcp-state { color: var(--danger); }
+/* The reason a server failed is usually a missing token or a command that is not on PATH.
+   Both are one edit away from fixed -- once you can read them, whole and unwrapped. */
+.mcp-problem {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

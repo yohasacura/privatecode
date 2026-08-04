@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
+import type { McpServerInfo } from '@core/host/protocol'
 import type { ChatState } from '../lib/state'
 import { formatTokenCount } from '../lib/format'
 import { Icon } from '../components/icons'
@@ -110,6 +111,52 @@ export function StatusBar({
   )
 }
 
+/**
+ * The MCP servers this workspace configured, and what became of each.
+ *
+ * A server that silently contributes nothing is worse than one that fails loudly: the user
+ * wrote it into a settings file and has every reason to believe its tools exist. The
+ * failure reason is shown in full — it is usually a missing token or a command that is not
+ * on PATH, both of which are one edit away from fixed once you can read them.
+ *
+ * Absent when nothing is configured, which is the normal case and deserves no chrome.
+ */
+function McpServers({ client }: { client: ProtocolClient }): VNode | null {
+  const [servers, setServers] = useState<McpServerInfo[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    client.call('status', {})
+      .then((r) => { if (!cancelled) setServers(r.mcpServers ?? null) })
+      .catch(() => { /* the modal's job is the workspace; this is extra */ })
+    return () => { cancelled = true }
+  }, [client])
+
+  if (servers === null || servers.length === 0) return null
+  return (
+    <>
+      <div class="field-label">MCP servers</div>
+      <div class="mcp-list">
+        {servers.map((s) => (
+          <div key={s.name} class={`mcp-item mcp-${s.state}`}>
+            <div class="mcp-head">
+              <span class="mcp-name">{s.name}</span>
+              <span class="mcp-state">
+                {s.state === 'connected' ? `${s.toolCount} tool${s.toolCount === 1 ? '' : 's'}` : 'failed'}
+              </span>
+            </div>
+            {s.problem !== undefined && <pre class="mcp-problem">{s.problem}</pre>}
+          </div>
+        ))}
+      </div>
+      <div class="field-hint">
+        Configured under "mcpServers" in .privatecode/settings.json. Their tools ask for
+        approval like everything else.
+      </div>
+    </>
+  )
+}
+
 export function SettingsModal({
   client, isDevBridge, onClose, onSessionSwitched,
 }: {
@@ -210,6 +257,8 @@ export function SettingsModal({
             </div>
           </>
         )}
+
+        <McpServers client={client} />
 
         {error && <div class="panel-error">{error}</div>}
 

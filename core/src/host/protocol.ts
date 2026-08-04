@@ -119,7 +119,19 @@ export interface FsTreeResult { entries: FsTreeEntry[] }
 
 /** Jailed to the workspace root; the result is capped at 2000 lines (see `truncated`). */
 export interface FsReadParams { path: string }
-export interface FsReadResult { lines: string[]; truncated: boolean }
+export interface FsReadResult {
+  lines: string[]
+  truncated: boolean
+  /**
+   * For an image file: a `data:` URL the app can put straight in an `<img>`.
+   *
+   * The agent's own screenshots land in `.privatecode/browser/*.png`, and a screenshot the
+   * person cannot look at is a screenshot that had no reason to be taken — the model has no
+   * vision tower, so the human is its entire audience. When this is present, `lines` is
+   * empty: there is no sensible text rendering of a PNG.
+   */
+  image?: { dataUrl: string; bytes: number }
+}
 
 export type StatusParams = Empty
 /** One configured MCP server, as the app's settings panel sees it. A server that silently

@@ -85,7 +85,7 @@ export function Transcript({
           : state.items.map((item) => (
             item.id === suppressedId
               ? null
-              : <TranscriptRow key={item.id} item={item} onOpenFile={onOpenFile} />
+              : <TranscriptRow key={item.id} item={item} onOpenFile={onOpenFile} client={client} />
           ))}
 
         {waiting && (
@@ -179,10 +179,12 @@ function Row({
  * from re-rendering (and re-parsing) the entire transcript. `onOpenFile` is stable — it is
  * created once in `App.tsx` — so the default shallow comparison is enough. */
 const TranscriptRow = memo(function TranscriptRow({
-  item, onOpenFile,
+  item, onOpenFile, client,
 }: {
   item: ChatItem
   onOpenFile: (path: string) => void
+  /** Stable for the app's lifetime, like `onOpenFile` -- so `memo` below still holds. */
+  client: ProtocolClient
 }): VNode {
   switch (item.kind) {
     case 'user':
@@ -210,7 +212,7 @@ const TranscriptRow = memo(function TranscriptRow({
       return <ReasoningBlock item={item} />
 
     case 'tool':
-      return <ToolCard item={item} onOpenFile={onOpenFile} />
+      return <ToolCard item={item} onOpenFile={onOpenFile} client={client} />
 
     case 'error':
       return (
@@ -394,11 +396,50 @@ function OutputBlock({ text }: { text: string }): VNode {
   )
 }
 
+/** What the browser tool's screenshot action puts in `display`, and nothing else. */
+const SCREENSHOT_PATH = /^\.privatecode\/browser\/shot-\d+\.png$/
+
+/**
+ * A screenshot, fetched through the same jailed `fs.read` the file preview uses.
+ *
+ * Loaded on demand rather than carried in the tool result: a base64 PNG is a few hundred
+ * kilobytes, and putting it in the reducer's state would keep every screenshot of a long
+ * session resident in memory forever, re-rendered on every keystroke in the composer.
+ */
+function Screenshot({ path, client }: { path: string; client: ProtocolClient }): VNode {
+  const [state, setState] = useState<{ kind: 'loading' } | { kind: 'ok'; url: string } | { kind: 'error'; why: string }>(
+    { kind: 'loading' },
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    setState({ kind: 'loading' })
+    client.call('fs.read', { path })
+      .then((r) => {
+        if (cancelled) return
+        const url = (r as { image?: { dataUrl: string } }).image?.dataUrl
+        setState(url ? { kind: 'ok', url } : { kind: 'error', why: 'not an image' })
+      })
+      .catch((e: Error) => { if (!cancelled) setState({ kind: 'error', why: e.message }) })
+    return () => { cancelled = true }
+  }, [client, path])
+
+  if (state.kind === 'loading') return <div class="tool-preview">loading {path}…</div>
+  if (state.kind === 'error') return <div class="tool-preview">could not show {path}: {state.why}</div>
+  return (
+    <figure class="shot">
+      <img src={state.url} alt={`Browser screenshot, ${path}`} />
+      <figcaption>{path} — the model cannot see this; you can</figcaption>
+    </figure>
+  )
+}
+
 function ToolCard({
-  item, onOpenFile,
+  item, onOpenFile, client,
 }: {
   item: ChatItem & { kind: 'tool' }
   onOpenFile: (path: string) => void
+  client: ProtocolClient
 }): VNode {
   const p = presentTool(item.name, item.args)
   const result = item.result
@@ -414,6 +455,12 @@ function ToolCard({
   const clipped = result !== undefined && result.display !== result.content
   const [showModelCopy, setShowModelCopy] = useState(false)
   const shownText = result === undefined ? '' : showModelCopy ? result.content : result.display
+  // A screenshot's only audience is the person reading this: the model has no vision tower,
+  // so the tool hands it a path and says so. Rendering the image here is what makes taking
+  // one worth anything at all.
+  const shotPath = item.name === 'browser' && result?.ok === true
+    ? SCREENSHOT_PATH.exec(result.display ?? '')?.[0] ?? null
+    : null
 
   // The success/failure glyph lives in the shared gutter, not inside the card: that is the
   // whole point of the gutter, and it buys the header the room to show the actual target.
@@ -480,11 +527,13 @@ function ToolCard({
                 </button>
               </div>
             )}
-            {p.kind === 'diff' && result.ok
-              ? <DiffView content={shownText} />
-              : isCommand
-                ? <OutputBlock text={shownText} />
-                : <pre class="tool-output">{shownText}</pre>}
+            {shotPath !== null
+              ? <Screenshot path={shotPath} client={client} />
+              : p.kind === 'diff' && result.ok
+                ? <DiffView content={shownText} />
+                : isCommand
+                  ? <OutputBlock text={shownText} />
+                  : <pre class="tool-output">{shownText}</pre>}
           </div>
         )}
         {/* A preview that merely repeats the target ("src/app.ts (32 lines)" under a header

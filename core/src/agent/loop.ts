@@ -1,7 +1,7 @@
 import type { InteractionPort } from '../interaction.js'
 import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ChatResult, Timings } from '../llama/types.js'
-import type { AgentMode, PermissionEngine } from '../permissions/engine.js'
+import { BROWSER_TOOL, MCP_TOOL_PREFIX, type AgentMode, type PermissionEngine } from '../permissions/engine.js'
 import { suggestRules } from '../permissions/rules.js'
 import { Transcript } from '../transcript/transcript.js'
 import type { ToolRegistry } from '../tools/registry.js'
@@ -222,6 +222,28 @@ const TRUNCATED_TWICE =
   'nothing was done. Do not restate your plan: choose the smallest possible next action ' +
   'and call one tool immediately.'
 
+/**
+ * Which external surfaces this turn can actually reach, for the system prompt.
+ *
+ * Derived from the registry AND the turn's allowed list, because plan mode narrows the
+ * list without changing the registry: telling a plan-mode session how to use a browser it
+ * cannot call would be a permanent instruction to do something impossible, in message 0 of
+ * a transcript that is never rewritten.
+ */
+function describeExternalTools(
+  registry: ToolRegistry, allowed: string[] | undefined,
+): { browser: boolean; mcpServers: string[] } {
+  const names = registry.names().filter((n) => allowed === undefined || allowed.includes(n))
+  const servers = new Set<string>()
+  for (const name of names) {
+    if (!name.startsWith(MCP_TOOL_PREFIX)) continue
+    const rest = name.slice(MCP_TOOL_PREFIX.length)
+    const cut = rest.indexOf('__')
+    if (cut > 0) servers.add(rest.slice(0, cut))
+  }
+  return { browser: names.includes(BROWSER_TOOL), mcpServers: [...servers].sort() }
+}
+
 export class Agent {
   private readonly opts: Required<
     Pick<AgentOptions, 'maxSteps' | 'maxTokensPerStep' | 'mode' | 'stepTimeoutMs' | 'toolChoice'>
@@ -276,6 +298,9 @@ export class Agent {
         content: buildSystemPrompt({
           workspaceRoot: opts.context.workspace.root,
           mode: this.opts.mode,
+          // Read from the registry rather than passed in by the caller: the prompt must
+          // describe the tools that exist, and the registry is the only thing that knows.
+          external: describeExternalTools(opts.registry, this.opts.allowedTools),
           // Conditional spread, not `memory: opts.memory`: tsconfig sets
           // exactOptionalPropertyTypes, so an explicit undefined is not the same as absent.
           ...(opts.memory !== undefined ? { memory: opts.memory } : {}),

@@ -17,6 +17,11 @@ export class ToolRegistry {
     return this.tools.get(name)
   }
 
+  /** Every registered tool name, in registration order. */
+  names(): string[] {
+    return [...this.tools.keys()]
+  }
+
   /**
    * Names of registered tools that declare `readOnly: true`. The sole basis `Agent` uses
    * to restrict plan mode: this reads the tools' own declarations rather than a parallel

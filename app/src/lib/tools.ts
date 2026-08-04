@@ -1,5 +1,5 @@
 /**
- * One place that knows how each of the agent's 14 tools should be PRESENTED: the verb, the
+ * One place that knows how each of the agent's tools should be PRESENTED: the verb, the
  * thing it acted on, and which family it belongs to (which in turn decides whether the
  * transcript renders a diff, a command console, or a plain collapsible result).
  *
@@ -87,10 +87,41 @@ function str(o: Record<string, unknown>, key: string): string | null {
   return typeof v === 'string' && v !== '' ? v : null
 }
 
+/** `mcp__sqlite__query` → `sqlite / query`. Which server answered is the part a person
+ * reading the transcript needs; the `mcp__` prefix exists for the rule language, not them. */
+function presentMcp(name: string, args: Record<string, unknown>): ToolPresentation {
+  const rest = name.slice('mcp__'.length)
+  const cut = rest.indexOf('__')
+  const server = cut === -1 ? rest : rest.slice(0, cut)
+  const tool = cut === -1 ? '' : rest.slice(cut + 2)
+  // No single argument is "the target" for an arbitrary server's tool, so the first string
+  // one is shown as a hint and the card's body carries the rest.
+  const firstString = Object.values(args).find((v) => typeof v === 'string' && v !== '')
+  return {
+    kind: 'other',
+    verb: server,
+    target: typeof firstString === 'string' ? `${tool}: ${firstString}` : tool,
+    path: null,
+  }
+}
+
 export function presentTool(name: string, argsJson: string): ToolPresentation {
   const args = parseArgs(argsJson)
   const kind = KINDS[name] ?? 'other'
   const verb = VERBS[name] ?? name
+
+  if (name.startsWith('mcp__')) return presentMcp(name, args)
+
+  if (name === 'browser') {
+    const action = str(args, 'action') ?? 'read'
+    // Deliberately NOT `text`: a fill can carry something the user pasted into a login form,
+    // and this string goes in a header, in a title attribute, and into the session file. The
+    // ref says where without saying what — the approval card already showed the value when
+    // it mattered.
+    const detail = str(args, 'url') ?? str(args, 'expression') ??
+      (typeof args['ref'] === 'number' ? `ref_${args['ref']}` : '')
+    return { kind: 'other', verb: `Browser ${action}`, target: detail, path: null }
+  }
 
   if (name === 'move_file') {
     const from = str(args, 'from')
