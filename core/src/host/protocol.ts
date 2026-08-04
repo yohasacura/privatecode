@@ -181,6 +181,14 @@ export interface GitStatusResult {
   suggestion: string
 }
 
+/**
+ * Put ONE file back to how it was before this session started, optionally with the user's
+ * reason. The whole-workspace rewind is the wrong tool when a turn got four files right and
+ * the fifth wrong, which is the common case.
+ */
+export interface CheckpointsRestoreFileParams { path: string; note?: string }
+export interface CheckpointsRestoreFileResult { removed: boolean }
+
 export interface GitDiffParams { path: string; untracked?: boolean }
 export interface GitDiffResult { diff: string }
 
@@ -314,6 +322,9 @@ export interface HostMethodMap {
   'question.reply': { params: QuestionReplyParams; result: QuestionReplyResult }
   'fs.tree': { params: FsTreeParams; result: FsTreeResult }
   'fs.find': { params: FsFindParams; result: FsFindResult }
+  'checkpoints.restoreFile': {
+    params: CheckpointsRestoreFileParams; result: CheckpointsRestoreFileResult
+  }
   'git.status': { params: GitStatusParams; result: GitStatusResult }
   'git.diff': { params: GitDiffParams; result: GitDiffResult }
   'git.commit': { params: GitCommitParams; result: GitCommitResult }

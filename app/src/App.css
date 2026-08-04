@@ -1940,3 +1940,10 @@ kbd {
   border-top: 1px solid var(--border-soft);
 }
 .commit-box .input { flex: 1; min-width: 0; }
+
+/* The one place a session's own change can be undone on its own. Deliberately reached
+   through a second click and never offered on a failed write, which changed nothing. */
+.revert-box { font-size: 12px; line-height: 1.45; }
+.revert-box p { margin: 0 0 8px; }
+.revert-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.revert-actions .input { flex: 1; min-width: 150px; }

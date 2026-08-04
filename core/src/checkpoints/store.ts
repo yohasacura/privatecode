@@ -1,5 +1,5 @@
 import { execa } from 'execa'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ensurePrivateDir, PRIVATE_DIR } from '../private-dir.js'
 
@@ -220,6 +220,39 @@ export class CheckpointStore {
       restored: { id, at: new Date().toISOString(), summary: await this.summarize(id) },
       undo,
     }
+  }
+
+  /**
+   * Puts ONE file back to how it was at `id`, leaving everything else alone.
+   *
+   * The whole-workspace `rewind` is the right tool when a turn went wrong; it is the wrong
+   * one when a turn got four files right and the fifth wrong, which is the common case and
+   * the one that used to have no answer except reverting all five and asking again.
+   *
+   * A file that did not EXIST at that checkpoint is deleted rather than left behind: "put it
+   * back as it was" and "as it was, there was no such file" are the same sentence, and
+   * leaving a stray new file is how a revert quietly does not revert.
+   */
+  async restoreFile(id: string, path: string): Promise<{ removed: boolean }> {
+    if (!(await this.available())) {
+      throw new Error('checkpoints are not available in this workspace')
+    }
+    const known = await this.git(['cat-file', '-t', id], { allowFail: true })
+    if (known === null || known.trim() !== 'commit') {
+      throw new Error(`no checkpoint "${id}"`)
+    }
+
+    const existed = await this.git(['cat-file', '-e', `${id}:${path}`], { allowFail: true })
+    if (existed === null) {
+      // Not in that checkpoint: the file is new since, so putting it back means removing it.
+      await this.git(['rm', '-f', '--quiet', '--ignore-unmatch', '--', path], { allowFail: true })
+      rmSync(join(this.root, path), { force: true })
+      return { removed: true }
+    }
+    if ((await this.git(['checkout', id, '--', path])) === null) {
+      throw new Error(`could not restore ${path} from ${id}`)
+    }
+    return { removed: false }
   }
 
   // ---------------------------------------------------------------------------------------

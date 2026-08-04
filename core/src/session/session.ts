@@ -423,6 +423,39 @@ export class Session {
    * files that no longer contain those edits. Silently restoring the files would leave it
    * acting on a workspace it thinks it knows. It is told instead.
    */
+  /**
+   * Puts one file back to how it was before this session touched anything, and tells the
+   * model.
+   *
+   * Telling it is the whole point, and is why this is a Session method rather than a store
+   * call the host could make on its own: the transcript is what the model believes about
+   * the workspace, and a file silently reverted underneath it is a belief that is now
+   * wrong. The next turn would edit around changes that no longer exist.
+   *
+   * `note` is the user's reason, when they gave one. It rides the same message, because
+   * "put it back" and "here is why" arriving separately is how the model concludes the
+   * revert was a mistake and simply does it again.
+   */
+  async restoreFile(path: string, note?: string): Promise<{ removed: boolean }> {
+    if (!this.checkpoints) throw new Error('this session is not keeping checkpoints')
+    if (this.sending) throw new Error('a turn is running; stop it before reverting a file')
+    const baseline = (await this.checkpoints.list()).at(-1)
+    if (!baseline) throw new Error('this session has no baseline to restore from')
+
+    const result = await this.checkpoints.restoreFile(baseline.id, path)
+    this.transcript.append({
+      role: 'user',
+      content:
+        `The user reverted ${path} to how it was before this session started` +
+        `${result.removed ? ' (it did not exist then, so it is now deleted)' : ''}. ` +
+        'Whatever earlier messages say about that file no longer describes what is on disk; ' +
+        're-read it before editing it again.' +
+        (note !== undefined && note.trim() !== '' ? `\nThey said: ${note.trim()}` : ''),
+    })
+    this.persistIfPossible()
+    return result
+  }
+
   async rewind(checkpointId: string): Promise<{ restored: Checkpoint; undo: Checkpoint }> {
     if (!this.checkpoints) throw new Error('this session is not keeping checkpoints')
     if (this.sending) throw new Error('a turn is running; stop it before rewinding')

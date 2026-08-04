@@ -65,6 +65,9 @@ export function ChangesTab({
   /** Bumped when a turn resolves a tool, so the working tree follows the agent's writes. */
   reloadKey: number
 }): VNode {
+  // Bumped by a per-file revert so the working tree below re-reads itself: the revert
+  // changed the disk, and a git status from before it is a lie.
+  const [reverts, setReverts] = useState(0)
   if (entries.length === 0) {
     return (
       <div class="changes-tab">
@@ -73,7 +76,7 @@ export function ChangesTab({
           title="Nothing changed yet"
           hint="Every file the agent writes in this session lands here, with its diff and a way back to the file."
         />
-        <WorkingTree client={client} reloadKey={reloadKey} />
+        <WorkingTree client={client} reloadKey={reloadKey + reverts} />
       </div>
     )
   }
@@ -97,25 +100,58 @@ export function ChangesTab({
         <DiffStatBadge stat={{ added, removed }} />
       </div>
       <PanelSection title="This session">
-        {entries.map((entry) => <ChangeRow key={entry.id} entry={entry} onOpenFile={onOpenFile} />)}
+        {entries.map((entry) => (
+          <ChangeRow
+            key={entry.id}
+            entry={entry}
+            onOpenFile={onOpenFile}
+            client={client}
+            onReverted={() => setReverts((n) => n + 1)}
+          />
+        ))}
       </PanelSection>
-      <WorkingTree client={client} reloadKey={reloadKey} />
+      <WorkingTree client={client} reloadKey={reloadKey + reverts} />
     </div>
   )
 }
 
+/**
+ * One file the agent wrote, with the two things you can do about it.
+ *
+ * "Put it back" is the answer the app was missing: the only undo was a whole-workspace
+ * rewind, so a turn that got four files right and the fifth wrong cost you all five. The
+ * note is optional and goes to the model with the revert, because "put it back" and "here
+ * is why" arriving separately is how it concludes the revert was a mistake and does it
+ * again.
+ */
 function ChangeRow({
-  entry, onOpenFile,
+  entry, onOpenFile, client, onReverted,
 }: {
   entry: ChangeEntry
   onOpenFile: (path: string) => void
+  client: ProtocolClient
+  onReverted: () => void
 }): VNode {
   const [open, setOpen] = useState(false)
+  const [asking, setAsking] = useState(false)
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
   const stat = entry.ok ? diffStat(entry.content) : null
+
+  function revert(): void {
+    setBusy(true)
+    client.call('checkpoints.restoreFile', {
+      path: entry.openPath, ...(note.trim() !== '' ? { note: note.trim() } : {}),
+    })
+      .then(() => { setAsking(false); setNote(''); setFailed(null); onReverted() })
+      .catch((e: Error) => setFailed(e.message))
+      .finally(() => setBusy(false))
+  }
 
   return (
     <PanelRow
-      open={open}
+      open={open || asking}
       onToggle={() => setOpen((o) => !o)}
       icon={Icon.file()}
       label={entry.path}
@@ -130,8 +166,41 @@ function ChangeRow({
           {!entry.ok && <span class="tag tag-danger">failed</span>}
         </>
       }
+      actions={
+        entry.ok
+          ? (
+            <button class="btn btn-small" onClick={() => setAsking(true)} disabled={asking}>
+              Put back
+            </button>
+            )
+          : undefined
+      }
     >
-      <DiffView content={entry.content} dense />
+      {asking && (
+        <div class="revert-box">
+          <p>
+            Restore <code>{entry.path}</code> to how it was before this session started, and
+            tell the agent why. Nothing else is touched.
+          </p>
+          {failed !== null && <div class="panel-error">{failed}</div>}
+          <div class="revert-actions">
+            <input
+              class="input"
+              value={note}
+              placeholder="why (optional) — the agent is told"
+              onInput={(e) => setNote(e.currentTarget.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') revert() }}
+            />
+            <button class="btn btn-danger btn-small" onClick={revert} disabled={busy}>
+              {busy ? 'Restoring…' : 'Put it back'}
+            </button>
+            <button class="btn btn-small" onClick={() => { setAsking(false); setFailed(null) }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {open && <DiffView content={entry.content} dense />}
     </PanelRow>
   )
 }

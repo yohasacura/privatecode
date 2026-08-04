@@ -31,6 +31,7 @@ import type {
   ConfigSetParams,
   ConfigSetResult,
   CheckpointsListResult,
+  CheckpointsRestoreFileParams,
   CheckpointsRewindParams,
   CheckpointsRewindResult,
   DecisionInfo,
@@ -310,6 +311,11 @@ export class SessionHost {
       case 'config.set': return this.configSet(params as ConfigSetParams)
       case 'checkpoints.list': return this.checkpointsList()
       case 'checkpoints.rewind': return this.checkpointsRewind(params as CheckpointsRewindParams)
+      case 'checkpoints.restoreFile':
+        return this.requireSession().restoreFile(
+          (params as CheckpointsRestoreFileParams).path,
+          (params as CheckpointsRestoreFileParams).note,
+        )
       case 'decisions.list': return this.decisionsList()
       case 'decisions.resolve': return this.decisionsResolve(params as DecisionsResolveParams)
       case 'worklog.read': return this.worklogRead()
