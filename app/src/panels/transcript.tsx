@@ -185,11 +185,16 @@ function CompactionRecord({ item }: { item: Extract<ChatItem, { kind: 'compactio
   // The two outcomes that change nothing used to print nothing at all, so a `/compact` that
   // could not help looked exactly like a `/compact` that was ignored.
   if (item.state === 'skipped') {
+    // Two different answers, and reading them as one is why "nothing happened" sounded like
+    // a fault: a short conversation has nothing a briefing could usefully replace.
     return (
-      <Row kind="record record-compaction" marker={Icon.alert()}>
+      <Row kind="record record-compaction" marker={Icon.check()}>
         <span class="record-text">
-          compaction made no difference — the summary would not have been meaningfully
-          smaller than the conversation, so nothing was changed.
+          {item.reason === 'nothing-to-gain'
+            ? 'nothing to compact yet — this conversation is still shorter than the ' +
+              'briefing that would replace it. Nothing was changed, and nothing needed to be.'
+            : 'compaction made no difference — the summary would not have been meaningfully ' +
+              'smaller than the conversation, so nothing was changed.'}
         </span>
       </Row>
     )

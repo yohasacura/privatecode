@@ -517,6 +517,10 @@ export interface CompactionEvent {
   state: CompactionState
   /** Only ever present on `'applied'`. */
   droppedMessages?: number
+  /** Why a `'postponed'` changed nothing, when the two answers differ for the reader:
+   * `'nothing-to-gain'` is "this conversation is too short to be worth summarising", not
+   * "it tried and could not help". */
+  reason?: 'nothing-to-gain'
   /**
    * What the swap did, present only on `'applied'`.
    *

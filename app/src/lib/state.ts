@@ -107,6 +107,8 @@ export type ChatItem =
      * operation that occupies the model for minutes and then changes nothing has to say so.
      */
     state: 'running' | 'applied' | 'skipped' | 'failed'
+    /** Distinguishes "too short to be worth summarising" from "tried and could not help". */
+    reason?: 'nothing-to-gain'
     beforeTokens?: number
     afterTokens?: number
     droppedMessages?: number
@@ -291,6 +293,7 @@ export type ChatAction =
   | { type: 'mode-changed'; mode: AgentMode }
   | {
     type: 'compaction'; state: CompactionState; droppedMessages?: number
+    reason?: 'nothing-to-gain'
     detail?: { beforeTokens: number; afterTokens: number; summary: string; keptMessages: number }
   }
   | { type: 'approval.request'; requestId: string; tool: string; summary: string; detail: string; suggestedRules: string[] }
@@ -736,6 +739,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           ...item,
           state: outcome,
           ...(action.droppedMessages !== undefined ? { droppedMessages: action.droppedMessages } : {}),
+          ...(action.reason !== undefined ? { reason: action.reason } : {}),
           ...(action.detail ?? {}),
         }
       }).reverse()
@@ -747,6 +751,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           id: state.nextId,
           state: outcome,
           ...(action.droppedMessages !== undefined ? { droppedMessages: action.droppedMessages } : {}),
+          ...(action.reason !== undefined ? { reason: action.reason } : {}),
           ...(action.detail ?? {}),
         }
         return { ...next, items: [...state.items, item], nextId: state.nextId + 1 }

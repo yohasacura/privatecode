@@ -592,6 +592,7 @@ export class SessionHost {
           state: info.state,
           ...(info.droppedMessages !== undefined ? { droppedMessages: info.droppedMessages } : {}),
           ...(info.detail !== undefined ? { detail: info.detail } : {}),
+          ...(info.reason !== undefined ? { reason: info.reason } : {}),
         })
       },
     }

@@ -59,6 +59,14 @@ export interface CompactionEvent {
   state: 'started' | 'ready' | 'applied' | 'postponed' | 'failed'
   droppedMessages?: number
   /**
+   * Why a `'postponed'` changed nothing, when the answer is worth distinguishing.
+   *
+   * `'nothing-to-gain'` means the conversation is too short for a summary to be smaller than
+   * what it would replace — not a failure, and not the same thing as a compaction that tried
+   * and could not help.
+   */
+  reason?: 'nothing-to-gain'
+  /**
    * What the swap actually did, present only on `'applied'`.
    *
    * A compaction used to pass almost invisibly — five seconds of status text — while being
@@ -200,6 +208,14 @@ const SUMMARY_MAX_INPUT_TOKENS = 40_000
  * 131.1k, and the very next turn was back at the wall.
  */
 const TAIL_SHARE = 0.2
+
+/**
+ * Below this much replaceable conversation, a summary cannot be smaller than what it
+ * replaces: the briefing alone is budgeted at 3000 tokens (compaction.ts's MAX_TOKENS),
+ * plus the acknowledgement and the instruction. Twice that is the point where the trade
+ * starts being worth a generation.
+ */
+const MIN_COMPACTABLE_TOKENS = 6_000
 
 /**
  * How much room a turn needs beyond what the transcript already occupies: the user's message
@@ -655,6 +671,27 @@ export class Session {
     return Math.min(MAX_COLD_START_MS, DEFAULT_STEP_TIMEOUT_MS + prefillMs)
   }
 
+  /**
+   * How much a compaction could actually free: the messages a briefing would replace.
+   *
+   * Everything except the system message and the tail that would be kept verbatim — which is
+   * exactly what `applyCompactionSwap` would drop.
+   */
+  private compactableTokens(): number {
+    const messages = this.transcript.messages()
+    const keepRecent = this.opts.compaction?.keepRecent ?? 6
+    const tailBudget = this.opts.compaction?.contextLength === undefined
+      ? 0
+      : Math.floor(this.opts.compaction.contextLength * TAIL_SHARE)
+    const { tail } = selectCompactionTail(messages, keepRecent, tailBudget)
+    const floor = messages.length > 0 && messages[0]!.role === 'system' ? 1 : 0
+    const middle = messages.slice(floor, messages.length - tail.length)
+    return middle.reduce(
+      (sum, m) => sum + Math.ceil(((m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0)) / 4),
+      0,
+    )
+  }
+
   /** The checkpoints taken in this workspace, newest first. Empty when not a long run. */
   async listCheckpoints(limit?: number): Promise<Checkpoint[]> {
     return this.checkpoints ? this.checkpoints.list(limit) : []
@@ -1046,6 +1083,19 @@ export class Session {
     {
       await this.abortInFlightCompaction()
       this.pendingSummary = undefined
+
+      // Asked BEFORE the model is: can this possibly help?
+      //
+      // A swap replaces the middle of the conversation with a briefing and keeps the recent
+      // tail. So it can only free space if the middle is bigger than the briefing that
+      // replaces it — and on a short session it is not. Running anyway spent a full
+      // generation to discover nothing and then reported "made no difference", which reads
+      // as a failure rather than as "you do not need this yet".
+      const middle = this.compactableTokens()
+      if (middle < MIN_COMPACTABLE_TOKENS) {
+        this.opts.onCompaction?.({ state: 'postponed', reason: 'nothing-to-gain' })
+        return
+      }
 
       this.opts.onCompaction?.({ state: 'started' })
       try {
