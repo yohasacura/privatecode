@@ -71,6 +71,8 @@ import type {
   SessionsNewResult,
   SessionsResumeParams,
   SessionsResumeResult,
+  SessionsSearchParams,
+  SessionsSearchResult,
   SetModeParams,
   SetModeResult,
   StatusResult,
@@ -84,6 +86,7 @@ import { rankFiles, walkFiles } from './file-search.js'
 import { attachFiles } from './attachments.js'
 import { buildRepoMap } from '../outline/repo-map.js'
 import { gitCommit, gitDiff, gitStatus, suggestCommitMessage } from './git.js'
+import { searchSessions } from './session-search.js'
 
 /**
  * What `SessionHost` needs from whatever carries its messages to the UI: fire-and-forget
@@ -293,6 +296,7 @@ export class SessionHost {
       case 'sessions.list': return this.sessionsList()
       case 'sessions.new': return this.sessionsNew()
       case 'sessions.resume': return this.sessionsResume(params as SessionsResumeParams)
+      case 'sessions.search': return this.sessionsSearch(params as SessionsSearchParams)
       case 'compact': return this.compact()
       case 'approval.reply': return this.approvalReply(params as ApprovalReplyParams)
       case 'question.reply': return this.questionReply(params as QuestionReplyParams)
@@ -550,6 +554,11 @@ export class SessionHost {
         ? []
         : replayEntries(session.messages(), toolOutcomes(workspaceRoot, session.id)),
     }
+  }
+
+  private sessionsSearch(params: SessionsSearchParams): SessionsSearchResult {
+    const { store, workspaceRoot } = this.requireInitialized()
+    return { hits: searchSessions(workspaceRoot, store.list(), params.query, params.limit ?? 20) }
   }
 
   private sessionsList(): SessionsListResult {

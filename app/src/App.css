@@ -1947,3 +1947,70 @@ kbd {
 .revert-box p { margin: 0 0 8px; }
 .revert-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .revert-actions .input { flex: 1; min-width: 150px; }
+
+/* --- the command palette -------------------------------------------------------------- */
+
+.palette {
+  width: 100%;
+  max-width: 620px;
+  margin-top: 12vh;
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.palette-input {
+  display: block;
+  width: 100%;
+  padding: 13px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.palette-input::placeholder { color: var(--text-faint); }
+
+.palette-list { max-height: 52vh; overflow-y: auto; }
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+/* Hover and the arrow keys drive the same highlight: this is used from the keyboard, and a
+   mouse that happens to be resting over a row must not disagree with the selection. */
+.palette-item-on { background: var(--bg-hover); color: var(--text); }
+.palette-icon { display: flex; flex: none; color: var(--text-faint); }
+.palette-icon .icon { width: 13px; height: 13px; }
+.palette-label { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+.palette-group {
+  flex: none;
+  margin-left: auto;
+  padding-left: 10px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}

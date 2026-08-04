@@ -13,6 +13,7 @@ import { Composer } from './panels/composer'
 import { ContextPanel } from './panels/context-panel'
 import { SessionsRail, type SessionSwitch } from './panels/sessions-rail'
 import { StatusBar, SettingsModal } from './panels/status'
+import { Palette, type PaletteAction } from './panels/palette'
 import { Transcript } from './panels/transcript'
 import './App.css'
 
@@ -138,6 +139,7 @@ export default function App() {
   const [recents, setRecents] = useState<string[]>([])
   const [previewPath, setPreviewPath] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const [sessionsKey, setSessionsKey] = useState(0)
   const [chatState, dispatch] = useChatSession(client)
 
@@ -268,6 +270,7 @@ export default function App() {
       if (!e.ctrlKey || e.altKey) return
       if (e.key === 'b' || e.key === 'B') { e.preventDefault(); setRailOpen((v) => !v) }
       if (e.key === 'j' || e.key === 'J') { e.preventDefault(); setContextOpen((v) => !v) }
+      if (e.key === 'k' || e.key === 'K') { e.preventDefault(); setPaletteOpen((v) => !v) }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -293,6 +296,39 @@ export default function App() {
     setPreviewPath(path)
     setContextOpen(true)
   }, [])
+
+  /**
+   * What a palette choice does. Every branch is something the window already does; the
+   * palette is a second way in, not a second implementation.
+   */
+  function runPaletteAction(c: ProtocolClient, action: PaletteAction): void {
+    switch (action.kind) {
+      case 'session':
+        c.call('sessions.resume', { id: action.id })
+          .then((r) => onSessionSwitched({
+            sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength,
+            title: r.title, problems: r.problems, items: r.items,
+          }))
+          .catch((e: Error) => dispatch({ type: 'send-failed', message: e.message }))
+        return
+      case 'file':
+        openFileFromTranscript(action.path)
+        return
+      case 'mode':
+        dispatch({ type: 'mode-changed', mode: action.mode })
+        c.call('setMode', { mode: action.mode })
+          .catch((e: Error) => dispatch({ type: 'send-failed', message: e.message }))
+        return
+      case 'command':
+        if (action.id === 'settings') { setSettingsOpen(true); return }
+        c.call('sessions.new', {})
+          .then((r) => onSessionSwitched({
+            sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength,
+            title: r.title, problems: r.problems, items: r.items,
+          }))
+          .catch((e: Error) => dispatch({ type: 'send-failed', message: e.message }))
+    }
+  }
 
   const ready = phase.kind === 'ready'
   const workspaceRoot = phase.kind === 'ready' ? phase.workspace : ''
@@ -457,6 +493,14 @@ export default function App() {
           )}
 
       {client && ready && phase.kind === 'ready' && <StatusBar client={client} chatState={chatState} />}
+
+      {paletteOpen && client && ready && (
+        <Palette
+          client={client}
+          onClose={() => setPaletteOpen(false)}
+          onPick={(action) => runPaletteAction(client, action)}
+        />
+      )}
 
       {settingsOpen && client && (
         <SettingsModal

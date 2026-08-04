@@ -186,6 +186,14 @@ export interface GitStatusResult {
  * reason. The whole-workspace rewind is the wrong tool when a turn got four files right and
  * the fifth wrong, which is the common case.
  */
+/** Full-text search across the workspace's stored conversations. Titles are the first line
+ * of a session, which is the worst summary of what a long one became. */
+export interface SessionsSearchParams { query: string; limit?: number }
+export interface SessionHit {
+  sessionId: string; title: string; updatedAt: string; count: number; snippet: string
+}
+export interface SessionsSearchResult { hits: SessionHit[] }
+
 export interface CheckpointsRestoreFileParams { path: string; note?: string }
 export interface CheckpointsRestoreFileResult { removed: boolean }
 
@@ -317,6 +325,7 @@ export interface HostMethodMap {
   'sessions.list': { params: SessionsListParams; result: SessionsListResult }
   'sessions.new': { params: SessionsNewParams; result: SessionsNewResult }
   'sessions.resume': { params: SessionsResumeParams; result: SessionsResumeResult }
+  'sessions.search': { params: SessionsSearchParams; result: SessionsSearchResult }
   compact: { params: CompactParams; result: CompactResult }
   'approval.reply': { params: ApprovalReplyParams; result: ApprovalReplyResult }
   'question.reply': { params: QuestionReplyParams; result: QuestionReplyResult }
