@@ -50,7 +50,9 @@ const DEFAULT_SERVER_URL = 'http://127.0.0.1:8080'
  * the model server for cores. */
 const BOOT_TIMEOUT_MS = 12_000
 const RAIL_DEFAULT = 232
-const CONTEXT_DEFAULT = 380
+/** Wide enough for all four tab names AND their badges at once. At 380 they did not fit,
+ * and the bar fell back to icons for everything but the tab you were on. */
+const CONTEXT_DEFAULT = 420
 
 /** Column widths and collapse state live in localStorage: a layout you have to re-arrange
  * on every launch is one you stop arranging. */

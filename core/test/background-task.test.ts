@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -67,4 +67,46 @@ describe('background_task', () => {
     const r = await call({ action: 'poll', id: 'task-999' })
     expect(r.ok).toBe(false)
   })
+})
+
+/**
+ * A stopped job's own children are stopped too.
+ *
+ * A job is `powershell.exe -Command <whatever was asked for>`, so the process doing the work
+ * -- a dev server, a watcher -- is PowerShell's CHILD. Killing the parent first left the
+ * grandchild reparented and `taskkill /T` with no tree left to walk: found by driving the
+ * app, where a `node -e "setInterval(...)"` job was still ticking in Task Manager after a
+ * workspace switch had reported it stopped.
+ *
+ * The test watches for the EFFECT rather than for a pid: the grandchild appends to a file
+ * every 200ms, and after the stop that file must not grow again. A pid check would prove
+ * one process died; this proves the work actually stopped.
+ */
+describe('stopping a job stops what the job started', () => {
+  it('a grandchild process is dead once stop() returns', async () => {
+    const marker = join(root, 'ticks.txt')
+    // Forward slashes: node accepts them on Windows, and it keeps the path out of the two
+    // levels of escaping this command already goes through (PowerShell, then `node -e`).
+    const path = marker.split('\\').join('/')
+    // PowerShell starts node; node is the grandchild and the one writing.
+    const started = await call({
+      action: 'start',
+      command: `node -e "setInterval(()=>require('fs').appendFileSync('${path}','x'),200)"`,
+    })
+    const id = /id: (task-\d+)/.exec(started.content)?.[1]
+    expect(id).toBeTruthy()
+
+    // Let it actually get going, or "it stopped" would be indistinguishable from "it never
+    // started" -- the failure mode that makes this kind of test pass while proving nothing.
+    await new Promise((r) => setTimeout(r, 1500))
+    const whileRunning = statSync(marker).size
+    expect(whileRunning).toBeGreaterThan(0)
+
+    await call({ action: 'stop', id })
+
+    await new Promise((r) => setTimeout(r, 1200))
+    const afterStop = statSync(marker).size
+    await new Promise((r) => setTimeout(r, 1200))
+    expect(statSync(marker).size).toBe(afterStop)
+  }, 30_000)
 })

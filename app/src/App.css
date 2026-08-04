@@ -1215,7 +1215,9 @@ kbd {
 
 /* ----------------------------------------------------------------- context panel ----- */
 
-.context-panel { display: flex; flex-direction: column; height: 100%; }
+/* Sized against ITSELF, not the window: the panel's width is the splitter's business, and
+   what fits inside it is nobody else's. */
+.context-panel { display: flex; flex-direction: column; height: 100%; container-type: inline-size; }
 
 .tabbar {
   display: flex;
@@ -1251,6 +1253,18 @@ kbd {
 .tab:hover { color: var(--text-dim); }
 .tab-active { color: var(--text); border-bottom-color: var(--accent); }
 .tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Names give way before targets do. Ellipsising every label at once -- "Chang… Histo… Fi…
+   Termi…" -- keeps four unreadable words where three readable ones and an icon would do,
+   so the tabs you are NOT on drop their labels first and the one you are on keeps its
+   name for as long as there is room. */
+@container (max-width: 386px) {
+  .tab:not(.tab-active) .tab-label { display: none; }
+  .tab { padding: 6px 9px; }
+}
+@container (max-width: 250px) {
+  .tab-label { display: none; }
+}
 .tab-badge {
   padding: 0 5px;
   border-radius: 999px;

@@ -135,15 +135,30 @@ export class BackgroundTasks {
     return false
   }
 
+  /**
+   * Stops one process AND everything it started.
+   *
+   * The order is the whole point, and getting it backwards is what this fixes. A job is
+   * `powershell.exe -Command <whatever the user asked for>`, so the thing doing the work --
+   * a dev server, a watcher, a `node -e` loop -- is PowerShell's CHILD, not this process.
+   * `taskkill /T` walks the tree by parent-child links as they stand when it runs, so it has
+   * to run while the parent is still alive. Killing the child first left the grandchild
+   * reparented and unreachable, and `/T` then found nothing to walk: a stopped dev server
+   * that was still holding its port, still writing to disk, and still running after the app
+   * closed. (Found by driving the app: a `node -e "setInterval(…)"` job was still ticking in
+   * Task Manager after a workspace switch had reported it stopped.)
+   *
+   * `kill()` stays, after, as the fallback for the case taskkill cannot help: a pid we never
+   * learned, or a machine without it on PATH.
+   */
   async stop(entry: Entry): Promise<void> {
     if (entry.exit) return
-    entry.child.kill()
-    // PowerShell's own children can outlive it; take the whole tree down.
     const pid = entry.child.pid
     if (pid !== undefined) {
       await execa('taskkill', ['/PID', String(pid), '/T', '/F'],
         { reject: false, windowsHide: true })
     }
+    entry.child.kill()
     entry.exit = { code: null, stopped: true }
   }
 
