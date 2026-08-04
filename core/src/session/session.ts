@@ -5,6 +5,7 @@ import { buildSystemPrompt } from '../agent/prompt.js'
 import { LoopDetector } from '../agent/loop-detector.js'
 import { CheckpointStore, type Checkpoint } from '../checkpoints/store.js'
 import { commandsFrom, WorkLog } from './worklog.js'
+import { DecisionQueue, queueingPort } from './decisions.js'
 import type { LoadedMemory } from '../memory/project-memory.js'
 import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
@@ -80,6 +81,13 @@ export interface SessionOptions {
    * long runs gets — a one-shot task has nothing to review in the morning.
    */
   longRun?: boolean
+  /**
+   * Park an unanswered approval or question instead of blocking on it forever.
+   *
+   * Absent means today's behaviour exactly: a request waits for a person indefinitely, which
+   * is right when there IS a person. See `session/decisions.ts`.
+   */
+  unattended?: { approvalTimeoutMs?: number }
   /** Absent -> the feature is off; see `CompactionOptions`. */
   compaction?: CompactionOptions
   onCompaction?(info: CompactionEvent): void
@@ -252,6 +260,7 @@ export class Session {
     // most often wants, and it only exists if it is taken before any work happens.
     this.checkpoints = opts.longRun ? new CheckpointStore(opts.workspaceRoot) : null
     this.workLog = opts.longRun ? new WorkLog(opts.workspaceRoot) : null
+    this.decisions = opts.unattended ? new DecisionQueue(opts.workspaceRoot) : null
   }
 
   /**
@@ -260,7 +269,21 @@ export class Session {
    * workspace cannot be written.
    */
   longRunProblems(): string[] {
-    return [...(this.checkpoints?.problems ?? []), ...(this.workLog?.problems ?? [])]
+    return [
+      ...(this.checkpoints?.problems ?? []),
+      ...(this.workLog?.problems ?? []),
+      ...(this.decisions?.problems ?? []),
+    ]
+  }
+
+  /** Requests parked because nobody answered them. Empty unless this is an unattended run. */
+  pendingDecisions(): ReturnType<DecisionQueue['pending']> {
+    return this.decisions ? this.decisions.pending() : []
+  }
+
+  /** The queue itself, for a host that needs to resolve entries. */
+  decisionQueue(): DecisionQueue | null {
+    return this.decisions
   }
 
   /** The checkpoints taken in this workspace, newest first. Empty when not a long run. */
@@ -770,6 +793,8 @@ export class Session {
   /** Built only for a long run; see `SessionOptions.longRun`. */
   private readonly checkpoints: CheckpointStore | null
   private readonly workLog: WorkLog | null
+  /** Present only in an unattended run; see `SessionOptions.unattended`. */
+  private readonly decisions: DecisionQueue | null
   /** The checkpoint the last turn ended on, so the next one can diff against it. */
   private lastCheckpoint: Checkpoint | null = null
   /** 1-based, counted by this session rather than read off the transcript: a compaction
@@ -782,6 +807,23 @@ export class Session {
    * single slot per name is exact. */
   private readonly lastToolArgs = new Map<string, string>()
 
+  /**
+   * The port the agent and the tools consult, wrapped for an unattended run.
+   *
+   * Built per turn rather than cached because it closes over the session id and the queue,
+   * and because `queueingPort` is pure construction — a few closures — so there is nothing
+   * to save by holding one.
+   */
+  private interactionPort(): InteractionPort | undefined {
+    if (!this.decisions) return this.opts.interaction
+    return queueingPort(this.opts.interaction, {
+      queue: this.decisions,
+      sessionId: this.id,
+      ...(this.opts.unattended?.approvalTimeoutMs !== undefined
+        ? { approvalTimeoutMs: this.opts.unattended.approvalTimeoutMs } : {}),
+    })
+  }
+
   private buildAgent(signal?: AbortSignal): Agent {
     const context: ToolContext = {
       workspace: this.workspace,
@@ -793,7 +835,11 @@ export class Session {
     // Built once per Session, so the circuit breaker inside it counts failures across the
     // whole session rather than resetting every turn.
     if (this.formatRunner) context.format = this.formatRunner
-    if (this.opts.interaction) context.interaction = this.opts.interaction
+    // The queueing wrapper, when this is an unattended run. Both the tool context (which
+    // `ask_user` reads) and the agent's own gate get the SAME port: a question that parks in
+    // one place and blocks in the other would stall the run on whichever path came first.
+    const port = this.interactionPort()
+    if (port) context.interaction = port
 
     const agentOpts: AgentOptions = {
       client: this.opts.client,
@@ -810,7 +856,7 @@ export class Session {
     } else {
       agentOpts.mode = this.meta.mode
     }
-    if (this.opts.interaction) agentOpts.interaction = this.opts.interaction
+    if (port) agentOpts.interaction = port
     if (this.hookRunner) agentOpts.hooks = this.hookRunner
     // Always composed, even when no host events were supplied: Session must keep tapping
     // onStepDone for contextUsage()/fillRatio() on every turn, host renderer or not (a

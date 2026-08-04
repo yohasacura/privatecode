@@ -637,6 +637,12 @@ export class Agent {
               content: 'Not run: the turn was cancelled while approval was pending.',
             }
           }
+          if (decided.verdict === 'defer') {
+            // Not a refusal by a person: nobody was there. Said in those terms so the model
+            // moves sideways to other work instead of reasoning about an objection nobody
+            // made. See `ApprovalDecision`'s `defer` arm.
+            return { ok: false, content: `Not run: ${decided.reason}` }
+          }
           if (decided.verdict === 'deny') {
             const why = decided.comment ? `: "${decided.comment}"` : ''
             return {

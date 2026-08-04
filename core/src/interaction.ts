@@ -12,6 +12,16 @@ export type RememberLayer = 'session' | 'local' | 'project' | 'user'
 export type ApprovalDecision =
   | { verdict: 'allow'; remember?: { rule: string; layer: RememberLayer } }
   | { verdict: 'deny'; comment?: string }
+  /**
+   * Nobody was there to decide, so the request was parked for later.
+   *
+   * Distinct from `deny` because the difference matters to the model: a denial is a person
+   * saying no, and the right response is to take their reasoning into account and find
+   * another way. A deferral is a person being asleep, and the right response is to leave
+   * this line of work alone and pick up another. Reporting one as the other would have the
+   * agent apologising to nobody and reasoning about an objection that was never made.
+   */
+  | { verdict: 'defer'; reason: string }
 
 export interface UserQuestion {
   question: string
