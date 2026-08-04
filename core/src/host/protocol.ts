@@ -73,6 +73,16 @@ export interface InitParams {
   serverUrl: string
   /** Session id to resume instead of starting fresh. */
   resume?: string
+  /**
+   * Resume this workspace's most recent session, whichever it is. Ignored when `resume`
+   * names one explicitly, and a no-op in a workspace with no sessions yet.
+   *
+   * A separate field rather than a magic `resume: 'last'`, because the two questions are
+   * genuinely different: one names a session, the other asks the host which one that would
+   * be. The app asks it on every launch — closing a window used to throw away the
+   * conversation you were in the middle of, and starting fresh is one click away.
+   */
+  continueLast?: boolean
 }
 export interface InitResult {
   sessionId: string

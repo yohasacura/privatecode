@@ -182,7 +182,10 @@ export default function App() {
   const connect = useCallback(async (c: ProtocolClient, workspace: string, serverUrl: string): Promise<void> => {
     setPhase({ kind: 'initializing', workspace })
     try {
-      const init = await c.call('init', { workspaceRoot: workspace, serverUrl })
+      // `continueLast`: opening a workspace picks up where it was left, rather than
+      // discarding the conversation you were in the middle of when you closed the window.
+      // Starting clean is the New session button, one click away.
+      const init = await c.call('init', { workspaceRoot: workspace, serverUrl, continueLast: true })
       dispatch({
         type: 'session-switched',
         sessionId: init.sessionId,

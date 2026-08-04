@@ -201,7 +201,7 @@ export function SettingsModal({
     if (root === '' || url === '') return
     setConnecting(true)
     setError(null)
-    client.call('init', { workspaceRoot: root, serverUrl: url })
+    client.call('init', { workspaceRoot: root, serverUrl: url, continueLast: true })
       .then((r) => {
         client.call('config.set', { serverUrl: url, recentWorkspace: root }).catch(() => {})
         onSessionSwitched({
@@ -269,7 +269,9 @@ export function SettingsModal({
         >
           {connecting ? 'Opening…' : 'Open workspace'}
         </button>
-        <div class="field-hint">Opening a workspace starts a fresh session in it.</div>
+        <div class="field-hint">
+          Opening a workspace picks up its most recent session. New session starts a clean one.
+        </div>
       </div>
     </div>
   )

@@ -333,7 +333,25 @@ export class SessionHost {
       ...await this.connectMcpServers(params.workspaceRoot),
     ]
 
-    return this.buildSession(params.resume)
+    return this.buildSession(this.sessionToOpen(params))
+  }
+
+  /**
+   * Which session `init` should open: the one named, else the newest one this workspace has
+   * if the caller asked to continue, else none (a fresh session).
+   *
+   * `store.list()` is newest-first by `updatedAt`, so its head IS "the one you were last
+   * in". A corrupt or unreadable store is not a reason to refuse to open the workspace --
+   * it degrades to a fresh session, and `store.problems` still reports why.
+   */
+  private sessionToOpen(params: InitParams): string | undefined {
+    if (params.resume !== undefined) return params.resume
+    if (params.continueLast !== true) return undefined
+    try {
+      return this.requireInitialized().store.list()[0]?.id
+    } catch {
+      return undefined
+    }
   }
 
   /**

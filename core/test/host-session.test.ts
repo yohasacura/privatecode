@@ -123,6 +123,21 @@ function reply(transport: CapturedTransport, id: number): HostReply | undefined 
   return transport.messages.find((m): m is HostReply => !isHostEvent(m) && m.id === id)
 }
 
+/**
+ * The result of request `id`, or a failure that says what actually went wrong.
+ *
+ * Reading `.result` off a `HostReply` union needs narrowing anyway, and doing it here buys
+ * the diagnosis for free: an error reply reports the host's own message instead of the
+ * `Cannot read properties of undefined` a bare `?.result` produces, which is what a
+ * mis-premised test looks like when it fails.
+ */
+function resultOf<T>(transport: CapturedTransport, id: number): T {
+  const found = reply(transport, id)
+  if (!found) throw new Error(`no reply to request ${id}`)
+  if ('error' in found) throw new Error(`request ${id} failed: ${found.error.message}`)
+  return found.result as T
+}
+
 /** Waits for the Nth (default 1st) occurrence of `name` to land in `transport.messages`,
  * polling on the microtask queue -- everything under test here settles via promise chains
  * with no real timers involved, so a `setImmediate`-paced poll is exactly as fast as an
@@ -374,4 +389,77 @@ test('switching sessions aborts an in-flight background compaction instead of ha
   expect(switchReply && 'result' in switchReply).toBe(true)
   expect(eventsNamed(transport, 'compaction').some((e) => (e.data as { state: string }).state === 'postponed'))
     .toBe(true)
+})
+
+/**
+ * Closing the window used to throw away the conversation you were in the middle of: every
+ * launch called `init` with no resume and got a fresh session. Now that a resumed session
+ * can actually be SHOWN, continuing the last one is what a launch should do.
+ */
+test('init with continueLast opens the workspace\'s newest session, with its conversation', async () => {
+  const fake = await makeServer(() => textSSE('noted'))
+  stop = fake.close
+  const root = newWorkspace()
+
+  // Two sessions, the second one carrying a turn, so "newest" is a real distinction and
+  // there is something to come back to.
+  const first = await initHost(fake.url, root)
+  const firstId = resultOf<{ sessionId: string }>(first.transport, 1).sessionId
+  await first.host.handle({ id: 2, method: 'sessions.new', params: {} })
+  const secondId = resultOf<{ sessionId: string }>(first.transport, 2).sessionId
+  await first.host.handle({ id: 3, method: 'send', params: { text: 'remember this' } })
+  await first.host.shutdown()
+
+  expect(secondId).not.toBe(firstId)
+
+  // A fresh host, as a relaunch would be.
+  const transport = makeTransport()
+  const host = new SessionHost({ transport })
+  await host.handle({
+    id: 1, method: 'init', params: { workspaceRoot: root, serverUrl: fake.url, continueLast: true },
+  })
+  const result = resultOf<{ sessionId: string; items: unknown[] }>(transport, 1)
+
+  expect(result.sessionId).toBe(secondId)
+  expect(result.items).toContainEqual({ kind: 'user', text: 'remember this' })
+  await host.shutdown()
+})
+
+test('continueLast in a workspace with no sessions yet is simply a fresh one', async () => {
+  const fake = await makeServer(() => textSSE('hi'))
+  stop = fake.close
+  const root = newWorkspace()
+  const transport = makeTransport()
+  const host = new SessionHost({ transport })
+  await host.handle({
+    id: 1, method: 'init', params: { workspaceRoot: root, serverUrl: fake.url, continueLast: true },
+  })
+  const result = resultOf<{ sessionId: string; items: unknown[] }>(transport, 1)
+  expect(typeof result.sessionId).toBe('string')
+  expect(result.items).toEqual([])
+  await host.shutdown()
+})
+
+test('an explicit resume beats continueLast: they answer different questions', async () => {
+  const fake = await makeServer(() => textSSE('ok'))
+  stop = fake.close
+  const root = newWorkspace()
+  const first = await initHost(fake.url, root)
+  const oldest = resultOf<{ sessionId: string }>(first.transport, 1).sessionId
+  // Both sessions take a turn: a session with no messages was never written to disk, so
+  // resuming it is a "not found", not a fair test of which id wins.
+  await first.host.handle({ id: 2, method: 'send', params: { text: 'the older one' } })
+  await first.host.handle({ id: 3, method: 'sessions.new', params: {} })
+  await first.host.handle({ id: 4, method: 'send', params: { text: 'the newer one' } })
+  await first.host.shutdown()
+
+  const transport = makeTransport()
+  const host = new SessionHost({ transport })
+  await host.handle({
+    id: 1,
+    method: 'init',
+    params: { workspaceRoot: root, serverUrl: fake.url, continueLast: true, resume: oldest },
+  })
+  expect(resultOf<{ sessionId: string }>(transport, 1).sessionId).toBe(oldest)
+  await host.shutdown()
 })
