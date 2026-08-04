@@ -1030,16 +1030,25 @@ kbd {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
   padding: 6px 7px 7px 9px;
 }
 
+/* Shrinkable, and scrolling once it cannot shrink further. Measured before: 397px of
+   controls in a 300px bar, which pushed Send off the edge of a 820px window -- the one
+   control in the row that must always be reachable. The chips give way; Send does not. */
 .mode-group {
   display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
   gap: 1px;
   padding: 2px;
   border-radius: 999px;
   background: var(--bg);
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.mode-group::-webkit-scrollbar { height: 0; }
 
 .composer-meta {
   flex: 1;
@@ -1849,7 +1858,7 @@ kbd {
 
 /* Sits with the mode chips because it is a mode: it changes what the agent may do without
    you, which is the only thing the other chips change either. */
-.run-chip { margin-left: 6px; }
+.run-chip { flex: 0 1 auto; min-width: 0; margin-left: 6px; overflow: hidden; text-overflow: ellipsis; }
 .run-chip-active {
   border-color: var(--accent);
   color: var(--accent);

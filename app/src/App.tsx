@@ -6,6 +6,7 @@ import {
 } from './lib/client'
 import { useChatSession } from './lib/use-chat-session'
 import { baseName } from './lib/format'
+import { MIN_CONTEXT, MIN_RAIL, fitColumns } from './lib/layout'
 import { Icon } from './components/icons'
 import { Splitter } from './components/split'
 import { Composer } from './panels/composer'
@@ -151,23 +152,20 @@ export default function App() {
   useEffect(() => { saveLayout('railWidth', railWidth) }, [railWidth])
   useEffect(() => { saveLayout('contextWidth', contextWidth) }, [contextWidth])
 
-  // Widths persist, window sizes do not. Restoring a layout saved on a wide monitor onto a
-  // narrow one could compute the chat column to 0px -- transcript and composer gone
-  // entirely, and reproduced on every relaunch because the numbers are on disk. Re-clamped
-  // on load and on every resize, always leaving the centre column a floor.
+  // Widths persist, window sizes do not. What the user asked for and what fits right now
+  // are different facts and only the first is stored: the previous version squeezed the
+  // saved numbers themselves on every resize, so docking to a small screen once shrank the
+  // layout you had set up on the big one -- permanently, because it was written to disk.
+  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth)
   useEffect(() => {
-    function clamp(): void {
-      const floor = 380
-      const available = window.innerWidth - floor
-      if (railWidth + contextWidth <= available) return
-      const scale = Math.max(0, available) / (railWidth + contextWidth)
-      setRailWidth(Math.max(180, Math.floor(railWidth * scale)))
-      setContextWidth(Math.max(280, Math.floor(contextWidth * scale)))
-    }
-    clamp()
-    window.addEventListener('resize', clamp)
-    return () => window.removeEventListener('resize', clamp)
-  }, [railWidth, contextWidth])
+    function onResize(): void { setWindowWidth(window.innerWidth) }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  const columns = fitColumns({ windowWidth, railOpen, contextOpen, railWidth, contextWidth })
+  const railShown = columns.rail > 0
+  const contextShown = columns.context > 0
 
   useEffect(() => {
     const c: ProtocolClient = createClient(wsUrlFromSearch(window.location.search))
@@ -309,17 +307,21 @@ export default function App() {
         )}
         <span class="titlebar-spacer" data-tauri-drag-region />
         <span class={`conn-dot conn-${connState}`} title={`agent process: ${connState}`} />
+        {/* Reflects what is SHOWN, and is disabled when the window has no room for the
+            panel: a toggle that flips a preference nothing can act on reads as broken. */}
         <button
-          class={`icon-button ${railOpen ? 'icon-button-on' : ''}`}
+          class={`icon-button ${railShown ? 'icon-button-on' : ''}`}
           onClick={() => setRailOpen((v) => !v)}
-          title="Sessions (Ctrl+B)"
+          disabled={!railShown && railOpen}
+          title={!railShown && railOpen ? 'The window is too narrow for the sessions rail' : 'Sessions (Ctrl+B)'}
         >
           {Icon.sidebar()}
         </button>
         <button
-          class={`icon-button ${contextOpen ? 'icon-button-on' : ''}`}
+          class={`icon-button ${contextShown ? 'icon-button-on' : ''}`}
           onClick={() => setContextOpen((v) => !v)}
-          title="Workspace panel (Ctrl+J)"
+          disabled={!contextShown && contextOpen}
+          title={!contextShown && contextOpen ? 'The window is too narrow for the workspace panel' : 'Workspace panel (Ctrl+J)'}
         >
           {Icon.panelRight()}
         </button>
@@ -330,9 +332,9 @@ export default function App() {
         : ready && client
         ? (
           <div class="body">
-            {railOpen && (
+            {railShown && (
               <>
-                <aside class="column column-rail" style={{ width: `${railWidth}px` }}>
+                <aside class="column column-rail" style={{ width: `${columns.rail}px` }}>
                   <SessionsRail
                     client={client}
                     workspaceRoot={workspaceRoot}
@@ -342,7 +344,7 @@ export default function App() {
                     reloadKey={sessionsKey}
                   />
                 </aside>
-                <Splitter side="left" min={180} max={420} current={railWidth} onResize={setRailWidth} />
+                <Splitter side="left" min={MIN_RAIL} max={420} current={columns.rail} onResize={setRailWidth} />
               </>
             )}
 
@@ -371,10 +373,10 @@ export default function App() {
               <Composer client={client} state={chatState} dispatch={dispatch} modalOpen={settingsOpen} />
             </main>
 
-            {contextOpen && (
+            {contextShown && (
               <>
-                <Splitter side="right" min={280} max={720} current={contextWidth} onResize={setContextWidth} />
-                <aside class="column column-context" style={{ width: `${contextWidth}px` }}>
+                <Splitter side="right" min={MIN_CONTEXT} max={720} current={columns.context} onResize={setContextWidth} />
+                <aside class="column column-context" style={{ width: `${columns.context}px` }}>
                   <ContextPanel
                     client={client}
                     items={chatState.items}
