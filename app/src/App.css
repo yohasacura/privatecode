@@ -1370,8 +1370,8 @@ kbd {
 .psection-count { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
 
 /* files */
-.files-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.files-tree { flex: 1; min-height: 90px; overflow: auto; padding: 6px 0; }
+.files-tab { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.files-tree { flex: 1; min-height: 0; overflow: auto; padding: 6px 0; }
 .tree-panel { font-size: 12.5px; }
 .tree-row {
   display: flex;
@@ -1391,42 +1391,62 @@ kbd {
 .tree-loading, .tree-error { padding: 3px 8px; font-size: 11.5px; color: var(--text-faint); }
 .tree-error { color: var(--red); cursor: pointer; }
 
-.files-preview {
-  flex: 1.4;
-  min-height: 120px;
+/* An overlay, not a second half. Splitting the column gave a three-entry tree 40% of the
+   height and the file you wanted to read the rest -- with no line numbers, no wrapping and
+   a horizontal scrollbar pinned to the bottom of the panel. */
+.preview {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--border-soft);
   background: var(--bg);
 }
-.files-preview-head {
+.preview-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   flex: none;
-  padding: 5px 6px 5px 12px;
+  padding: 5px 8px 5px 4px;
   border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-panel);
 }
-.files-preview-path {
+.preview-path {
+  display: flex;
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
   font-size: 11.5px;
-  color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.files-preview-body {
-  flex: 1;
+.preview-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); }
+.preview-name { flex: none; color: var(--text); }
+
+.preview-scroll { display: flex; flex: 1; min-height: 0; align-items: flex-start; overflow: auto; }
+.preview-nums {
+  position: sticky;
+  left: 0;
+  flex: none;
   margin: 0;
-  padding: 8px 12px;
-  overflow: auto;
+  padding: 8px 8px 8px 10px;
+  text-align: right;
   font-family: var(--mono);
   font-size: 11.5px;
-  line-height: 1.5;
+  line-height: 1.55;
+  color: #4d4d57;
+  background: var(--bg);
+  user-select: none;
+}
+.preview-code {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 12px 8px 4px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
   color: var(--text-dim);
 }
+.preview-wrap { white-space: pre-wrap; word-break: break-word; }
 
 /* changes */
 .changes-tab { overflow-y: auto; padding: 6px; }

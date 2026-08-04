@@ -57,6 +57,9 @@ export const Icon = {
   sidebar: () => <Svg><rect x="1.5" y="2.5" width="13" height="11" rx="2" /><path d="M6 2.5v11" /></Svg>,
   panelRight: () => <Svg><rect x="1.5" y="2.5" width="13" height="11" rx="2" /><path d="M10 2.5v11" /></Svg>,
   arrowDown: () => <Svg><path d="M8 3v10M4 9l4 4 4-4" /></Svg>,
+  arrowLeft: () => <Svg><path d="M13 8H3M7 4 3 8l4 4" /></Svg>,
+  /** A line that turns back on itself: wrapping. */
+  wrap: () => <Svg><path d="M2.5 4h11M2.5 12h4M2.5 8h9a2 2 0 1 1 0 4h-1.5" /><path d="M8 10.5 6.5 12 8 13.5" /></Svg>,
   refresh: () => <Svg><path d="M13.5 8a5.5 5.5 0 1 1-1.7-4" /><path d="M13.5 2.5V6H10" /></Svg>,
   play: () => <Svg><path d="M5 3.5 12 8l-7 4.5z" /></Svg>,
   shield: () => <Svg><path d="M8 1.8 13 3.6v4.1c0 3-2.1 5.6-5 6.5-2.9-.9-5-3.5-5-6.5V3.6z" /></Svg>,
