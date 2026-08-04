@@ -229,6 +229,11 @@ kbd {
      title bar widened the whole window past the viewport. */
   grid-template-columns: minmax(0, 1fr);
   height: 100%;
+  /* Nothing in a window this size may ever produce a horizontal scrollbar. Measured before
+     this line existed: scrollWidth 1481 against a 1440 viewport, so the left rail sat
+     partly off-screen and the whole application slid when a control near the right edge
+     took focus. */
+  overflow: hidden;
 }
 
 .titlebar {
@@ -284,7 +289,7 @@ kbd {
 .conn-connecting { background: var(--yellow); }
 .conn-closed { background: var(--red); }
 
-.body { display: flex; min-height: 0; }
+.body { display: flex; min-height: 0; min-width: 0; overflow: hidden; }
 .column { display: flex; flex-direction: column; min-height: 0; }
 .column-chat { flex: 1; min-width: 0; background: var(--bg); }
 .column-rail { flex: none; background: var(--bg-panel); border-right: 1px solid var(--border-soft); }
@@ -1206,14 +1211,24 @@ kbd {
 .tabbar {
   display: flex;
   flex: none;
+  min-width: 0;
   padding: 6px 6px 0;
   gap: 2px;
   border-bottom: 1px solid var(--border-soft);
+  /* A backstop, not the plan: four tabs fit even the 280px minimum panel width. It is here
+     because when five did not fit, nothing stopped them -- the bar simply grew 19px past
+     the window's right edge and made the ENTIRE shell scroll sideways, so clicking a tab
+     slid the whole application. Overflow belongs to the thing that overflows. */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.tabbar::-webkit-scrollbar { height: 0; }
 .tab {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
   padding: 6px 10px;
   border: none;
   border-bottom: 2px solid transparent;
@@ -1226,7 +1241,7 @@ kbd {
 }
 .tab:hover { color: var(--text-dim); }
 .tab-active { color: var(--text); border-bottom-color: var(--accent); }
-.tab-label { white-space: nowrap; }
+.tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-badge {
   padding: 0 5px;
   border-radius: 999px;
@@ -1445,45 +1460,24 @@ kbd {
 .change-failed .change-path { color: var(--red); }
 .change-body { padding: 0 4px 8px 22px; }
 
-/* jobs */
-.jobs-tab { overflow-y: auto; padding: 6px; }
-.job { border-bottom: 1px solid var(--border-soft); }
-.job-head { display: flex; align-items: center; gap: 7px; padding: 6px 4px; }
-.job-state { font-size: 10.5px; font-family: var(--mono); white-space: nowrap; }
+/* terminal (and, since they were one question asked twice, the processes) */
+.terminal-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.terminal-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+
+/* Pinned above the console, never scrolling with it. */
+.terminal-running {
+  flex: none;
+  max-height: 45%;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
 .job-running { color: var(--accent); }
 .job-ok { color: var(--green); }
 .job-fail { color: var(--red); }
 .job-stopped { color: var(--text-faint); }
-.job-command {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.job-output {
-  margin: 0 0 8px 22px;
-  padding: 8px 10px;
-  max-height: 260px;
-  overflow: auto;
-  border-radius: var(--radius-sm);
-  background: var(--bg);
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-dim);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
 
-/* terminal */
-.terminal-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.terminal-body { flex: 1; overflow-y: auto; padding: 8px 10px; }
-.term-line { margin-bottom: 10px; }
-.term-command { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 11.5px; }
 .term-origin {
   padding: 0 5px;
   border-radius: 3px;
@@ -1494,10 +1488,8 @@ kbd {
 .term-origin-agent { background: var(--accent-soft); color: var(--accent); }
 .term-origin-you { background: rgba(111, 168, 220, 0.15); color: var(--blue); }
 .term-prompt { color: var(--text-faint); }
-.term-text { flex: 1; color: var(--text); word-break: break-all; }
-.term-state { font-size: 10.5px; }
 .term-output {
-  margin: 4px 0 0;
+  margin: 0;
   padding: 6px 9px;
   max-height: 300px;
   overflow: auto;
