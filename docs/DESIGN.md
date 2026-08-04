@@ -119,7 +119,7 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 
 ## 5. Tools exposed to the model
 
-14 tools, plus a reserved slot for web and whatever MCP servers contribute.
+15 built-in tools, plus whatever MCP servers contribute under `mcp__<server>__<tool>`.
 
 | group | tool | notes |
 |---|---|---|
@@ -134,17 +134,23 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 | | `move_file`, `delete_file` | separate from bash so permission rules can see them |
 | run | `run_command` | PowerShell, with timeout |
 | | `background_task` | start / poll / stop long-running processes |
+| web | `browser` | one tool, eleven actions, over CDP against the installed Edge/Chrome. Text-first (`read` returns the page with `[ref_N]` markers) because there is no vision tower; a screenshot is for the person watching |
 | meta | `todo_write` | visible plan |
 | | `ask_user` | question with options, instead of guessing |
+
+MCP-contributed tools carry the server's own schema, are always gated (§6), and are capped
+at 32 across all servers — every schema rides every request and becomes part of the
+constraint grammar.
 
 ---
 
 ## 6. Feature set (all of it — sequencing is an implementation-plan concern)
 
-Chat with streaming and interrupt · the 14 tools · permission system with all four modes ·
+Chat with streaming and interrupt · the 15 tools · permission system with all four modes ·
 plan mode · per-file diff review · session persistence and resume · auto-compaction ·
 `AGENTS.md` project memory (three layers, auto-loaded) · custom slash commands ·
-todo list · after-tool hooks · auto-formatter after edits · live server status.
+todo list · after-tool hooks · auto-formatter after edits · live server status ·
+**browser control over CDP** · **MCP client (stdio and streamable HTTP)**.
 
 **All of the above is built** as of 2026-08-04. Two decisions worth recording, because the
 original list was wrong about both:
@@ -157,19 +163,55 @@ original list was wrong about both:
 - **Project memory is `AGENTS.md`, not `PROJECT.md`** — the cross-tool convention, so one
   file serves this tool and others.
 
-**Reserved, not in the first build:** web fetch / search (one tool + one permission rule —
-drops in without rework), sub-agents, LSP integration, **MCP client for local servers**.
-MCP was specced and cut: it is the only planned feature whose purpose is to WIDEN the
-constraint grammar §4 deliberately narrows, its permission key carries neither a command
-nor paths (so it would fall through both gate families and be auto-allowed in normal mode —
-the least trustworthy tools would be the least gated), and the servers that would justify
-it — GitHub, Linear, Sentry — are network servers §4 refuses to reach. The local ones
-duplicate `read_file` / `search_code` / `git_status` in already-jailed, permission-keyed
-form.
+### MCP: cut, then admitted — and what changed
 
-**Impossible with the current setup:** images and screenshots. Qwen3.6 is natively
-image-text, but this GGUF has **no vision tower**; it would need a separate mmproj file
-and VRAM that isn't available. This is the one genuine gap versus Claude Desktop.
+This section previously recorded MCP as specced and cut, for three reasons. Two of them
+have been answered and one still stands; all three are worth keeping, because the one that
+still stands is why the built-in toolset did not change.
+
+1. **"Its permission key carries neither a command nor paths, so it would fall through both
+   gate families and be auto-allowed in normal mode — the least trustworthy tools would be
+   the least gated."** This was correct, and it was the real objection. It is fixed at the
+   source rather than worked around: `permissions/engine.ts` now has a **third family**,
+   `isExternalTool`, covering `browser` and everything under `mcp__`, which **asks** by
+   default in normal and auto-edit, allows in autopilot, and denies in plan. It is a
+   predicate, not a `Set`, because MCP tool names are not known until a server has been
+   contacted — a family whose membership is mutated at runtime by whatever registers the
+   tools is not a gate. Rules are `mcp__<server>__<tool>` or `mcp__<server>` for the whole
+   server; the `__` separator is checked explicitly so `mcp__git` cannot cover
+   `mcp__github__*`.
+2. **"The servers that would justify it are network servers §4 refuses to reach."** The
+   user lifted this: both stdio and streamable HTTP are supported. §4's rule was that the
+   *model* never leaves the machine, and that still holds — no completion, no transcript
+   and no file content is sent to a server the user did not configure, and every call is
+   gated. A remote MCP server is now the user's decision, in the user's settings file, with
+   a token that lives in the environment (`${VAR}` expansion) rather than in the file.
+3. **"Local servers duplicate `read_file` / `search_code` / `git_status` in already-jailed,
+   permission-keyed form."** Still true, and it is why **none of the built-in tools were
+   removed or replaced**. MCP is an addition at the edges, not a new way to do what the
+   jailed tools already do.
+
+One thing that follows from admitting MCP: an MCP result and a web page are the first text
+this tool can hand the model from outside the user's own machine, so the system prompt
+gained a sentence saying such text is data, not instructions.
+
+### The browser
+
+Driven over the Chrome DevTools Protocol against the Edge or Chrome already installed, with
+no new dependency — Node 24 ships a global `WebSocket`. Bundling a browser would have added
+hundreds of megabytes to a tool whose proposition is that it runs from a folder.
+
+The **origin is the unit of approval**: `browser(http://localhost:5173:*)` covers every
+action on that server. Asking per click would be unusable, and worse than unusable — it
+trains the user to approve reflexively, which is a weaker gate than not asking at all.
+
+**Reserved, not built:** web fetch / search, sub-agents, LSP integration.
+
+**Still impossible:** the model cannot see images. Qwen3.6 is natively image-text, but this
+GGUF has **no vision tower**; it would need a separate mmproj file and VRAM that isn't
+available. The browser tool is built around that fact rather than in spite of it — `read`
+renders a page as text with `[ref_N]` markers, and `screenshot` says plainly that it saved
+a file for the person to look at.
 
 ---
 
