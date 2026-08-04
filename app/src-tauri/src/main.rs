@@ -26,6 +26,11 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
+#[cfg(windows)]
+mod job;
+#[cfg(windows)]
+use job::{assign_to_job, JobHandle};
+
 /// Cap on how many stderr lines `sidecar_stderr()` keeps -- a ring buffer, not a growing
 /// log: this exists purely for interactive debugging (a developer or the controller
 /// inspecting why a turn failed), not as an audit trail, so unbounded growth over a
@@ -35,6 +40,10 @@ const STDERR_RING_CAP: usize = 200;
 struct RunningSidecar {
     child: Child,
     stdin: ChildStdin,
+    /// Held for the sidecar's lifetime and never read: dropping it is the whole point.
+    /// See `JobHandle`.
+    #[cfg(windows)]
+    _job: Option<JobHandle>,
 }
 
 struct SidecarState {
@@ -135,6 +144,16 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
         .spawn()
         .map_err(|e| format!("failed to spawn sidecar ({node_exe:?} {agent_cjs:?}): {e}"))?;
 
+    // Before anything else touches the child: everything it spawns from here on joins this
+    // job, so the OS can clean up after it no matter how this process ends. See `JobHandle`.
+    #[cfg(windows)]
+    let job = assign_to_job(&child);
+    #[cfg(windows)]
+    if job.is_none() {
+        eprintln!("main.rs: could not put the sidecar in a job object; \
+                   its processes will not be cleaned up if this app is killed");
+    }
+
     let stdin = child.stdin.take().ok_or("sidecar stdin was not piped")?;
     let stdout = child.stdout.take().ok_or("sidecar stdout was not piped")?;
     let stderr = child.stderr.take().ok_or("sidecar stderr was not piped")?;
@@ -184,7 +203,12 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
         eprintln!("sidecar stderr: (stream closed)");
     });
 
-    Ok(RunningSidecar { child, stdin })
+    Ok(RunningSidecar {
+        child,
+        stdin,
+        #[cfg(windows)]
+        _job: job,
+    })
 }
 
 /// Stops the current sidecar (if any) and starts a fresh one, replacing what
@@ -267,6 +291,17 @@ fn shutdown_sidecar(state: &SidecarState) {
         }
         let _ = running.child.wait();
     }
+
+    // Closing the job is the last line of defence, not bookkeeping, and it matters most in
+    // the branch that LOOKS like success: a sidecar that exited on its own sets `exited`
+    // and skips the taskkill above — which could not have helped anyway, since `/T` needs a
+    // live parent to walk the tree from. Its MCP servers and its browser are still running
+    // at this point, and closing the job is what ends them.
+    //
+    // Explicit rather than left to the end of scope: `running.stdin` was moved out above,
+    // so `running` is partially moved and cannot be dropped as a whole.
+    #[cfg(windows)]
+    drop(running._job);
 }
 
 fn main() {
