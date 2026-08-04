@@ -148,7 +148,16 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
       // user's deny rules with no signal anywhere in the UI.
       client.on('settings.problem', (d) => emit({ type: 'settings-problem', text: d.text })),
       client.on('compaction', (d) => emit({
-        type: 'compaction', state: d.state, ...(d.droppedMessages !== undefined ? { droppedMessages: d.droppedMessages } : {}),
+        type: 'compaction',
+        state: d.state,
+        ...(d.droppedMessages !== undefined ? { droppedMessages: d.droppedMessages } : {}),
+        // Forwarded, not dropped. The card was built to show before/after sizes and the
+        // briefing, the core sends both, and this one line quietly kept neither — so it read
+        // "0 → 0 (0% freed)… (the briefing was not recorded)" over a real 214-message
+        // compaction. An event copied field by field is an event that loses whatever the
+        // copy forgets.
+        ...(d.detail !== undefined ? { detail: d.detail } : {}),
+        ...(d.reason !== undefined ? { reason: d.reason } : {}),
       })),
     ]
     return () => {
