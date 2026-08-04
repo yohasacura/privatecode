@@ -453,6 +453,9 @@ export class SessionHost {
 
     const session = new Session(sessionOpts)
     this.session = session
+    // Wired here rather than inside Session: the queue is core's, the event is the wire's,
+    // and Session has no business knowing a protocol exists.
+    session.decisionQueue()?.onChange((pending) => this.emit('decisions.changed', { pending }))
     this.engine = engine
 
     // Memory, MCP and browser problems all ride the channel settings problems already use --
@@ -894,6 +897,12 @@ export class SessionHost {
       } finally {
         session.setUnattended(false)
         this.sending = false
+        // Any approval still on screen belongs to a turn that is over: the call it asks
+        // about was deferred minutes ago and the agent moved on. Leaving the card up
+        // invites someone to answer a question that can no longer change anything, which
+        // is worse than clearing it — the parked copy in the queue is the one that matters
+        // now, and it is still there.
+        this.denyAllPending()
         const queue = session.decisionQueue()
         if (queue) this.emit('decisions.changed', { pending: queue.pending().length })
         for (const problem of session.longRunProblems()) {

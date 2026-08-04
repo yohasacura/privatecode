@@ -176,3 +176,34 @@ describe('the same question asked twice', () => {
     expect(queue.pending()).toHaveLength(1)
   })
 })
+
+describe('the change signal', () => {
+  test('fires when something parks, not only when it is answered', async () => {
+    // The app first shipped emitting only on resolve, so a question parked at 02:00 was
+    // invisible until something else happened to fire the event. The count exists so the
+    // card appears the moment there is something to answer.
+    const queue = new DecisionQueue(root)
+    const counts: number[] = []
+    queue.onChange((pending) => counts.push(pending))
+
+    const port = queueingPort(undefined, { queue, sessionId: 's1' })
+    await port.requestApproval(request)
+    expect(counts).toEqual([1])
+
+    queue.resolve({ id: queue.pending()[0]!.id, verdict: 'deny' })
+    expect(counts).toEqual([1, 0])
+  })
+
+  test('a duplicate that is not parked does not pretend anything changed', () => {
+    const queue = new DecisionQueue(root)
+    const entry = {
+      kind: 'approval' as const, id: 'a', at: 'now', sessionId: 's1',
+      tool: 'run_command', summary: 'npm test', detail: 'd', suggestedRules: [],
+    }
+    queue.add(entry)
+    const counts: number[] = []
+    queue.onChange((pending) => counts.push(pending))
+    queue.add({ ...entry, id: 'b' })
+    expect(counts).toEqual([])
+  })
+})

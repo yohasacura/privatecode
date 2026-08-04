@@ -143,24 +143,35 @@ export class CheckpointStore {
     }
   }
 
-  /** Newest first. */
+  /**
+   * Newest first, each with the size of what it captured.
+   *
+   * `--shortstat` in the same `log` call rather than a `show` per entry: the summary a
+   * person reads is "3 files, +42 -7", and fetching that one commit at a time would be
+   * fifty git invocations to draw one panel. The first version skipped it entirely and
+   * showed the raw commit subject — `turn 1 (s-20260804-151432-6895)` — which is the
+   * session id, in a panel about files.
+   */
   async list(limit = 50): Promise<Checkpoint[]> {
     if (!(await this.available())) return []
     const out = await this.git([
-      'log', `-n`, String(limit), '--format=%h%x1f%aI%x1f%s',
+      'log', '-n', String(limit), '--format=%x1e%h%x1f%aI%x1f%s', '--shortstat',
     ], { allowFail: true })
     if (out === null) return [] // a repository with no commits yet
+
     const entries: Checkpoint[] = []
-    for (const line of out.split('\n')) {
-      if (line.trim() === '') continue
-      const [id, at, subject] = line.split('')
+    // `%x1e` starts each record, so a commit's own shortstat lines stay attached to it.
+    for (const record of out.split('')) {
+      if (record.trim() === '') continue
+      const [header, ...rest] = record.split('\n')
+      const [id, at, subject] = (header ?? '').split('')
       if (!id || !at) continue
       const turn = /^turn (\d+)/.exec(subject ?? '')
       entries.push({
         id,
         at,
         ...(turn ? { turn: Number(turn[1]) } : {}),
-        summary: subject ?? '',
+        summary: shortstatLabel(rest.join('\n')),
       })
     }
     return entries
@@ -292,14 +303,33 @@ export class CheckpointStore {
     }
   }
 
-  /** `3 files, +42 -7` for a commit, or `baseline` for the first one. */
+  /**
+   * `3 files, +42 -7`, from the SAME command `list` uses.
+   *
+   * `git show --shortstat` was the obvious choice and is subtly different: on a ROOT commit
+   * it prints no stat at all, while `git log --shortstat` prints the whole tree. So the
+   * baseline read "baseline" when it was taken and "1 file, +1 -0" when it was listed —
+   * the same checkpoint described two ways depending on which screen you were looking at.
+   * A test comparing the two caught it.
+   */
   private async summarize(id: string): Promise<string> {
-    const stat = await this.git(['show', '--shortstat', '--format=', id], { allowFail: true })
-    const line = (stat ?? '').trim().split('\n').pop()?.trim() ?? ''
-    if (line === '') return 'baseline'
-    const files = /(\d+) files? changed/.exec(line)?.[1]
-    const added = /(\d+) insertions?/.exec(line)?.[1] ?? '0'
-    const removed = /(\d+) deletions?/.exec(line)?.[1] ?? '0'
-    return files ? `${files} file${files === '1' ? '' : 's'}, +${added} -${removed}` : line
+    const stat = await this.git(['log', '-n', '1', '--format=', '--shortstat', id], { allowFail: true })
+    return shortstatLabel(stat ?? '')
   }
+}
+
+/**
+ * Turns git's `--shortstat` line into the phrase the panel shows.
+ *
+ * Shared by `take` and `list` so the same checkpoint cannot read one way when it is created
+ * and another way when it is listed. An empty stat is the first commit in the repository:
+ * everything is new, nothing is a change, and "baseline" is what that is.
+ */
+function shortstatLabel(stat: string): string {
+  const line = stat.trim().split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? ''
+  if (line === '') return 'baseline'
+  const files = /(\d+) files? changed/.exec(line)?.[1]
+  const added = /(\d+) insertions?/.exec(line)?.[1] ?? '0'
+  const removed = /(\d+) deletions?/.exec(line)?.[1] ?? '0'
+  return files ? `${files} file${files === '1' ? '' : 's'}, +${added} -${removed}` : line
 }
