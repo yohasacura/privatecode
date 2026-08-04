@@ -68,7 +68,7 @@ export function HistoryTab({
   }
 
   if (error !== null) return <div class="panel-error">{error}</div>
-  if (checkpoints === null) return <div class="panel-empty">loading…</div>
+  if (checkpoints === null) return <div class="panel-placeholder">loading…</div>
 
   return (
     <div class="history">
@@ -83,7 +83,7 @@ export function HistoryTab({
 
       {checkpoints.length === 0
         ? (
-          <div class="panel-empty">
+          <div class="panel-placeholder">
             No checkpoints yet. One is taken before the first turn, and after any turn that
             changes a file.
           </div>

@@ -94,6 +94,27 @@ kbd {
 .dim { color: var(--text-faint); }
 .warn { color: var(--yellow); }
 
+/* Keyboard focus, everywhere, from one rule. Its absence was the plainest accessibility
+   gap in the app: every control had a hover state and none had a focus state, so tabbing
+   through the window moved an invisible cursor. Text fields are exempt because their own
+   border already changes, and the composer's whole shell lights up. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.input:focus-visible, .composer-input:focus-visible, .terminal-input:focus-visible { outline: none; }
+
+/* Motion here is never decorative -- every animation in this file means "this is happening
+   right now" -- so switching it off must not switch off the MEANING. Each one is replaced
+   by its own resting state at full strength rather than simply frozen mid-cycle. */
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 1ms !important; }
+  .pulse-dot { animation: none; opacity: 1; transform: none; }
+  .reasoning-live .row-gutter { animation: none; }
+  .caret { animation: none; }
+  .composer-shell-live .composer-activity { animation: none; background: var(--accent); }
+}
+
 /* ---------------------------------------------------------------------- controls ----- */
 
 .btn {
@@ -818,6 +839,9 @@ kbd {
 }
 .row-card-row .row-gutter { color: var(--accent); }
 .card-question { border-color: var(--border); }
+/* The approval card is the security surface: it is the one card that should read as
+   louder than the conversation around it, not the same weight as a tool result. */
+.card-approval { border-color: var(--accent); }
 
 .card-head {
   display: flex;
@@ -1226,6 +1250,7 @@ kbd {
 .tree-chevron { display: flex; flex: none; width: 16px; color: var(--text-faint); }
 .tree-icon { display: flex; color: var(--text-faint); }
 .tree-dir .tree-icon { color: var(--blue); opacity: 0.75; }
+.tree-file .tree-icon { color: var(--text-faint); }
 .tree-name { overflow: hidden; text-overflow: ellipsis; }
 .tree-loading, .tree-error { padding: 3px 8px; font-size: 11.5px; color: var(--text-faint); }
 .tree-error { color: var(--red); cursor: pointer; }
@@ -1574,7 +1599,7 @@ kbd {
 .shot img {
   display: block;
   max-width: 100%;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border-soft);
   border-radius: 6px;
   background: var(--bg-raised);
 }
@@ -1591,7 +1616,7 @@ kbd {
   margin-bottom: 4px;
 }
 .mcp-item {
-  border: 1px solid var(--line);
+  border: 1px solid var(--border-soft);
   border-radius: 6px;
   padding: 6px 8px;
   background: var(--bg-raised);
@@ -1604,8 +1629,8 @@ kbd {
 }
 .mcp-name { font-weight: 600; }
 .mcp-state { font-size: 11px; color: var(--text-dim); }
-.mcp-failed { border-color: var(--danger); }
-.mcp-failed .mcp-state { color: var(--danger); }
+.mcp-failed { border-color: var(--red); }
+.mcp-failed .mcp-state { color: var(--red); }
 /* The reason a server failed is usually a missing token or a command that is not on PATH.
    Both are one edit away from fixed -- once you can read them, whole and unwrapped. */
 .mcp-problem {
@@ -1624,7 +1649,7 @@ kbd {
 .history-note {
   padding: 8px 10px;
   margin-bottom: 8px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border-soft);
   border-radius: 6px;
   background: var(--bg-raised);
   font-size: 12px;
@@ -1645,7 +1670,7 @@ kbd {
   border-radius: 6px;
   padding: 6px 8px;
 }
-.ckpt:hover { border-color: var(--line); background: var(--bg-raised); }
+.ckpt:hover { border-color: var(--border); background: var(--bg-raised); }
 .ckpt-head { display: flex; align-items: baseline; gap: 8px; }
 .ckpt-when { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 11px; }
 .ckpt-what { flex: 1; font-size: 12px; }
@@ -1658,7 +1683,7 @@ kbd {
 .ckpt-confirm {
   margin-top: 8px;
   padding: 8px;
-  border: 1px solid var(--danger);
+  border: 1px solid var(--red);
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.45;
@@ -1666,10 +1691,12 @@ kbd {
 .ckpt-confirm p { margin: 0 0 6px; }
 .ckpt-confirm-undo { color: var(--text-dim); }
 .ckpt-confirm-actions { display: flex; gap: 6px; }
-.btn-danger { border-color: var(--danger); color: var(--danger); }
-.btn-small { padding: 2px 8px; font-size: 11px; }
+/* `.btn-danger` is declared once, with the controls at the top of this file. A second
+   declaration lived here and quietly won, which is how the one destructive button in the
+   app lost its red. */
+.btn-small { padding: 2px 8px; font-size: 11px; height: 22px; }
 
-.history-log { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.history-log { margin-top: 12px; border-top: 1px solid var(--border-soft); padding-top: 8px; }
 .history-log-toggle {
   display: flex;
   align-items: center;
@@ -1690,7 +1717,7 @@ kbd {
 
 /* --- parked decisions ----------------------------------------------------------------- */
 
-.card-decisions { border-color: var(--warn, var(--accent)); }
+.card-decisions { border-color: var(--accent); }
 .decisions-head {
   width: 100%;
   background: none;
@@ -1702,7 +1729,7 @@ kbd {
 }
 .decisions-body { display: flex; flex-direction: column; gap: 10px; padding: 8px 0 0; }
 .decision {
-  border: 1px solid var(--line);
+  border: 1px solid var(--border-soft);
   border-radius: 6px;
   padding: 8px;
   background: var(--bg-raised);
