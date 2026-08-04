@@ -319,7 +319,25 @@ export const editFileTool: Tool<EditFileArgs> = {
       }
     }
 
-    const notes: string[] = []
+    // Formatting happens HERE, between the write and the diff, which is the whole point of
+    // it living in the tool: `renderDiff` below is then rendered against the file as it now
+    // exists on disk, so the text the model is shown is the text its next SEARCH anchor
+    // will have to match. A formatter that ran after this result was built would leave the
+    // diff describing bytes that are no longer there.
+    let finalText = outcome.text
+    const formatNotes: string[] = []
+    if (next !== raw && ctx.format) {
+      const formatted = await ctx.format.run(args.path, ctx.signal)
+      if (formatted.note !== undefined) formatNotes.push(formatted.note)
+      if (formatted.text !== null && formatted.changed) {
+        // Compared in the same normalised space `renderDiff` works in, so a formatter that
+        // only rewrote line endings does not show up as a change to every line.
+        const body = formatted.text.charCodeAt(0) === 0xfeff ? formatted.text.slice(1) : formatted.text
+        finalText = toLf(body)
+      }
+    }
+
+    const notes: string[] = [...formatNotes]
     if (!outcome.matchedExactly) notes.push('the anchor matched only after ignoring whitespace')
     if (endings.crlf > 0 && endings.lf > 0) {
       notes.push(
@@ -329,6 +347,6 @@ export const editFileTool: Tool<EditFileArgs> = {
     }
     const note = notes.length === 0 ? '' : `\n(note: ${notes.join('; ')})`
 
-    return { ok: true, content: `${renderDiff(lfBody, outcome.text, args.path)}${note}` }
+    return { ok: true, content: `${renderDiff(lfBody, finalText, args.path)}${note}` }
   },
 }

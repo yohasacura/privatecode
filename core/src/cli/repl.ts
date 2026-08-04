@@ -5,6 +5,7 @@ import type { TurnResult } from '../agent/loop.js'
 import { LlamaClient } from '../llama/client.js'
 import { PermissionEngine, type AgentMode } from '../permissions/engine.js'
 import { loadLayers } from '../permissions/settings.js'
+import { loadFormatRules } from '../format/config.js'
 import { loadProjectMemory, type LoadedMemory } from '../memory/project-memory.js'
 import { expandCommand, listCommands } from '../commands/custom.js'
 import { Session, type SessionOptions } from '../session/session.js'
@@ -216,8 +217,9 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
 
     const { layers, problems } = loadLayers(opts.workspaceRoot)
     const memory = loadProjectMemory(opts.workspaceRoot)
+    const formatting = loadFormatRules(opts.workspaceRoot)
     loadedMemory = memory
-    memoryProblems = memory.problems
+    memoryProblems = [...memory.problems, ...formatting.problems]
     const newEngine = new PermissionEngine({
       layers, mode: explicitMode ?? 'normal', workspaceRoot: opts.workspaceRoot, problems,
     })
@@ -231,6 +233,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       events: turnRenderer.events,
       interaction: port,
       ...(memory.layers.length > 0 ? { memory } : {}),
+      ...(formatting.rules.length > 0 ? { formatRules: formatting.rules } : {}),
       onCompaction: (info) => {
         const line = renderCompactionEvent(info)
         if (line === undefined) return

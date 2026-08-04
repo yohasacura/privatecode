@@ -3,6 +3,8 @@ import { resolve } from 'node:path'
 import { Agent, type AgentEvents, type AgentOptions, type StepInfo, type TurnResult } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
 import type { LoadedMemory } from '../memory/project-memory.js'
+import type { FormatRule } from '../format/config.js'
+import { createFormatRunner, type FormatRunner } from '../format/runner.js'
 import type { InteractionPort } from '../interaction.js'
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage } from '../llama/types.js'
@@ -63,6 +65,9 @@ export interface SessionOptions {
    * transcript discipline forbids.
    */
   memory?: LoadedMemory
+  /** Formatter rules from the settings layers, already parsed by the host. Empty or absent
+   * means no formatting, which is the normal case. */
+  formatRules?: FormatRule[]
   /** Absent -> the feature is off; see `CompactionOptions`. */
   compaction?: CompactionOptions
   onCompaction?(info: CompactionEvent): void
@@ -140,6 +145,8 @@ export class Session {
    * `opts.memory` so both build sites — `buildAgent` and `applyCompactionSwap` — use the
    * same text and cannot drift. */
   private readonly memoryText: string | undefined
+  /** The project's formatter, when `.privatecode/settings.json` configures one. */
+  private readonly formatRunner: FormatRunner | undefined
   /** Guard against concurrent send() calls. persistedCount and pendingModeNote are not concurrency-safe. */
   private sending = false
   /** The newest server-reported `usage.prompt_tokens`, from the latest completed step
@@ -172,6 +179,9 @@ export class Session {
     // Frozen here, once: both places that build a system message read this field, so they
     // cannot drift, and a mid-session edit to AGENTS.md cannot reach message 0.
     this.memoryText = opts.memory && opts.memory.text !== '' ? opts.memory.text : undefined
+    this.formatRunner = opts.formatRules && opts.formatRules.length > 0
+      ? createFormatRunner(opts.formatRules, this.workspace)
+      : undefined
 
     if (opts.resume !== undefined) {
       if (!opts.store) {
@@ -620,6 +630,9 @@ export class Session {
 
   private buildAgent(signal?: AbortSignal): Agent {
     const context: ToolContext = { workspace: this.workspace, todos: this.opts.toolset.todos }
+    // Built once per Session, so the circuit breaker inside it counts failures across the
+    // whole session rather than resetting every turn.
+    if (this.formatRunner) context.format = this.formatRunner
     if (this.opts.interaction) context.interaction = this.opts.interaction
 
     const agentOpts: AgentOptions = {

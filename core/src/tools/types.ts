@@ -1,11 +1,16 @@
 import type { Workspace } from '../workspace.js'
 import type { InteractionPort, TodoStore } from '../interaction.js'
+import type { FormatRunner } from '../format/runner.js'
 
 export interface ToolContext {
   workspace: Workspace
   signal?: AbortSignal
   interaction?: InteractionPort
   todos?: TodoStore
+  /** The project's formatter, when one is configured. Absent means "no formatting", which
+   * is the normal case. See `format/runner.ts` for why this runs inside the write tools
+   * rather than as an after-tool hook. */
+  format?: FormatRunner
 }
 
 export interface ToolResult {
