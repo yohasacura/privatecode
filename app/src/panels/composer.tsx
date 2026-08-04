@@ -309,17 +309,20 @@ export function Composer({
         </span>
       )
     }
-    // A compaction over a full context is a minute or more of a single non-streaming
-    // request: nothing streams, no step starts, and the only thing on screen was the word
-    // "working". Reported as a hang, twice. It stays up for as long as it actually runs.
-    if (state.lastCompaction?.state === 'started') {
-      return (
-        <span class="status-live">
-          compacting the conversation to fit the context window — this takes a minute
-        </span>
-      )
-    }
     if (state.turnRunning) {
+      // A compaction over a full context is minutes of a single non-streaming request:
+      // nothing streams, no step starts, and the only thing on screen was the word
+      // "working". But it is only TRUE while no step is in flight — `lastCompaction` is the
+      // last event seen, not a live flag, and a 'started' with no terminal event after it
+      // (the sidecar was restarted mid-generation) left this line up forever, next to a
+      // running step. Seen in a screenshot: "compacting…" beside step 2.
+      if (!step && state.lastCompaction?.state === 'started') {
+        return (
+          <span class="status-live">
+            compacting the conversation to fit the context window — this takes a few minutes
+          </span>
+        )
+      }
       if (!step) return <span class="status-live">{runningTool ? `running ${runningTool}` : 'working'}</span>
       return (
         <span class="status-live">

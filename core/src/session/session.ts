@@ -166,6 +166,16 @@ const MAX_VERIFY_ROUNDS = 2
 const SUMMARY_OUTPUT_RESERVE = 8_000
 
 /**
+ * The most transcript one summary request may carry.
+ *
+ * 40k at the 393 tok/s measured here is ~100 s of prefill — fast enough to finish between
+ * two messages, and with room to spare against every timeout in the path. The alternative,
+ * sizing it to the window, produced a request that took as long as the problem it was
+ * solving.
+ */
+const SUMMARY_MAX_INPUT_TOKENS = 40_000
+
+/**
  * How much room a turn needs beyond what the transcript already occupies: the user's message
  * plus a few steps of tool results and reasoning.
  *
@@ -174,11 +184,22 @@ const SUMMARY_OUTPUT_RESERVE = 8_000
  */
 const PRE_TURN_HEADROOM = 4_000
 
-/** ~1.9 ms/token, from Transcript's own benchmark (27.7 s for a ~14.9k-token history),
- * rounded up. See `coldStartTimeout`. */
-const PREFILL_MS_PER_TOKEN = 2
-/** Below the client's ten-minute transport timeout, so a silent server is still caught. */
-const MAX_COLD_START_MS = 8 * 60_000
+/**
+ * Prefill cost per token, with margin.
+ *
+ * Measured live against this machine's own server while it was warming a compacted session:
+ * `n_prompt_tokens_processed` moved 26,099 -> 30,195 in 10.4 s, i.e. **393 tok/s, 2.54
+ * ms/token**, at 99-100% GPU. That is a third slower than the 1.9 ms/token this constant
+ * first carried, which came from Transcript's benchmark over a much smaller history — and a
+ * budget derived from the optimistic number is the one that runs out.
+ *
+ * 4 ms carries the measured rate plus room for a GPU that is also driving a display or
+ * another process, which is the ordinary condition on a laptop.
+ */
+const PREFILL_MS_PER_TOKEN = 4
+/** Below the client's ten-minute transport timeout, so a silent server is still caught by
+ * something. */
+const MAX_COLD_START_MS = 9 * 60_000
 
 /**
  * What every request carries that `Transcript.approxTokens()` cannot see: the tool schemas.
@@ -579,7 +600,19 @@ export class Session {
   private summaryBudget(): number {
     const contextLength = this.opts.compaction?.contextLength
     if (contextLength === undefined || contextLength <= 0) return 0
-    return Math.max(0, contextLength - SUMMARY_OUTPUT_RESERVE)
+    // Capped far below the window, not merely inside it.
+    //
+    // "The window minus a reserve" made a summary request nearly as large as the conversation
+    // it was rescuing: ~123k tokens, five minutes of prefill before a word is generated, and
+    // an answer that has to arrive before the client's own transport timeout. Measured on
+    // this machine at 393 tok/s of prefill, that is the difference between a remedy that
+    // finishes and one that keeps being interrupted — and in the session that prompted this,
+    // compaction had NEVER once applied: zero markers in 374 messages.
+    //
+    // A summary does not need the whole conversation. `fitForSummary` already keeps the
+    // system message, the opening exchange and the most recent work, which is what a
+    // continuation is built from; the middle is what a summary is for.
+    return Math.max(0, Math.min(contextLength - SUMMARY_OUTPUT_RESERVE, SUMMARY_MAX_INPUT_TOKENS))
   }
 
   /**
