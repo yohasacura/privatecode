@@ -348,6 +348,20 @@ export function Composer({
   const newestItem = state.items[state.items.length - 1]
   const streaming = newestItem !== undefined && newestItem.kind === 'thinking' &&
     !newestItem.done && newestItem.text.length > 0
+  /**
+   * The model is writing a TOOL CALL, and nothing shows it.
+   *
+   * The arguments of `edit_file` are generated exactly like reasoning is — token by token,
+   * for as long as the change is big — but the window only learns of a call once it has
+   * arrived whole. So the chat went silent for the entire time the edit was being composed,
+   * which is the longest silence in a normal turn and the one that reads as a freeze.
+   *
+   * The state is recognisable without any new plumbing: a step is running, the reasoning
+   * block for it has CLOSED (the model stopped thinking in prose), and no call has been
+   * announced yet. There is only one thing that can be.
+   */
+  const composingCall = newestItem !== undefined && newestItem.kind === 'thinking' &&
+    newestItem.done && state.turnRunning
 
   function statusLine(): VNode | null {
     if (waitingOnYou) return <span class="status-live">waiting on you · nothing generating</span>
@@ -378,7 +392,9 @@ export function Composer({
               characters (~15k tokens), and at the ~393 tok/s measured on this machine that is
               close to forty seconds of silence, after which generation runs at its usual
               speed. Saying so turns "it hung" into "it is reading". */}
-          {!streaming && <span class="status-quiet"> · reading what the last step returned</span>}
+          {composingCall
+            ? <span class="status-quiet"> · writing the change — the tool call is generated a token at a time, like the reasoning above it</span>
+            : !streaming && <span class="status-quiet"> · reading what the last step returned</span>}
           {remainingMs !== null && remainingMs < 20_000 && (
             <span class="warn"> · {Math.ceil(remainingMs / 1000)}s to timeout</span>
           )}
