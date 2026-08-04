@@ -243,6 +243,16 @@ export class CheckpointStore {
         await execa('git', ['--git-dir', this.gitDir, 'config', 'core.excludesFile', excludePath], {
           timeout: GIT_TIMEOUT_MS, windowsHide: true, reject: false,
         })
+        // A snapshot store wants byte-for-byte fidelity, and git's line-ending translation
+        // is the opposite of that. `core.autocrlf=true` is the Windows default and is set
+        // globally on this machine: with it, a rewind rewrites the line endings of every
+        // file it restores — a "put it back" that silently changes every line of the
+        // workspace. Caught by a test asserting the exact bytes came back.
+        for (const [key, value] of [['core.autocrlf', 'false'], ['core.eol', 'native'], ['core.safecrlf', 'false']]) {
+          await execa('git', ['--git-dir', this.gitDir, 'config', key!, value!], {
+            timeout: GIT_TIMEOUT_MS, windowsHide: true, reject: false,
+          })
+        }
       }
       return true
     } catch (e) {

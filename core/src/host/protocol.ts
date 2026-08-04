@@ -246,6 +246,13 @@ export interface HostMethodMap {
   'terminal.run': { params: TerminalRunParams; result: TerminalRunResult }
   'config.get': { params: ConfigGetParams; result: ConfigGetResult }
   'config.set': { params: ConfigSetParams; result: ConfigSetResult }
+  'checkpoints.list': { params: CheckpointsListParams; result: CheckpointsListResult }
+  'checkpoints.rewind': { params: CheckpointsRewindParams; result: CheckpointsRewindResult }
+  'decisions.list': { params: DecisionsListParams; result: DecisionsListResult }
+  'decisions.resolve': { params: DecisionsResolveParams; result: DecisionsResolveResult }
+  'worklog.read': { params: WorklogReadParams; result: WorklogReadResult }
+  'run.start': { params: RunStartParams; result: RunStartResult }
+  'run.stop': { params: RunStopParams; result: RunStopResult }
 }
 export type HostMethodName = keyof HostMethodMap
 
@@ -340,8 +347,90 @@ export interface HostEventMap {
   compaction: CompactionEvent
   'settings.problem': SettingsProblemEvent
   'turn.done': TurnDoneEvent
+  'run.turn': RunTurnEvent
+  'run.ended': RunEndedEvent
+  'decisions.changed': DecisionsChangedEvent
 }
 export type HostEventName = keyof HostEventMap
+
+// ---------------------------------------------------------------------------------------
+// Long runs: checkpoints, the decision queue, the work log, and the unattended runner.
+// ---------------------------------------------------------------------------------------
+
+/** One snapshot of the workspace. Mirrors `checkpoints/store.ts`'s own `Checkpoint`,
+ * redeclared here for the same reason as `JobInfo`: an internal refactor must not silently
+ * change the wire contract. */
+export interface CheckpointInfo {
+  id: string
+  at: string
+  turn?: number
+  summary: string
+}
+
+export type CheckpointsListParams = Empty
+export interface CheckpointsListResult { checkpoints: CheckpointInfo[] }
+
+export interface CheckpointsRewindParams { id: string }
+/** `undo` is the checkpoint that puts things back, so the UI can offer the reverse
+ * immediately -- a rewind to the wrong point is the failure this whole feature has to
+ * survive. */
+export interface CheckpointsRewindResult { restored: CheckpointInfo; undo: CheckpointInfo }
+
+/** A request parked because nobody answered it. `kind` decides which half is populated. */
+export interface DecisionInfo {
+  kind: 'approval' | 'question'
+  id: string
+  at: string
+  /** approval only */
+  tool?: string
+  summary?: string
+  detail?: string
+  suggestedRules?: string[]
+  /** question only */
+  question?: string
+  options?: string[]
+}
+
+export type DecisionsListParams = Empty
+export interface DecisionsListResult { decisions: DecisionInfo[] }
+
+/**
+ * Answering a parked request.
+ *
+ * `rule` is the point of the whole queue: a night's worth of approvals should become a
+ * handful of permission rules, not a handful of one-off yesses that are gone by tomorrow.
+ * It is applied to the live engine exactly as an in-the-moment "always allow" would be.
+ */
+export interface DecisionsResolveParams {
+  id: string
+  verdict?: 'allow' | 'deny'
+  rule?: { rule: string; layer: 'session' | 'local' | 'project' | 'user' }
+  answer?: string
+}
+export type DecisionsResolveResult = Empty
+
+export type WorklogReadParams = Empty
+/** `text` is empty when nothing has been logged yet, which is the normal state of a
+ * workspace that has never run unattended. */
+export interface WorklogReadResult { text: string; path: string }
+
+export interface RunStartParams {
+  task: string
+  maxTurns?: number
+  maxHours?: number
+}
+export type RunStartResult = Empty
+export type RunStopParams = Empty
+export type RunStopResult = Empty
+
+/** Emitted before each unattended turn, so the composer can show progress without the app
+ * having to count `turn.done` events itself. */
+export interface RunTurnEvent { turn: number; text: string }
+export interface RunEndedEvent { turns: number; stoppedBecause: string; detail: string }
+/** Fired whenever the parked count changes, so the card appears without polling. */
+export interface DecisionsChangedEvent { pending: number }
+
+
 
 // ---------------------------------------------------------------------------------------
 // Framing: ndjson in, ndjson out.

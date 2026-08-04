@@ -266,7 +266,11 @@ export class Session {
     // most often wants, and it only exists if it is taken before any work happens.
     this.checkpoints = opts.longRun ? new CheckpointStore(opts.workspaceRoot) : null
     this.workLog = opts.longRun ? new WorkLog(opts.workspaceRoot) : null
-    this.decisions = opts.unattended ? new DecisionQueue(opts.workspaceRoot) : null
+    // The queue exists for any long run; whether it INTERCEPTS is a separate, runtime
+    // question. Sitting in front of the window, an approval must wait for the person, not
+    // time out into a file they will read tomorrow.
+    this.decisions = opts.longRun || opts.unattended ? new DecisionQueue(opts.workspaceRoot) : null
+    this.unattendedActive = opts.unattended !== undefined
   }
 
   /**
@@ -285,6 +289,18 @@ export class Session {
   /** Requests parked because nobody answered them. Empty unless this is an unattended run. */
   pendingDecisions(): ReturnType<DecisionQueue['pending']> {
     return this.decisions ? this.decisions.pending() : []
+  }
+
+  /**
+   * Turns parking on or off.
+   *
+   * Called when an unattended run starts and stops. The flag is what decides whether an
+   * unanswered approval waits forever (right, when someone is watching) or is queued (right,
+   * when nobody is) — the queue's mere existence must not change how a supervised session
+   * behaves.
+   */
+  setUnattended(active: boolean): void {
+    this.unattendedActive = active
   }
 
   /** The queue itself, for a host that needs to resolve entries. */
@@ -837,8 +853,11 @@ export class Session {
   /** Built only for a long run; see `SessionOptions.longRun`. */
   private readonly checkpoints: CheckpointStore | null
   private readonly workLog: WorkLog | null
-  /** Present only in an unattended run; see `SessionOptions.unattended`. */
+  /** Present for any long run; see `SessionOptions.longRun`. */
   private readonly decisions: DecisionQueue | null
+  /** Whether unanswered requests currently park. Toggled by `setUnattended` when a run
+   * starts and stops, so the same session can be driven both ways. */
+  private unattendedActive: boolean
   /** The checkpoint the last turn ended on, so the next one can diff against it. */
   private lastCheckpoint: Checkpoint | null = null
   /** 1-based, counted by this session rather than read off the transcript: a compaction
@@ -862,7 +881,7 @@ export class Session {
    * to save by holding one.
    */
   private interactionPort(): InteractionPort | undefined {
-    if (!this.decisions) return this.opts.interaction
+    if (!this.decisions || !this.unattendedActive) return this.opts.interaction
     return queueingPort(this.opts.interaction, {
       queue: this.decisions,
       sessionId: this.id,

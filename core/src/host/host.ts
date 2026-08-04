@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { readFile, readdir, stat } from 'node:fs/promises'
-import { extname } from 'node:path'
+import { extname, join } from 'node:path'
 import type { AgentEvents } from '../agent/loop.js'
 import { HEALTH_CHECK_TIMEOUT_MS } from '../cli/render.js'
 import type { ApprovalDecision, InteractionPort } from '../interaction.js'
@@ -18,6 +18,8 @@ import { loadBrowserSettings } from '../browser/settings.js'
 import { loadServers } from '../mcp/config.js'
 import { McpManager } from '../mcp/manager.js'
 import { Workspace } from '../workspace.js'
+import { PRIVATE_DIR } from '../private-dir.js'
+import { runUnattended } from '../cli/unattended.js'
 import type {
   AbortResult,
   ApprovalReplyParams,
@@ -27,6 +29,17 @@ import type {
   ConfigGetResult,
   ConfigSetParams,
   ConfigSetResult,
+  CheckpointsListResult,
+  CheckpointsRewindParams,
+  CheckpointsRewindResult,
+  DecisionInfo,
+  DecisionsListResult,
+  DecisionsResolveParams,
+  DecisionsResolveResult,
+  RunStartParams,
+  RunStartResult,
+  RunStopResult,
+  WorklogReadResult,
   FsReadParams,
   FsReadResult,
   FsTreeEntry,
@@ -267,6 +280,13 @@ export class SessionHost {
       case 'terminal.run': return this.terminalRun(params as TerminalRunParams)
       case 'config.get': return this.configGet()
       case 'config.set': return this.configSet(params as ConfigSetParams)
+      case 'checkpoints.list': return this.checkpointsList()
+      case 'checkpoints.rewind': return this.checkpointsRewind(params as CheckpointsRewindParams)
+      case 'decisions.list': return this.decisionsList()
+      case 'decisions.resolve': return this.decisionsResolve(params as DecisionsResolveParams)
+      case 'worklog.read': return this.worklogRead()
+      case 'run.start': return this.runStart(params as RunStartParams)
+      case 'run.stop': return this.runStop()
       default: throw new Error(`unknown method: "${method}"`)
     }
   }
@@ -407,6 +427,9 @@ export class SessionHost {
     })
 
     const sessionOpts: SessionOptions = {
+      // Measured at ~220 ms per turn against a 30-60 s turn, so on by default: 'put back
+      // what it just did' is worth having while watching, not only overnight.
+      longRun: true,
       client,
       toolset,
       workspaceRoot,
@@ -754,6 +777,140 @@ export class SessionHost {
   }
 
   // -----------------------------------------------------------------------------------
+  // Long runs: checkpoints, parked decisions, the work log, the unattended runner
+  // -----------------------------------------------------------------------------------
+
+  private async checkpointsList(): Promise<CheckpointsListResult> {
+    const session = this.requireSession()
+    return { checkpoints: await session.listCheckpoints() }
+  }
+
+  /**
+   * Restores the workspace and tells the UI what to offer as the reverse.
+   *
+   * Refused while a turn is running, by `Session.rewind` itself: pulling files out from
+   * under a model mid-edit produces a workspace neither of them believes in.
+   */
+  private async checkpointsRewind(params: CheckpointsRewindParams): Promise<CheckpointsRewindResult> {
+    if (typeof params?.id !== 'string' || params.id.trim() === '') {
+      throw new Error('checkpoints.rewind needs an id')
+    }
+    const session = this.requireSession()
+    const { restored, undo } = await session.rewind(params.id)
+    return { restored, undo }
+  }
+
+  private decisionsList(): DecisionsListResult {
+    const queue = this.session?.decisionQueue()
+    if (!queue) return { decisions: [] }
+    return { decisions: queue.pending().map(toDecisionInfo) }
+  }
+
+  /**
+   * Answers a parked request.
+   *
+   * The `rule` half is the whole value of the queue: a night's worth of approvals becomes a
+   * handful of permission rules rather than a handful of yesses that are gone by morning. It
+   * goes through the same `engine.remember` an in-the-moment "always allow" uses, so the two
+   * paths cannot drift.
+   *
+   * The tool call itself is long gone -- it was refused hours ago and the agent moved on --
+   * so this records an ANSWER, it does not retroactively run anything. Saying otherwise
+   * would be the worst kind of lie for a security surface.
+   */
+  private decisionsResolve(params: DecisionsResolveParams): DecisionsResolveResult {
+    const queue = this.session?.decisionQueue()
+    if (!queue) throw new Error('there is no decision queue in this session')
+    if (typeof params?.id !== 'string' || params.id.trim() === '') {
+      throw new Error('decisions.resolve needs an id')
+    }
+    if (params.rule && this.engine) {
+      try {
+        this.engine.remember(params.rule.rule, params.rule.layer)
+      } catch { /* remembering must never fail the answer itself */ }
+      for (const problem of this.engine.problems.splice(0)) {
+        this.emit('settings.problem', { text: problem })
+      }
+    }
+    queue.resolve({
+      id: params.id,
+      ...(params.verdict !== undefined ? { verdict: params.verdict } : {}),
+      ...(params.rule !== undefined ? { rule: params.rule } : {}),
+      ...(params.answer !== undefined ? { answer: params.answer } : {}),
+    })
+    this.emit('decisions.changed', { pending: queue.pending().length })
+    return {}
+  }
+
+  private async worklogRead(): Promise<WorklogReadResult> {
+    const { workspaceRoot } = this.requireInitialized()
+    const path = `${PRIVATE_DIR}/worklog.md`
+    try {
+      return { text: await readFile(join(workspaceRoot, PRIVATE_DIR, 'worklog.md'), 'utf8'), path }
+    } catch {
+      // An absent log is the normal state of a workspace that has never run unattended, not
+      // an error to put in front of someone.
+      return { text: '', path }
+    }
+  }
+
+  /**
+   * Starts an unattended run: turn after turn until a named stop condition fires.
+   *
+   * Shares the single-slot bookkeeping a manual `send` uses -- `sending`, `currentAbort`,
+   * `currentTurn` -- because it IS a sequence of ordinary turns, and a manual send arriving
+   * mid-run must be refused by exactly the same guard rather than a second one written to
+   * agree with it.
+   */
+  private runStart(params: RunStartParams): RunStartResult {
+    const session = this.requireSession()
+    if (this.sending) throw new Error('a turn is already running in this session')
+    if (typeof params?.task !== 'string' || params.task.trim() === '') {
+      throw new Error('run.start needs a task')
+    }
+
+    this.sending = true
+    this.currentAbort = new AbortController()
+    const signal = this.currentAbort.signal
+    session.setUnattended(true)
+
+    this.currentTurn = (async () => {
+      try {
+        const summary = await runUnattended({
+          session,
+          task: params.task,
+          signal,
+          ...(typeof params.maxTurns === 'number' ? { maxTurns: params.maxTurns } : {}),
+          ...(typeof params.maxHours === 'number' ? { maxHours: params.maxHours } : {}),
+          onTurn: (info) => this.emit('run.turn', info),
+        })
+        this.emit('run.ended', summary)
+      } catch (e) {
+        this.emit('run.ended', {
+          turns: 0,
+          stoppedBecause: 'error',
+          detail: e instanceof Error ? e.message : String(e),
+        })
+      } finally {
+        session.setUnattended(false)
+        this.sending = false
+        const queue = session.decisionQueue()
+        if (queue) this.emit('decisions.changed', { pending: queue.pending().length })
+        for (const problem of session.longRunProblems()) {
+          this.emit('settings.problem', { text: problem })
+        }
+      }
+    })()
+    return {}
+  }
+
+  /** Same abort a manual turn uses; the runner sees it and stops after the current turn. */
+  private runStop(): RunStopResult {
+    if (this.currentAbort && !this.currentAbort.signal.aborted) this.currentAbort.abort()
+    return {}
+  }
+
+  // -----------------------------------------------------------------------------------
   // Status
   // -----------------------------------------------------------------------------------
 
@@ -861,5 +1018,30 @@ export class SessionHost {
   private requireSession(): Session {
     if (!this.session) throw new Error('SessionHost: no active session (call "init" first)')
     return this.session
+  }
+}
+
+/** The queue's own entry, flattened for the wire. See `DecisionInfo`. */
+function toDecisionInfo(entry: {
+  kind: 'approval' | 'question'
+  id: string
+  at: string
+  tool?: string
+  summary?: string
+  detail?: string
+  suggestedRules?: string[]
+  question?: string
+  options?: string[]
+}): DecisionInfo {
+  return {
+    kind: entry.kind,
+    id: entry.id,
+    at: entry.at,
+    ...(entry.tool !== undefined ? { tool: entry.tool } : {}),
+    ...(entry.summary !== undefined ? { summary: entry.summary } : {}),
+    ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
+    ...(entry.suggestedRules !== undefined ? { suggestedRules: entry.suggestedRules } : {}),
+    ...(entry.question !== undefined ? { question: entry.question } : {}),
+    ...(entry.options !== undefined ? { options: entry.options } : {}),
   }
 }
