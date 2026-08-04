@@ -310,6 +310,10 @@ fn main() {
         // builds only -- the dev-bridge transport has no Tauri window behind it and uses
         // a plain text field instead; see status.tsx's `pickWorkspaceDialog`).
         .plugin(tauri_plugin_dialog::init())
+        // An unattended run assumes you walked away. Everything the app built for those
+        // runs -- parking a question instead of blocking, stopping for a named reason --
+        // is worth nothing if the only way to learn it happened is to come back and look.
+        .plugin(tauri_plugin_notification::init())
         .manage(SidecarState::new())
         .invoke_handler(tauri::generate_handler![sidecar_send, sidecar_stderr, restart_sidecar])
         .setup(|app| {

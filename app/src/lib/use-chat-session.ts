@@ -1,6 +1,7 @@
 import { useEffect, useReducer } from 'preact/hooks'
 import type { ProtocolClient } from './client'
 import { type ChatAction, type ChatState, initialChatState, reduceChat } from './state'
+import { notify } from './notify'
 
 /**
  * Subscribes ONE `ProtocolClient` to `lib/state.ts`'s reducer and returns `[state,
@@ -24,6 +25,9 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
 
   useEffect(() => {
     if (!client) return
+    // Per-subscription, not per-render: the point is to tell a RISE from a fall, and a
+    // value that resets on every render can do neither.
+    let lastPending = 0
     const unsubs = [
       client.on('step.start', (d) =>
         dispatch({ type: 'step.start', step: d.step, timeoutMs: d.timeoutMs, startedAtMs: Date.now() })),
@@ -47,19 +51,40 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         ...(d.draftAcceptance !== undefined ? { draftAcceptance: d.draftAcceptance } : {}),
       })),
       client.on('turn.done', (d) => dispatch({ type: 'turn.done', stoppedBecause: d.stoppedBecause, atMs: Date.now() })),
-      client.on('approval.request', (d) => dispatch({
-        type: 'approval.request', requestId: d.requestId, tool: d.tool, summary: d.summary,
-        detail: d.detail, suggestedRules: d.suggestedRules,
-      })),
-      client.on('question.request', (d) => dispatch({
-        type: 'question.request', requestId: d.requestId, question: d.question, options: d.options,
-      })),
+      client.on('approval.request', (d) => {
+        dispatch({
+          type: 'approval.request', requestId: d.requestId, tool: d.tool, summary: d.summary,
+          detail: d.detail, suggestedRules: d.suggestedRules,
+        })
+        // A blocked turn is the most expensive thing to not notice: nothing else happens
+        // until it is answered, and unattended it will eventually be parked instead.
+        void notify('PrivateCode needs a decision', d.summary)
+      }),
+      client.on('question.request', (d) => {
+        dispatch({ type: 'question.request', requestId: d.requestId, question: d.question, options: d.options })
+        void notify('PrivateCode has a question', d.question)
+      }),
       client.on('todos', (d) => dispatch({ type: 'todos', items: d.items })),
-      client.on('decisions.changed', (d) => dispatch({ type: 'decisions.changed', pending: d.pending })),
+      client.on('decisions.changed', (d) => {
+        dispatch({ type: 'decisions.changed', pending: d.pending })
+        // Only a RISE is news. The count also changes as you answer them, and being told
+        // about your own clicks is noise.
+        if (d.pending > lastPending) {
+          void notify(
+            'A question was parked',
+            `${d.pending} decision${d.pending === 1 ? '' : 's'} waiting for you`,
+          )
+        }
+        lastPending = d.pending
+      }),
       client.on('run.turn', (d) => dispatch({ type: 'run.turn', turn: d.turn })),
-      client.on('run.ended', (d) => dispatch({
-        type: 'run.ended', stoppedBecause: d.stoppedBecause, detail: d.detail, turns: d.turns,
-      })),
+      client.on('run.ended', (d) => {
+        dispatch({ type: 'run.ended', stoppedBecause: d.stoppedBecause, detail: d.detail, turns: d.turns })
+        void notify(
+          `Run ended: ${d.stoppedBecause}`,
+          `${d.turns} turn${d.turns === 1 ? '' : 's'} — ${d.detail}`,
+        )
+      }),
       // Nothing consumed this before: a settings file that failed to parse dropped the
       // user's deny rules with no signal anywhere in the UI.
       client.on('settings.problem', (d) => dispatch({ type: 'settings-problem', text: d.text })),
