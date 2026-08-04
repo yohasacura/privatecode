@@ -75,6 +75,7 @@ import { loadUiConfig, saveUiConfig } from './ui-config.js'
 import { recordToolOutcome, replayEntries, toolOutcomes } from './replay.js'
 import { rankFiles, walkFiles } from './file-search.js'
 import { attachFiles } from './attachments.js'
+import { buildRepoMap } from '../outline/repo-map.js'
 
 /**
  * What `SessionHost` needs from whatever carries its messages to the UI: fire-and-forget
@@ -162,6 +163,14 @@ export class SessionHost {
   /** Built once per workspace on the first `fs.find`; see that method for why it is not
    * rebuilt per keystroke. Cleared by `init`, which replaces the whole host state. */
   private fileIndex: string[] | undefined
+  /**
+   * The project map, built once per WORKSPACE rather than per session.
+   *
+   * Per workspace because that is what it describes, and because building it parses every
+   * source file: paying that on every New session would make the button feel broken. It
+   * belongs to the same lifetime as the MCP servers and the file index for the same reason.
+   */
+  private repoMap = ''
   private workspace: Workspace | undefined
   private client: LlamaClient | undefined
   private toolset: Toolset | undefined
@@ -341,6 +350,11 @@ export class SessionHost {
       ...browserSettings.problems,
       ...await this.connectMcpServers(params.workspaceRoot),
     ]
+    // Built here, once per workspace, and awaited: it belongs in the system message, which
+    // is message 0 of an append-only transcript, so there is no later moment to add it to.
+    // A workspace it cannot index yields '' and the session runs exactly as it did before
+    // maps existed.
+    this.repoMap = await buildRepoMap(params.workspaceRoot)
 
     return this.buildSession(this.sessionToOpen(params))
   }
@@ -474,6 +488,7 @@ export class SessionHost {
       },
     }
     if (memory.layers.length > 0) sessionOpts.memory = memory
+    if (this.repoMap !== '') sessionOpts.repoMap = this.repoMap
     if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
     if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
     if (resumeId !== undefined) sessionOpts.resume = resumeId

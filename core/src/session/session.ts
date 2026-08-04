@@ -70,6 +70,10 @@ export interface SessionOptions {
    * transcript discipline forbids.
    */
   memory?: LoadedMemory
+  /** The project map, ALREADY BUILT by the host -- mirroring how `memory` and `engine`
+   * arrive ready-made. Carried across compaction swaps for the same reason memory is: it
+   * belongs to the session, not to one agent instance. */
+  repoMap?: string
   /** Formatter rules from the settings layers, already parsed by the host. Empty or absent
    * means no formatting, which is the normal case. */
   formatRules?: FormatRule[]
@@ -171,6 +175,7 @@ export class Session {
    * `opts.memory` so both build sites — `buildAgent` and `applyCompactionSwap` — use the
    * same text and cannot drift. */
   private readonly memoryText: string | undefined
+  private readonly repoMapText: string | undefined
   /** The project's formatter, when `.privatecode/settings.json` configures one. */
   private readonly formatRunner: FormatRunner | undefined
   /** Built once per Session so a hook's failure counter spans the session, not one turn. */
@@ -207,6 +212,7 @@ export class Session {
     // Frozen here, once: both places that build a system message read this field, so they
     // cannot drift, and a mid-session edit to AGENTS.md cannot reach message 0.
     this.memoryText = opts.memory && opts.memory.text !== '' ? opts.memory.text : undefined
+    this.repoMapText = opts.repoMap !== undefined && opts.repoMap !== '' ? opts.repoMap : undefined
     this.formatRunner = opts.formatRules && opts.formatRules.length > 0
       ? createFormatRunner(opts.formatRules, this.workspace)
       : undefined
@@ -749,6 +755,7 @@ export class Session {
         workspaceRoot: this.workspace.root,
         mode: this.meta.mode,
         ...(this.memoryText !== undefined ? { memory: this.memoryText } : {}),
+        ...(this.repoMapText !== undefined ? { repoMap: this.repoMapText } : {}),
       }),
     })
     next.append({ role: 'user', content: `${COMPACTION_BRIEFING_PREFIX}\n${summary}` })
@@ -928,6 +935,7 @@ export class Session {
       loopDetector: this.loopDetector,
     }
     if (this.memoryText !== undefined) agentOpts.memory = this.memoryText
+    if (this.repoMapText !== undefined) agentOpts.repoMap = this.repoMapText
     if (this.opts.engine) {
       // mode intentionally omitted here -- see the constructor's invariant note. Agent
       // resolves opts.permissions.mode instead, which is always meta.mode by now.

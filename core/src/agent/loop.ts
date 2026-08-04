@@ -127,6 +127,8 @@ export interface AgentOptions {
    * re-read: it lands in the system message, which is message 0 of an append-only
    * transcript. */
   memory?: string
+  /** The project map for the system prompt; see `outline/repo-map.ts`. */
+  repoMap?: string
   /** User-configured after-tool hooks. Absent means none, the normal case. */
   hooks?: HookRunner
   /**
@@ -316,6 +318,7 @@ export class Agent {
           // Conditional spread, not `memory: opts.memory`: tsconfig sets
           // exactOptionalPropertyTypes, so an explicit undefined is not the same as absent.
           ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
+          ...(opts.repoMap !== undefined ? { repoMap: opts.repoMap } : {}),
         }),
       })
     }

@@ -13,6 +13,16 @@ export interface PromptOptions {
    */
   memory?: string
   /**
+   * The project's structural map (see `outline/repo-map.ts`), or absent.
+   *
+   * It goes before `memory`, not after: memory is what the USER wrote about this project and
+   * deserves the last word; the map is a derived listing, and a listing read after an
+   * instruction competes with it for attention. Being in the stable prefix is the whole
+   * reason it is affordable -- it is paid for on the first request of a session and cached
+   * from then on.
+   */
+  repoMap?: string
+  /**
    * Which surfaces beyond the built-in fourteen tools are actually registered this session.
    *
    * Passed in rather than assumed, because this prompt is message 0 of an append-only
@@ -109,6 +119,7 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     )
   }
 
+  if (opts.repoMap !== undefined && opts.repoMap !== '') parts.push('', opts.repoMap)
   // Memory goes LAST -- see PromptOptions.memory. An absent or empty block leaves this
   // function returning byte-for-byte what it returned before memory existed, which is what
   // keeps every existing assertion about this prompt meaningful.
