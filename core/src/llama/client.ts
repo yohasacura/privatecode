@@ -239,10 +239,23 @@ export class LlamaClient {
           if (typeof fragment.id === 'string') {
             entry.id = fragment.id
             if (typeof fragment.function?.name === 'string') entry.name = fragment.function.name
-            cb?.onDelta?.({ toolCallStarted: true })
+            cb?.onDelta?.({
+              toolCallStarted: true,
+              toolCallIndex: fragment.index,
+              ...(entry.name !== '' ? { toolCallName: entry.name } : {}),
+            })
           }
           if (typeof fragment.function?.arguments === 'string') {
             entry.arguments += fragment.function.arguments
+            // Reported as well as accumulated. Writing a large argument IS the step, and a
+            // consumer that only ever sees the finished call has nothing to show for the
+            // whole of it.
+            if (fragment.function.arguments !== '') {
+              cb?.onDelta?.({
+                toolCallArguments: fragment.function.arguments,
+                toolCallIndex: fragment.index,
+              })
+            }
           }
         }
       }

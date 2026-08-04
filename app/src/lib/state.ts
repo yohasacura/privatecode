@@ -57,6 +57,18 @@ export type ChatItem =
     id: number
     name: string
     args: string
+    /**
+     * The call is still being GENERATED — `args` is a partial JSON document, not yet valid.
+     *
+     * A large edit is written into the argument a token at a time, and that is most of the
+     * step. Until the call streamed, the window learned of it only when it arrived whole, so
+     * the chat stopped for the whole of the longest stretch in a normal turn. Cleared by the
+     * `tool.call` that completes it, which is also what replaces `args` with the real one.
+     */
+    writing?: true
+    /** Which call in the step this is, while it is being written. Parallel calls interleave
+     * in one stream and are told apart only by this. Dropped once the call completes. */
+    callIndex?: number
     /** When the call was announced, from the action's optional `atMs`. Used to order the
      * Terminal tab, which interleaves the agent's commands with the user's own. `0` when
      * the caller had no clock (a test). */
@@ -265,6 +277,9 @@ export type ChatAction =
    * the "thought for 12s" duration. */
   | { type: 'text.delta'; text: string; atMs?: number }
   | { type: 'assistant.text'; text: string; atMs?: number }
+  /** A tool call arriving as it is written: `name` opens the card, `args` fragments fill it.
+   * See the `tool` ChatItem's `writing`. */
+  | { type: 'tool.call.delta'; index: number; name?: string; args?: string; atMs?: number }
   | { type: 'tool.call'; name: string; args: string; atMs?: number }
   | { type: 'tool.result'; name: string; ok: boolean; content: string; display?: string }
   | { type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number; promptTokens?: number; draftAcceptance?: number; atMs?: number }
@@ -370,11 +385,15 @@ function lastAssistantItem(items: ChatItem[]): (ChatItem & { kind: 'assistant' }
  *
  * Recency alone is still the right match: tools run strictly one at a time here, so there
  * is never more than one unresolved call, even when the same tool is called twice in a row.
+ *
+ * A card still being WRITTEN is skipped. It has no result for the same reason it has no
+ * finished arguments — the model is still generating it — so it can never be the call a
+ * result belongs to, and matching it would hand one call's result to another.
  */
 function lastPendingTool(items: ChatItem[]): (ChatItem & { kind: 'tool' }) | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
-    if (item?.kind === 'tool' && item.result === undefined) return item
+    if (item?.kind === 'tool' && item.result === undefined && item.writing !== true) return item
   }
   return undefined
 }
@@ -527,10 +546,54 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       return { ...state, items: [...items, item], nextId: state.nextId + 1 }
     }
 
+    case 'tool.call.delta': {
+      // The name opens the card. It arrives on the call's first fragment, before a single
+      // character of the argument — so the row appears at the moment the model commits to a
+      // tool, not minutes later when it has finished describing what to do with it.
+      if (action.name !== undefined) {
+        const items = closeThinking(state.items, action.atMs)
+        const item: ChatItem = {
+          kind: 'tool', id: state.nextId, name: action.name, args: '',
+          startedAtMs: action.atMs ?? 0, writing: true, callIndex: action.index,
+        }
+        return { ...state, items: [...items, item], nextId: state.nextId + 1 }
+      }
+      if (action.args === undefined || action.args === '') return state
+      // Appended to the newest card still being written for THIS call. Matching on the index
+      // rather than on position is what keeps parallel calls apart: they interleave in one
+      // stream and are otherwise indistinguishable.
+      let done = false
+      const items = [...state.items].reverse().map((item): ChatItem => {
+        if (done || item.kind !== 'tool' || item.writing !== true || item.callIndex !== action.index) return item
+        done = true
+        return { ...item, args: item.args + action.args }
+      }).reverse()
+      // A fragment with no card is a call whose opening fragment this window never saw.
+      // Dropping it is right: half an argument under no name is not something to show.
+      return done ? { ...state, items } : state
+    }
+
     case 'tool.call': {
       // The other way a step's reasoning ends -- and the one the original code missed,
       // which is why every tool-calling step used to leave a live "thinking…" row behind.
       const items = closeThinking(state.items, action.atMs)
+      // The authoritative call, completing the card that was being written for it. `args`
+      // here is the assembled document the tool will actually run on; the streamed fragments
+      // were only ever a view of it being produced, and may have been coalesced or dropped.
+      // OLDEST first, unlike every other lookup here: `tool.call` fires once per call in the
+      // order the calls were made, so two parallel calls to the same tool must complete
+      // their cards in that same order or the two swap arguments.
+      let completed = false
+      const settled = items.map((item): ChatItem => {
+        if (completed || item.kind !== 'tool' || item.writing !== true || item.name !== action.name) return item
+        completed = true
+        const { writing: _w, callIndex: _c, ...rest } = item
+        return { ...rest, args: action.args }
+      })
+      if (completed) return { ...state, items: settled }
+
+      // No card to complete: streaming is off, or this window was opened mid-step. The call
+      // still happened, so it still gets a row.
       const item: ChatItem = {
         kind: 'tool', id: state.nextId, name: action.name, args: action.args,
         startedAtMs: action.atMs ?? 0,

@@ -669,6 +669,17 @@ kbd {
 .tool-toggle { display: flex; color: var(--text-faint); }
 .tool-spacer { flex: 1; }
 
+/* A call the model is still writing. Not a button: there is nothing to expand yet, and a
+   header that looks pressable but is not is worse than one that plainly is not. */
+.tool-head-writing { cursor: default; }
+.tool-head-writing:hover { background: transparent; }
+.tool-writing-note {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
 /* A command, whole. Wrapped, never ellipsised, selectable, and shown even while it runs. */
 .cmd-line {
   display: flex;

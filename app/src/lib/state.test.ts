@@ -650,3 +650,82 @@ describe('reduceChat: a compaction read back off disk', () => {
     expect(state.lastCompaction).toBeNull()
   })
 })
+
+describe('reduceChat: a tool call arriving as it is written', () => {
+  it('opens a card on the name, before a single argument character', () => {
+    // The whole point. On a large edit the model spends most of the step writing the
+    // argument; the name arrives on the first fragment, so the row can be there for all of
+    // it instead of appearing at the end.
+    const state = run([{ type: 'tool.call.delta', index: 0, name: 'edit_file', atMs: 5 }])
+    expect(state.items).toEqual([
+      { kind: 'tool', id: 1, name: 'edit_file', args: '', startedAtMs: 5, writing: true, callIndex: 0 },
+    ])
+  })
+
+  it('grows the card as the argument is generated', () => {
+    const state = run([
+      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, args: '{"path":"a' },
+      { type: 'tool.call.delta', index: 0, args: '.ts","old":"x"}' },
+    ])
+    expect(state.items).toHaveLength(1)
+    expect((state.items[0] as { args: string }).args).toBe('{"path":"a.ts","old":"x"}')
+  })
+
+  it('is completed by the real call, not duplicated by it', () => {
+    // `tool.call` is the authoritative event: it carries the assembled document the tool
+    // actually runs on. Appending a second row for it would show every call twice.
+    const state = run([
+      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts"' },
+      { type: 'tool.call', name: 'edit_file', args: '{"path":"a.ts","old":"x","new":"y"}' },
+    ])
+    expect(state.items).toEqual([
+      {
+        kind: 'tool', id: 1, name: 'edit_file', args: '{"path":"a.ts","old":"x","new":"y"}',
+        startedAtMs: 0,
+      },
+    ])
+  })
+
+  it('still shows a call whose streaming this window never saw', () => {
+    // Streaming is off, or the window was opened mid-step. The call happened either way.
+    const state = run([{ type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' }])
+    expect(state.items).toHaveLength(1)
+    expect(state.items[0]).toMatchObject({ kind: 'tool', name: 'read_file' })
+    expect(state.items[0]).not.toHaveProperty('writing')
+  })
+
+  it('keeps two parallel calls to the same tool apart', () => {
+    // They interleave in one stream and are told apart only by index. Completing them in
+    // the wrong order hands one call's arguments to the other — which would show the wrong
+    // file against the wrong diff.
+    const state = run([
+      { type: 'tool.call.delta', index: 0, name: 'read_file' },
+      { type: 'tool.call.delta', index: 1, name: 'read_file' },
+      { type: 'tool.call.delta', index: 1, args: '{"path":"second' },
+      { type: 'tool.call.delta', index: 0, args: '{"path":"first' },
+      { type: 'tool.call', name: 'read_file', args: '{"path":"first.ts"}' },
+      { type: 'tool.call', name: 'read_file', args: '{"path":"second.ts"}' },
+    ])
+    expect(state.items.map((i) => (i as { args: string }).args))
+      .toEqual(['{"path":"first.ts"}', '{"path":"second.ts"}'])
+  })
+
+  it('does not hand a result to a call that is still being written', () => {
+    // A card with no result and a card still generating look alike to a recency match, and
+    // the second cannot possibly be what a result belongs to.
+    const state = run([
+      { type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' },
+      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.result', name: 'read_file', ok: true, content: 'a.ts (2 lines)' },
+    ])
+    expect(state.items[0]).toMatchObject({ name: 'read_file', result: { ok: true } })
+    expect(state.items[1]).toMatchObject({ name: 'edit_file', writing: true })
+    expect(state.items[1]).not.toHaveProperty('result')
+  })
+
+  it('ignores an argument fragment for a call it never saw open', () => {
+    expect(run([{ type: 'tool.call.delta', index: 3, args: '{"path":"a' }]).items).toEqual([])
+  })
+})

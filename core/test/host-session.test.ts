@@ -683,3 +683,49 @@ test('a long turn compacts between its own steps instead of dying on a full wind
   const sent = (lastChat as any).body.messages as { content: string | null }[]
   expect(sent.some((m) => m.content?.includes('BRIEFING: what happened so far'))).toBe(true)
 })
+
+/**
+ * A tool call reaches the window while it is being written, not only once it is whole.
+ *
+ * On a large edit the model spends most of the step generating the argument. Until this
+ * existed the fragments were accumulated in the client and reported to nobody, so the window
+ * had nothing to show for that time — the longest silence in a normal turn, and the one the
+ * user described as the chat freezing.
+ */
+test('the arguments of a tool call are streamed as they are generated', async () => {
+  let call = 0
+  const fake = await makeServer(() => {
+    call++
+    if (call > 1) return textSSE('done')
+    // Deliberately in pieces, the way a real generation arrives: the id and name once, then
+    // the argument a fragment at a time.
+    const body =
+      sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name: 'read_file', arguments: '' } }] } }] }) +
+      sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"path":' } }] } }] }) +
+      sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"note' } }] } }] }) +
+      sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '.txt"}' } }] } }] }) +
+      sseFrame({ choices: [{ finish_reason: 'tool_calls', delta: {} }], timings: {} }) +
+      SSE_DONE
+    return new RawResponse(200, body, 'text/event-stream')
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  writeFileSync(join(root, 'note.txt'), 'hello', 'utf8')
+  const { host, transport } = await initHost(fake.url, root)
+
+  await host.handle({ id: 2, method: 'send', params: { text: 'read the note' } })
+
+  const deltas = eventsNamed(transport, 'tool.call.delta')
+    .map((e) => e.data as { index: number; name?: string; args?: string })
+
+  // The name comes first and alone -- that is what lets the window open a row before any of
+  // the argument exists.
+  expect(deltas[0]).toEqual({ index: 0, name: 'read_file' })
+  // Every fragment, in order, and together they are the call.
+  expect(deltas.slice(1).map((d) => d.args).join('')).toBe('{"path":"note.txt"}')
+  expect(deltas.slice(1).every((d) => d.name === undefined)).toBe(true)
+
+  // And the finished call still arrives, carrying the assembled document the tool ran on.
+  const calls = eventsNamed(transport, 'tool.call').map((e) => e.data as { name: string; args: string })
+  expect(calls).toEqual([{ name: 'read_file', args: '{"path":"note.txt"}' }])
+})

@@ -109,6 +109,20 @@ export interface AgentEvents {
    * Without this the median hard step is silent across two full generations.
    */
   onContinuation?(step: number): void
+  /**
+   * A tool call being WRITTEN, fired as the server streams its arguments.
+   *
+   * `onToolCall` below fires once, when the call is complete and about to run. That is too
+   * late to be the only signal: on a large edit the model spends most of the step generating
+   * the argument, and until this existed there was nothing to show for that time -- no path,
+   * no progress, an interface that simply stopped. `args` is a FRAGMENT of a JSON document,
+   * not valid JSON on its own; concatenate by `index` and parse only what `onToolCall`
+   * hands over.
+   *
+   * Fires under the same condition as the other delta callbacks: streaming is only switched
+   * on when a host wires one of them.
+   */
+  onToolCallDelta?(info: { index: number; name?: string; args?: string }): void
   onToolCall?(name: string, args: string): void
   /** `callId` is the model's own id for this call. Passed because the host records how each
    * call ended in a file beside the session -- the transcript keeps the result TEXT, which
@@ -611,11 +625,18 @@ export class Agent {
       // tool dispatch, transcript append, timeout/abort mapping — reads the ASSEMBLED
       // ChatResult that both methods return in the same shape; nothing downstream knows
       // which path produced it.
-      const result = events?.onThinkingDelta || events?.onTextDelta
+      const result = events?.onThinkingDelta || events?.onTextDelta || events?.onToolCallDelta
         ? await this.opts.client.chatStream(request, {
           onDelta: (d) => {
             if (d.reasoning) events?.onThinkingDelta?.(d.reasoning)
             if (d.content) events?.onTextDelta?.(d.content)
+            if (d.toolCallIndex !== undefined && (d.toolCallName !== undefined || d.toolCallArguments !== undefined)) {
+              events?.onToolCallDelta?.({
+                index: d.toolCallIndex,
+                ...(d.toolCallName !== undefined ? { name: d.toolCallName } : {}),
+                ...(d.toolCallArguments !== undefined ? { args: d.toolCallArguments } : {}),
+              })
+            }
           },
         })
         : await this.opts.client.chat(request)

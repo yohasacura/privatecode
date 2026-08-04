@@ -360,8 +360,14 @@ export function Composer({
    * block for it has CLOSED (the model stopped thinking in prose), and no call has been
    * announced yet. There is only one thing that can be.
    */
-  const composingCall = newestItem !== undefined && newestItem.kind === 'thinking' &&
-    newestItem.done && state.turnRunning
+  // Now read from the call itself rather than inferred from the shape of the transcript.
+  // The inference above -- reasoning closed, turn running, no call yet -- was the best
+  // available while a call only existed once it had arrived whole; it was right about WHAT
+  // was happening and could say nothing about what was being written. The card in the
+  // transcript now shows the tool and its target as they are generated, so this line only
+  // has to name the state.
+  const composingCall = newestItem !== undefined && newestItem.kind === 'tool' &&
+    newestItem.writing === true
 
   function statusLine(): VNode | null {
     if (waitingOnYou) return <span class="status-live">waiting on you · nothing generating</span>

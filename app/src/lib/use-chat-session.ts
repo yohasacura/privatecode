@@ -45,6 +45,9 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
      */
     let thinkingBuffer = ''
     let textBuffer = ''
+    /** Per call index, because parallel calls interleave in one stream and concatenating
+     * them into one buffer would splice two JSON documents together. */
+    const argsBuffer = new Map<number, string>()
     let frame: number | null = null
 
     function flush(): void {
@@ -59,11 +62,23 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         textBuffer = ''
         dispatch({ type: 'text.delta', text, atMs: Date.now() })
       }
+      if (argsBuffer.size > 0) {
+        // Drained into a list first: dispatching while iterating the map would let a delta
+        // arriving synchronously in a reducer's wake mutate what is still being read.
+        const pending = [...argsBuffer.entries()]
+        argsBuffer.clear()
+        for (const [index, args] of pending) dispatch({ type: 'tool.call.delta', index, args })
+      }
     }
 
     function buffer(into: 'thinking' | 'text', text: string): void {
       if (into === 'thinking') thinkingBuffer += text
       else textBuffer += text
+      frame ??= requestAnimationFrame(flush)
+    }
+
+    function bufferArgs(index: number, args: string): void {
+      argsBuffer.set(index, (argsBuffer.get(index) ?? '') + args)
       frame ??= requestAnimationFrame(flush)
     }
 
@@ -90,6 +105,16 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
       // stamp the end of the reasoning block each of these closes (see state.ts).
       client.on('text.delta', (d) => buffer('text', d.text)),
       client.on('assistant.text', (d) => emit({ type: 'assistant.text', text: d.text, atMs: Date.now() })),
+      // The NAME goes through `emit`, not the buffer: it opens the card, and it has to be
+      // ordered against the reasoning that precedes it (emit drains the buffer first) or the
+      // card lands above the thinking that led to it. The arguments are coalesced per frame
+      // like any other stream — on a large edit they arrive in hundreds of fragments.
+      client.on('tool.call.delta', (d) => {
+        if (d.name !== undefined) {
+          emit({ type: 'tool.call.delta', index: d.index, name: d.name, atMs: Date.now() })
+        }
+        if (d.args !== undefined && d.args !== '') bufferArgs(d.index, d.args)
+      }),
       client.on('tool.call', (d) => emit({ type: 'tool.call', name: d.name, args: d.args, atMs: Date.now() })),
       client.on('tool.result', (d) => emit({
         type: 'tool.result', name: d.name, ok: d.ok, content: d.content,

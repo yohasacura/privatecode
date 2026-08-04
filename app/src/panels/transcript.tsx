@@ -569,6 +569,55 @@ function Screenshot({ path, client }: { path: string; client: ProtocolClient }):
   )
 }
 
+/**
+ * The target of a call whose arguments are still half-written.
+ *
+ * `JSON.parse` is not available here — the document is incomplete by definition — so this
+ * reads the first complete string value of the first key that names a target. A path is
+ * short and is written early, so in practice it is on screen within the first fragments,
+ * long before the file contents that follow it. Returns null until the closing quote
+ * arrives; a half-written path is worse than none, since it reads as a different file.
+ */
+const TARGET_KEYS = ['path', 'file', 'pattern', 'command', 'query', 'url'] as const
+
+function targetInPartialArgs(args: string): string | null {
+  for (const key of TARGET_KEYS) {
+    // The value ends at the first unescaped quote; `(?:[^"\\]|\\.)*` is what makes an
+    // escaped quote inside a Windows path or a regex not end it early.
+    const found = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(args)
+    if (found?.[1] !== undefined && found[1] !== '') {
+      try {
+        return JSON.parse(`"${found[1]}"`) as string
+      } catch {
+        return found[1]
+      }
+    }
+  }
+  return null
+}
+
+function WritingCall({ item }: { item: ChatItem & { kind: 'tool' } }): VNode {
+  const target = targetInPartialArgs(item.args)
+  return (
+    <Row kind="tool tool-pending" marker={<span class="pulse-dot" />}>
+      <div class="tool-card">
+        <div class="tool-head tool-head-writing">
+          <span class="tool-verb">{item.name}</span>
+          {target !== null ? <span class="tool-target">{target}</span> : <span class="tool-spacer" />}
+          <span class="tool-writing-note">
+            writing{item.args.length > 0 && <> · {formatBytes(item.args.length)}</>}
+          </span>
+        </div>
+      </div>
+    </Row>
+  )
+}
+
+/** Characters, in the same shape the rest of the window uses for sizes. */
+function formatBytes(n: number): string {
+  return n < 1000 ? `${n} chars` : `${(n / 1000).toFixed(1)}k chars`
+}
+
 function ToolCard({
   item, onOpenFile, client,
 }: {
@@ -576,6 +625,11 @@ function ToolCard({
   onOpenFile: (path: string) => void
   client: ProtocolClient
 }): VNode {
+  // A call still being generated has no arguments to present -- `args` is half a JSON
+  // document. It gets its own row, which is the whole point: this is the longest silence in
+  // a normal turn, and it used to show nothing at all.
+  if (item.writing === true) return <WritingCall item={item} />
+
   const p = presentTool(item.name, item.args)
   const result = item.result
   const pending = result === undefined

@@ -476,6 +476,26 @@ export interface ToolCallEvent {
   /** The raw JSON-arguments string the model produced, unparsed. */
   args: string
 }
+
+/**
+ * A tool call being written, while it is being written.
+ *
+ * `tool.call` fires once, when the call is finished and about to run. On a large edit the
+ * model spends most of the step producing the argument, and with only the finished event to
+ * go on the window had nothing to show for that time — it stopped. This carries the call as
+ * it is generated: the name arrives first, then the argument in fragments.
+ *
+ * `args` is a SLICE of a JSON document and is not valid JSON alone. Concatenate by `index`;
+ * a consumer that needs structure waits for `tool.call`.
+ */
+export interface ToolCallDeltaEvent {
+  /** Which call this belongs to. Parallel calls interleave in one stream. */
+  index: number
+  /** Present on the first fragment of a call, absent on the rest. */
+  name?: string
+  /** Present on argument fragments, absent on the first. */
+  args?: string
+}
 /**
  * Mirrors `tools/types.ts`'s `ToolResult` intentionally but is redeclared here rather than
  * imported to decouple the wire contract from internal execution-layer types: an internal
@@ -567,6 +587,7 @@ export interface HostEventMap {
   'thinking.delta': ThinkingDeltaEvent
   'text.delta': TextDeltaEvent
   'assistant.text': AssistantTextEvent
+  'tool.call.delta': ToolCallDeltaEvent
   'tool.call': ToolCallEvent
   'tool.result': ToolResultEvent
   verify: VerifyEvent

@@ -885,6 +885,7 @@ export class SessionHost {
       }),
       onThinkingDelta: (text) => this.emit('thinking.delta', { text }),
       onTextDelta: (text) => this.emit('text.delta', { text }),
+      onToolCallDelta: (info) => this.emit('tool.call.delta', info),
       onToolCall: (name, args) => this.emit('tool.call', { name, args }),
       onToolResult: (name, result, callId) => {
         // Recorded before the event goes out, so a window that is about to be closed still
