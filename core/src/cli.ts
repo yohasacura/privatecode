@@ -1,4 +1,5 @@
 import { existsSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import { LlamaClient } from './llama/client.js'
@@ -7,6 +8,7 @@ import { createToolset, READ_ONLY_TOOLS } from './tools/default-set.js'
 import { loadBrowserSettings } from './browser/settings.js'
 import { loadServers } from './mcp/config.js'
 import { McpManager } from './mcp/manager.js'
+import { runUnattended } from './cli/unattended.js'
 import { PermissionEngine, type AgentMode } from './permissions/engine.js'
 import { loadLayers } from './permissions/settings.js'
 import { loadProjectMemory } from './memory/project-memory.js'
@@ -50,13 +52,35 @@ function resolveMode(values: { plan?: boolean; mode?: string }):
   return { ok: true, value: values.mode as AgentMode }
 }
 
+/**
+ * A positive-number flag, or `undefined` to keep the default.
+ *
+ * Silently ignoring a typo'd budget is the one behaviour to avoid here: someone who wrote
+ * `--max-hours 8h` and got the eight-hour default by accident never learns they were lucky,
+ * and someone who got a fifty-turn default when they asked for five has a very different
+ * night than they planned.
+ */
+function numberFlag(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) {
+    console.error(`ignoring "${raw}": expected a positive number`)
+    return undefined
+  }
+  return value
+}
+
 const USAGE =
   'usage: npm run agent -- --workspace <dir> [--task "<text>"]\n' +
   '                         [--mode normal|plan|auto-edit|autopilot] [--plan]\n' +
   '                         [--server <url>] [--steps <n>] [--resume <id>]\n' +
   '  --task "<text>"  run one turn and exit (approvals prompt on a TTY, fail closed otherwise)\n' +
   '  (no --task)      start the interactive REPL\n' +
-  '  --resume <id>    continue a saved session (REPL only; one-shot runs have no store)'
+  '  --resume <id>    continue a saved session\n' +
+  '  --unattended     keep taking turns until the work is done or a budget stops it;\n' +
+  '                   an unanswered approval is queued instead of blocking the run\n' +
+  '  --max-turns <n>  turn budget for --unattended (default 50)\n' +
+  '  --max-hours <n>  wall-clock budget for --unattended (default 8)'
 
 /** Builds a plain, raw-mode-free ReadlineLike for the one-shot `--task` path: it never
  * runs a turn the user can abort mid-flight, so it needs none of the REPL's keypress
@@ -81,6 +105,9 @@ async function main() {
     steps?: string
     mode?: string
     resume?: string
+    unattended?: boolean
+    'max-turns'?: string
+    'max-hours'?: string
   }
   try {
     ;({ values } = parseArgs({
@@ -92,6 +119,9 @@ async function main() {
         steps: { type: 'string', default: '40' },
         mode: { type: 'string' },
         resume: { type: 'string' },
+        unattended: { type: 'boolean', default: false },
+        'max-turns': { type: 'string' },
+        'max-hours': { type: 'string' },
       },
     }))
   } catch (e) {
@@ -230,6 +260,13 @@ async function main() {
     events: renderer.events,
   }
   if (oneShotReadline) sessionOpts.interaction = createConsolePort(oneShotReadline.adapter)
+  if (values.unattended) {
+    // A long run needs somewhere to save its turns: without a store the work log's turn
+    // numbers and the session it refers to would not survive the process.
+    sessionOpts.store = new SessionStore(values.workspace)
+    sessionOpts.longRun = true
+    sessionOpts.unattended = {}
+  }
   const session = new Session(sessionOpts)
 
   // The REPL's own shutdown() calls toolset.background.stopAll() so a background_task
@@ -240,6 +277,46 @@ async function main() {
   // exited on its own. try/finally here, around both the send and the result report
   // below, guarantees stopAll() runs on every exit from this block: normal completion,
   // the catch-and-return below, or a throw from the console.log calls themselves.
+  if (values.unattended) {
+    const budget = {
+      maxTurns: numberFlag(values['max-turns']),
+      maxHours: numberFlag(values['max-hours']),
+    }
+    try {
+      const summary = await runUnattended({
+        session,
+        task: values.task,
+        ...(budget.maxTurns !== undefined ? { maxTurns: budget.maxTurns } : {}),
+        ...(budget.maxHours !== undefined ? { maxHours: budget.maxHours } : {}),
+        onTurn: ({ turn, text }) => {
+          console.log(`\n\x1b[1m--- turn ${turn} ---\x1b[0m`)
+          console.log(`\x1b[90m${text.split('\n')[0]?.slice(0, 120) ?? ''}\x1b[0m`)
+        },
+      })
+      const plural = summary.turns === 1 ? '' : 's'
+      console.log(`\n--- run ended: ${summary.stoppedBecause} after ${summary.turns} turn${plural} ---`)
+      console.log(summary.detail)
+
+      // Printed last and always, because it is the whole point of the night: a person who
+      // walks up to this terminal in the morning needs the queue and the log, not a scroll
+      // back through every turn.
+      const pending = session.pendingDecisions()
+      if (pending.length > 0) {
+        console.log(`\n${pending.length} decision${pending.length === 1 ? '' : 's'} waiting for you:`)
+        for (const d of pending) {
+          console.log(`  - ${d.kind === 'approval' ? `${d.tool}: ${d.summary}` : d.question}`)
+        }
+      }
+      console.log(`\nWhat it did: ${join(values.workspace, '.privatecode', 'worklog.md')}`)
+      for (const p of session.longRunProblems()) console.error(`long run: ${p}`)
+      process.exitCode = summary.stoppedBecause === 'done' ? 0 : 1
+    } finally {
+      oneShotReadline?.close()
+      await stopExternal()
+    }
+    return
+  }
+
   try {
     let result
     try {

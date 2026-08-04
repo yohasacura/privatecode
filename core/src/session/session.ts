@@ -10,7 +10,7 @@ import type { LoadedMemory } from '../memory/project-memory.js'
 import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
 import { createHookRunner, type HookRunner, type HookSpec } from '../hooks/hooks.js'
-import type { InteractionPort } from '../interaction.js'
+import type { InteractionPort, TodoItem } from '../interaction.js'
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage } from '../llama/types.js'
 import type { AgentMode, PermissionEngine } from '../permissions/engine.js'
@@ -92,6 +92,12 @@ export interface SessionOptions {
   compaction?: CompactionOptions
   onCompaction?(info: CompactionEvent): void
 }
+
+/** What counts as changing the workspace, for `turnFootprint`. Mirrors the permission
+ * engine's own write family; restated here rather than imported so a change to the gate's
+ * membership is a deliberate decision in both places. */
+const WRITE_TOOLS: ReadonlySet<string> = new Set(['edit_file', 'write_file', 'move_file', 'delete_file'])
+const COMMAND_TOOLS: ReadonlySet<string> = new Set(['run_command', 'background_task'])
 
 const PLAN_MODE_NOTE = '(mode is now plan: investigate and propose; do not edit)'
 
@@ -286,6 +292,46 @@ export class Session {
     return this.decisions
   }
 
+  /** The agent's own todo list, which the unattended runner uses to build each nudge. */
+  todos(): readonly TodoItem[] {
+    return this.opts.toolset.todos.list()
+  }
+
+  /**
+   * Running totals of the two things that count as WORK: files written and commands run.
+   *
+   * The unattended runner compares this before and after a turn to answer "did anything
+   * happen". Cumulative rather than per-turn so the comparison is a subtraction the caller
+   * makes, with no state to reset and nothing to get out of step if a turn throws.
+   *
+   * Reading and thinking are excluded on purpose. A turn that only read files may well have
+   * been useful once; two in a row are a model narrating instead of working, and that is
+   * the failure that looks most like progress from the outside.
+   */
+  turnFootprint(): { writes: number; commands: number } {
+    return { writes: this.writeCount, commands: this.commandCount }
+  }
+
+  /**
+   * Records why the whole run stopped, as the last line of the work log.
+   *
+   * Separate from the per-turn entry because it is a different fact: the turns say what
+   * happened, this says why there are no more of them. Someone reading at 8am scrolls to
+   * the bottom for exactly this.
+   */
+  noteRunEnded(detail: string): void {
+    if (!this.workLog) return
+    this.workLog.append({
+      at: new Date(),
+      turn: this.turnNumber,
+      ask: '(end of run)',
+      commands: [],
+      ended: 'run ended',
+      steps: 0,
+      runEnded: detail,
+    })
+  }
+
   /** The checkpoints taken in this workspace, newest first. Empty when not a long run. */
   async listCheckpoints(limit?: number): Promise<Checkpoint[]> {
     return this.checkpoints ? this.checkpoints.list(limit) : []
@@ -403,6 +449,13 @@ export class Session {
     // about whether the tests passed -- is exactly what the log exists not to do.
     const captureToolResult = (name: string, result: { ok: boolean; content: string }): void => {
       if (this.workLog) this.turnCommands.push({ name, args: this.lastToolArgs.get(name) ?? '', content: result.content, ok: result.ok })
+      // Only SUCCESSFUL calls count as work: a refused edit and a failed command both leave
+      // the workspace exactly as it was, and counting them would make a turn that achieved
+      // nothing look busy to the idle check.
+      if (result.ok) {
+        if (WRITE_TOOLS.has(name)) this.writeCount += 1
+        else if (COMMAND_TOOLS.has(name)) this.commandCount += 1
+      }
       host?.onToolResult?.(name, result as never)
     }
     const captureToolCall = (name: string, args: string): void => {
@@ -806,6 +859,9 @@ export class Session {
    * arguments are held here to be paired with its result. One tool runs per step, so a
    * single slot per name is exact. */
   private readonly lastToolArgs = new Map<string, string>()
+  /** Cumulative across the session; see `turnFootprint`. */
+  private writeCount = 0
+  private commandCount = 0
 
   /**
    * The port the agent and the tools consult, wrapped for an unattended run.
