@@ -302,7 +302,8 @@ async function main() {
       // back through every turn.
       const pending = session.pendingDecisions()
       if (pending.length > 0) {
-        console.log(`\n${pending.length} decision${pending.length === 1 ? '' : 's'} waiting for you:`)
+        const many = pending.length !== 1
+        console.log(`\n${pending.length} decision${many ? 's' : ''} ${many ? 'are' : 'is'} waiting for you:`)
         for (const d of pending) {
           console.log(`  - ${d.kind === 'approval' ? `${d.tool}: ${d.summary}` : d.question}`)
         }

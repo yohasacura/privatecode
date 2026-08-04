@@ -603,7 +603,7 @@ export class Agent {
           prepared.tool.permissionKey?.(prepared.args, this.toolContext()) ?? { tool: name }
         const decision = engine.decide(key)
         if (decision.verdict === 'deny') {
-          return { ok: false, content: `Not run. ${decision.reason}` }
+          return this.remember(detector, name, args, { ok: false, content: `Not run. ${decision.reason}` })
         }
         if (decision.verdict === 'ask') {
           const port = this.opts.interaction
@@ -641,7 +641,7 @@ export class Agent {
             // Not a refusal by a person: nobody was there. Said in those terms so the model
             // moves sideways to other work instead of reasoning about an objection nobody
             // made. See `ApprovalDecision`'s `defer` arm.
-            return { ok: false, content: `Not run: ${decided.reason}` }
+            return this.remember(detector, name, args, { ok: false, content: `Not run: ${decided.reason}` })
           }
           if (decided.verdict === 'deny') {
             const why = decided.comment ? `: "${decided.comment}"` : ''
@@ -689,6 +689,22 @@ export class Agent {
     const key: PermissionKey =
       prepared.tool.permissionKey?.(prepared.args, this.toolContext()) ?? { tool: name }
     return hooks.afterTool(key, result, this.opts.context.signal)
+  }
+
+  /**
+   * Records a gate outcome with the loop detector, then returns it unchanged.
+   *
+   * A denial and a deferral ARE results the call produced — unlike the detector's own
+   * refusal, which is its output and must stay out of its window. Recording them is what
+   * stops the model re-issuing a call the gate already turned down: the live rehearsal saw
+   * it queue the same `npx tsc --noEmit` three times, because a deferred call never reached
+   * the `record` after `executePrepared` and so was invisible to the detector.
+   */
+  private remember(
+    detector: LoopDetector | undefined, name: string, args: string, result: ToolResult,
+  ): ToolResult {
+    detector?.record(name, args, result.content)
+    return result
   }
 
   /**

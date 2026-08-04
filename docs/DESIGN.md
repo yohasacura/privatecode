@@ -150,7 +150,8 @@ Chat with streaming and interrupt · the 15 tools · permission system with all 
 plan mode · per-file diff review · session persistence and resume · auto-compaction ·
 `AGENTS.md` project memory (three layers, auto-loaded) · custom slash commands ·
 todo list · after-tool hooks · auto-formatter after edits · live server status ·
-**browser control over CDP** · **MCP client (stdio and streamable HTTP)**.
+**browser control over CDP** · **MCP client (stdio and streamable HTTP)** ·
+**checkpoints and rollback · loop detection · work log · decision queue · unattended runs**.
 
 **All of the above is built** as of 2026-08-04. Two decisions worth recording, because the
 original list was wrong about both:
@@ -204,6 +205,34 @@ hundreds of megabytes to a tool whose proposition is that it runs from a folder.
 The **origin is the unit of approval**: `browser(http://localhost:5173:*)` covers every
 action on that server. Asking per click would be unusable, and worse than unusable — it
 trains the user to approve reflexively, which is a weaker gate than not asking at all.
+
+### Long unattended runs
+
+Five pieces that only add up together, and the reason they are one feature rather than five:
+the blocker was never "can it keep going for eight hours" — a `while` loop does that. It was
+that the two available modes were both wrong overnight. `normal` stops dead on its first
+approval at 22:06. `autopilot` does not stop, but nothing can be undone afterwards.
+
+- **Checkpoints** (`checkpoints/store.ts`) are what make autopilot survivable, and they are
+  the load-bearing piece. A *shadow* git repository at `.privatecode/checkpoints.git` driven
+  with `--work-tree=<root>`: it never touches the user's own `.git`, works where there is no
+  repository at all, honours their `.gitignore`, and gives real diffs for free. A rewind
+  snapshots the current state first, so it is itself undoable, and uses `clean -fd` without
+  `-x` so it never costs a rebuild.
+- **Loop detection** (`agent/loop-detector.ts`) refuses the third identical call *whose
+  result was also identical*. The result, not the call, is the signal: `background_task` poll
+  exists to be called repeatedly, and a detector that counted calls would break the one tool
+  whose purpose is repetition.
+- **The work log** (`session/worklog.ts`) is one screenful per turn, and every line comes
+  from something that happened — the changed files from the checkpoint diff, the exit codes
+  from what the tools returned. A summary written by the model that did the work agrees with
+  itself by construction.
+- **The decision queue** (`session/decisions.ts`) parks an unanswered approval instead of
+  blocking, and never auto-approves: auto-approving is what autopilot is for. `ApprovalDecision`
+  gained a third verdict, `defer`, because "a person said no" and "nobody was there" call for
+  different behaviour from the model.
+- **The unattended runner** (`cli/unattended.ts`) takes turns until one of seven named stop
+  conditions fires, each nudge built from the agent's own todo list.
 
 **Reserved, not built:** web fetch / search, sub-agents, LSP integration.
 

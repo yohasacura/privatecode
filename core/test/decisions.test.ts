@@ -150,3 +150,29 @@ describe('the queueing port', () => {
     expect(seen).toEqual([1])
   })
 })
+
+describe('the same question asked twice', () => {
+  test('is one entry, because a morning that opens to three of one thing is worse than useless', async () => {
+    // The live rehearsal produced three queue entries for one question: the model retried
+    // `npx tsc --noEmit` twice and then a variant. A queue that looks like a backlog buries
+    // whichever entry was actually different.
+    const queue = new DecisionQueue(root)
+    const port = queueingPort(undefined, { queue, sessionId: 's1' })
+    await port.requestApproval(request)
+    await port.requestApproval(request)
+    await port.requestApproval({ ...request, summary: 'something else' })
+    expect(queue.pending()).toHaveLength(2)
+  })
+
+  test('but comes back once it has been answered, because the answer may have changed', () => {
+    const queue = new DecisionQueue(root)
+    const entry = {
+      kind: 'approval' as const, id: 'a', at: 'now', sessionId: 's1',
+      tool: 'run_command', summary: 'npm test', detail: 'd', suggestedRules: [],
+    }
+    queue.add(entry)
+    queue.resolve({ id: 'a', verdict: 'deny' })
+    queue.add({ ...entry, id: 'b' })
+    expect(queue.pending()).toHaveLength(1)
+  })
+})

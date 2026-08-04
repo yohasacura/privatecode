@@ -34,6 +34,18 @@ export interface CommandRecord {
   /** From the tool result's first line (`exit 0 in 1.2 s`), or absent when it did not run. */
   exit?: number
   ok: boolean
+  /**
+   * Whether the command actually executed.
+   *
+   * The rehearsal caught this being missing, and it was the worst kind of missing: a
+   * `run_command` that the permission gate DEFERRED was written into the log under
+   * "**Ran:** … → failed", so a person reading in the morning would have concluded the
+   * typecheck was run and broken. A blocked call is worth reporting — it is often the most
+   * interesting thing that happened — but never under the same heading as one that ran.
+   */
+  ran: boolean
+  /** Why it did not run, for the blocked line. */
+  blockedBy?: string
 }
 
 export interface WorkLogEntry {
@@ -49,8 +61,6 @@ export interface WorkLogEntry {
   /** `TurnResult.stoppedBecause`. */
   ended: string
   steps: number
-  /** Set when the run itself is stopping, with the reason: the last line of the night. */
-  runEnded?: string
 }
 
 function clip(text: string, max: number): string {
@@ -93,21 +103,52 @@ function renderEntry(entry: WorkLogEntry): string {
   // absence is the signal, and reads faster when scanning a night's worth of entries.
   if (changed !== '') lines.push(`**Changed:** ${changed}`)
 
-  if (entry.commands.length > 0) {
-    const shown = entry.commands.slice(0, MAX_COMMANDS)
-    const rendered = shown.map((c) => {
-      const status = c.exit !== undefined ? `exit ${c.exit}` : c.ok ? 'ok' : 'failed'
-      return `\`${clip(c.command, 80)}\` → ${status}`
-    })
-    const more = entry.commands.length > shown.length
-      ? ` · and ${entry.commands.length - shown.length} more`
-      : ''
-    lines.push(`**Ran:** ${rendered.join(' · ')}${more}`)
+  const ran = entry.commands.filter((c) => c.ran)
+  const blocked = entry.commands.filter((c) => !c.ran)
+
+  if (ran.length > 0) {
+    lines.push(`**Ran:** ${renderCommands(ran, (c) =>
+      c.exit !== undefined ? `exit ${c.exit}` : c.ok ? 'ok' : 'failed')}`)
+  }
+  // Its own line, never folded into "Ran". A command the agent wanted and did not get is
+  // frequently the most useful thing in a night's log — it is what the morning's answer to
+  // the decision queue is about.
+  if (blocked.length > 0) {
+    lines.push(`**Blocked:** ${renderCommands(blocked, (c) => c.blockedBy ?? 'not run')}`)
   }
 
   lines.push(`**Ended:** ${entry.ended}, ${entry.steps} step${entry.steps === 1 ? '' : 's'}`)
-  if (entry.runEnded !== undefined) lines.push(`**Run stopped:** ${entry.runEnded}`)
   return `${lines.join('\n')}\n\n`
+}
+
+function renderCommands(commands: CommandRecord[], status: (c: CommandRecord) => string): string {
+  // Collapsed by command-and-outcome, with a count. A model that was blocked twice on the
+  // same command produced two identical entries in the rehearsal's log; saying it twice
+  // conveys nothing the count does not, and pushes whatever WAS different off the line.
+  const groups = new Map<string, { text: string; times: number }>()
+  for (const c of commands) {
+    const text = `\`${clip(c.command, 80)}\` → ${status(c)}`
+    const existing = groups.get(text)
+    if (existing) existing.times += 1
+    else groups.set(text, { text, times: 1 })
+  }
+  const all = [...groups.values()]
+  const shown = all.slice(0, MAX_COMMANDS)
+  const rendered = shown.map((g) => (g.times > 1 ? `${g.text} (×${g.times})` : g.text))
+  const more = all.length > shown.length ? ` · and ${all.length - shown.length} more` : ''
+  return `${rendered.join(' · ')}${more}`
+}
+
+/**
+ * The last line of the night: why there are no more turns.
+ *
+ * Its own shape rather than a turn entry with empty fields. The first rehearsal wrote it as
+ * one, which produced a second "turn 1" heading and an "Ended: run ended, 0 steps" line that
+ * said nothing — noise at exactly the place a person looks first.
+ */
+function renderRunEnd(at: Date, turns: number, detail: string): string {
+  const time = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+  return `## ${time} · run ended after ${turns} turn${turns === 1 ? '' : 's'}\n${detail}\n\n`
 }
 
 export class WorkLog {
@@ -131,15 +172,22 @@ export class WorkLog {
    * failing the turn over it would be worse still.
    */
   append(entry: WorkLogEntry): void {
+    this.write(renderEntry(entry), entry.at)
+  }
+
+  /** The last line of the night. See `renderRunEnd`. */
+  appendRunEnd(at: Date, turns: number, detail: string): void {
+    this.write(renderRunEnd(at, turns, detail), at)
+  }
+
+  private write(body: string, at: Date): void {
     try {
       ensurePrivateDir(this.root)
       // A dated header once per process, so a file spanning several days is still readable
       // — the per-entry stamps are times only, which is what makes the entries scannable.
-      const header = this.started
-        ? ''
-        : `\n# ${entry.at.toISOString().slice(0, 10)}\n\n`
+      const header = this.started ? '' : `\n# ${at.toISOString().slice(0, 10)}\n\n`
       this.started = true
-      appendFileSync(this.path, header + renderEntry(entry), 'utf8')
+      appendFileSync(this.path, header + body, 'utf8')
     } catch (e) {
       if (this.problems.length === 0) {
         this.problems.push(`the work log could not be written (${(e as Error).message})`)
@@ -156,6 +204,23 @@ export class WorkLog {
  * the alternative — trusting the model's prose about whether the tests passed — is exactly
  * what this file exists not to do.
  */
+/**
+ * Why a call did not run, as a few words.
+ *
+ * The full text is written for the MODEL — it explains what to do instead, at length — and
+ * the first rehearsal pasted all of it into the log three times over, once per retry, so the
+ * one line a person needs was buried under sixty words of instructions addressed to someone
+ * else. These are the four ways a call is stopped, and each is a label.
+ */
+function blockLabel(content: string): string {
+  const body = content.replace(/^Not run[:.]\s*/, '')
+  if (/queued for the user/i.test(body)) return 'queued for you'
+  if (/already called/i.test(body)) return 'already tried twice with the same result'
+  if (/declined/i.test(body)) return 'you declined it'
+  if (/not available in this mode/i.test(body)) return 'not available in this mode'
+  return clip(body, 60)
+}
+
 export function commandsFrom(
   calls: { name: string; args: string; content: string; ok: boolean }[],
 ): CommandRecord[] {
@@ -168,11 +233,20 @@ export function commandsFrom(
       if (typeof parsed.command === 'string') command = parsed.command
     } catch { /* a call whose arguments did not parse never ran */ }
     if (command === '') continue
+
+    // Every path that stops a call before it executes -- a permission denial, a deferral
+    // into the decision queue, a loop-detector refusal, plan mode -- answers with a result
+    // beginning `Not run:`. That prefix is the one honest signal available here, and
+    // getting it wrong is how a command that never ran ends up logged as one that ran and
+    // failed, which is what the first rehearsal produced.
+    const blocked = /^Not run[:.]/.test(call.content)
     const exit = /^exit (-?\d+)/.exec(call.content)?.[1]
     records.push({
       command,
       ...(exit !== undefined ? { exit: Number(exit) } : {}),
       ok: call.ok,
+      ran: !blocked,
+      ...(blocked ? { blockedBy: blockLabel(call.content) } : {}),
     })
   }
   return records

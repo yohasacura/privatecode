@@ -164,8 +164,8 @@ export async function runUnattended(opts: UnattendedOptions): Promise<RunSummary
     // waiting on the user. Continuing would spend the budget re-discovering that.
     if (pending.length > 0 && stillOpen.length === 0) {
       return finish('blocked',
-        `${pending.length} decision${pending.length === 1 ? '' : 's'} are waiting for you, and ` +
-        'nothing else is left to work on')
+        `${pending.length} decision${pending.length === 1 ? ' is' : 's are'} waiting for you, ` +
+        'and nothing else is left to work on')
     }
 
     if (saysFinished(result.finalText) && stillOpen.length === 0) {

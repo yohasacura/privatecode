@@ -320,16 +320,7 @@ export class Session {
    * the bottom for exactly this.
    */
   noteRunEnded(detail: string): void {
-    if (!this.workLog) return
-    this.workLog.append({
-      at: new Date(),
-      turn: this.turnNumber,
-      ask: '(end of run)',
-      commands: [],
-      ended: 'run ended',
-      steps: 0,
-      runEnded: detail,
-    })
+    this.workLog?.appendRunEnd(new Date(), this.turnNumber, detail)
   }
 
   /** The checkpoints taken in this workspace, newest first. Empty when not a long run. */

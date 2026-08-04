@@ -120,7 +120,7 @@ describe('stopping', () => {
     const { session } = fakeSession([{ worked: true }], { pending: [{ id: 'd1' }] })
     const summary = await run(session)
     expect(summary.stoppedBecause).toBe('blocked')
-    expect(summary.detail).toContain('1 decision')
+    expect(summary.detail).toContain('1 decision is waiting')
   })
 
   test('but NOT while there is still other work to do', async () => {
