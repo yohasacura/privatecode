@@ -18,8 +18,11 @@ import { createToolset, type Toolset } from '../tools/default-set.js'
 import { loadBrowserSettings } from '../browser/settings.js'
 import { loadServers } from '../mcp/config.js'
 import { McpManager } from '../mcp/manager.js'
-import { Workspace } from '../workspace.js'
-import { loadMounts, type Mount } from '../mounts.js'
+import { isRootPath, Workspace } from '../workspace.js'
+import {
+  loadMounts, readProfile, saveWorkspaceFile, storedPath, workspaceFilePath,
+  type Mount, type WorkspaceFile,
+} from '../mounts.js'
 import { discoverUnits, type SnapshotUnit } from '../checkpoints/units.js'
 import { PRIVATE_DIR } from '../private-dir.js'
 import { runUnattended } from '../cli/unattended.js'
@@ -75,6 +78,10 @@ import type {
   SessionsResumeResult,
   SessionsSearchParams,
   SessionsSearchResult,
+  WorkspaceFolderView,
+  WorkspaceGetResult,
+  WorkspaceSetParams,
+  WorkspaceSetResult,
   SetModeParams,
   SetModeResult,
   StatusResult,
@@ -88,7 +95,7 @@ import { rankFiles, walkFiles } from './file-search.js'
 import { attachFiles } from './attachments.js'
 import { buildRepoMap } from '../outline/repo-map.js'
 import { gitCommit, gitDiff, suggestCommitMessage } from './git.js'
-import { discoverRepos, repoRootFor, toRepoPaths } from './repos.js'
+import { describeFolder, discoverRepos, repoRootFor, toRepoPaths } from './repos.js'
 import { searchSessions } from './session-search.js'
 
 /**
@@ -192,6 +199,9 @@ export class SessionHost {
    * Found by a disk scan in `init`, for the same reason the map is built there. */
   private units: readonly SnapshotUnit[] = []
   private workspaceName = ''
+  /** The parsed `workspace.json`, or null for a plain single-folder workspace. Kept so a
+   * session switch re-reads the profile without re-scanning the disk. */
+  private workspaceFile: WorkspaceFile | null = null
   /** Folders that could not be attached — moved, overlapping, badly named. Reported to the
    * window with the settings problems, because a folder silently missing from the tree is
    * indistinguishable from an empty one. */
@@ -316,6 +326,8 @@ export class SessionHost {
       case 'question.reply': return this.questionReply(params as QuestionReplyParams)
       case 'fs.tree': return this.fsTree((params ?? {}) as FsTreeParams)
       case 'fs.find': return this.fsFind(params as FsFindParams)
+      case 'workspace.get': return this.workspaceGet()
+      case 'workspace.set': return this.workspaceSet(params as WorkspaceSetParams)
       case 'git.status': return this.gitStatusFor()
       case 'git.diff': return this.gitDiffFor(params as GitDiffParams)
       case 'git.commit': return this.gitCommitFor(params as GitCommitParams)
@@ -381,6 +393,7 @@ export class SessionHost {
     this.mounts = loaded.mounts
     this.workspaceName = loaded.name
     this.workspaceProblems = loaded.problems
+    this.workspaceFile = loaded.file
     this.workspace = new Workspace(loaded.mounts)
     this.client = new LlamaClient({ baseUrl: params.serverUrl, model: MODEL })
     const browserSettings = loadBrowserSettings(params.workspaceRoot)
@@ -510,8 +523,11 @@ export class SessionHost {
     const formatting = loadFormatRules(workspaceRoot)
     const hooking = loadHooks(workspaceRoot)
     const verifying = loadVerify(workspaceRoot)
+    // What this combination of folders is FOR: the mode it opens in and the check each
+    // folder gets. Read per session build, like the settings layers beside it.
+    const profile = readProfile(this.workspaceFile, this.mounts, workspaceFilePath(workspaceRoot))
     const engine = new PermissionEngine({
-      layers, mode: 'normal', workspaceRoot, problems: settingsProblems,
+      layers, mode: profile.mode ?? 'normal', workspaceRoot, problems: settingsProblems,
     })
 
     const sessionOpts: SessionOptions = {
@@ -523,6 +539,8 @@ export class SessionHost {
       workspaceRoot,
       ...(this.mounts.length > 1 ? { mounts: this.mounts } : {}),
       ...(this.units.length > 0 ? { units: this.units } : {}),
+      ...(profile.mode !== undefined ? { mode: profile.mode } : {}),
+      ...(Object.keys(profile.verify).length > 0 ? { verifyFolders: profile.verify } : {}),
       engine,
       store,
       events: this.buildAgentEvents(),
@@ -539,8 +557,12 @@ export class SessionHost {
     if (this.repoMap !== '') sessionOpts.repoMap = this.repoMap
     if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
     if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
-    if (verifying.verify) {
-      sessionOpts.verify = verifying.verify
+    if (verifying.verify) sessionOpts.verify = verifying.verify
+    // Wired whenever ANY folder has a check, not only when the settings files supply one.
+    // Tying the callback to the settings-file source meant a workspace whose checks all came
+    // from the profile ran them and reported nothing — the commands fired, the window stayed
+    // silent, and a check that takes thirty seconds while saying nothing reads as a hang.
+    if (verifying.verify || Object.keys(profile.verify).length > 0) {
       sessionOpts.onVerify = (info) => this.emit('verify', info)
     }
     if (resumeId !== undefined) sessionOpts.resume = resumeId
@@ -565,6 +587,7 @@ export class SessionHost {
       // indistinguishable from an empty one. Repeated on every session switch, like the
       // external problems above and for the same reason.
       ...this.workspaceProblems,
+      ...profile.problems,
     ]
     if (this.contextLength === null) {
       problems.push(
@@ -577,6 +600,8 @@ export class SessionHost {
       sessionId: session.id,
       mode: session.mode,
       contextLength: this.contextLength,
+      workspaceName: this.workspaceName,
+      folderCount: this.mounts.length,
       problems,
       title: session.meta.title,
       // Empty for a new session, and cheap to compute either way: this is a map over
@@ -840,10 +865,63 @@ export class SessionHost {
    * cost than one that stats the tree sixty times a minute.
    */
   private async fsFind(params: FsFindParams): Promise<FsFindResult> {
-    const { workspaceRoot } = this.requireInitialized()
-    this.fileIndex ??= await walkFiles(workspaceRoot)
+    const { workspace } = this.requireInitialized()
+    if (this.fileIndex === undefined) {
+      // Every folder, prefixed — otherwise `@` would only ever reach the primary one, and a
+      // picker that silently covers a fifth of the workspace is worse than no picker.
+      const all: string[] = []
+      for (const mount of workspace.mounts) {
+        const files = await walkFiles(mount.root)
+        all.push(...(workspace.multi
+          ? files.map((f) => `${mount.name}/${f.split(/[\\/]/).join('/')}`)
+          : files))
+      }
+      this.fileIndex = all
+    }
     const limit = Math.min(Math.max(params.limit ?? 20, 1), 100)
     return { paths: rankFiles(this.fileIndex, params.query, limit).map((m) => m.path) }
+  }
+
+  /** The folders this workspace is made of, with what git is under each. */
+  private async workspaceGet(): Promise<WorkspaceGetResult> {
+    const { workspace } = this.requireInitialized()
+    const folders: WorkspaceFolderView[] = []
+    for (const mount of workspace.mounts) {
+      folders.push({
+        name: mount.name,
+        root: mount.root,
+        access: mount.access,
+        primary: mount.primary,
+        git: await describeFolder(mount.root),
+      })
+    }
+    return { name: this.workspaceName, folders, problems: [...this.workspaceProblems] }
+  }
+
+  /**
+   * Replaces the attached folders and re-opens the workspace.
+   *
+   * Everything downstream of the folder list is rebuilt rather than patched — the jail, the
+   * repo map, the undo units, the file index, the MCP servers — because every one of them is
+   * derived from it, and a half-updated workspace is the shape in which a write lands
+   * somewhere nobody expected. The session is preserved by resuming the current one.
+   */
+  private async workspaceSet(params: WorkspaceSetParams): Promise<WorkspaceSetResult> {
+    const { workspaceRoot } = this.requireInitialized()
+    const existing = this.workspaceFile
+    saveWorkspaceFile(workspaceRoot, {
+      version: 1,
+      ...(params.name !== undefined && params.name.trim() !== '' ? { name: params.name.trim() } : {}),
+      folders: params.folders.map((f) => ({
+        path: storedPath(workspaceRoot, f.path),
+        ...(f.name !== undefined && f.name.trim() !== '' ? { name: f.name.trim() } : {}),
+        access: f.access,
+      })),
+      // Carried over untouched: the manager edits folders, and dropping the profile because
+      // it was not part of this dialog would silently unconfigure the workspace.
+      ...(existing?.profile !== undefined ? { profile: existing.profile } : {}),
+    })
+    return {}
   }
 
   /**
@@ -910,6 +988,10 @@ export class SessionHost {
 
   private async fsTree(params: FsTreeParams): Promise<FsTreeResult> {
     const { workspace } = this.requireInitialized()
+    // The root of a multi-folder workspace is the folder list, not a directory on disk.
+    if (workspace.multi && isRootPath(params.path ?? '')) {
+      return { entries: workspace.mounts.map((m) => ({ name: m.name, dir: true })) }
+    }
     const abs = workspace.resolve(params.path ?? '')
     const dirents = await readdir(abs, { withFileTypes: true })
     const entries: FsTreeEntry[] = dirents

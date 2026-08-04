@@ -139,6 +139,9 @@ export default function App() {
   const [recents, setRecents] = useState<string[]>([])
   const [previewPath, setPreviewPath] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  /** What this workspace is called and how many folders it spans. Kept beside `phase`
+   * rather than inside it because it survives a session switch unchanged. */
+  const [workspaceLabel, setWorkspaceLabel] = useState<{ name: string; folders: number }>({ name: '', folders: 1 })
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [sessionsKey, setSessionsKey] = useState(0)
   const [chatState, dispatch] = useChatSession(client)
@@ -188,6 +191,7 @@ export default function App() {
       // discarding the conversation you were in the middle of when you closed the window.
       // Starting clean is the New session button, one click away.
       const init = await c.call('init', { workspaceRoot: workspace, serverUrl, continueLast: true })
+      setWorkspaceLabel({ name: init.workspaceName, folders: init.folderCount })
       dispatch({
         type: 'session-switched',
         sessionId: init.sessionId,
@@ -341,7 +345,19 @@ export default function App() {
           PrivateCode
         </span>
         {ready && (
-          <span class="titlebar-workspace" title={workspaceRoot}>{baseName(workspaceRoot)}</span>
+          // The NAME, not the folder: a multi-folder workspace whose titlebar showed only
+          // its primary folder would be describing a fifth of what the agent can reach.
+          <span
+            class="titlebar-workspace"
+            title={workspaceLabel.folders > 1
+              ? `${workspaceLabel.folders} folders · main: ${workspaceRoot}`
+              : workspaceRoot}
+          >
+            {workspaceLabel.name || baseName(workspaceRoot)}
+            {workspaceLabel.folders > 1 && (
+              <span class="titlebar-folders">+{workspaceLabel.folders - 1}</span>
+            )}
+          </span>
         )}
         {chatState.session?.title && (
           <span class="titlebar-session" title={chatState.session.title}>{chatState.session.title}</span>
@@ -512,6 +528,7 @@ export default function App() {
             if (info.items.length > 0) dispatch({ type: 'transcript-restored', entries: info.items })
             for (const text of info.problems) dispatch({ type: 'settings-problem', text })
             setPhase({ kind: 'ready', workspace: info.workspaceRoot })
+            setWorkspaceLabel({ name: info.workspaceName, folders: info.folderCount })
             setPreviewPath(null)
             setSessionsKey((k) => k + 1)
             setSettingsOpen(false)

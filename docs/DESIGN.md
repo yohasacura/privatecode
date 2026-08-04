@@ -336,6 +336,49 @@ in as a safety net, not as a load-bearing part.
 The real argument defect is different: on a *trivial* file, 2 of 5 runs emitted an **empty
 `search_text`** — schema-valid, semantically useless. Tools must validate meaning.
 
+## 7b. Workspaces: folders from anywhere
+
+A workspace is one PRIMARY folder plus any number of folders attached from anywhere on disk.
+The definition lives in `<primary>/.privatecode/workspace.json`, so opening the primary folder
+restores the whole thing and every piece of existing state keeps the home it already had.
+
+**Addressing.** Each folder is mounted under a short name and every model-visible path starts
+with it: `api/src/server.ts`, never `src/server.ts`. An unprefixed path is REFUSED, with the
+list of names — a write that silently landed in the wrong repository is the failure this rules
+out, and being strict costs one wasted step. A single-folder workspace behaves exactly as it
+always did, prefix and all state included. The absolute path of a folder never enters the
+prompt: the model sees names, which is shorter, keeps a disk layout out of the transcript, and
+gives permission rules a scope for free (`edit_file(api/**)` now means what it says).
+
+**Access.** A folder is attached `write` or `read`. A read folder is refused by the JAIL, above
+the permission engine, so no rule can open it — a reference folder a rule could open is not a
+reference folder. This binds the file tools; `run_command` was never contained by the jail and
+still is not.
+
+**Only the primary folder configures anything.** Settings, hooks, the formatter and the verify
+command are read from the primary and nowhere else. A verify command is a shell command run
+without a per-run approval, so an attached folder that could supply one would be a way to
+execute code by pointing at a directory. Per-folder verify commands live in the primary's
+`workspace.json` profile, which also carries the mode a workspace opens in.
+
+**Git is discovered, not assumed.** With one folder there was one question. With five there are
+five different answers, and all of them occur: the folder IS a repository; the folder is a
+SUBDIRECTORY of a bigger one (a monorepo package mounted as a lens); the folder is under no
+version control; the folder CONTAINS repositories, at any depth; two folders turn out to be two
+subtrees of the SAME repository. Repositories are found per folder, deduplicated by toplevel,
+and each shows only the subtrees that are actually in the workspace — mounting one package and
+being shown the whole monorepo's changes would invite a commit of forty files nobody read.
+
+**The undo covers nested repositories, and used not to.** Measured: `git add -A` records a
+directory containing `.git` as a gitlink — a pointer to a commit — so a rewind restored the
+pointer and not one file inside it, with no warning. That hole predates multi-folder
+workspaces; it was always there for anyone whose project vendored a repository. Coverage is now
+a SET of snapshot units — one per writable folder plus one per nested repository — each with
+its own shadow store, each excluding its children through `$GIT_DIR/info/exclude`. A checkpoint
+is a set of commits recorded in `.privatecode/checkpoints/sets.jsonl`. Verified live: a rewind
+removed a file the agent had written inside a nested repository, and that repository's own git
+history was untouched.
+
 ## 8. Open items
 
 - ~~Finish the edit-reliability probe and settle whether SEARCH/REPLACE anchors need

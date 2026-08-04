@@ -1,6 +1,10 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { ensurePrivateDir, PRIVATE_DIR } from './private-dir.js'
+import type { AgentMode } from './permissions/engine.js'
+import {
+  DEFAULT_VERIFY_TIMEOUT_MS, MAX_VERIFY_TIMEOUT_MS, type VerifySpec,
+} from './verify/config.js'
 
 /**
  * A workspace is one folder that holds the state, plus any number of folders attached to it
@@ -50,16 +54,87 @@ export interface FolderSpec {
   access?: MountAccess
 }
 
+/**
+ * What this particular combination of folders is FOR.
+ *
+ * A workspace is not only a set of folders, it is a way of working with them: the production
+ * repository beside its reference wants `normal` mode and a real test command; a scratch pile
+ * wants `autopilot` and no checks at all. Without this, both open the same way and the mode
+ * has to be set by hand on every launch — which means it eventually is not.
+ *
+ * Lives in the primary folder's `workspace.json` and nowhere else, for the same reason
+ * settings do: a verify command is a shell command, and an attached folder that could supply
+ * one would be running code by reference.
+ */
+export interface WorkspaceProfile {
+  /** Mode a new session starts in. Absent keeps `normal`, which is what it has always been. */
+  mode?: AgentMode
+  /** Folder name -> its check. A string is the command; the object form adds a timeout. */
+  verify?: Record<string, string | { command: string; timeoutMs?: number }>
+}
+
 export interface WorkspaceFile {
   version: 1
   /** What to call the whole thing in the window. Defaults to the primary folder's name. */
   name?: string
   folders: FolderSpec[]
-  /**
-   * Task 6 fills this in. Loaded and preserved verbatim here so saving a folder change from
-   * an older build cannot silently drop a profile a newer one wrote.
-   */
-  profile?: unknown
+  profile?: WorkspaceProfile
+}
+
+const MODES: readonly AgentMode[] = ['normal', 'plan', 'auto-edit', 'autopilot']
+
+/**
+ * The profile, validated, with every rejection reported rather than silently dropped.
+ *
+ * A folder name that matches nothing is the one worth saying out loud: it looks like a
+ * configured check and is in fact a check that will never run, which is exactly the shape of
+ * "I thought that was covered".
+ */
+export function readProfile(
+  file: WorkspaceFile | null, mounts: readonly Mount[], where: string,
+): { mode?: AgentMode; verify: Record<string, VerifySpec>; problems: string[] } {
+  const problems: string[] = []
+  const verify: Record<string, VerifySpec> = {}
+  const profile = file?.profile
+  if (profile === undefined || profile === null || typeof profile !== 'object') {
+    return { verify, problems }
+  }
+
+  let mode: AgentMode | undefined
+  if (profile.mode !== undefined) {
+    if (MODES.includes(profile.mode)) mode = profile.mode
+    else problems.push(`${where}: profile.mode "${String(profile.mode)}" is not one of ${MODES.join(', ')}; ignored`)
+  }
+
+  if (profile.verify !== undefined) {
+    if (typeof profile.verify !== 'object' || Array.isArray(profile.verify)) {
+      problems.push(`${where}: profile.verify must be an object of folder name -> command`)
+    } else {
+      for (const [folder, value] of Object.entries(profile.verify)) {
+        if (!mounts.some((m) => m.name === folder)) {
+          problems.push(`${where}: profile.verify names "${folder}", which is not a folder in this workspace; it will never run`)
+          continue
+        }
+        const command = typeof value === 'string' ? value : value?.command
+        if (typeof command !== 'string' || command.trim() === '') {
+          problems.push(`${where}: profile.verify."${folder}" must be a command string`)
+          continue
+        }
+        const raw = typeof value === 'string' ? undefined : value.timeoutMs
+        let timeoutMs = DEFAULT_VERIFY_TIMEOUT_MS
+        if (raw !== undefined) {
+          if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) {
+            problems.push(`${where}: profile.verify."${folder}".timeoutMs must be a positive number of milliseconds`)
+          } else {
+            timeoutMs = Math.min(raw, MAX_VERIFY_TIMEOUT_MS)
+          }
+        }
+        verify[folder] = { command: command.trim(), timeoutMs, source: `${where} (profile)` }
+      }
+    }
+  }
+
+  return { ...(mode !== undefined ? { mode } : {}), verify, problems }
 }
 
 export const WORKSPACE_FILE = 'workspace.json'

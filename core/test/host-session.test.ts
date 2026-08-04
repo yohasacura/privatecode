@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, expect, test } from 'vitest'
 import { SessionHost } from '../src/host/host.js'
 import {
@@ -503,5 +503,57 @@ test('verify runs after a turn that wrote, and not after one that only read', as
   await host.handle({ id: 3, method: 'send', params: { text: 'and now just answer' } })
   expect(readFileSync(log, 'utf8')).toBe(afterWrite)
   expect(eventsNamed(transport, 'verify')).toHaveLength(1)
+  await host.shutdown()
+}, 30_000)
+
+/**
+ * Verify, once a workspace is several folders.
+ *
+ * The gate that matters here is the same one as above, one level finer: running every
+ * folder's suite after a one-line edit in one of them turns a thirty-second turn into three
+ * minutes, and the folders nothing touched cannot have been broken.
+ */
+test('verify runs only in the folder that was written', async () => {
+  let call = 0
+  const fake = await makeServer((_body, _streaming) => {
+    call++
+    if (call === 1) return toolCallSSE('write_file', JSON.stringify({ path: 'engine/x.txt', content: 'x' }))
+    return textSSE('done')
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  const engine = join(root, '..', `${basename(root)}-engine`)
+  mkdirSync(engine, { recursive: true })
+  workspaces.push(engine)
+  mkdirSync(join(root, '.privatecode'), { recursive: true })
+  writeFileSync(
+    join(root, '.privatecode', 'settings.json'),
+    JSON.stringify({ permissions: { allow: ['write_file(**)'] } }),
+    'utf8',
+  )
+  // Both commands are observable by what they leave behind, in their own folder.
+  writeFileSync(
+    join(root, '.privatecode', 'workspace.json'),
+    JSON.stringify({
+      version: 1,
+      folders: [{ path: engine, name: 'engine', access: 'write' }],
+      profile: {
+        verify: {
+          [basename(root)]: 'Write-Output ran >> primary-verified.log',
+          engine: 'Write-Output ran >> engine-verified.log',
+        },
+      },
+    }),
+    'utf8',
+  )
+
+  const { host, transport } = await initHost(fake.url, root)
+  await host.handle({ id: 2, method: 'send', params: { text: 'write into the engine folder' } })
+
+  expect(existsSync(join(engine, 'engine-verified.log'))).toBe(true)
+  expect(existsSync(join(root, 'primary-verified.log'))).toBe(false)
+  const fired = eventsNamed(transport, 'verify')
+  expect(fired).toHaveLength(1)
+  expect((fired[0]?.data as { folder?: string }).folder).toBe('engine')
   await host.shutdown()
 }, 30_000)

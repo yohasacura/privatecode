@@ -35,7 +35,7 @@ export interface LoadedVerify {
 /** Long enough for a real test suite, short enough that a hung one does not eat the turn
  * silently. A project whose suite needs more says so in its own config. */
 export const DEFAULT_VERIFY_TIMEOUT_MS = 120_000
-const MAX_VERIFY_TIMEOUT_MS = 600_000
+export const MAX_VERIFY_TIMEOUT_MS = 600_000
 
 function readOne(path: string, problems: string[]): VerifySpec | null {
   let raw: string

@@ -6,6 +6,7 @@ import type { ChatState } from '../lib/state'
 import { formatTokenCount } from '../lib/format'
 import { Icon } from '../components/icons'
 import type { SessionSwitch } from './sessions-rail'
+import { Folders } from './folders'
 
 /**
  * The status bar and the settings modal.
@@ -165,7 +166,11 @@ export function SettingsModal({
    * dialog, so it gets a plain text field instead. */
   isDevBridge: boolean
   onClose: () => void
-  onSessionSwitched: (info: SessionSwitch & { workspaceRoot: string }) => void
+  /** Opening a workspace is the one moment its name and folder count can change, so they
+   * ride this callback rather than every session switch. */
+  onSessionSwitched: (
+    info: SessionSwitch & { workspaceRoot: string; workspaceName: string; folderCount: number },
+  ) => void
 }): VNode {
   const [serverUrl, setServerUrl] = useState('http://127.0.0.1:8080')
   const [workspace, setWorkspace] = useState('')
@@ -207,6 +212,7 @@ export function SettingsModal({
         onSessionSwitched({
           sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
           problems: r.problems, items: r.items, workspaceRoot: root,
+          workspaceName: r.workspaceName, folderCount: r.folderCount,
         })
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
@@ -257,6 +263,13 @@ export function SettingsModal({
             </div>
           </>
         )}
+
+        <div class="field-label">Folders</div>
+        <Folders
+          client={client}
+          isDevBridge={isDevBridge}
+          onChanged={() => connect()}
+        />
 
         <McpServers client={client} />
 

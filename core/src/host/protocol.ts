@@ -93,6 +93,11 @@ export interface InitResult {
   title: string
   /** The conversation so far, empty for a new session. See `TranscriptEntry`. */
   items: TranscriptEntry[]
+  /** What to call this workspace: its profile name, or the primary folder's own name. */
+  workspaceName: string
+  /** How many folders it is made of. The window says so when it is more than one — a
+   * titlebar that names only the primary folder would be describing a fifth of the jail. */
+  folderCount: number
 }
 
 /**
@@ -205,6 +210,32 @@ export interface GitStatusResult {
  */
 /** Full-text search across the workspace's stored conversations. Titles are the first line
  * of a session, which is the worst summary of what a long one became. */
+/** One folder as the manager shows it. `git` is prose, deliberately: the four states a
+ * folder can be in are not a flag, and "part of monorepo" is the one people need told. */
+export interface WorkspaceFolderView {
+  name: string
+  root: string
+  access: 'write' | 'read'
+  primary: boolean
+  git: string
+}
+export type WorkspaceGetParams = Empty
+export interface WorkspaceGetResult {
+  name: string
+  folders: WorkspaceFolderView[]
+  problems: string[]
+}
+
+/** The attached folders, whole — this replaces the list rather than patching it, so the file
+ * on disk always matches what the manager was showing when Save was pressed. */
+export interface WorkspaceSetParams {
+  name?: string
+  folders: { path: string; name?: string; access: 'write' | 'read' }[]
+}
+/** Nothing comes back: changing the folders changes the jail, the map, the undo units and
+ * the file index, so the caller re-runs `init` rather than being handed a patch. */
+export type WorkspaceSetResult = Empty
+
 export interface SessionsSearchParams { query: string; limit?: number }
 export interface SessionHit {
   sessionId: string; title: string; updatedAt: string; count: number; snippet: string
@@ -343,6 +374,8 @@ export interface HostMethodMap {
   'sessions.new': { params: SessionsNewParams; result: SessionsNewResult }
   'sessions.resume': { params: SessionsResumeParams; result: SessionsResumeResult }
   'sessions.search': { params: SessionsSearchParams; result: SessionsSearchResult }
+  'workspace.get': { params: WorkspaceGetParams; result: WorkspaceGetResult }
+  'workspace.set': { params: WorkspaceSetParams; result: WorkspaceSetResult }
   compact: { params: CompactParams; result: CompactResult }
   'approval.reply': { params: ApprovalReplyParams; result: ApprovalReplyResult }
   'question.reply': { params: QuestionReplyParams; result: QuestionReplyResult }
@@ -428,6 +461,9 @@ export interface VerifyEvent {
   ok: boolean
   /** 1 for the check itself; 2 means the model's first fix was verified again. */
   attempt: number
+  /** Which folder was checked. Present only in a multi-folder workspace, where "which one"
+   * is a question a person actually has. */
+  folder?: string
   exitCode?: number
   /** The command could not be run at all -- a configuration problem, not a broken project. */
   problem?: string

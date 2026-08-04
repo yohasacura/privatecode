@@ -259,6 +259,16 @@ kbd {
   font-size: 13px;
 }
 .brand-mark { color: var(--accent); display: flex; }
+/* "+2" beside the workspace name: a titlebar that showed only the primary folder would be
+   describing a fifth of what the agent can reach. */
+.titlebar-folders {
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--bg-active);
+  color: var(--text-faint);
+  font-size: 10px;
+}
 .titlebar-workspace {
   flex: 0 1 auto;
   min-width: 0;
@@ -2013,4 +2023,74 @@ kbd {
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------------------------------
+   The folders a workspace is made of.
+
+   Three lines per folder, because three different things matter and none of them is the
+   path alone: the NAME (every path the agent writes starts with it), the path (where it
+   actually is), and what git makes of it. The access toggle is a button rather than a
+   checkbox so its current state reads as a word -- "read-only" is a promise, and a ticked
+   box is not a sentence.
+   --------------------------------------------------------------------------------------- */
+.folders {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.folder-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--bg-raised);
+}
+.folder-icon {
+  color: var(--text-dim);
+  flex: none;
+  margin-top: 3px;
+}
+.folder-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.folder-name {
+  font-weight: 600;
+  padding: 2px 6px;
+}
+.folder-path {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-git {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.folder-add {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.folder-add .input { flex: 1; }
+.folder-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
 }

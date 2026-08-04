@@ -87,15 +87,20 @@ function toPrefix(toplevel: string, dir: string): string {
  * `above` earns the extra words: "part of monorepo" is the difference between a panel you can
  * trust and one that appears to be showing you a different project than the one you opened.
  */
-function describe(relation: RepoRelation, toplevel: string, scopes: RepoScope[]): string {
-  const names = scopes.map((s) => (s.prefix === '' ? s.mount : `${s.mount}`))
+function describe(
+  relation: RepoRelation, toplevel: string, scopes: RepoScope[], workspace: Workspace,
+): string {
+  const names = scopes.map((s) => s.mount)
   switch (relation) {
     case 'folder':
       return names.join(' + ')
     case 'above':
       return `${names.join(' + ')} — part of ${toplevel.split(/[\\/]/).pop() ?? toplevel}`
     case 'nested':
-      return names[0] ?? toplevel
+      // The addressed path, not the folder name: two repositories inside one folder are two
+      // sections, and labelling both of them `bundle` is a panel you cannot act on. Caught by
+      // driving a workspace whose `bundle` folder held libA and libB.
+      return workspace.display(toplevel)
   }
 }
 
@@ -157,7 +162,7 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
 
   const roots = [...byRoot.keys()]
   for (const repo of byRoot.values()) {
-    repo.label = describe(repo.relation, repo.root, repo.scopes)
+    repo.label = describe(repo.relation, repo.root, repo.scopes, workspace)
     // Scoped to the subtrees that are in the workspace. `--porcelain` reports paths relative
     // to the repository root whatever the cwd is, which is what makes the translation below
     // one rule instead of one per scope.
@@ -188,6 +193,23 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
   }
 
   return { repos: [...byRoot.values()], unversioned, problems }
+}
+
+/**
+ * What git is under one folder, in the words the folder manager shows.
+ *
+ * The four answers are genuinely different and a person choosing whether to attach a folder
+ * wants to know which one they are getting — especially "part of something bigger", which is
+ * the one that surprises people.
+ */
+export async function describeFolder(root: string): Promise<string> {
+  const [toplevel, nested] = await Promise.all([toplevelOf(root), findNestedRepos(root)])
+  const inside = nested.length === 0
+    ? ''
+    : ` · ${nested.length} repositor${nested.length === 1 ? 'y' : 'ies'} inside`
+  if (toplevel === resolve(root)) return `git repository${inside}`
+  if (toplevel !== null) return `part of ${toplevel.split(/[\\/]/).pop() ?? toplevel}${inside}`
+  return nested.length === 0 ? 'not under version control' : `not a repository${inside}`
 }
 
 /**

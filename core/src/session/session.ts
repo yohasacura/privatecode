@@ -101,9 +101,23 @@ export interface SessionOptions {
    * long every writing turn takes, and only the project's owner can make it.
    */
   verify?: VerifySpec
+  /**
+   * Per-folder verify commands, keyed by folder name, from the workspace profile.
+   *
+   * The profile is the ONLY source for an attached folder's command. A verify command is a
+   * shell command run without a per-run approval, and reading one out of a folder you merely
+   * pointed at would be a way to execute arbitrary code by reference. An entry here also
+   * overrides `verify` for the primary folder, which is what makes a workspace able to say
+   * "in this combination, check it this way".
+   */
+  verifyFolders?: Record<string, VerifySpec>
   /** Fired for every verify run, pass or fail, so a window can show that it happened. A
-   * check that silently added thirty seconds to each turn would read as the app hanging. */
-  onVerify?(info: { command: string; ok: boolean; attempt: number; exitCode?: number; problem?: string }): void
+   * check that silently added thirty seconds to each turn would read as the app hanging.
+   * `folder` is present only in a multi-folder workspace, where "which one" is a question. */
+  onVerify?(info: {
+    command: string; ok: boolean; attempt: number; folder?: string
+    exitCode?: number; problem?: string
+  }): void
   /**
    * Snapshot the workspace after every turn that changed it, and record what changed in
    * a work log. Absent means neither happens, which is what every caller that predates
@@ -392,17 +406,54 @@ export class Session {
   private async verifyAndFix(
     result: TurnResult, writesThisTurn: number, signal?: AbortSignal,
   ): Promise<TurnResult> {
-    const spec = this.opts.verify
-    if (!spec || writesThisTurn === 0 || result.stoppedBecause !== 'done') return result
+    if (writesThisTurn === 0 || result.stoppedBecause !== 'done') return result
 
+    // Only the folders this turn actually wrote to, each with its own command. Running every
+    // folder's suite after a one-line edit in one of them turns a thirty-second turn into
+    // three minutes, and the folders that were not touched cannot have been broken.
+    const jobs = this.verifyJobs()
+    if (jobs.length === 0) return result
+
+    let current = result
+    for (const job of jobs) {
+      current = await this.verifyOne(job, current, signal)
+      // A folder still failing after its rounds is the end state; carrying on to the next
+      // one would bury the failure the model was just handed.
+      if (current.stoppedBecause !== 'done') return current
+    }
+    return current
+  }
+
+  /** The verify commands that apply to what this turn wrote, in mount order. */
+  private verifyJobs(): { spec: VerifySpec; root: string; folder: string }[] {
+    const jobs: { spec: VerifySpec; root: string; folder: string }[] = []
+    for (const mount of this.workspace.mounts) {
+      if (!this.writtenMounts.has(mount.name)) continue
+      // The workspace profile wins for a folder that has an entry; otherwise the primary
+      // folder falls back to its own settings files, which is what a single-folder workspace
+      // has always used. An ATTACHED folder never supplies its own command: a verify command
+      // is a shell command, and reading one out of a folder you merely pointed at is a way
+      // to run arbitrary code by reference.
+      const spec = this.opts.verifyFolders?.[mount.name] ?? (mount.primary ? this.opts.verify : undefined)
+      if (spec) jobs.push({ spec, root: mount.root, folder: mount.name })
+    }
+    return jobs
+  }
+
+  private async verifyOne(
+    job: { spec: VerifySpec; root: string; folder: string },
+    result: TurnResult,
+    signal?: AbortSignal,
+  ): Promise<TurnResult> {
     let current = result
     for (let attempt = 1; attempt <= MAX_VERIFY_ROUNDS; attempt++) {
       if (signal?.aborted) return current
-      const outcome = await runVerify(spec, this.opts.workspaceRoot, signal)
+      const outcome = await runVerify(job.spec, job.root, signal)
       this.opts.onVerify?.({
-        command: spec.command,
+        command: job.spec.command,
         ok: outcome.ok,
         attempt,
+        ...(this.workspace.multi ? { folder: job.folder } : {}),
         ...(outcome.exitCode !== null ? { exitCode: outcome.exitCode } : {}),
         ...(outcome.problem !== undefined ? { problem: outcome.problem } : {}),
       })
@@ -411,13 +462,35 @@ export class Session {
       // model has already been told it is not its fault.
       if (outcome.problem !== undefined) return current
 
+      const where = this.workspace.multi ? `In the "${job.folder}" folder: ` : ''
       const fixer = this.buildAgent(signal)
-      current = await fixer.runTurn(verifyFailureMessage(spec, outcome))
+      current = await fixer.runTurn(`${where}${verifyFailureMessage(job.spec, outcome)}`)
       // Aborted or out of steps: stop asking. The workspace is still broken and the
       // transcript says so, which is the honest end state.
       if (current.stoppedBecause !== 'done') return current
     }
     return current
+  }
+
+  /** Records the folder a successful write landed in, from the tool call's raw arguments. */
+  private notePathWritten(rawArgs: string | undefined): void {
+    if (rawArgs === undefined) return
+    let parsed: { path?: unknown; to?: unknown }
+    try {
+      parsed = JSON.parse(rawArgs) as { path?: unknown; to?: unknown }
+    } catch {
+      return
+    }
+    // `move_file` reports its destination as `to`; every other write tool uses `path`.
+    const target = typeof parsed.path === 'string' ? parsed.path
+      : typeof parsed.to === 'string' ? parsed.to : undefined
+    if (target === undefined) return
+    try {
+      const mount = this.workspace.mountFor(this.workspace.resolve(target))
+      if (mount) this.writtenMounts.add(mount.name)
+    } catch {
+      // A path the jail refuses cannot have been written; nothing to record.
+    }
   }
 
   /**
@@ -600,13 +673,20 @@ export class Session {
       // the workspace exactly as it was, and counting them would make a turn that achieved
       // nothing look busy to the idle check.
       if (result.ok) {
-        if (WRITE_TOOLS.has(name)) this.writeCount += 1
-        else if (COMMAND_TOOLS.has(name)) this.commandCount += 1
+        if (WRITE_TOOLS.has(name)) {
+          this.writeCount += 1
+          // Which FOLDER was written, so verify runs where the change landed instead of
+          // everywhere. Read from the call's own arguments: the tool has already resolved
+          // and jailed the path, and the transcript is not a place to re-derive it from.
+          this.notePathWritten(this.lastToolArgs.get(name))
+        } else if (COMMAND_TOOLS.has(name)) this.commandCount += 1
       }
       host?.onToolResult?.(name, result as never, callId)
     }
     const captureToolCall = (name: string, args: string): void => {
-      if (this.workLog) this.lastToolArgs.set(name, args)
+      // Recorded unconditionally now, not only for the work log: `captureToolResult` reads
+      // it back to learn which folder a write landed in.
+      this.lastToolArgs.set(name, args)
       host?.onToolCall?.(name, args)
     }
     return { ...host, onStepDone: captureStepDone, onToolCall: captureToolCall, onToolResult: captureToolResult }
@@ -656,6 +736,7 @@ export class Session {
       // `writeCount` is cumulative across the session (the unattended idle check needs it
       // that way), so "did THIS turn change anything" is a difference, not a value.
       const writesBefore = this.writeCount
+      this.writtenMounts.clear()
       let result = await agent.runTurn(userText)
       result = await this.verifyAndFix(result, this.writeCount - writesBefore, signal)
 
@@ -1019,6 +1100,9 @@ export class Session {
   private readonly lastToolArgs = new Map<string, string>()
   /** Cumulative across the session; see `turnFootprint`. */
   private writeCount = 0
+  /** Folders written to in the CURRENT turn, cleared at the start of each one. Verify
+   * runs where the change landed, not everywhere. */
+  private writtenMounts = new Set<string>()
   private commandCount = 0
 
   /**

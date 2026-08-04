@@ -135,7 +135,38 @@ type RgCheck = { ok: true } | { ok: false; detail: string }
  * A `--version` handshake is decided by behaviour instead, and covers every shape at once
  * including a real, wrong executable, which no amount of filesystem inspection can catch.
  */
+/**
+ * Windows extensions that can actually be EXECUTED, from `PATHEXT`.
+ *
+ * Anything else handed to the OS as a command is not run, it is OPENED — Windows passes it
+ * to whatever application owns the extension. Measured while chasing a complaint that the
+ * test suite kept opening editor tabs: the `--version` handshake below, given a fixture
+ * called `credentials.json`, produced
+ *
+ *     cmd.exe /q /d /s /c "…\credentials.json "--version""
+ *
+ * and Windows launched VS Code on it. That is a real defect in the product and not only in
+ * the test: `PRIVATECODE_RG` pointing at a data file is a typo, and answering a typo by
+ * opening the file in someone's editor is a side effect nobody asked a search tool for.
+ */
+const WINDOWS_EXECUTABLE = new Set(
+  (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').map((e) => e.trim().toLowerCase()).filter(Boolean),
+)
+
+/** Whether the OS would RUN this path, as opposed to opening it in an application. */
+function looksExecutable(path: string): boolean {
+  if (process.platform !== 'win32') return true
+  const dot = path.lastIndexOf('.')
+  const slash = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'))
+  if (dot <= slash) return false // no extension at all: Windows cannot run it
+  return WINDOWS_EXECUTABLE.has(path.slice(dot).toLowerCase())
+}
+
 async function verifyIsRipgrep(path: string): Promise<RgCheck> {
+  if (!looksExecutable(path)) {
+    return { ok: false, detail: 'it is not an executable file (Windows would open it, not run it)' }
+  }
+
   const spawn = () =>
     execa(path, ['--version'], { reject: false, timeout: 10_000, env: RG_ENV })
 
