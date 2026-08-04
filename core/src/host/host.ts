@@ -70,6 +70,7 @@ import type {
   TurnSummary,
 } from './protocol.js'
 import { loadUiConfig, saveUiConfig } from './ui-config.js'
+import { recordToolOutcome, replayEntries, toolOutcomes } from './replay.js'
 
 /**
  * What `SessionHost` needs from whatever carries its messages to the UI: fire-and-forget
@@ -479,6 +480,11 @@ export class SessionHost {
       contextLength: this.contextLength,
       problems,
       title: session.meta.title,
+      // Empty for a new session, and cheap to compute either way: this is a map over
+      // messages already in memory, not a second read of the session file.
+      items: resumeId === undefined
+        ? []
+        : replayEntries(session.messages(), toolOutcomes(workspaceRoot, session.id)),
     }
   }
 
@@ -677,12 +683,19 @@ export class SessionHost {
       onThinkingDelta: (text) => this.emit('thinking.delta', { text }),
       onTextDelta: (text) => this.emit('text.delta', { text }),
       onToolCall: (name, args) => this.emit('tool.call', { name, args }),
-      onToolResult: (name, result) => this.emit('tool.result', {
-        name,
-        ok: result.ok,
-        content: result.content,
-        ...(result.display !== undefined ? { display: result.display } : {}),
-      }),
+      onToolResult: (name, result, callId) => {
+        // Recorded before the event goes out, so a window that is about to be closed still
+        // leaves the outcome on disk for the next time this session is opened.
+        if (this.workspaceRoot !== undefined && this.session) {
+          recordToolOutcome(this.workspaceRoot, this.session.id, callId, result.ok)
+        }
+        this.emit('tool.result', {
+          name,
+          ok: result.ok,
+          content: result.content,
+          ...(result.display !== undefined ? { display: result.display } : {}),
+        })
+      },
       onAssistantText: (text) => this.emit('assistant.text', { text }),
     }
   }

@@ -81,7 +81,31 @@ export interface InitResult {
   contextLength: number | null
   problems: string[]
   title: string
+  /** The conversation so far, empty for a new session. See `TranscriptEntry`. */
+  items: TranscriptEntry[]
 }
+
+/**
+ * One moment of a stored conversation, in the shape the UI already knows how to fold.
+ *
+ * A resumed session used to come back as a title and nothing else: you clicked yesterday's
+ * work in the rail and got an empty chat with the right name on it. The transcript was on
+ * disk the whole time -- it is what the model is being sent -- and there was simply no way
+ * to ask for it.
+ *
+ * These deliberately mirror the LIVE events rather than the finished rows: the app turns
+ * each one into the same reducer action the live path dispatches, so a restored conversation
+ * is assembled by exactly the code that assembles a running one. A second renderer for
+ * history would be a second thing to keep in step, and it would drift.
+ */
+export type TranscriptEntry =
+  | { kind: 'user'; text: string }
+  | { kind: 'reasoning'; step: number; text: string }
+  | { kind: 'tool-call'; name: string; args: string }
+  /** `ok` for calls made before this feature existed is unknown and reported as `true`;
+   * see `toolOutcomes` for why that is the honest default and what records the real one. */
+  | { kind: 'tool-result'; name: string; ok: boolean; content: string }
+  | { kind: 'assistant'; text: string }
 
 export interface SendParams { text: string }
 export interface SendResult { turn: TurnSummary }

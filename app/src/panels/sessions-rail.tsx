@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { AgentMode } from '@core/permissions/engine'
+import type { TranscriptEntry } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { baseName, relativeTime } from '../lib/format'
 import { Icon } from '../components/icons'
@@ -23,6 +24,8 @@ export interface SessionSwitch {
    * reply that ends the switch, and the switch resets the transcript, so an event-only
    * path is wiped microseconds after it lands. */
   problems: string[]
+  /** The conversation this session already had. Empty for a new one. */
+  items: readonly TranscriptEntry[]
 }
 
 type SessionMeta = {
@@ -69,7 +72,7 @@ export function SessionsRail({
   function startNew(): void {
     switchTo(client.call('sessions.new', {}).then((r) => ({
       sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
-      problems: r.problems,
+      problems: r.problems, items: r.items,
     })))
   }
 
@@ -77,7 +80,7 @@ export function SessionsRail({
     if (id === activeSessionId) return
     switchTo(client.call('sessions.resume', { id }).then((r) => ({
       sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
-      problems: r.problems,
+      problems: r.problems, items: r.items,
     })))
   }
 

@@ -110,7 +110,10 @@ export interface AgentEvents {
    */
   onContinuation?(step: number): void
   onToolCall?(name: string, args: string): void
-  onToolResult?(name: string, result: ToolResult): void
+  /** `callId` is the model's own id for this call. Passed because the host records how each
+   * call ended in a file beside the session -- the transcript keeps the result TEXT, which
+   * is all the model needs, and loses whether it worked, which is all the window needs. */
+  onToolResult?(name: string, result: ToolResult, callId: string): void
   onAssistantText?(text: string): void
   /** Emitted once the model call(s) of the step are over, before the tool runs. */
   onStepDone?(info: StepInfo): void
@@ -392,7 +395,7 @@ export class Agent {
       const call = calls[0]!
       this.opts.events?.onToolCall?.(call.function.name, call.function.arguments)
       const result = await this.runTool(call.function.name, call.function.arguments)
-      this.opts.events?.onToolResult?.(call.function.name, result)
+      this.opts.events?.onToolResult?.(call.function.name, result, call.id)
       this.transcript.append({
         role: 'tool',
         tool_call_id: call.id,

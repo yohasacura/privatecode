@@ -406,6 +406,19 @@ export class Session {
   }
 
   /**
+   * A read-only view of the conversation as it stands.
+   *
+   * Exists so a resumed session can be SHOWN, not only continued. The alternative was for
+   * the host to re-read the session file it had just handed this object, which is both a
+   * second parse of a possibly large transcript and, after a compaction swap, a different
+   * answer: the file carries the marker and the messages before it, this carries what the
+   * model will actually be sent next.
+   */
+  messages(): readonly ChatMessage[] {
+    return this.transcript.messages()
+  }
+
+  /**
    * Real usage numbers where available, alongside the always-on heuristic.
    *
    * `promptTokens` is the newest server-reported prompt size (the latest completed step's
@@ -454,7 +467,7 @@ export class Session {
     // rather than reconstructed from the transcript afterwards: run_command's first result
     // line carries the real exit code, and the alternative -- trusting the model's prose
     // about whether the tests passed -- is exactly what the log exists not to do.
-    const captureToolResult = (name: string, result: { ok: boolean; content: string }): void => {
+    const captureToolResult = (name: string, result: { ok: boolean; content: string }, callId: string): void => {
       if (this.workLog) this.turnCommands.push({ name, args: this.lastToolArgs.get(name) ?? '', content: result.content, ok: result.ok })
       // Only SUCCESSFUL calls count as work: a refused edit and a failed command both leave
       // the workspace exactly as it was, and counting them would make a turn that achieved
@@ -463,7 +476,7 @@ export class Session {
         if (WRITE_TOOLS.has(name)) this.writeCount += 1
         else if (COMMAND_TOOLS.has(name)) this.commandCount += 1
       }
-      host?.onToolResult?.(name, result as never)
+      host?.onToolResult?.(name, result as never, callId)
     }
     const captureToolCall = (name: string, args: string): void => {
       if (this.workLog) this.lastToolArgs.set(name, args)

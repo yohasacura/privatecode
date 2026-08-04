@@ -442,3 +442,78 @@ describe('reduceChat: a turn that outlived its session', () => {
     expect(after.items[0]?.id).toBeGreaterThan(first.items[first.items.length - 1]?.id ?? 0)
   })
 })
+
+/**
+ * Restoring a conversation off disk.
+ *
+ * The point of folding stored entries through this same reducer is that history and the
+ * present are assembled by one piece of code. The first test is what proves it: the same
+ * conversation, once as it arrives live and once as it comes back from the session file,
+ * has to produce the same transcript.
+ */
+describe('reduceChat: transcript-restored', () => {
+  it('produces the same transcript as the live events it stands in for', () => {
+    const live = run([
+      { type: 'user-message', text: 'add a docstring' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
+      { type: 'thinking.delta', text: 'read it first' },
+      { type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' },
+      { type: 'tool.result', name: 'read_file', ok: true, content: 'a.ts (2 lines)' },
+      { type: 'assistant.text', text: 'Done.' },
+    ])
+
+    const restored = run([
+      {
+        type: 'transcript-restored',
+        entries: [
+          { kind: 'user', text: 'add a docstring' },
+          { kind: 'reasoning', step: 1, text: 'read it first' },
+          { kind: 'tool-call', name: 'read_file', args: '{"path":"a.ts"}' },
+          { kind: 'tool-result', name: 'read_file', ok: true, content: 'a.ts (2 lines)' },
+          { kind: 'assistant', text: 'Done.' },
+        ],
+      },
+    ])
+
+    // `startedAtMs` is the one honest difference: live events carry a clock and a session
+    // file does not record one. Everything the reader sees is identical.
+    const forget = (items: ChatState['items']): unknown[] =>
+      items.map((i) => (i.kind === 'thinking' ? { ...i, startedAtMs: 0 } : i))
+    expect(forget(restored.items)).toEqual(forget(live.items))
+  })
+
+  it('keeps two consecutive reasoning steps as two blocks', () => {
+    // Live, a tool call or an answer ends each block. A stored conversation can hold two
+    // thinking steps back to back, and without the step boundary they would accumulate into
+    // one wall of text.
+    const state = run([
+      {
+        type: 'transcript-restored',
+        entries: [
+          { kind: 'reasoning', step: 1, text: 'first thought' },
+          { kind: 'reasoning', step: 2, text: 'second thought' },
+        ],
+      },
+    ])
+    expect(state.items.map((i) => (i.kind === 'thinking' ? i.text : i.kind)))
+      .toEqual(['first thought', 'second thought'])
+    expect(state.items.every((i) => i.kind === 'thinking' && i.done)).toBe(true)
+  })
+
+  it('marks a restored failure as a failure', () => {
+    const state = run([
+      {
+        type: 'transcript-restored',
+        entries: [
+          { kind: 'tool-call', name: 'run_command', args: '{}' },
+          { kind: 'tool-result', name: 'run_command', ok: false, content: 'exit 1' },
+        ],
+      },
+    ])
+    expect(state.items[0]).toMatchObject({ kind: 'tool', result: { ok: false, content: 'exit 1' } })
+  })
+
+  it('restoring nothing leaves an empty transcript', () => {
+    expect(run([{ type: 'transcript-restored', entries: [] }]).items).toEqual([])
+  })
+})

@@ -1,5 +1,5 @@
 import type { ApprovalDecision, TodoItem } from '@core/interaction'
-import type { CompactionState, StoppedBecause } from '@core/host/protocol'
+import type { CompactionState, StoppedBecause, TranscriptEntry } from '@core/host/protocol'
 import type { AgentMode } from '@core/permissions/engine'
 
 /**
@@ -226,6 +226,10 @@ export type ChatAction =
    * state alongside the new session info: an old session's messages and pending cards
    * have no business surviving into a new one's view. */
   | { type: 'session-switched'; sessionId: string; mode: AgentMode; contextLength: number | null; title: string }
+  /** The conversation a resumed session already had, dispatched right after the
+   * `session-switched` that cleared the view. Folded through this same reducer one entry at
+   * a time (see the case), so history is assembled by the code that assembles the present. */
+  | { type: 'transcript-restored'; entries: readonly TranscriptEntry[] }
   | { type: 'mode-changed'; mode: AgentMode }
   | { type: 'compaction'; state: CompactionState; droppedMessages?: number }
   | { type: 'approval.request'; requestId: string; tool: string; summary: string; detail: string; suggestedRules: string[] }
@@ -301,6 +305,18 @@ function lastPendingTool(items: ChatItem[]): (ChatItem & { kind: 'tool' }) | und
   return undefined
 }
 
+/** The live action each stored entry stands in for. See the `transcript-restored` case. */
+function restoreAction(entry: TranscriptEntry): ChatAction {
+  switch (entry.kind) {
+    case 'user': return { type: 'user-message', text: entry.text }
+    case 'reasoning': return { type: 'thinking.delta', text: entry.text }
+    case 'tool-call': return { type: 'tool.call', name: entry.name, args: entry.args }
+    case 'tool-result':
+      return { type: 'tool.result', name: entry.name, ok: entry.ok, content: entry.content }
+    case 'assistant': return { type: 'assistant.text', text: entry.text }
+  }
+}
+
 export function reduceChat(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case 'user-message': {
@@ -341,6 +357,42 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         endedAtMs: null,
       }
       return { ...state, items: [...state.items, item], nextId: state.nextId + 1 }
+    }
+
+    /**
+     * A conversation read back off disk.
+     *
+     * Each entry becomes the action the LIVE path would have dispatched, and is folded
+     * through this same reducer — so a restored transcript is built by exactly the code
+     * that builds a running one, and there is no second renderer for history to drift
+     * from. It also means every rule already proved here (reasoning closes on a tool call,
+     * a result attaches to the most recent unresolved call) holds for free.
+     *
+     * One thing the live path gets from elsewhere has to be supplied here: reasoning blocks
+     * are separated by whatever ENDS them, and two consecutive thinking steps with nothing
+     * between them would otherwise accumulate into one wall of text. The step number is the
+     * boundary, so a change in it closes the open block.
+     */
+    case 'transcript-restored': {
+      let next = state
+      for (const entry of action.entries) {
+        // One reasoning entry per step, so every one of them starts a new block: close
+        // whatever was open (a no-op unless two thinking steps ran back to back, which
+        // live only avoids because a tool call or an answer always came between), and set
+        // the step so a restored block carries the same number a live one would.
+        if (entry.kind === 'reasoning') {
+          next = {
+            ...next,
+            items: closeThinking(next.items, undefined),
+            currentStep: { step: entry.step, timeoutMs: 0, startedAtMs: 0 },
+          }
+        }
+        next = reduceChat(next, restoreAction(entry))
+      }
+      // Nothing here is running. Without this, a conversation whose last message was a
+      // thought would come back with a pulsing "thinking…" row and the composer counting
+      // up a step that finished yesterday.
+      return { ...next, items: closeThinking(next.items, undefined), currentStep: null }
     }
 
     case 'text.delta': {

@@ -194,6 +194,7 @@ export default function App() {
       // host emits its `settings.problem` events while BUILDING the session -- i.e. before
       // the reply above resolves -- so anything appended earlier is wiped microseconds
       // later. The reducer dedupes on exact text, so the double delivery costs nothing.
+      if (init.items.length > 0) dispatch({ type: 'transcript-restored', entries: init.items })
       for (const text of init.problems) dispatch({ type: 'settings-problem', text })
       // Remember what worked; the next launch auto-connects with exactly this.
       c.call('config.set', { serverUrl, recentWorkspace: workspace }).catch(() => {})
@@ -277,6 +278,7 @@ export default function App() {
 
   function onSessionSwitched(info: SessionSwitch): void {
     dispatch({ type: 'session-switched', ...info })
+    if (info.items.length > 0) dispatch({ type: 'transcript-restored', entries: info.items })
     for (const text of info.problems) dispatch({ type: 'settings-problem', text })
     setPreviewPath(null)
   }
@@ -456,6 +458,7 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onSessionSwitched={(info) => {
             dispatch({ type: 'session-switched', ...info })
+            if (info.items.length > 0) dispatch({ type: 'transcript-restored', entries: info.items })
             for (const text of info.problems) dispatch({ type: 'settings-problem', text })
             setPhase({ kind: 'ready', workspace: info.workspaceRoot })
             setPreviewPath(null)

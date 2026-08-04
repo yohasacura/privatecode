@@ -206,7 +206,7 @@ export function SettingsModal({
         client.call('config.set', { serverUrl: url, recentWorkspace: root }).catch(() => {})
         onSessionSwitched({
           sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
-          problems: r.problems, workspaceRoot: root,
+          problems: r.problems, items: r.items, workspaceRoot: root,
         })
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
