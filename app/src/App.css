@@ -2190,3 +2190,6 @@ kbd {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Said quietly beside the step timer: it explains a pause, it is not an event. */
+.status-quiet { color: var(--text-faint); }

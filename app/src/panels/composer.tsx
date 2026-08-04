@@ -342,6 +342,13 @@ export function Composer({
    * next starting -- exactly when a tool is running or an approval is open -- so that case
    * gets its own wording instead of a blank.
    */
+  /** Whether tokens are actually coming out right now, as opposed to the model still
+   * reading. The last item being a live reasoning block WITH text is the only honest
+   * evidence of that; a step having started is not. */
+  const newestItem = state.items[state.items.length - 1]
+  const streaming = newestItem !== undefined && newestItem.kind === 'thinking' &&
+    !newestItem.done && newestItem.text.length > 0
+
   function statusLine(): VNode | null {
     if (waitingOnYou) return <span class="status-live">waiting on you · nothing generating</span>
     // Why a run ENDED outranks how the last turn went: after an unattended run the first
@@ -365,6 +372,13 @@ export function Composer({
       return (
         <span class="status-live">
           step {step.step} · {formatDuration(now - step.startedAtMs)}
+          {/* The gap that reads as a freeze. llama.cpp matches its cache by longest common
+              prefix, so the tokens a step APPENDS -- a file the last tool returned -- have to
+              be processed before the first new one comes out. A `read_file` may return 60,000
+              characters (~15k tokens), and at the ~393 tok/s measured on this machine that is
+              close to forty seconds of silence, after which generation runs at its usual
+              speed. Saying so turns "it hung" into "it is reading". */}
+          {!streaming && <span class="status-quiet"> · reading what the last step returned</span>}
           {remainingMs !== null && remainingMs < 20_000 && (
             <span class="warn"> · {Math.ceil(remainingMs / 1000)}s to timeout</span>
           )}
