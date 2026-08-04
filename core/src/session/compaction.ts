@@ -4,6 +4,12 @@ import type { ChatMessage, ChatRequest } from '../llama/types.js'
 export interface CompactionInput {
   messages: readonly ChatMessage[] // the full current transcript
   workspaceRoot: string
+  /**
+   * How many tokens of transcript this request may carry. Absent (or 0) sends all of it,
+   * which is what every caller did before a session was found that no longer fit — see
+   * `fitForSummary`.
+   */
+  budgetTokens?: number
 }
 export interface CompactionResult {
   /** The summary text the new transcript opens with. */
@@ -47,6 +53,73 @@ summarize or drop any of them.
 Be concrete: exact file paths, exact function/variable names, exact remaining steps. Omit \
 nothing a continuation would need and add nothing it would not.`
 
+/** The same chars-per-token estimate `Transcript.approxTokens` uses, per message. */
+function approxTokensOf(m: ChatMessage): number {
+  let chars = (m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0)
+  for (const c of m.tool_calls ?? []) chars += c.function.arguments.length + 20
+  return Math.ceil(chars / 4)
+}
+
+/** How many messages after the system one are kept whole at the FRONT: the original request
+ * and the first answer to it, which is what every summary has to be anchored on. */
+const KEEP_HEAD = 3
+
+/**
+ * The messages a summary request may carry, within a token budget.
+ *
+ * This exists because of a dead end found in the running app: a session whose transcript had
+ * outgrown the window answered every send with
+ * `request (133029 tokens) exceeds the available context size (131072 tokens)` — and the only
+ * remedy on offer, compaction, sent the WHOLE transcript to be summarised, so it hit exactly
+ * the same wall. The advice was unfollowable and the session was unusable forever.
+ *
+ * What is kept, in priority order: the system message (it carries the project's own rules),
+ * the opening exchange (what was asked), and then as much of the TAIL as fits, because where
+ * the work stands now is what a continuation needs most. The middle is dropped with a marker
+ * saying so — a summary that quietly skipped half a conversation while claiming to cover it
+ * would be worse than no summary at all.
+ *
+ * `budgetTokens <= 0` (a caller that does not know the window) keeps everything, which is
+ * exactly the old behaviour.
+ */
+export function fitForSummary(
+  messages: readonly ChatMessage[], budgetTokens = 0,
+): ChatMessage[] {
+  if (budgetTokens <= 0) return [...messages]
+  const total = messages.reduce((sum, m) => sum + approxTokensOf(m), 0)
+  if (total <= budgetTokens) return [...messages]
+
+  const system = messages[0]?.role === 'system' ? [messages[0]] : []
+  const rest = messages.slice(system.length)
+  const head = rest.slice(0, KEEP_HEAD)
+
+  let spent = [...system, ...head].reduce((sum, m) => sum + approxTokensOf(m), 0)
+  const tail: ChatMessage[] = []
+  // Backwards from the end, stopping before the head so nothing is taken twice.
+  for (let i = rest.length - 1; i >= head.length; i--) {
+    const message = rest[i]!
+    const cost = approxTokensOf(message)
+    if (spent + cost > budgetTokens) break
+    tail.unshift(message)
+    spent += cost
+  }
+
+  const dropped = rest.length - head.length - tail.length
+  if (dropped <= 0) return [...system, ...head, ...tail]
+  return [
+    ...system,
+    ...head,
+    {
+      role: 'user',
+      content:
+        `[${dropped} messages from the middle of this conversation are not included here: ` +
+        'it no longer fits in the context window. Summarise what you can see, and say ' +
+        'plainly in the summary that the middle was not available.]',
+    },
+    ...tail,
+  ]
+}
+
 /**
  * Builds the compaction request by APPENDING one user message to `input.messages` --
  * never editing the existing list. `input.messages` (and every message in it) is left
@@ -67,7 +140,7 @@ nothing a continuation would need and add nothing it would not.`
 export function buildCompactionRequest(input: CompactionInput): ChatRequest {
   const briefing: ChatMessage = { role: 'user', content: COMPACTION_INSTRUCTION }
   return {
-    messages: [...input.messages, briefing],
+    messages: [...fitForSummary(input.messages, input.budgetTokens), briefing],
     maxTokens: MAX_TOKENS,
     toolChoice: 'none',
   }

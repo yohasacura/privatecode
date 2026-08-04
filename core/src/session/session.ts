@@ -151,6 +151,26 @@ const PLAN_MODE_NOTE = '(mode is now plan: investigate and propose; do not edit)
  * guess is another write to a workspace that is already broken. */
 const MAX_VERIFY_ROUNDS = 2
 
+/**
+ * Room kept clear in the window for a summary request: the ~4.5k tokens the generation may
+ * produce (compaction.ts's RETRY_MAX_TOKENS) plus a margin for the chat template's own
+ * scaffolding, which is not in any per-message estimate.
+ *
+ * Sized generously on purpose. Being wrong low costs a few hundred tokens of transcript in
+ * one summary; being wrong high costs the whole remedy, which is the failure this exists to
+ * remove.
+ */
+const SUMMARY_OUTPUT_RESERVE = 8_000
+
+/**
+ * How much room a turn needs beyond what the transcript already occupies: the user's message
+ * plus a few steps of tool results and reasoning.
+ *
+ * Deliberately small next to the 80% background trigger — this is not a second opinion about
+ * when to compact, it is the backstop for a conversation that is already at the edge.
+ */
+const PRE_TURN_HEADROOM = 4_000
+
 /** Important-5 guard (see `applyCompactionSwap`): a swap is abandoned, not applied, when
  * the NEW transcript's `approxTokens()` is still at least this fraction of the OLD
  * transcript's -- i.e. it didn't shrink by a meaningful margin (a `keepRecent` at or past
@@ -504,6 +524,19 @@ export class Session {
     this.workLog?.appendRunEnd(new Date(), this.turnNumber, detail)
   }
 
+  /**
+   * How much transcript a summary request may carry: the window, less the room the summary
+   * itself needs to be generated into, less a margin for the chat template's own overhead.
+   *
+   * Zero when the window is unknown, which means "send everything" — the behaviour every
+   * caller had before a session was found that no longer fit in it.
+   */
+  private summaryBudget(): number {
+    const contextLength = this.opts.compaction?.contextLength
+    if (contextLength === undefined || contextLength <= 0) return 0
+    return Math.max(0, contextLength - SUMMARY_OUTPUT_RESERVE)
+  }
+
   /** The checkpoints taken in this workspace, newest first. Empty when not a long run. */
   async listCheckpoints(limit?: number): Promise<Checkpoint[]> {
     return this.checkpoints ? this.checkpoints.list(limit) : []
@@ -725,6 +758,10 @@ export class Session {
       // works: an abort on the turn's own signal aborts the compaction too.
       await this.settleInFlightCompaction(signal)
       this.swapInCompactionIfReady()
+      // Last line of defence: if the conversation still cannot fit, compact before the turn
+      // rather than letting the server refuse it. A refusal here is permanent — every later
+      // message hits the same wall.
+      await this.compactIfOverWindow(signal)
 
       const note = this.pendingModeNote
       this.pendingModeNote = undefined
@@ -852,6 +889,21 @@ export class Session {
     }
     this.sending = true
     try {
+      await this.compactNow(signal)
+    } finally {
+      this.sending = false
+    }
+  }
+
+  /**
+   * One compaction cycle, right now, without the single-slot guard.
+   *
+   * Extracted from `forceCompact` so `send()` can use it too: a transcript that ALREADY
+   * cannot fit has to be compacted before the turn, and `forceCompact` refuses while a send
+   * is in progress — which, from inside `send()`, is always.
+   */
+  private async compactNow(signal?: AbortSignal): Promise<void> {
+    {
       await this.abortInFlightCompaction()
       this.pendingSummary = undefined
 
@@ -859,7 +911,11 @@ export class Session {
       try {
         const result = await generateCompaction(
           this.opts.client,
-          { messages: this.transcript.messages(), workspaceRoot: this.opts.workspaceRoot },
+          {
+            messages: this.transcript.messages(),
+            workspaceRoot: this.opts.workspaceRoot,
+            budgetTokens: this.summaryBudget(),
+          },
           signal,
         )
         this.opts.onCompaction?.({ state: 'ready' })
@@ -878,9 +934,31 @@ export class Session {
         // read as a calm 'postponed', not a scary 'failed'.
         this.opts.onCompaction?.({ state: signal?.aborted ? 'postponed' : 'failed' })
       }
-    } finally {
-      this.sending = false
     }
+  }
+
+  /**
+   * Compacts BEFORE the turn when the conversation already cannot fit in the window.
+   *
+   * The 80% background trigger handles the ordinary case; this is the backstop for a session
+   * that got past it — one long turn that jumped the threshold in a single step, or one
+   * resumed from disk. Reported from the running app: continuing such a session answered
+   * every message with `request (133029 tokens) exceeds the available context size (131072
+   * tokens)`, permanently.
+   *
+   * Uses the server's own last count when this process has one and the transcript's estimate
+   * otherwise — a resumed session has no count, and that is exactly the case that was stuck.
+   */
+  private async compactIfOverWindow(signal?: AbortSignal): Promise<void> {
+    const contextLength = this.opts.compaction?.contextLength
+    if (contextLength === undefined || contextLength <= 0) return
+    // Scaled to the window, never a flat number: a fixed 4k reserve against a small context
+    // is larger than the context, so the check fired on every single send and compacted a
+    // transcript that had barely started. Caught by the host suite timing out.
+    const headroom = Math.min(PRE_TURN_HEADROOM, Math.floor(contextLength * 0.05))
+    const used = this.latestPromptTokens ?? this.approxTokens()
+    if (used + headroom < contextLength) return
+    await this.compactNow(signal)
   }
 
   /**
@@ -1095,7 +1173,9 @@ export class Session {
   private async runBackgroundCompaction(messages: readonly ChatMessage[], signal: AbortSignal): Promise<void> {
     try {
       const result = await generateCompaction(
-        this.opts.client, { messages, workspaceRoot: this.opts.workspaceRoot }, signal,
+        this.opts.client,
+        { messages, workspaceRoot: this.opts.workspaceRoot, budgetTokens: this.summaryBudget() },
+        signal,
       )
       this.pendingSummary = result.summary
       this.compactionInFlight = undefined
