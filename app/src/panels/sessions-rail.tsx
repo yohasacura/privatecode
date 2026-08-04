@@ -24,6 +24,9 @@ export interface SessionSwitch {
    * reply that ends the switch, and the switch resets the transcript, so an event-only
    * path is wiped microseconds after it lands. */
   problems: string[]
+  /** How full the context already is, so the status bar has something true to show before
+   * the first message rather than after it. */
+  contextUsed: { promptTokens: number | null; approxTokens: number }
   /** The conversation this session already had. Empty for a new one. */
   items: readonly TranscriptEntry[]
 }
@@ -72,7 +75,7 @@ export function SessionsRail({
   function startNew(): void {
     switchTo(client.call('sessions.new', {}).then((r) => ({
       sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
-      problems: r.problems, items: r.items,
+      problems: r.problems, items: r.items, contextUsed: r.contextUsed,
     })))
   }
 
@@ -80,7 +83,7 @@ export function SessionsRail({
     if (id === activeSessionId) return
     switchTo(client.call('sessions.resume', { id }).then((r) => ({
       sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
-      problems: r.problems, items: r.items,
+      problems: r.problems, items: r.items, contextUsed: r.contextUsed,
     })))
   }
 

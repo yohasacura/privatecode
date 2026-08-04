@@ -198,6 +198,7 @@ export default function App() {
         mode: init.mode,
         contextLength: init.contextLength,
         title: init.title,
+        contextUsed: init.contextUsed,
       })
       // AFTER session-switched, never before: that action resets the transcript, and the
       // host emits its `settings.problem` events while BUILDING the session -- i.e. before
@@ -312,6 +313,7 @@ export default function App() {
           .then((r) => onSessionSwitched({
             sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength,
             title: r.title, problems: r.problems, items: r.items,
+            contextUsed: r.contextUsed,
           }))
           .catch((e: Error) => dispatch({ type: 'send-failed', message: e.message }))
         return
@@ -329,6 +331,7 @@ export default function App() {
           .then((r) => onSessionSwitched({
             sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength,
             title: r.title, problems: r.problems, items: r.items,
+            contextUsed: r.contextUsed,
           }))
           .catch((e: Error) => dispatch({ type: 'send-failed', message: e.message }))
     }

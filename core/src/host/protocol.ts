@@ -98,6 +98,15 @@ export interface InitResult {
   /** How many folders it is made of. The window says so when it is more than one — a
    * titlebar that names only the primary folder would be describing a fifth of the jail. */
   folderCount: number
+  /**
+   * How full the context is right now.
+   *
+   * `promptTokens` is the server's own count from the last step THIS PROCESS ran, so it is
+   * null for a session that was resumed rather than driven; `approxTokens` is the
+   * transcript's own estimate and is always available. The window showed nothing at all
+   * until you spoke — a number it could have computed the whole time.
+   */
+  contextUsed: { promptTokens: number | null; approxTokens: number }
 }
 
 /**

@@ -100,17 +100,59 @@ describe('reduceChat: step reset', () => {
     ])
   })
 
-  it('clears currentStep/lastStepDone on turn-started so a new turn never shows stale numbers', () => {
+  /**
+   * This assertion used to be the opposite, on the theory that a new turn must not show
+   * "stale numbers". It is the wrong frame, and the app showed why: clearing here made the
+   * context bar, tok/s and MTP vanish the instant you pressed Enter and reappear when the
+   * first step landed — a blink on every single message, reported from the running window.
+   *
+   * The last measurement does not stop being the last measurement because a new turn began.
+   * The step in flight is genuinely unknown and IS cleared; what was measured stays until
+   * something measures again.
+   */
+  it('keeps the last step\'s numbers across turn-started, and clears only the step in flight', () => {
     const midway = run([
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
-      { type: 'step.done', step: 1, seconds: 2, tokensPerSecond: 30 },
+      { type: 'step.done', step: 1, seconds: 2, tokensPerSecond: 30, promptTokens: 4200 },
     ])
-    expect(midway.lastStepDone).toEqual({ step: 1, seconds: 2, tokensPerSecond: 30 })
+    expect(midway.lastStepDone?.promptTokens).toBe(4200)
 
     const fresh = reduceChat(midway, { type: 'turn-started' })
     expect(fresh.currentStep).toBeNull()
-    expect(fresh.lastStepDone).toBeNull()
+    expect(fresh.lastStepDone?.promptTokens).toBe(4200)
     expect(fresh.turnRunning).toBe(true)
+  })
+
+  /**
+   * A resumed session has no step in THIS process, so the bar had nothing to show until the
+   * user spoke — while the host knew the size of the transcript it had just restored.
+   */
+  it('seeds the context reading from a restored session, marked as an estimate', () => {
+    const restored = reduceChat(initialChatState(), {
+      type: 'session-switched',
+      sessionId: 's1',
+      mode: 'normal',
+      contextLength: 131_072,
+      title: 'yesterday',
+      contextUsed: { promptTokens: null, approxTokens: 18_400 },
+    })
+    expect(restored.lastStepDone?.promptTokens).toBe(18_400)
+    expect(restored.lastStepDone?.estimated).toBe(true)
+    // Nothing was timed, so nothing claims to have been.
+    expect(restored.lastStepDone?.tokensPerSecond).toBeUndefined()
+  })
+
+  it('prefers the server\'s own count over the estimate when this process has one', () => {
+    const restored = reduceChat(initialChatState(), {
+      type: 'session-switched',
+      sessionId: 's1',
+      mode: 'normal',
+      contextLength: 131_072,
+      title: 'live',
+      contextUsed: { promptTokens: 20_100, approxTokens: 18_400 },
+    })
+    expect(restored.lastStepDone?.promptTokens).toBe(20_100)
+    expect(restored.lastStepDone?.estimated).toBe(false)
   })
 
   it('clears currentStep once step.done arrives', () => {

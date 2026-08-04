@@ -642,6 +642,7 @@ export class SessionHost {
       contextLength: this.contextLength,
       workspaceName: this.workspaceName,
       folderCount: this.mounts.length,
+      contextUsed: session.contextUsage(),
       problems,
       title: session.meta.title,
       // Empty for a new session, and cheap to compute either way: this is a map over

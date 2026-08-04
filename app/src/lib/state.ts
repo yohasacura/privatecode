@@ -128,6 +128,10 @@ export interface LastStepStats {
   /** Speculative-decoding draft-acceptance rate for this step, when the server reports
    * one -- Task 8's status bar's "MTP %". */
   draftAcceptance: number | undefined
+  /** The prompt count is the transcript's own estimate, not the server's measurement --
+   * true for a resumed session until its first step lands. The status bar says so rather
+   * than presenting an estimate as a reading. */
+  estimated?: boolean
 }
 
 /**
@@ -228,7 +232,13 @@ export type ChatAction =
    * different one, so this always resets the whole transcript/turn/pending-card/todos
    * state alongside the new session info: an old session's messages and pending cards
    * have no business surviving into a new one's view. */
-  | { type: 'session-switched'; sessionId: string; mode: AgentMode; contextLength: number | null; title: string }
+  | {
+    type: 'session-switched'; sessionId: string; mode: AgentMode; contextLength: number | null; title: string
+    /** How full the context already is. A resumed session has no step in this process, so
+     * without this the bar stayed blank until the first message — hiding a number the
+     * host could compute from the transcript it just restored. */
+    contextUsed?: { promptTokens: number | null; approxTokens: number }
+  }
   /** The conversation a resumed session already had, dispatched right after the
    * `session-switched` that cleared the view. Folded through this same reducer one entry at
    * a time (see the case), so history is assembled by the code that assembles the present. */
@@ -329,8 +339,19 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     }
 
     case 'turn-started':
-      // A fresh turn starts clean: no leftover step timing/stats from the previous one.
-      return { ...state, turnRunning: true, currentStep: null, lastStepDone: null }
+      // `lastStepDone` deliberately SURVIVES the turn boundary.
+      //
+      // Clearing it made the context bar, tok/s and MTP vanish the instant you pressed
+      // Enter and reappear when the first step landed — a blink on every message, reported
+      // from the running app. None of those readings stops being true because a new turn
+      // began: they are the last measurement, and the last measurement is exactly what a
+      // status bar is for. The first `step.done` of this turn overwrites them, merging
+      // field by field, so nothing goes stale for longer than one step.
+      //
+      // This is the same lesson `step.done` already learned WITHIN a turn (see its own
+      // comment about aborted steps wiping the count) applied ACROSS turns, where it was
+      // simply never carried over.
+      return { ...state, turnRunning: true, currentStep: null }
 
     case 'step.start':
       return {
@@ -600,6 +621,16 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         nextId: state.nextId,
         session: {
           sessionId: action.sessionId, mode: action.mode, contextLength: action.contextLength, title: action.title,
+        },
+        // Seeded from the transcript that was just restored, so the context bar has
+        // something true to show before the first message rather than after it.
+        lastStepDone: action.contextUsed === undefined ? null : {
+          step: 0,
+          seconds: 0,
+          tokensPerSecond: undefined,
+          promptTokens: action.contextUsed.promptTokens ?? action.contextUsed.approxTokens,
+          draftAcceptance: undefined,
+          estimated: action.contextUsed.promptTokens === null,
         },
       }
 

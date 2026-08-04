@@ -88,7 +88,14 @@ export function StatusBar({
       {session && <span class={`status-mode mode-${session.mode}`}>{session.mode}</span>}
 
       {fillPct !== null && used !== undefined && total !== null && (
-        <span class="status-context" title="context used by the last step">
+        <span
+          class="status-context"
+          title={lastStep?.estimated === true
+            // Said out loud rather than shown as a reading: this is the transcript measured
+            // here, not the count the server reported, and the two differ a little.
+            ? 'context in use, estimated from the restored conversation — the exact figure arrives with the next step'
+            : 'context used by the last step'}
+        >
           <span class="ctx-bar"><span class={`ctx-fill ${fillPct >= 80 ? 'ctx-high' : ''}`} style={{ width: `${fillPct}%` }} /></span>
           {formatTokenCount(used)}/{formatTokenCount(total)}
         </span>
@@ -213,6 +220,7 @@ export function SettingsModal({
           sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
           problems: r.problems, items: r.items, workspaceRoot: root,
           workspaceName: r.workspaceName, folderCount: r.folderCount,
+          contextUsed: r.contextUsed,
         })
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
