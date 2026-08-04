@@ -46,6 +46,11 @@
   --radius: 10px;
   --radius-sm: 6px;
   --read: 860px;
+  /* The right column's rhythm. One row padding and one leading-control width for every
+     list in the column, so rows in different tabs line up with each other -- which is most
+     of what makes a column read as one instrument instead of five. */
+  --row-pad: 10px;
+  --row-lead: 18px;
   /* The transcript's marker column. Every row aligns its content to the same edge. */
   --gutter: 18px;
 }
@@ -1232,6 +1237,122 @@ kbd {
 }
 
 .tab-body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+
+/* --- the panel vocabulary (components/panel.tsx) ------------------------------------- */
+
+/* An empty list is centred in the space it is given. These panels are 700px tall, and one
+   sentence pinned to the top-left corner of that much emptiness was the strongest
+   "unfinished" signal in the window. */
+.panel-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 150px;
+  padding: 24px 26px;
+  text-align: center;
+  color: var(--text-faint);
+}
+.panel-empty-mark { display: flex; color: #3a3a44; }
+.panel-empty-mark .icon { width: 22px; height: 22px; }
+.panel-empty-title { font-size: 12.5px; color: var(--text-dim); }
+.panel-empty-hint { max-width: 32ch; font-size: 11.5px; line-height: 1.5; }
+
+.panel-error-retry {
+  display: block;
+  width: 100%;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.panel-error-retry:hover { background: rgba(224, 105, 108, 0.2); }
+
+.prow { border-bottom: 1px solid var(--border-soft); }
+.prow:last-child { border-bottom: none; }
+.prow-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 4px var(--row-pad) 4px 4px;
+}
+.prow-head:hover { background: var(--bg-raised); }
+
+.prow-lead { display: flex; flex: none; justify-content: center; width: var(--row-lead); }
+.prow-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.prow-toggle:hover { color: var(--text); background: var(--bg-hover); }
+.prow-toggle .icon { width: 12px; height: 12px; }
+
+.prow-icon { display: flex; flex: none; color: var(--text-faint); }
+.prow-icon .icon { width: 13px; height: 13px; }
+
+.prow-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  text-align: left;
+}
+.prow-mono { font-family: var(--mono); font-size: 11.5px; }
+.prow-label-button {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.prow-label-button.prow-mono { font-family: var(--mono); font-size: 11.5px; }
+.prow-label-button:hover { color: var(--accent); }
+
+.prow-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--text-faint);
+}
+.prow-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.prow-bad .prow-label { color: var(--red); }
+
+/* Aligned to the label's left edge, not the row's: an expanded diff that started under the
+   chevron read as a separate block rather than as this row's detail. */
+.prow-body { padding: 2px var(--row-pad) 10px calc(var(--row-lead) + 27px); }
+
+.psection { display: flex; flex-direction: column; }
+.psection-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px var(--row-pad) 4px;
+}
+.psection-title {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.psection-count { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
 
 /* files */
 .files-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
