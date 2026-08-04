@@ -607,3 +607,79 @@ test('verify runs only in the folder that was written', async () => {
   expect((fired[0]?.data as { folder?: string }).folder).toBe('engine')
   await host.shutdown()
 }, 30_000)
+
+/**
+ * A turn that fills the window makes room and carries on.
+ *
+ * Compaction used to be possible only BETWEEN turns, because it replaces the transcript
+ * object while a running Agent holds a reference to the old one. So a single turn long
+ * enough to fill the context by itself had no way out: it ran until llama.cpp refused the
+ * request, and the refusal ended it. With the step ceiling gone, that turn is exactly the
+ * turn this tool is for.
+ */
+test('a long turn compacts between its own steps instead of dying on a full window', async () => {
+  // Sized against the real thresholds rather than round numbers: the pre-turn check is
+  // skipped below (TOOL_SCHEMA_TOKENS + PRE_TURN_HEADROOM) * 4 = 26 400, so the window has
+  // to be bigger than that for the check to run at all.
+  const CONTEXT = 40_000
+  let streamed = 0
+  let compactions = 0
+  const fake = await makeServer((_body, streaming) => {
+    if (!streaming) {
+      compactions++
+      return {
+        choices: [{
+          message: { role: 'assistant', content: 'BRIEFING: what happened so far, in short.' },
+          finish_reason: 'stop',
+        }],
+      }
+    }
+    streamed++
+    // Each working step reports a prompt the server itself measured at nearly the whole
+    // window -- that is the ground truth the between-steps check reads -- and carries enough
+    // reasoning to be worth summarising. Both are needed: compaction is refused outright
+    // when the history it would replace is no bigger than the briefing replacing it, and the
+    // first two steps ARE refused for exactly that reason (the big message is still the
+    // newest one, and the tail keeps what is recent). By the third there is a middle.
+    if (streamed <= 3) {
+      const body =
+        sseFrame({ choices: [{ delta: { reasoning_content: 'x'.repeat(60_000) } }] }) +
+        sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: `c${streamed}`, type: 'function', function: { name: 'list_dir', arguments: '' } }] } }] }) +
+        // A different path each time: three identical calls in a row is what the loop
+        // detector is for, and tripping it would prove nothing about compaction.
+        sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ path: `d${streamed}` }) } }] } }] }) +
+        sseFrame({ choices: [{ finish_reason: 'tool_calls', delta: {} }], timings: {} }) +
+        // The step that runs on the freshly compacted transcript reports what such a step
+        // really would: a much smaller prompt. Left at 38 000 it re-triggers the check and
+        // the turn compacts twice -- which works, and is the fake being untruthful rather
+        // than anything under test.
+        sseFrame({ choices: [], usage: { prompt_tokens: streamed <= 2 ? 38_000 : 9_000, completion_tokens: 20 } }) +
+        SSE_DONE
+      return new RawResponse(200, body, 'text/event-stream')
+    }
+    return textSSE('finished after making room', { prompt_tokens: 900, completion_tokens: 5 })
+  }, CONTEXT)
+  stop = fake.close
+  const root = newWorkspace()
+  for (const d of ['d1', 'd2', 'd3']) mkdirSync(join(root, d))
+  const { host, transport } = await initHost(fake.url, root)
+
+  await host.handle({ id: 2, method: 'send', params: { text: 'do something long' } })
+
+  // It compacted, and it compacted DURING the turn -- there was only ever one turn.
+  const states = eventsNamed(transport, 'compaction').map((e) => (e.data as { state: string }).state)
+  expect(compactions).toBe(1)
+  expect(states).toContain('started')
+  expect(states).toContain('applied')
+
+  // And the turn finished on its own terms rather than being ended by the window.
+  const done = eventsNamed(transport, 'turn.done')
+  expect(done).toHaveLength(1)
+  expect((done[0]!.data as { stoppedBecause: string }).stoppedBecause).toBe('done')
+
+  // The proof that the swap reached the running turn: the step after it was sent the
+  // briefing, which only exists in the transcript compaction built.
+  const lastChat = fake.requests.filter((r: any) => r.body.messages).at(-1)
+  const sent = (lastChat as any).body.messages as { content: string | null }[]
+  expect(sent.some((m) => m.content?.includes('BRIEFING: what happened so far'))).toBe(true)
+})

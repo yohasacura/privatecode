@@ -224,13 +224,27 @@ export interface CompactionTail {
 }
 
 /**
- * A message a compacted tail may safely open on: a `user` message, or an `assistant`
- * message that is not itself waiting on any `tool` replies. Anything else -- a bare
- * `tool` reply, or an `assistant` message that still has `tool_calls` pending -- would
- * leave the tail's first message dangling on a round-trip whose other half got cut.
+ * A message a compacted tail may safely open on: anything that is not a bare `tool` reply.
+ *
+ * A `tool` message is the only kind a slice can orphan. Its other half -- the `assistant`
+ * message carrying the matching `tool_calls` -- comes BEFORE it, so cutting there leaves a
+ * result answering a call that is no longer in the conversation.
+ *
+ * An `assistant` message with pending `tool_calls` was also refused here, and that was too
+ * strict: its other half comes AFTER it, inside the tail. Opening on it cuts nothing. The
+ * cost of the stricter rule only showed up once compaction could run BETWEEN THE STEPS of
+ * one turn (see `Agent`'s `beforeStep`): mid-turn, every message from the user's request
+ * onward is either an assistant-with-calls or a tool reply, so the walk-back rejected all of
+ * them and landed on the request itself -- making the tail the whole turn, the middle empty,
+ * and every mid-turn compaction a no-op reported as "nothing to gain". The mechanism was
+ * there and could never fire.
+ *
+ * An assistant message whose calls are genuinely unanswered (a turn cut short) stays exactly
+ * as unanswered as it was: that is a property of the transcript, not something this slice
+ * introduces.
  */
 function isCleanTailStart(m: ChatMessage): boolean {
-  return m.role === 'user' || (m.role === 'assistant' && !(m.tool_calls && m.tool_calls.length > 0))
+  return m.role !== 'tool'
 }
 
 /**

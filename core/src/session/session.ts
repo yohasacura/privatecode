@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 import {
   Agent, DEFAULT_STEP_TIMEOUT_MS,
-  type AgentEvents, type AgentOptions, type StepInfo, type TurnResult,
+  type AgentEvents, type AgentOptions, type StepInfo, type StepPreamble, type TurnResult,
 } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
 import { LoopDetector } from '../agent/loop-detector.js'
@@ -1299,7 +1299,13 @@ export class Session {
       }),
     })
     next.append({ role: 'user', content: `${COMPACTION_BRIEFING_PREFIX}\n${summary}` })
-    next.append({ role: 'assistant', content: COMPACTION_ACK_TEXT })
+    // The acknowledgement closes the briefing's round-trip -- unless the tail already opens
+    // on an assistant message, which it can now do when a compaction lands mid-turn. Keeping
+    // it there too would put two assistant messages back to back, and the natural shape is
+    // the one a real conversation has: the briefing is read, and the model acts.
+    if (tail[0]?.role !== 'assistant') {
+      next.append({ role: 'assistant', content: COMPACTION_ACK_TEXT })
+    }
     for (const m of tail) next.append(m)
 
     const oldApproxTokens = this.transcript.approxTokens()
@@ -1520,6 +1526,24 @@ export class Session {
     // one-shot CLI call, or a test, may never pass `events` at all).
     agentOpts.events = this.composeEvents(this.opts.events)
     if (this.opts.maxSteps !== undefined) agentOpts.maxSteps = this.opts.maxSteps
+    // A turn that fills the window now makes room and carries on, instead of running until
+    // the server refuses the request.
+    //
+    // The pre-turn check is the same one, and it was the ONLY one: a turn long enough to
+    // fill the context by itself could not compact, because compaction replaces the
+    // transcript object and a running Agent held a reference to the old one. The exception
+    // path caught the refusal afterwards and restarted the whole turn -- one wasted prefill,
+    // one wasted request, and only ever once.
+    //
+    // Comparing the object identity is what tells us a swap actually happened: a compaction
+    // that was postponed (nothing to gain) or failed leaves it untouched, and neither is a
+    // reason to make the next step pay a cold-cache budget.
+    agentOpts.beforeStep = async (): Promise<StepPreamble | undefined> => {
+      const before = this.transcript
+      await this.compactIfOverWindow(signal)
+      if (this.transcript === before) return undefined
+      return { transcript: this.transcript, timeoutMs: this.coldStartTimeout() }
+    }
     // The first step of a turn whose prompt prefix the server has not seen must be allowed
     // to PREFILL before it generates. See `promptCacheCold`.
     if (this.promptCacheCold) agentOpts.firstStepTimeoutMs = this.coldStartTimeout()

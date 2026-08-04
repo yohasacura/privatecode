@@ -166,7 +166,37 @@ export interface AgentOptions {
    * suggest it to the user instead of retrying.
    */
   interaction?: InteractionPort
+  /**
+   * A ceiling on the steps ONE turn may take. Unbounded by default.
+   *
+   * It used to default to 40, which is about ten minutes of work, and a turn that reached it
+   * stopped mid-task and said so. That is the wrong shape of guard for a tool meant to run
+   * for days: counting steps does not distinguish an agent that is stuck from one that is
+   * simply doing something large, and the only thing it reliably caught was the second kind.
+   *
+   * What remains in its place is not nothing. A repeated action is caught by `loopDetector`,
+   * which sees what a counter cannot; the user's abort ends a turn at any depth; and a turn
+   * whose context fills now compacts and carries on rather than dying (see `beforeStep`).
+   * Those bound the failure this limit was aimed at, and they do it without also bounding
+   * the work.
+   *
+   * Still honoured when a caller sets it -- the CLI's `--steps` is a deliberate ceiling for
+   * a one-shot run, and `stoppedBecause: 'max_steps'` is still how reaching one is reported.
+   */
   maxSteps?: number
+  /**
+   * Runs between steps, and may hand the turn a new transcript to continue on.
+   *
+   * This exists so a turn can outlive its own context window. Compaction replaces the
+   * transcript OBJECT (the append-only law holds per-object), so before this hook the only
+   * safe moment to compact was between turns, while no `Agent` held a reference -- which
+   * meant a long turn had no way to make room and eventually met the server's refusal.
+   *
+   * Returning a `StepPreamble` tells this loop the transcript underneath it has changed; it
+   * adopts the new one for every later step. Returning nothing means carry on unchanged,
+   * which is the common case and costs a comparison.
+   */
+  beforeStep?: (step: number) => Promise<StepPreamble | undefined>
   /**
    * Token budget for one generation. Defaults to DEFAULT_MAX_TOKENS_PER_STEP.
    *
@@ -218,6 +248,20 @@ export interface AgentOptions {
   transcript?: Transcript
   events?: AgentEvents
   signal?: AbortSignal
+}
+
+/** What `beforeStep` changed about the turn it ran inside. */
+export interface StepPreamble {
+  /** The transcript the rest of the turn continues on. */
+  transcript: Transcript
+  /**
+   * How long the NEXT step alone may take, when the change made the server's prompt cache
+   * cold. llama.cpp matches its cache by longest common prefix, so replacing the transcript
+   * means the whole prompt is prefilled again before a token is generated -- the ordinary
+   * per-step budget is sized for a warm cache and is spent before generation begins. This is
+   * `firstStepTimeoutMs`'s reasoning, applied to the other moment the cache goes cold.
+   */
+  timeoutMs?: number
 }
 
 export interface TurnResult {
@@ -277,7 +321,9 @@ export class Agent {
   private readonly opts: Required<
     Pick<AgentOptions, 'maxSteps' | 'maxTokensPerStep' | 'mode' | 'stepTimeoutMs' | 'toolChoice'>
   > & AgentOptions
-  readonly transcript: Transcript
+  /** Not `readonly`: `beforeStep` may replace it mid-turn when the conversation is compacted
+   * to make room. Reassigned in exactly one place, `runTurn`. */
+  transcript: Transcript
 
   constructor(opts: AgentOptions) {
     // The option is the single source of truth for the mode when given; otherwise the
@@ -292,7 +338,7 @@ export class Agent {
     // otherwise overwrite them.
     this.opts = {
       ...opts,
-      maxSteps: opts.maxSteps ?? 40,
+      maxSteps: opts.maxSteps ?? Infinity,
       maxTokensPerStep: opts.maxTokensPerStep ?? DEFAULT_MAX_TOKENS_PER_STEP,
       mode,
       stepTimeoutMs: opts.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS,
@@ -354,12 +400,25 @@ export class Agent {
     const schemas = this.opts.registry.schemas(this.opts.allowedTools)
     let lastText = ''
 
+    // Carries a cold-cache budget across exactly ONE step boundary: the step that follows a
+    // transcript swap pays for a full re-prefill, and the one after that is warm again.
+    let coldTimeoutMs: number | undefined
+
     for (let step = 1; step <= this.opts.maxSteps; step++) {
       if (this.opts.signal?.aborted) {
         return { steps: step - 1, finalText: lastText, stoppedBecause: 'aborted' }
       }
 
-      const outcome = await this.runStep(step, schemas)
+      if (this.opts.beforeStep) {
+        const preamble = await this.opts.beforeStep(step)
+        if (preamble) {
+          this.transcript = preamble.transcript
+          coldTimeoutMs = preamble.timeoutMs
+        }
+      }
+
+      const outcome = await this.runStep(step, schemas, coldTimeoutMs)
+      coldTimeoutMs = undefined
 
       if (outcome.kind === 'aborted') {
         return { steps: step - 1, finalText: lastText, stoppedBecause: 'aborted' }
@@ -469,13 +528,16 @@ export class Agent {
   private async runStep(
     step: number,
     schemas: ReturnType<ToolRegistry['schemas']>,
+    coldTimeoutMs?: number,
   ): Promise<StepOutcome> {
     const started = performance.now()
-    // Only the first step can face a cold cache: every later one in the same turn appends to
-    // a prefix the server has just processed.
-    const timeoutMs = step === 1
-      ? this.opts.firstStepTimeoutMs ?? this.opts.stepTimeoutMs
-      : this.opts.stepTimeoutMs
+    // Two moments face a cold cache, not one. The first step of a turn is the obvious one:
+    // the prefix may be a session just resumed, or one a compaction rewrote between turns.
+    // The other is a step that follows a compaction WITHIN this turn -- `beforeStep` reports
+    // it by handing over a budget, because the loop cannot see the server's cache itself.
+    // Every other step appends to a prefix the server has just processed.
+    const timeoutMs = coldTimeoutMs
+      ?? (step === 1 ? this.opts.firstStepTimeoutMs ?? this.opts.stepTimeoutMs : this.opts.stepTimeoutMs)
     const deadline = AbortSignal.timeout(timeoutMs)
     this.opts.events?.onStepStart?.({ step, timeoutMs })
 
