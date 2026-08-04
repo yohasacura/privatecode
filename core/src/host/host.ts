@@ -46,6 +46,11 @@ import type {
   FsTreeEntry,
   FsFindParams,
   FsFindResult,
+  GitCommitParams,
+  GitCommitResult,
+  GitDiffParams,
+  GitDiffResult,
+  GitStatusResult,
   FsTreeParams,
   FsTreeResult,
   HostEventMap,
@@ -77,6 +82,7 @@ import { recordToolOutcome, replayEntries, toolOutcomes } from './replay.js'
 import { rankFiles, walkFiles } from './file-search.js'
 import { attachFiles } from './attachments.js'
 import { buildRepoMap } from '../outline/repo-map.js'
+import { gitCommit, gitDiff, gitStatus, suggestCommitMessage } from './git.js'
 
 /**
  * What `SessionHost` needs from whatever carries its messages to the UI: fire-and-forget
@@ -291,6 +297,9 @@ export class SessionHost {
       case 'question.reply': return this.questionReply(params as QuestionReplyParams)
       case 'fs.tree': return this.fsTree((params ?? {}) as FsTreeParams)
       case 'fs.find': return this.fsFind(params as FsFindParams)
+      case 'git.status': return this.gitStatusFor()
+      case 'git.diff': return this.gitDiffFor(params as GitDiffParams)
+      case 'git.commit': return this.gitCommitFor(params as GitCommitParams)
       case 'fs.read': return this.fsRead(params as FsReadParams)
       case 'status': return this.status()
       case 'commands.list': return this.commandsList()
@@ -789,6 +798,32 @@ export class SessionHost {
     this.fileIndex ??= await walkFiles(workspaceRoot)
     const limit = Math.min(Math.max(params.limit ?? 20, 1), 100)
     return { paths: rankFiles(this.fileIndex, params.query, limit).map((m) => m.path) }
+  }
+
+  /** The working tree as the Changes panel shows it. Never throws for "not a repository":
+   * most workspaces are repositories, some are not, and neither is an error. */
+  private async gitStatusFor(): Promise<GitStatusResult> {
+    const { workspaceRoot } = this.requireInitialized()
+    const status = await gitStatus(workspaceRoot)
+    return { ...status, suggestion: suggestCommitMessage(status.files) }
+  }
+
+  private async gitDiffFor(params: GitDiffParams): Promise<GitDiffResult> {
+    const { workspace, workspaceRoot } = this.requireInitialized()
+    // Resolved through the jail before it reaches git, like every other path the UI sends.
+    workspace.resolve(params.path)
+    return { diff: await gitDiff(workspaceRoot, params.path, params.untracked === true) }
+  }
+
+  private async gitCommitFor(params: GitCommitParams): Promise<GitCommitResult> {
+    const { workspace, workspaceRoot } = this.requireInitialized()
+    for (const path of params.paths) workspace.resolve(path)
+    const result = await gitCommit(workspaceRoot, params.message, params.paths)
+    return {
+      ok: result.ok,
+      ...(result.sha !== undefined ? { sha: result.sha } : {}),
+      ...(result.problem !== undefined ? { problem: result.problem } : {}),
+    }
   }
 
   private async fsTree(params: FsTreeParams): Promise<FsTreeResult> {

@@ -85,7 +85,12 @@ export function ContextPanel({
 
       <div class="tab-body">
         {tab === 'changes' && (
-          <ChangesTab changes={changes} onOpenFile={(p) => { onOpenFile(p); setTab('files') }} />
+          <ChangesTab
+            changes={changes}
+            onOpenFile={(p) => { onOpenFile(p); setTab('files') }}
+            client={client}
+            reloadKey={resolvedTools}
+          />
         )}
         {tab === 'history' && <HistoryTab client={client} reloadKey={resolvedTools} />}
         {tab === 'files' && (

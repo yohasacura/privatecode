@@ -161,6 +161,32 @@ export type QuestionReplyResult = Empty
 export interface FsFindParams { query: string; limit?: number }
 export interface FsFindResult { paths: string[] }
 
+/**
+ * The working tree, for the Changes panel.
+ *
+ * Separate from the model's read-only `git_status` tool, which returns prose for a context
+ * window. This returns structure for a panel, and `git.commit` does the one thing the
+ * model's tool deliberately cannot: a commit is where work becomes permanent, and that is a
+ * person's decision, made over a message they can read and edit.
+ */
+export type GitStatusParams = Empty
+export interface GitFileChange { path: string; code: string; staged: boolean; untracked: boolean }
+export interface GitStatusResult {
+  isRepo: boolean
+  branch: string | null
+  files: GitFileChange[]
+  problem?: string
+  /** A starting point for the commit message, derived from the files themselves -- never
+   * generated, because a generation is a turn against a single-slot server. */
+  suggestion: string
+}
+
+export interface GitDiffParams { path: string; untracked?: boolean }
+export interface GitDiffResult { diff: string }
+
+export interface GitCommitParams { message: string; paths: string[] }
+export interface GitCommitResult { ok: boolean; sha?: string; problem?: string }
+
 export interface FsTreeEntry { name: string; dir: boolean }
 /** Jailed to the workspace root, like every other path the sidecar accepts from the UI. */
 export interface FsTreeParams { path?: string }
@@ -288,6 +314,9 @@ export interface HostMethodMap {
   'question.reply': { params: QuestionReplyParams; result: QuestionReplyResult }
   'fs.tree': { params: FsTreeParams; result: FsTreeResult }
   'fs.find': { params: FsFindParams; result: FsFindResult }
+  'git.status': { params: GitStatusParams; result: GitStatusResult }
+  'git.diff': { params: GitDiffParams; result: GitDiffResult }
+  'git.commit': { params: GitCommitParams; result: GitCommitResult }
   'fs.read': { params: FsReadParams; result: FsReadResult }
   status: { params: StatusParams; result: StatusResult }
   'commands.list': { params: CommandsListParams; result: CommandsListResult }

@@ -1922,3 +1922,21 @@ kbd {
   display: inline-block;
   vertical-align: bottom;
 }
+
+/* --- the working tree, under this session's own changes ------------------------------- */
+
+.tree-check {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.commit-box {
+  display: flex;
+  gap: 6px;
+  padding: 8px var(--row-pad) 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.commit-box .input { flex: 1; min-width: 0; }

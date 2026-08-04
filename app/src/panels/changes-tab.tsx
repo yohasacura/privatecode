@@ -4,7 +4,9 @@ import type { ChatItem } from '../lib/state'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
 import { WRITE_TOOLS, presentTool } from '../lib/tools'
 import { Icon } from '../components/icons'
-import { PanelEmpty, PanelRow } from '../components/panel'
+import { PanelEmpty, PanelRow, PanelSection } from '../components/panel'
+import { WorkingTree } from './working-tree'
+import type { ProtocolClient } from '../lib/client'
 
 /**
  * Changes tab: every write this session made, in one list, newest first.
@@ -55,18 +57,24 @@ export function collectChanges(items: ChatItem[]): ChangeEntry[] {
  * memoises `collectChanges` so it does not re-run (and re-parse every write call's args)
  * on every streamed token. */
 export function ChangesTab({
-  changes: entries, onOpenFile,
+  changes: entries, onOpenFile, client, reloadKey,
 }: {
   changes: ChangeEntry[]
   onOpenFile: (path: string) => void
+  client: ProtocolClient
+  /** Bumped when a turn resolves a tool, so the working tree follows the agent's writes. */
+  reloadKey: number
 }): VNode {
   if (entries.length === 0) {
     return (
-      <PanelEmpty
-        icon={Icon.diff()}
-        title="Nothing changed yet"
-        hint="Every file the agent writes in this session lands here, with its diff and a way back to the file."
-      />
+      <div class="changes-tab">
+        <PanelEmpty
+          icon={Icon.diff()}
+          title="Nothing changed yet"
+          hint="Every file the agent writes in this session lands here, with its diff and a way back to the file."
+        />
+        <WorkingTree client={client} reloadKey={reloadKey} />
+      </div>
     )
   }
 
@@ -88,7 +96,10 @@ export function ChangesTab({
         <span>{entries.length} file{entries.length === 1 ? '' : 's'}</span>
         <DiffStatBadge stat={{ added, removed }} />
       </div>
-      {entries.map((entry) => <ChangeRow key={entry.id} entry={entry} onOpenFile={onOpenFile} />)}
+      <PanelSection title="This session">
+        {entries.map((entry) => <ChangeRow key={entry.id} entry={entry} onOpenFile={onOpenFile} />)}
+      </PanelSection>
+      <WorkingTree client={client} reloadKey={reloadKey} />
     </div>
   )
 }

@@ -1,0 +1,153 @@
+import { execa } from 'execa'
+
+/**
+ * The working tree, for the window.
+ *
+ * Distinct from `git_status`, which is the MODEL's read-only tool and returns prose for a
+ * context window. This returns structure for a panel, and it can commit — the one thing the
+ * model's tool deliberately cannot do.
+ *
+ * Why committing belongs here and not there: a commit is the moment work becomes permanent,
+ * and the person is the one who decides that. Handing the model a commit tool would put the
+ * decision inside a turn, where it would be made by whatever the model concluded from the
+ * last tool result. The window's version is a button a human presses over a message a human
+ * can read and edit first.
+ *
+ * Every call is `git` with a fixed argv in the workspace directory. Paths from the UI are
+ * passed after `--`, so a file named like a flag cannot become one.
+ */
+
+export interface GitFileChange {
+  path: string
+  /** Porcelain XY, e.g. ` M`, `??`, `A `, `MM`. Kept raw so the caller can label it. */
+  code: string
+  staged: boolean
+  untracked: boolean
+}
+
+export interface GitStatus {
+  isRepo: boolean
+  branch: string | null
+  files: GitFileChange[]
+  /** Set when git itself refused: not a repository, not installed, a broken index. */
+  problem?: string
+}
+
+async function git(cwd: string, args: string[], timeout = 15_000) {
+  return execa('git', args, { cwd, reject: false, timeout, windowsHide: true })
+}
+
+/** Splits porcelain v1 output. The first two characters are the status pair; a rename
+ * carries `old -> new` and is reported by its NEW path, which is the one on disk. */
+function parsePorcelain(stdout: string): { branch: string | null; files: GitFileChange[] } {
+  let branch: string | null = null
+  const files: GitFileChange[] = []
+
+  for (const line of stdout.split('\n')) {
+    if (line === '') continue
+    if (line.startsWith('## ')) {
+      // `## main...origin/main [ahead 1]` or `## HEAD (no branch)`
+      branch = line.slice(3).split('...')[0]!.split(' ')[0] ?? null
+      continue
+    }
+    const code = line.slice(0, 2)
+    const rest = line.slice(3)
+    const arrow = rest.indexOf(' -> ')
+    const path = arrow === -1 ? rest : rest.slice(arrow + 4)
+    files.push({
+      path: path.replace(/^"|"$/g, ''),
+      code,
+      staged: code[0] !== ' ' && code[0] !== '?',
+      untracked: code === '??',
+    })
+  }
+  return { branch, files }
+}
+
+export async function gitStatus(cwd: string): Promise<GitStatus> {
+  const inside = await git(cwd, ['rev-parse', '--is-inside-work-tree'])
+  if (inside.exitCode !== 0 || inside.stdout.trim() !== 'true') {
+    return {
+      isRepo: false,
+      branch: null,
+      files: [],
+      problem: inside.stderr.trim() || 'this workspace is not a git repository',
+    }
+  }
+  const result = await git(cwd, ['status', '--porcelain=v1', '--branch'])
+  if (result.exitCode !== 0) {
+    return { isRepo: true, branch: null, files: [], problem: result.stderr.trim() || 'git status failed' }
+  }
+  return { isRepo: true, ...parsePorcelain(result.stdout) }
+}
+
+/**
+ * The unified diff for one path, working tree against HEAD.
+ *
+ * An untracked file has no HEAD side to diff against, so git says nothing about it at all —
+ * which in a panel reads as "no changes" for a file that is entirely new. `--no-index`
+ * against the null device produces the real answer: every line, added.
+ */
+export async function gitDiff(cwd: string, path: string, untracked: boolean): Promise<string> {
+  const result = untracked
+    ? await git(cwd, ['diff', '--no-index', '--', '/dev/null', path])
+    : await git(cwd, ['diff', 'HEAD', '--', path])
+  // `--no-index` exits 1 when the files differ, which is the normal case here.
+  return result.stdout
+}
+
+export interface GitCommitResult {
+  ok: boolean
+  /** Short sha on success. */
+  sha?: string
+  message?: string
+  problem?: string
+}
+
+/**
+ * Stages the named paths and commits them.
+ *
+ * Paths are explicit, never `-a`: a window that committed everything in the tree because
+ * the list happened to be on screen would eventually catch a file the user was in the
+ * middle of. An empty selection is refused rather than turned into "everything".
+ */
+export async function gitCommit(
+  cwd: string, message: string, paths: readonly string[],
+): Promise<GitCommitResult> {
+  if (message.trim() === '') return { ok: false, problem: 'a commit needs a message' }
+  if (paths.length === 0) return { ok: false, problem: 'select at least one file to commit' }
+
+  const add = await git(cwd, ['add', '--', ...paths])
+  if (add.exitCode !== 0) return { ok: false, problem: add.stderr.trim() || 'git add failed' }
+
+  const commit = await git(cwd, ['commit', '-m', message, '--', ...paths], 30_000)
+  if (commit.exitCode !== 0) {
+    return { ok: false, problem: (commit.stderr.trim() || commit.stdout.trim()) || 'git commit failed' }
+  }
+  const head = await git(cwd, ['rev-parse', '--short', 'HEAD'])
+  return {
+    ok: true,
+    ...(head.exitCode === 0 ? { sha: head.stdout.trim() } : {}),
+    message: commit.stdout.trim().split('\n')[0] ?? '',
+  }
+}
+
+/**
+ * A commit message derived from the files themselves.
+ *
+ * Deliberately NOT generated by the model. A generation is a turn against a single-slot
+ * server: pressing Commit would wait thirty seconds for a sentence the person is going to
+ * rewrite anyway, and it would compete with whatever the agent is doing. This is a starting
+ * point in an editable field, which is what a default is for.
+ */
+export function suggestCommitMessage(files: readonly GitFileChange[]): string {
+  if (files.length === 0) return ''
+  if (files.length === 1) {
+    const only = files[0]!
+    const verb = only.untracked ? 'add' : 'update'
+    return `${verb} ${only.path}`
+  }
+  const dirs = new Set(files.map((f) => (f.path.includes('/') ? f.path.split('/')[0]! : '.')))
+  const where = dirs.size === 1 ? ` in ${[...dirs][0]}` : ''
+  return `update ${files.length} files${where}`
+}
