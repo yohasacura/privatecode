@@ -7,6 +7,7 @@ import { Transcript } from '../transcript/transcript.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } from '../tools/types.js'
 import { buildSystemPrompt } from './prompt.js'
+import type { LoopDetector } from './loop-detector.js'
 import type { HookRunner } from '../hooks/hooks.js'
 
 /**
@@ -125,6 +126,14 @@ export interface AgentOptions {
   memory?: string
   /** User-configured after-tool hooks. Absent means none, the normal case. */
   hooks?: HookRunner
+  /**
+   * Refuses a call that has already returned the same answer twice.
+   *
+   * Owned by the `Session`, not created here: the loop that matters spans turns, and an
+   * Agent lives for one. Absent means the check does not run at all, which is what every
+   * caller that predates it gets.
+   */
+  loopDetector?: LoopDetector
   /**
    * Tool names the model may use this turn. Omit for all of them.
    *
@@ -563,6 +572,22 @@ export class Agent {
     const prepared = this.opts.registry.prepare(name, args)
     if (!prepared.ok) return { ok: false, content: prepared.content }
 
+    // Before the permission gate, and deliberately: this call is not going to be run, so
+    // there is nothing to ask the user about. Putting it after would surface an approval
+    // card for an action that is about to be refused anyway — the worst possible moment to
+    // interrupt someone, and during an unattended run it would fill the decision queue with
+    // questions about a loop.
+    const detector = this.opts.loopDetector
+    if (detector?.wouldRepeat(name, args)) {
+      // Deliberately NOT recorded. The refusal is the detector's own output, not something
+      // the tool returned, and recording it as a result made the next identical call look
+      // like progress — the window's last two entries were then "the real answer" and "the
+      // refusal", which differ, so the call was allowed to run again. Measured: the tool ran
+      // twice, was refused once, and then ran twice more. Leaving the refusal out of the
+      // window means every further attempt meets the same wall, which is the point.
+      return { ok: false, content: detector.refusal(name) }
+    }
+
     // The whole gate is wrapped: `port.requestApproval` is a host boundary (today an
     // in-process callback, tomorrow IPC/JSON), and a rejection from it must not propagate
     // out of `runTool`. Left unguarded, that throw would escape past the assistant message
@@ -646,6 +671,7 @@ export class Agent {
       }
     }
     const result = await this.opts.registry.executePrepared(prepared, this.toolContext())
+    detector?.record(name, args, result.content)
 
     // After-tool hooks fire HERE: after the tool ran, before `runTurn` appends the tool
     // message. A hook's note is therefore folded into the result the transcript records,

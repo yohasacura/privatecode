@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 import { Agent, type AgentEvents, type AgentOptions, type StepInfo, type TurnResult } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
+import { LoopDetector } from '../agent/loop-detector.js'
 import type { LoadedMemory } from '../memory/project-memory.js'
 import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
@@ -636,6 +637,13 @@ export class Session {
     }
   }
 
+  /**
+   * One per session, not one per turn: the loop worth catching spans turns. A model that
+   * re-runs the same failing command once per turn for an hour looks reasonable inside each
+   * turn and is the exact failure an overnight run has to survive.
+   */
+  private readonly loopDetector = new LoopDetector()
+
   private buildAgent(signal?: AbortSignal): Agent {
     const context: ToolContext = {
       workspace: this.workspace,
@@ -654,6 +662,7 @@ export class Session {
       registry: this.opts.toolset.registry,
       context,
       transcript: this.transcript,
+      loopDetector: this.loopDetector,
     }
     if (this.memoryText !== undefined) agentOpts.memory = this.memoryText
     if (this.opts.engine) {

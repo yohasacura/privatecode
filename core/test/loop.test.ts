@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Agent, type AgentEvents, type AgentOptions } from '../src/agent/loop.js'
+import { LoopDetector } from '../src/agent/loop-detector.js'
 import { LlamaClient } from '../src/llama/client.js'
 import { ToolRegistry } from '../src/tools/registry.js'
 import { Workspace } from '../src/workspace.js'
@@ -735,4 +736,61 @@ test('draftAcceptance is absent when only one of draft_n/draft_n_accepted is pre
 
   const [stepDone] = rec.of('stepDone') as any[]
   expect(stepDone.draftAcceptance).toBeUndefined()
+})
+
+// --- loop detection, wired ------------------------------------------------------------
+//
+// The detector's own semantics are unit-tested in loop-detector.test.ts. What is tested
+// here is the WIRING, which is where a six-line change goes wrong: that the Agent consults
+// it, that it does so before the tool runs, and that the refusal reaches the model as an
+// ordinary tool message rather than ending the turn.
+
+test('the third identical call with the same answer is refused instead of run', async () => {
+  const fake = await startFakeServer(() => ({
+    choices: [{
+      message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'c', type: 'function', function: { name: 'ping', arguments: '{"value":"same"}' } },
+      ] },
+      finish_reason: 'tool_calls',
+    }],
+  }))
+  stop = fake.close
+
+  const { handlers, events } = recorder()
+  const agent = makeAgent(fake.url, { loopDetector: new LoopDetector(), events: handlers })
+  await agent.runTurn('go')
+
+  // Five steps were offered; the tool ran twice and was refused after that.
+  expect(pingCalls).toBe(2)
+  const results = events.filter(([kind]) => kind === 'toolResult')
+  expect(results.length).toBe(5)
+  const refusals = results.filter(([, , r]) => (r as { content: string }).content.includes('already called ping'))
+  expect(refusals.length).toBe(3)
+})
+
+test('a call whose answer keeps changing is never refused', async () => {
+  // The regression that would matter most: breaking background_task poll, whose whole
+  // purpose is to be called until something changes.
+  let n = 0
+  const counter: Tool<Record<string, never>> = {
+    name: 'counter',
+    readOnly: true,
+    description: 'counts',
+    parameters: { type: 'object', properties: {} },
+    validate: () => ({ ok: true, args: {} }),
+    execute: async () => ({ ok: true, content: `count ${n++}` }),
+  }
+  const fake = await startFakeServer(() => ({
+    choices: [{
+      message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'c', type: 'function', function: { name: 'counter', arguments: '{}' } },
+      ] },
+      finish_reason: 'tool_calls',
+    }],
+  }))
+  stop = fake.close
+
+  const agent = makeAgent(fake.url, { loopDetector: new LoopDetector() }, [counter])
+  await agent.runTurn('go')
+  expect(n).toBe(5)
 })
