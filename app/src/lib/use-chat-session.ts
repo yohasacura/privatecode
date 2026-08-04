@@ -55,6 +55,9 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         type: 'question.request', requestId: d.requestId, question: d.question, options: d.options,
       })),
       client.on('todos', (d) => dispatch({ type: 'todos', items: d.items })),
+      // Nothing consumed this before: a settings file that failed to parse dropped the
+      // user's deny rules with no signal anywhere in the UI.
+      client.on('settings.problem', (d) => dispatch({ type: 'settings-problem', text: d.text })),
       client.on('compaction', (d) => dispatch({
         type: 'compaction', state: d.state, ...(d.droppedMessages !== undefined ? { droppedMessages: d.droppedMessages } : {}),
       })),

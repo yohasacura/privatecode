@@ -172,6 +172,11 @@ export default function App() {
         contextLength: init.contextLength,
         title: init.title,
       })
+      // AFTER session-switched, never before: that action resets the transcript, and the
+      // host emits its `settings.problem` events while BUILDING the session -- i.e. before
+      // the reply above resolves -- so anything appended earlier is wiped microseconds
+      // later. The reducer dedupes on exact text, so the double delivery costs nothing.
+      for (const text of init.problems) dispatch({ type: 'settings-problem', text })
       // Remember what worked; the next launch auto-connects with exactly this.
       c.call('config.set', { serverUrl, recentWorkspace: workspace }).catch(() => {})
       setPhase({ kind: 'ready', workspace })
@@ -254,6 +259,7 @@ export default function App() {
 
   function onSessionSwitched(info: SessionSwitch): void {
     dispatch({ type: 'session-switched', ...info })
+    for (const text of info.problems) dispatch({ type: 'settings-problem', text })
     setPreviewPath(null)
   }
 
@@ -327,7 +333,22 @@ export default function App() {
                 dispatch={dispatch}
                 onOpenFile={openFileFromTranscript}
               />
-              <Composer client={client} state={chatState} dispatch={dispatch} />
+              {chatState.problems.length > 0 && (
+                <div class="problem-strip">
+                  <span class="problem-icon">{Icon.alert()}</span>
+                  <div class="problem-list">
+                    {chatState.problems.map((p) => <div key={p}>{p}</div>)}
+                  </div>
+                  <button
+                    class="icon-button"
+                    onClick={() => dispatch({ type: 'problems-dismissed' })}
+                    title="Dismiss"
+                  >
+                    {Icon.x()}
+                  </button>
+                </div>
+              )}
+              <Composer client={client} state={chatState} dispatch={dispatch} modalOpen={settingsOpen} />
             </main>
 
             {contextOpen && (
@@ -416,6 +437,7 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onSessionSwitched={(info) => {
             dispatch({ type: 'session-switched', ...info })
+            for (const text of info.problems) dispatch({ type: 'settings-problem', text })
             setPhase({ kind: 'ready', workspace: info.workspaceRoot })
             setPreviewPath(null)
             setSessionsKey((k) => k + 1)

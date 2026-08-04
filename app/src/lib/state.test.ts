@@ -124,6 +124,7 @@ describe('reduceChat: step reset', () => {
 describe('reduceChat: interrupt', () => {
   it('marks a partial assistant item interrupted when the turn ends aborted', () => {
     const state = run([
+      { type: 'turn-started' },
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
       { type: 'text.delta', text: 'partial resp' },
       { type: 'turn.done', stoppedBecause: 'aborted' },
@@ -141,6 +142,7 @@ describe('reduceChat: interrupt', () => {
     // The case the user actually hit: the agent goes quiet mid-task because it reached the
     // 40-step ceiling, and nothing on screen said so.
     const state = run([
+      { type: 'turn-started' },
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
       { type: 'text.delta', text: 'working on it' },
       { type: 'turn.done', stoppedBecause: 'max_steps' },
@@ -150,6 +152,7 @@ describe('reduceChat: interrupt', () => {
 
   it('does not mark anything interrupted when the turn ends normally', () => {
     const state = run([
+      { type: 'turn-started' },
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
       { type: 'text.delta', text: 'complete response' },
       { type: 'turn.done', stoppedBecause: 'done' },
@@ -159,6 +162,7 @@ describe('reduceChat: interrupt', () => {
 
   it('is a no-op on the transcript when the turn aborts with no assistant text yet', () => {
     const state = run([
+      { type: 'turn-started' },
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
       { type: 'turn.done', stoppedBecause: 'aborted', atMs: 700 },
     ])
@@ -363,5 +367,78 @@ describe('reduceChat: session switching', () => {
   it('mode-changed before any session exists is a harmless no-op', () => {
     const state = reduceChat(initialChatState(), { type: 'mode-changed', mode: 'plan' })
     expect(state.session).toBeNull()
+  })
+})
+
+describe('reduceChat: configuration problems', () => {
+  it('collects problems, deduplicates them, and clears them on a session switch', () => {
+    // The same strings arrive twice for one session: the host emits `settings.problem`
+    // while BUILDING it, and the init reply then carries the identical list. Both paths
+    // are needed (the events land before the reset that would wipe them), so the dedupe
+    // is what makes the double delivery harmless.
+    const state = run([
+      { type: 'settings-problem', text: 'settings.json line 3: unparseable rule' },
+      { type: 'settings-problem', text: 'settings.json line 3: unparseable rule' },
+      { type: 'settings-problem', text: 'could not probe the context length' },
+    ])
+    expect(state.problems).toEqual([
+      'settings.json line 3: unparseable rule',
+      'could not probe the context length',
+    ])
+
+    const switched = reduceChat(state, {
+      type: 'session-switched', sessionId: 's2', mode: 'normal', contextLength: null, title: '',
+    })
+    expect(switched.problems).toEqual([])
+  })
+
+  it('caps the list so an unparseable file cannot produce a strip nobody reads', () => {
+    const actions: ChatAction[] = []
+    for (let i = 0; i < 25; i++) actions.push({ type: 'settings-problem', text: `problem ${i}` })
+    expect(run(actions).problems).toHaveLength(10)
+  })
+
+  it('dismissal clears the strip without touching the transcript', () => {
+    const state = run([
+      { type: 'user-message', text: 'hi' },
+      { type: 'settings-problem', text: 'a problem' },
+      { type: 'problems-dismissed' },
+    ])
+    expect(state.problems).toEqual([])
+    expect(state.items).toHaveLength(1)
+  })
+})
+
+describe('reduceChat: a turn that outlived its session', () => {
+  it('ignores a turn.done that arrives after the session was switched', () => {
+    // Switching sessions mid-turn aborts the old turn host-side; its `turn.done` then
+    // lands on a state that has already been reset. It used to append "Stopped by you."
+    // as the first and only row of a session the user had not typed a word into.
+    const midTurn = run([
+      { type: 'turn-started' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
+      { type: 'text.delta', text: 'half an answer' },
+    ])
+    const switched = reduceChat(midTurn, {
+      type: 'session-switched', sessionId: 's2', mode: 'normal', contextLength: null, title: '',
+    })
+    const late = reduceChat(switched, { type: 'turn.done', stoppedBecause: 'aborted' })
+    expect(late.items).toEqual([])
+    expect(late).toBe(switched)
+  })
+
+  it('keeps item ids unique across a switch, because they are identities elsewhere', () => {
+    // tree.tsx remembers which tool items it has already acted on in a set that is never
+    // cleared. Restarting ids at 1 made new items collide with remembered old ones, and
+    // roughly every second write silently failed to refresh the file tree.
+    const first = run([
+      { type: 'user-message', text: 'one' },
+      { type: 'tool.call', name: 'write_file', args: '{"path":"a.ts"}' },
+    ])
+    const switched = reduceChat(first, {
+      type: 'session-switched', sessionId: 's2', mode: 'normal', contextLength: null, title: '',
+    })
+    const after = reduceChat(switched, { type: 'user-message', text: 'two' })
+    expect(after.items[0]?.id).toBeGreaterThan(first.items[first.items.length - 1]?.id ?? 0)
   })
 })

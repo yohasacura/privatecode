@@ -18,6 +18,11 @@ export interface SessionSwitch {
   mode: AgentMode
   contextLength: number | null
   title: string
+  /** Config problems the engine found while building this session. Carried here rather
+   * than left to the `settings.problem` events alone: the host emits those BEFORE the
+   * reply that ends the switch, and the switch resets the transcript, so an event-only
+   * path is wiped microseconds after it lands. */
+  problems: string[]
 }
 
 type SessionMeta = {
@@ -64,6 +69,7 @@ export function SessionsRail({
   function startNew(): void {
     switchTo(client.call('sessions.new', {}).then((r) => ({
       sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
+      problems: r.problems,
     })))
   }
 
@@ -71,6 +77,7 @@ export function SessionsRail({
     if (id === activeSessionId) return
     switchTo(client.call('sessions.resume', { id }).then((r) => ({
       sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
+      problems: r.problems,
     })))
   }
 

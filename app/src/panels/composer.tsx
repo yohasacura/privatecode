@@ -28,11 +28,13 @@ const MODES: readonly { value: AgentMode; label: string; hint: string }[] = [
 const MAX_SEND_CHARS = 500_000
 
 export function Composer({
-  client, state, dispatch,
+  client, state, dispatch, modalOpen,
 }: {
   client: ProtocolClient
   state: ChatState
   dispatch: (action: ChatAction) => void
+  /** A dialog is on screen and owns Escape. See the keydown effect below. */
+  modalOpen: boolean
 }): VNode {
   const [input, setInput] = useState('')
   /**
@@ -59,11 +61,15 @@ export function Composer({
   // enabled during a turn now, but focus may legitimately be anywhere (a diff, the tree),
   // and abort is the one thing that must work from everywhere. `abort` is documented
   // idempotent host-side, so firing it with nothing running is a harmless no-op.
+  // `modalOpen` is not optional politeness: the settings dialog has its own Escape
+  // handler, and both listeners are on `window`, so one press closed the dialog AND killed
+  // the running turn -- dismissing a dialog is not a request to stop the agent.
+  const modalOpenRef = useRef(modalOpen)
+  modalOpenRef.current = modalOpen
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
-        client.call('abort', {}).catch(() => { /* turn.done, or its absence, is the real signal */ })
-      }
+      if (e.key !== 'Escape' || modalOpenRef.current) return
+      client.call('abort', {}).catch(() => { /* turn.done, or its absence, is the real signal */ })
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)

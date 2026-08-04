@@ -153,6 +153,17 @@ export interface ChatState {
    * the core side. */
   todos: TodoItem[]
   session: SessionInfo | null
+  /**
+   * Configuration problems the engine reported for this session — an unparseable
+   * settings file, a rule that failed to compile, a context length it could not probe.
+   *
+   * These were reaching the app on two channels and being consumed on NEITHER: nothing
+   * subscribed `settings.problem`, and `App.tsx` discarded every field of `init`'s result
+   * except the four it forwarded. So a settings file with one bad line silently dropped
+   * the user's deny rules with no banner, no notice and no mark anywhere — in autopilot
+   * that rule may have been the only thing standing between the agent and the command.
+   */
+  problems: string[]
   /** The most recent `compaction` event, plus a monotonic `seq` -- Task 8's status bar
    * renders this as a subtle, self-clearing flash ('compacting…', 'compacted: N messages
    * summarised', 'postponed'). Never cleared BY the reducer itself (there is no action
@@ -166,6 +177,7 @@ export function initialChatState(): ChatState {
   return {
     items: [], turnRunning: false, currentStep: null, lastStepDone: null, nextId: 1,
     pendingApproval: null, pendingQuestion: null, todos: [], session: null, lastCompaction: null,
+    problems: [],
   }
 }
 
@@ -203,6 +215,12 @@ export type ChatAction =
   | { type: 'question.request'; requestId: string; question: string; options: string[] }
   | { type: 'question.answered'; answer: string }
   | { type: 'todos'; items: TodoItem[] }
+  /** One configuration problem, from the `settings.problem` event OR forwarded out of an
+   * init/new/resume result. Both arrive for the same session -- the host emits the events
+   * while building it, BEFORE the reply that carries the same strings -- so this action
+   * deduplicates on exact text and the double delivery is harmless. */
+  | { type: 'settings-problem'; text: string }
+  | { type: 'problems-dismissed' }
 
 /** First line only, capped -- the same "one-line result preview" the plan asks the tool
  * row to show; a multi-line tool result (a diff, a directory listing) would otherwise
@@ -365,6 +383,13 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       }
 
     case 'turn.done': {
+      // A turn.done for a turn THIS state never started. Switching sessions mid-turn
+      // aborts the old one host-side, and its `turn.done` arrives after `session-switched`
+      // has already reset everything -- which used to append "Stopped by you." as the
+      // first and only row of a session the user had not typed a word into. Every
+      // legitimate turn.done follows the `turn-started` the composer dispatches
+      // synchronously before its `send` call, so `turnRunning` is the exact discriminator.
+      if (!state.turnRunning) return state
       // An aborted turn's partial assistant text (if any) is marked `interrupted` so the
       // UI can show the "[interrupted]" marker next to it. Reasoning is closed first:
       // interrupting mid-thought is exactly the case that used to leave a pulsing row.
@@ -436,11 +461,29 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'todos':
       return { ...state, todos: action.items }
 
+    case 'settings-problem': {
+      const text = action.text.trim()
+      // Capped: a settings file that fails to parse can produce one problem per rule, and
+      // a strip that grows without bound is a strip nobody reads.
+      if (text === '' || state.problems.includes(text) || state.problems.length >= 10) return state
+      return { ...state, problems: [...state.problems, text] }
+    }
+
+    case 'problems-dismissed':
+      return { ...state, problems: [] }
+
     case 'session-switched':
       // A full reset, deliberately: see this action's own doc comment for why an old
       // session's transcript/pending cards must not survive into a new one's view.
+      //
+      // `nextId` is the ONE thing carried across. Item ids are consumed outside this
+      // reducer as identities, not as indices: `tree.tsx` remembers which tool items it
+      // has already acted on in a set that is never cleared, so restarting at 1 made new
+      // items collide with remembered old ones and roughly every second write silently
+      // failed to refresh the file tree.
       return {
         ...initialChatState(),
+        nextId: state.nextId,
         session: {
           sessionId: action.sessionId, mode: action.mode, contextLength: action.contextLength, title: action.title,
         },
