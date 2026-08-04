@@ -156,6 +156,22 @@ export interface ChatState {
    * "the current list", matching `TodoStore`'s own set()-replaces-wholesale semantics on
    * the core side. */
   todos: TodoItem[]
+  /**
+   * How many requests are parked, waiting for the user.
+   *
+   * A count and not the list: the entries themselves are read on demand when the card is
+   * opened, because a night's worth would otherwise sit in the reducer and re-render on
+   * every streamed token — the same reason the transcript memoises its rows.
+   */
+  pendingDecisions: number
+  /**
+   * The unattended run in progress, if any. `null` when a person is driving.
+   *
+   * `lastRun` outlives it deliberately: the reason a run stopped is the first thing wanted
+   * afterwards, and it must not vanish the instant the run does.
+   */
+  run: { turn: number } | null
+  lastRun: { turns: number; stoppedBecause: string; detail: string } | null
   session: SessionInfo | null
   /**
    * Configuration problems the engine reported for this session — an unparseable
@@ -181,12 +197,15 @@ export function initialChatState(): ChatState {
   return {
     items: [], turnRunning: false, currentStep: null, lastStepDone: null, nextId: 1,
     pendingApproval: null, pendingQuestion: null, todos: [], session: null, lastCompaction: null,
-    problems: [],
+    problems: [], pendingDecisions: 0, run: null, lastRun: null,
   }
 }
 
 export type ChatAction =
   | { type: 'user-message'; text: string }
+  | { type: 'decisions.changed'; pending: number }
+  | { type: 'run.turn'; turn: number }
+  | { type: 'run.ended'; turns: number; stoppedBecause: string; detail: string }
   | { type: 'turn-started' }
   | { type: 'step.start'; step: number; timeoutMs: number; startedAtMs: number }
   | { type: 'thinking.delta'; text: string }
@@ -469,6 +488,21 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       }
       return { ...state, items: [...state.items, item], pendingQuestion: null, nextId: state.nextId + 1 }
     }
+
+    case 'decisions.changed':
+      return { ...state, pendingDecisions: action.pending }
+
+    case 'run.turn':
+      // `lastRun` is cleared here rather than on start: a run that begins and immediately
+      // fails would otherwise show the PREVIOUS run's reason beside its own.
+      return { ...state, run: { turn: action.turn }, lastRun: null }
+
+    case 'run.ended':
+      return {
+        ...state,
+        run: null,
+        lastRun: { turns: action.turns, stoppedBecause: action.stoppedBecause, detail: action.detail },
+      }
 
     case 'todos':
       return { ...state, todos: action.items }

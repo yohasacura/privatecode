@@ -39,6 +39,14 @@ export const Icon = {
   diff: () => <Svg><path d="M4 2.5v11M2 4.5h4M2 11.5h4M10 2.5v11M8 7h4" /></Svg>,
   terminal: () => <Svg><path d="M3 4l3 3-3 3M8.5 11H13" /><rect x="1.5" y="1.5" width="13" height="13" rx="2" /></Svg>,
   jobs: () => <Svg><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3.2l2 1.3" /></Svg>,
+  /** A clock with an arrow going back: history, and specifically the ability to return to it. */
+  history: () => (
+    <Svg>
+      <path d="M2.5 8a5.5 5.5 0 1 0 1.9-4.2" />
+      <path d="M2 2.2v2.6h2.6" />
+      <path d="M8 5.2V8l2 1.3" />
+    </Svg>
+  ),
   chevronRight: () => <Svg><path d="M6 3.5 10.5 8 6 12.5" /></Svg>,
   chevronDown: () => <Svg><path d="M3.5 6 8 10.5 12.5 6" /></Svg>,
   check: () => <Svg><path d="M3 8.5 6.5 12 13 4.5" /></Svg>,

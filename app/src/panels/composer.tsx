@@ -124,6 +124,33 @@ export function Composer({
   const sessionId = state.session?.sessionId
   useEffect(() => { setQueued(null) }, [sessionId])
 
+  /**
+   * Starts an unattended run with whatever is in the composer as the task.
+   *
+   * Taking the composer text rather than opening a dialog: the thing you would type into a
+   * dialog is the thing you already typed, and an empty composer is a clear enough signal
+   * to refuse.
+   */
+  function startRun(): void {
+    const task = input.trim()
+    if (task === '') {
+      dispatch({
+        type: 'send-failed',
+        message: 'Type what you want done first — an unattended run needs a task to start from.',
+      })
+      return
+    }
+    setInput('')
+    dispatch({ type: 'user-message', text: task })
+    client.call('run.start', { task }).catch((e: Error) => {
+      dispatch({ type: 'send-failed', message: e.message })
+    })
+  }
+
+  function stopRun(): void {
+    client.call('run.stop', {}).catch(() => { /* the run ends on its own signal */ })
+  }
+
   function send(): void {
     const text = input.trim()
     if (text === '') return
@@ -192,6 +219,17 @@ export function Composer({
    */
   function statusLine(): VNode | null {
     if (waitingOnYou) return <span class="status-live">waiting on you · nothing generating</span>
+    // Why a run ENDED outranks how the last turn went: after an unattended run the first
+    // question is always "why did it stop", and a tok/s figure answers a question nobody
+    // asked. It stays until the next turn replaces it.
+    if (!state.turnRunning && state.lastRun) {
+      return (
+        <span class="status-idle">
+          run ended: {state.lastRun.stoppedBecause} after {state.lastRun.turns} turn
+          {state.lastRun.turns === 1 ? '' : 's'} · <span class="run-detail">{state.lastRun.detail}</span>
+        </span>
+      )
+    }
     if (state.turnRunning) {
       if (!step) return <span class="status-live">{runningTool ? `running ${runningTool}` : 'working'}</span>
       return (
@@ -295,6 +333,22 @@ export function Composer({
               </button>
             ))}
           </div>
+
+          {/* A mode in every sense that matters, so it sits with the modes. Disabled while
+              anything is running: an unattended run and a manual turn are the same single
+              slot, and offering a button that would be refused is worse than not offering
+              it. */}
+          <button
+            class={`mode-chip run-chip ${state.run ? 'run-chip-active' : ''}`}
+            title={state.run
+              ? 'Stop after the current turn'
+              : 'Keep taking turns until the work is done or a budget stops it. ' +
+                'Questions are queued instead of blocking.'}
+            disabled={!state.session || (state.turnRunning && state.run === null)}
+            onClick={state.run ? stopRun : startRun}
+          >
+            {state.run ? `Stop · turn ${state.run.turn}` : 'Run unattended'}
+          </button>
 
           <div class="composer-meta">{statusLine()}</div>
 

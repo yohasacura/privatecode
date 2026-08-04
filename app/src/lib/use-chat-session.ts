@@ -55,6 +55,11 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         type: 'question.request', requestId: d.requestId, question: d.question, options: d.options,
       })),
       client.on('todos', (d) => dispatch({ type: 'todos', items: d.items })),
+      client.on('decisions.changed', (d) => dispatch({ type: 'decisions.changed', pending: d.pending })),
+      client.on('run.turn', (d) => dispatch({ type: 'run.turn', turn: d.turn })),
+      client.on('run.ended', (d) => dispatch({
+        type: 'run.ended', stoppedBecause: d.stoppedBecause, detail: d.detail, turns: d.turns,
+      })),
       // Nothing consumed this before: a settings file that failed to parse dropped the
       // user's deny rules with no signal anywhere in the UI.
       client.on('settings.problem', (d) => dispatch({ type: 'settings-problem', text: d.text })),

@@ -5,6 +5,7 @@ import type { ChatItem } from '../lib/state'
 import { Icon } from '../components/icons'
 import { ChangesTab, collectChanges } from './changes-tab'
 import { FilesTab } from './files-tab'
+import { HistoryTab } from './history-tab'
 import { JobsTab } from './jobs-tab'
 import { TerminalTab } from './terminal-tab'
 import { useJobs } from '../lib/use-jobs'
@@ -18,7 +19,7 @@ import { useJobs } from '../lib/use-jobs'
  * tell you something happened.
  */
 
-export type ContextTab = 'files' | 'changes' | 'jobs' | 'terminal'
+export type ContextTab = 'files' | 'changes' | 'history' | 'jobs' | 'terminal'
 
 export function ContextPanel({
   client, items, openPath, onOpenFile, hasSession, workspaceRoot,
@@ -51,6 +52,7 @@ export function ContextPanel({
   const tabs: { id: ContextTab; label: string; icon: () => VNode; badge?: number }[] = [
     { id: 'files', label: 'Files', icon: Icon.files },
     { id: 'changes', label: 'Changes', icon: Icon.diff, badge: changeCount },
+    { id: 'history', label: 'History', icon: Icon.history },
     { id: 'jobs', label: 'Jobs', icon: Icon.jobs, badge: runningJobs },
     { id: 'terminal', label: 'Terminal', icon: Icon.terminal },
   ]
@@ -73,6 +75,7 @@ export function ContextPanel({
       </div>
 
       <div class="tab-body">
+        {tab === 'history' && <HistoryTab client={client} reloadKey={resolvedTools} />}
         {tab === 'files' && (
           <FilesTab
             client={client}

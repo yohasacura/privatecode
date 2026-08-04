@@ -11,6 +11,7 @@ import { formatDuration } from '../lib/format'
 import { useStickToBottom } from '../lib/sticky-scroll'
 import { Icon } from '../components/icons'
 import { ApprovalCard, QuestionCard, TodosCard } from './approvals'
+import { DecisionsCard } from './decisions'
 
 /**
  * The transcript: everything that has happened this session, in order, rendered as the
@@ -100,6 +101,18 @@ export function Transcript({
         {/* Wrapped in a Row like everything else: a card that ignored the gutter sat 28px
             left of the whole conversation, which is exactly the sort of thing that makes a
             UI look assembled rather than designed. */}
+        {/* Above the live approval, because a parked question is older: it has been
+            waiting since the night and the thing in front of you can be answered in a
+            second. */}
+        {state.pendingDecisions > 0 && (
+          <Row kind="card-row" marker={Icon.chat()}>
+            <DecisionsCard
+              client={client}
+              pending={state.pendingDecisions}
+              onChanged={() => dispatch({ type: 'decisions.changed', pending: state.pendingDecisions - 1 })}
+            />
+          </Row>
+        )}
         {state.pendingApproval && (
           <Row kind="card-row" marker={Icon.shield()}>
             <ApprovalCard
