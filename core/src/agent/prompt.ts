@@ -35,6 +35,14 @@ export interface PromptOptions {
     /** Configured server names, for naming who wrote the tools the model is being offered. */
     mcpServers: string[]
   }
+  /**
+   * The folders this workspace is made of, when there is more than one.
+   *
+   * Names only, never paths: the model addresses `engine/lib.rs`, and where that folder
+   * lives on this disk is not something it needs, would benefit from, or should carry in a
+   * transcript. Absent (or a single folder) leaves this prompt byte-for-byte what it was.
+   */
+  folders?: { name: string; access: 'write' | 'read' }[]
 }
 
 /**
@@ -45,8 +53,28 @@ export interface PromptOptions {
  * the two levers that stop the thinking runaway (docs/SPIKE-TEMPERATURE.md).
  */
 export function buildSystemPrompt(opts: PromptOptions): string {
+  const multi = opts.folders !== undefined && opts.folders.length > 1
+  const width = multi ? Math.max(...opts.folders!.map((f) => f.name.length)) : 0
   const common = [
-    `You are PrivateCode, a coding agent working in the local workspace ${opts.workspaceRoot}.`,
+    ...(multi
+      ? [
+        'You are PrivateCode, a coding agent working in a local workspace made of several',
+        'folders:',
+        '',
+        ...opts.folders!.map((f) =>
+          `  ${f.name.padEnd(width)}   ${f.access === 'read' ? 'read-only reference' : 'writable'}`),
+        '',
+        `Every path starts with one of those folder names: ${opts.folders![0]!.name}/src/thing.ts,`,
+        'not src/thing.ts. A path with no folder name is refused, so there is no way to edit',
+        'the wrong project by accident.',
+        ...(opts.folders!.some((f) => f.access === 'read')
+          ? [
+            'A read-only folder is there to be read, searched and quoted from. Nothing can be',
+            'written to it; a change that belongs there has to land in a writable folder instead.',
+          ]
+          : []),
+      ]
+      : [`You are PrivateCode, a coding agent working in the local workspace ${opts.workspaceRoot}.`]),
     '',
     'Work in small steps. Each step: use exactly one tool, look at the result, then decide',
     'the next step. Never claim something works unless a command or test you ran says so.',

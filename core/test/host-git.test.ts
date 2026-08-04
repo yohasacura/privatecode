@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { gitCommit, gitDiff, gitStatus, suggestCommitMessage } from '../src/host/git.js'
+import { gitCommit, gitDiff, suggestCommitMessage } from '../src/host/git.js'
+import { discoverRepos } from '../src/host/repos.js'
+import { Workspace } from '../src/workspace.js'
 
 /**
  * The working tree, for the window.
@@ -36,11 +38,13 @@ const write = (rel: string, body: string): void => {
 }
 
 describe('reading the working tree', () => {
+  const statusOf = async (dir: string) => (await discoverRepos(new Workspace(dir))).repos[0]
+
   test('a clean repository reports its branch and nothing else', async () => {
-    const status = await gitStatus(root)
-    expect(status.isRepo).toBe(true)
-    expect(status.branch).toMatch(/^(main|master)$/)
-    expect(status.files).toEqual([])
+    const repo = await statusOf(root)
+    expect(repo?.relation).toBe('folder')
+    expect(repo?.branch).toMatch(/^(main|master)$/)
+    expect(repo?.files).toEqual([])
   })
 
   test('modified, untracked and staged files are told apart', async () => {
@@ -49,7 +53,7 @@ describe('reading the working tree', () => {
     write('staged.txt', 'staged\n')
     await run(['add', 'staged.txt'])
 
-    const byPath = new Map((await gitStatus(root)).files.map((f) => [f.path, f]))
+    const byPath = new Map(((await statusOf(root))?.files ?? []).map((f) => [f.path, f]))
     expect(byPath.get('kept.txt')).toMatchObject({ staged: false, untracked: false })
     expect(byPath.get('new.txt')).toMatchObject({ untracked: true })
     expect(byPath.get('staged.txt')).toMatchObject({ staged: true, untracked: false })
@@ -58,17 +62,16 @@ describe('reading the working tree', () => {
   test('a rename is reported by the path that exists on disk', async () => {
     // Porcelain writes `R  old -> new`, and the panel opens what it lists.
     await run(['mv', 'kept.txt', 'moved.txt'])
-    const files = (await gitStatus(root)).files
+    const files = (await statusOf(root))?.files ?? []
     expect(files.map((f) => f.path)).toContain('moved.txt')
   })
 
-  test('a directory that is not a repository says so instead of failing', async () => {
+  test('a directory that is not a repository is listed as unversioned, not as a failure', async () => {
     const plain = mkdtempSync(join(tmpdir(), 'pc-nogit-'))
     try {
-      const status = await gitStatus(plain)
-      expect(status.isRepo).toBe(false)
-      expect(status.problem).toBeTruthy()
-      expect(status.files).toEqual([])
+      const found = await discoverRepos(new Workspace(plain))
+      expect(found.repos).toEqual([])
+      expect(found.unversioned.map((u) => u.mount)).toHaveLength(1)
     } finally {
       rmSync(plain, { recursive: true, force: true })
     }
@@ -103,8 +106,8 @@ describe('committing', () => {
     expect(result.sha).toMatch(/^[0-9a-f]{7,}$/)
 
     // The file that was not named is still sitting there uncommitted.
-    const after = await gitStatus(root)
-    expect(after.files.map((f) => f.path)).toEqual(['other.txt'])
+    const after = (await discoverRepos(new Workspace(root))).repos[0]
+    expect(after?.files.map((f) => f.path)).toEqual(['other.txt'])
   })
 
   test('an empty selection is refused, never widened to everything', async () => {
@@ -112,7 +115,7 @@ describe('committing', () => {
     // would eventually catch a file someone was in the middle of.
     write('kept.txt', 'changed\n')
     expect(await gitCommit(root, 'msg', [])).toMatchObject({ ok: false })
-    expect((await gitStatus(root)).files).toHaveLength(1)
+    expect((await discoverRepos(new Workspace(root))).repos[0]?.files).toHaveLength(1)
   })
 
   test('an empty message is refused', async () => {

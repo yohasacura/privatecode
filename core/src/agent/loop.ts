@@ -319,6 +319,11 @@ export class Agent {
           // exactOptionalPropertyTypes, so an explicit undefined is not the same as absent.
           ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
           ...(opts.repoMap !== undefined ? { repoMap: opts.repoMap } : {}),
+          ...(opts.context.workspace.multi
+            ? {
+              folders: opts.context.workspace.mounts.map((m) => ({ name: m.name, access: m.access })),
+            }
+            : {}),
         }),
       })
     }

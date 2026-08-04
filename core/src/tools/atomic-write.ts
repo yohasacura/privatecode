@@ -101,7 +101,10 @@ export function tempBasename(targetBasename: string): string {
  * exists not to depend on.
  */
 export async function writeFileAtomic(abs: string, data: string, workspace: Workspace): Promise<void> {
-  const target = workspace.resolve(abs)
+  // `resolveForWrite`, for the same reason the whole path is re-resolved: a read-only folder
+  // that only the tools refused to write to would be one forgotten caller away from not
+  // being read-only.
+  const target = workspace.resolveForWrite(abs)
   const tmp = join(dirname(target), tempBasename(basename(target)))
   // 'wx' rather than 'w': the cleanup below deletes this path, so it must be a file this
   // call created and not one it happened to find.

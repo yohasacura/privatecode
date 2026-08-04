@@ -25,21 +25,13 @@ export interface GitFileChange {
   untracked: boolean
 }
 
-export interface GitStatus {
-  isRepo: boolean
-  branch: string | null
-  files: GitFileChange[]
-  /** Set when git itself refused: not a repository, not installed, a broken index. */
-  problem?: string
-}
-
 async function git(cwd: string, args: string[], timeout = 15_000) {
   return execa('git', args, { cwd, reject: false, timeout, windowsHide: true })
 }
 
 /** Splits porcelain v1 output. The first two characters are the status pair; a rename
  * carries `old -> new` and is reported by its NEW path, which is the one on disk. */
-function parsePorcelain(stdout: string): { branch: string | null; files: GitFileChange[] } {
+export function parsePorcelain(stdout: string): { branch: string | null; files: GitFileChange[] } {
   let branch: string | null = null
   const files: GitFileChange[] = []
 
@@ -62,23 +54,6 @@ function parsePorcelain(stdout: string): { branch: string | null; files: GitFile
     })
   }
   return { branch, files }
-}
-
-export async function gitStatus(cwd: string): Promise<GitStatus> {
-  const inside = await git(cwd, ['rev-parse', '--is-inside-work-tree'])
-  if (inside.exitCode !== 0 || inside.stdout.trim() !== 'true') {
-    return {
-      isRepo: false,
-      branch: null,
-      files: [],
-      problem: inside.stderr.trim() || 'this workspace is not a git repository',
-    }
-  }
-  const result = await git(cwd, ['status', '--porcelain=v1', '--branch'])
-  if (result.exitCode !== 0) {
-    return { isRepo: true, branch: null, files: [], problem: result.stderr.trim() || 'git status failed' }
-  }
-  return { isRepo: true, ...parsePorcelain(result.stdout) }
 }
 
 /**

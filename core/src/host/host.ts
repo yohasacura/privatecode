@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { readFile, readdir, stat } from 'node:fs/promises'
-import { extname, join } from 'node:path'
+import { extname, join, relative, sep } from 'node:path'
 import type { AgentEvents } from '../agent/loop.js'
 import { HEALTH_CHECK_TIMEOUT_MS } from '../cli/render.js'
 import type { ApprovalDecision, InteractionPort } from '../interaction.js'
@@ -19,6 +19,8 @@ import { loadBrowserSettings } from '../browser/settings.js'
 import { loadServers } from '../mcp/config.js'
 import { McpManager } from '../mcp/manager.js'
 import { Workspace } from '../workspace.js'
+import { loadMounts, type Mount } from '../mounts.js'
+import { discoverUnits, type SnapshotUnit } from '../checkpoints/units.js'
 import { PRIVATE_DIR } from '../private-dir.js'
 import { runUnattended } from '../cli/unattended.js'
 import type {
@@ -85,7 +87,8 @@ import { recordToolOutcome, replayEntries, toolOutcomes } from './replay.js'
 import { rankFiles, walkFiles } from './file-search.js'
 import { attachFiles } from './attachments.js'
 import { buildRepoMap } from '../outline/repo-map.js'
-import { gitCommit, gitDiff, gitStatus, suggestCommitMessage } from './git.js'
+import { gitCommit, gitDiff, suggestCommitMessage } from './git.js'
+import { discoverRepos, repoRootFor, toRepoPaths } from './repos.js'
 import { searchSessions } from './session-search.js'
 
 /**
@@ -182,6 +185,17 @@ export class SessionHost {
    * belongs to the same lifetime as the MCP servers and the file index for the same reason.
    */
   private repoMap = ''
+  /** The folders this workspace is made of, primary first. Set by `init` alongside
+   * `workspace`, and handed to every session so the jail and the prompt agree. */
+  private mounts: readonly Mount[] = []
+  /** What the undo store covers — one per writable folder plus one per nested repository.
+   * Found by a disk scan in `init`, for the same reason the map is built there. */
+  private units: readonly SnapshotUnit[] = []
+  private workspaceName = ''
+  /** Folders that could not be attached — moved, overlapping, badly named. Reported to the
+   * window with the settings problems, because a folder silently missing from the tree is
+   * indistinguishable from an empty one. */
+  private workspaceProblems: string[] = []
   private workspace: Workspace | undefined
   private client: LlamaClient | undefined
   private toolset: Toolset | undefined
@@ -360,7 +374,14 @@ export class SessionHost {
 
     this.workspaceRoot = params.workspaceRoot
     this.fileIndex = undefined
-    this.workspace = new Workspace(params.workspaceRoot)
+    // The folders this workspace is made of. A folder with no definition file is one mount
+    // and behaves exactly as it always has; a folder that was renamed or now overlaps another
+    // is reported and skipped rather than refusing to open the workspace at all.
+    const loaded = loadMounts(params.workspaceRoot)
+    this.mounts = loaded.mounts
+    this.workspaceName = loaded.name
+    this.workspaceProblems = loaded.problems
+    this.workspace = new Workspace(loaded.mounts)
     this.client = new LlamaClient({ baseUrl: params.serverUrl, model: MODEL })
     const browserSettings = loadBrowserSettings(params.workspaceRoot)
     this.toolset = createToolset({ browser: browserSettings.options })
@@ -374,7 +395,11 @@ export class SessionHost {
     // is message 0 of an append-only transcript, so there is no later moment to add it to.
     // A workspace it cannot index yields '' and the session runs exactly as it did before
     // maps existed.
-    this.repoMap = await buildRepoMap(params.workspaceRoot)
+    this.repoMap = await buildRepoMap(loaded.mounts)
+    // A disk scan, so it happens here rather than in the Session constructor. Per workspace,
+    // like the map and the MCP servers: cloning a repository into the project mid-session is
+    // not something a session switch should have to notice.
+    this.units = await discoverUnits(loaded.mounts, params.workspaceRoot)
 
     return this.buildSession(this.sessionToOpen(params))
   }
@@ -496,6 +521,8 @@ export class SessionHost {
       client,
       toolset,
       workspaceRoot,
+      ...(this.mounts.length > 1 ? { mounts: this.mounts } : {}),
+      ...(this.units.length > 0 ? { units: this.units } : {}),
       engine,
       store,
       events: this.buildAgentEvents(),
@@ -534,6 +561,10 @@ export class SessionHost {
       ...engine.problems, ...memory.problems, ...formatting.problems, ...hooking.problems,
       ...verifying.problems,
       ...this.externalProblems,
+      // A folder that failed to attach is invisible in the tree, and an invisible folder is
+      // indistinguishable from an empty one. Repeated on every session switch, like the
+      // external problems above and for the same reason.
+      ...this.workspaceProblems,
     ]
     if (this.contextLength === null) {
       problems.push(
@@ -815,25 +846,61 @@ export class SessionHost {
     return { paths: rankFiles(this.fileIndex, params.query, limit).map((m) => m.path) }
   }
 
-  /** The working tree as the Changes panel shows it. Never throws for "not a repository":
-   * most workspaces are repositories, some are not, and neither is an error. */
+  /**
+   * The working tree as the Changes panel shows it: every repository the workspace touches,
+   * and the folders that are under no version control at all.
+   *
+   * Never throws for "not a repository". With one folder that was a yes-or-no question; with
+   * several it is not even the same question per folder, and none of the answers is an error.
+   */
   private async gitStatusFor(): Promise<GitStatusResult> {
-    const { workspaceRoot } = this.requireInitialized()
-    const status = await gitStatus(workspaceRoot)
-    return { ...status, suggestion: suggestCommitMessage(status.files) }
+    const { workspace } = this.requireInitialized()
+    const found = await discoverRepos(workspace)
+    return {
+      repos: found.repos.map((repo) => ({
+        root: repo.root,
+        label: repo.label,
+        branch: repo.branch,
+        relation: repo.relation,
+        files: repo.files,
+        suggestion: suggestCommitMessage(repo.files),
+        ...(repo.problem !== undefined ? { problem: repo.problem } : {}),
+      })),
+      unversioned: found.unversioned,
+    }
   }
 
+  /** The repository is found from the file rather than passed in: the panel has a path, and
+   * asking git which repository owns it is one process and cannot disagree with itself. */
   private async gitDiffFor(params: GitDiffParams): Promise<GitDiffResult> {
-    const { workspace, workspaceRoot } = this.requireInitialized()
+    const { workspace } = this.requireInitialized()
     // Resolved through the jail before it reaches git, like every other path the UI sends.
-    workspace.resolve(params.path)
-    return { diff: await gitDiff(workspaceRoot, params.path, params.untracked === true) }
+    const abs = workspace.resolve(params.path)
+    const repoRoot = await repoRootFor(abs)
+    if (repoRoot === null) return { diff: '' }
+    const within = relative(repoRoot, abs).split(sep).join('/')
+    return { diff: await gitDiff(repoRoot, within, params.untracked === true) }
   }
 
+  /**
+   * Commits into whichever repository holds the selection.
+   *
+   * A selection that spans two repositories is refused, not split: one message describing two
+   * commits is a message that is wrong about both, and the panel groups by repository anyway,
+   * so reaching this is already a sign something was misunderstood.
+   */
   private async gitCommitFor(params: GitCommitParams): Promise<GitCommitResult> {
-    const { workspace, workspaceRoot } = this.requireInitialized()
-    for (const path of params.paths) workspace.resolve(path)
-    const result = await gitCommit(workspaceRoot, params.message, params.paths)
+    const { workspace } = this.requireInitialized()
+    const first = params.paths[0]
+    if (first === undefined) return { ok: false, problem: 'select at least one file to commit' }
+    const repoRoot = await repoRootFor(workspace.resolve(first))
+    if (repoRoot === null) {
+      return { ok: false, problem: `${first} is not inside a git repository` }
+    }
+    const translated = toRepoPaths(workspace, repoRoot, params.paths)
+    if (!translated.ok) return { ok: false, problem: translated.problem }
+
+    const result = await gitCommit(repoRoot, params.message, translated.paths)
     return {
       ok: result.ok,
       ...(result.sha !== undefined ? { sha: result.sha } : {}),

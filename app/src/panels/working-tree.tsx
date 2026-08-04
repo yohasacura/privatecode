@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
-import type { GitFileChange } from '@core/host/protocol'
+import type { GitFileChange, GitRepoView } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { DiffView } from '../lib/diff'
 import { Icon } from '../components/icons'
@@ -70,37 +70,33 @@ function FileRow({
   )
 }
 
-export function WorkingTree({ client, reloadKey }: { client: ProtocolClient; reloadKey: number }): VNode | null {
-  const [files, setFiles] = useState<GitFileChange[]>([])
-  const [branch, setBranch] = useState<string | null>(null)
-  const [isRepo, setIsRepo] = useState(true)
+/**
+ * One repository, with its own selection and its own commit box.
+ *
+ * Per repository rather than one box for the panel, because a commit belongs to exactly one
+ * repository: a single message over files from two of them describes neither, and the host
+ * refuses it anyway. Separate boxes make that a shape you can see instead of an error you
+ * discover.
+ */
+function RepoSection({
+  client, repo, alone, onCommitted,
+}: {
+  client: ProtocolClient
+  repo: GitRepoView
+  /** The only repository in the workspace — then it keeps the panel's original wording. */
+  alone: boolean
+  onCommitted: () => void
+}): VNode {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [message, setMessage] = useState('')
-  const [suggestion, setSuggestion] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [committed, setCommitted] = useState<string | null>(null)
 
-  const load = useCallback(() => {
-    client.call('git.status', {})
-      .then((r) => {
-        setIsRepo(r.isRepo)
-        setBranch(r.branch)
-        setFiles(r.files)
-        setSuggestion(r.suggestion)
-        // Selection follows the tree: a path that is no longer dirty must not stay ticked
-        // and end up in the next `git add`.
-        setSelected((prev) => new Set(r.files.map((f) => f.path).filter((p) => prev.has(p))))
-        setError(r.problem !== undefined && r.isRepo ? r.problem : null)
-      })
-      .catch((e: Error) => setError(e.message))
-  }, [client])
-
-  useEffect(() => { load() }, [load, reloadKey])
-
-  // Not a repository is not a failure and not a thing to explain every time: most
-  // workspaces are, some are not, and the tab still has this session's changes to show.
-  if (!isRepo) return null
+  // Selection follows the tree: a path that is no longer dirty must not stay ticked and end
+  // up in the next `git add`.
+  useEffect(() => {
+    setSelected((prev) => new Set(repo.files.map((f) => f.path).filter((p) => prev.has(p))))
+  }, [repo.files])
 
   function toggle(path: string): void {
     setSelected((prev) => {
@@ -112,16 +108,14 @@ export function WorkingTree({ client, reloadKey }: { client: ProtocolClient; rel
   }
 
   function commit(): void {
-    const paths = [...selected]
     setBusy(true)
     setError(null)
-    client.call('git.commit', { message: message.trim() || suggestion, paths })
+    client.call('git.commit', { message: message.trim() || repo.suggestion, paths: [...selected] })
       .then((r) => {
         if (r.ok) {
-          setCommitted(r.sha ?? 'committed')
           setMessage('')
           setSelected(new Set())
-          load()
+          onCommitted()
         } else {
           setError(r.problem ?? 'the commit did not happen')
         }
@@ -130,18 +124,16 @@ export function WorkingTree({ client, reloadKey }: { client: ProtocolClient; rel
       .finally(() => setBusy(false))
   }
 
+  const branch = repo.branch !== null ? ` · ${repo.branch}` : ''
   return (
-    <PanelSection title={branch !== null ? `Working tree · ${branch}` : 'Working tree'} count={files.length}>
-      {error !== null && <PanelError message={error} onRetry={load} />}
-      {committed !== null && files.length === 0 && (
-        <div class="history-note">Committed as <code>{committed}</code>. Nothing else is uncommitted.</div>
-      )}
-
-      {files.length === 0
+    <PanelSection title={alone ? `Working tree${branch}` : `${repo.label}${branch}`} count={repo.files.length}>
+      {repo.problem !== undefined && <div class="history-note">{repo.problem}</div>}
+      {error !== null && <PanelError message={error} />}
+      {repo.files.length === 0
         ? <PanelRow icon={Icon.check()} label="Nothing uncommitted" />
         : (
           <>
-            {files.map((file) => (
+            {repo.files.map((file) => (
               <FileRow
                 key={file.path}
                 client={client}
@@ -154,7 +146,7 @@ export function WorkingTree({ client, reloadKey }: { client: ProtocolClient; rel
               <input
                 class="input"
                 value={message}
-                placeholder={suggestion || 'commit message'}
+                placeholder={repo.suggestion || 'commit message'}
                 onInput={(e) => setMessage(e.currentTarget.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && selected.size > 0) commit() }}
               />
@@ -170,5 +162,48 @@ export function WorkingTree({ client, reloadKey }: { client: ProtocolClient; rel
           </>
           )}
     </PanelSection>
+  )
+}
+
+export function WorkingTree({ client, reloadKey }: { client: ProtocolClient; reloadKey: number }): VNode | null {
+  const [repos, setRepos] = useState<GitRepoView[]>([])
+  const [unversioned, setUnversioned] = useState<{ mount: string }[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    client.call('git.status', {})
+      .then((r) => {
+        setRepos(r.repos)
+        setUnversioned(r.unversioned)
+        setError(r.problem ?? null)
+      })
+      .catch((e: Error) => setError(e.message))
+  }, [client])
+
+  useEffect(() => { load() }, [load, reloadKey])
+
+  // Nothing under version control anywhere is not a failure and not a thing to explain
+  // every time: the tab still has this session's own changes to show.
+  if (error === null && repos.length === 0) return null
+
+  return (
+    <>
+      {error !== null && <PanelError message={error} onRetry={load} />}
+      {repos.map((repo) => (
+        <RepoSection
+          key={repo.root}
+          client={client}
+          repo={repo}
+          alone={repos.length === 1 && unversioned.length === 0}
+          onCommitted={load}
+        />
+      ))}
+      {unversioned.length > 0 && repos.length > 0 && (
+        <div class="history-note">
+          Not under version control: {unversioned.map((u) => u.mount).join(', ')}. Checkpoints
+          still cover {unversioned.length === 1 ? 'it' : 'them'}; there is simply nothing to commit.
+        </div>
+      )}
+    </>
   )
 }

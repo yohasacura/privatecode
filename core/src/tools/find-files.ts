@@ -1,5 +1,7 @@
 import { glob } from 'node:fs/promises'
 import { isAbsolute, join, posix, relative, sep, win32 } from 'node:path'
+import type { Mount } from '../mounts.js'
+import type { Workspace } from '../workspace.js'
 import { fsErrorReason } from './atomic-write.js'
 import type { Tool } from './types.js'
 
@@ -66,10 +68,40 @@ function patternProblem(pattern: string): string | null {
   return null
 }
 
+/** `*`, `?`, `[`, `{` — the characters that make a segment a pattern rather than a name. */
+const GLOB_META = /[*?[\]{}]/
+
+/**
+ * Which folders to run the pattern in, and with what.
+ *
+ * One rule covering both things a person means. `engine/**\/*.rs` names a folder, so it runs
+ * only there; `**\/*.rs` names none, so it runs in all of them and every result comes back
+ * prefixed. Deciding by "is the first segment literally one of the folder names" rather than
+ * by requiring a prefix keeps the useful case — find this everywhere — one call instead of
+ * one per folder.
+ */
+function globJobs(pattern: string, workspace: Workspace): { mount: Mount; pattern: string }[] {
+  if (!workspace.multi) return [{ mount: workspace.mounts[0] as Mount, pattern }]
+
+  const cut = pattern.search(SEPARATOR)
+  const head = cut === -1 ? pattern : pattern.slice(0, cut)
+  if (!GLOB_META.test(head)) {
+    const named = workspace.mounts.find((m) => m.name.toLowerCase() === head.toLowerCase())
+    if (named) {
+      const rest = cut === -1 ? '' : pattern.slice(cut + 1)
+      return [{ mount: named, pattern: rest === '' ? '**/*' : rest }]
+    }
+  }
+  return workspace.mounts.map((mount) => ({ mount, pattern }))
+}
+
 export const findFilesTool: Tool<FindFilesArgs> = {
   name: 'find_files',
   readOnly: true,
-  description: 'Find files by glob pattern, for example "src/**/*.ts". Directories are not returned.',
+  description:
+    'Find files by glob pattern, for example "src/**/*.ts". Directories are not returned. ' +
+    'In a workspace with several folders, a pattern that starts with a folder name searches ' +
+    'only that folder; one that does not searches all of them.',
   parameters: {
     type: 'object',
     properties: { glob: { type: 'string', description: 'Glob relative to the workspace root.' } },
@@ -89,37 +121,41 @@ export const findFilesTool: Tool<FindFilesArgs> = {
     if (problem !== null) return { ok: false, content: problem }
 
     const matches: string[] = []
-    try {
-      // Known limitation, not an oversight: Node's fs.glob has no `dot` option, so there is
-      // no way to opt a pattern into matching dotted path segments. A non-dotted pattern
-      // (e.g. "**/*.yml") therefore cannot reach a dotted path (e.g. ".github/workflows/ci.yml");
-      // the caller must write an explicitly dotted pattern (e.g. ".github/**/*.yml") to see it.
-      // Measured directly against fs.glob on Node v24.18.1 - passing `dot: true` is silently
-      // ignored, not rejected, which is why it must not be passed at all.
-      for await (const entry of glob(args.glob, { cwd: ctx.workspace.root, withFileTypes: true })) {
-        // The tool is called find_files: a bare directory name is indistinguishable from
-        // an extensionless file, and the model will call read_file on it.
-        if (entry.isDirectory()) continue
-        const rel = relative(ctx.workspace.root, join(entry.parentPath, entry.name))
-        const segments = rel.split(sep)
-        if (segments.some((segment) => HIDDEN_SEGMENTS.has(segment.toLowerCase()))) continue
-        // Enumeration goes through the same jail as reading. glob is given the model's raw
-        // pattern, so containment and the secrets denylist have to be enforced on what
-        // comes back out, not on what went in.
-        try {
-          ctx.workspace.resolve(rel)
-        } catch {
-          continue
+    const multi = ctx.workspace.multi
+    for (const job of globJobs(args.glob, ctx.workspace)) {
+      try {
+        // Known limitation, not an oversight: Node's fs.glob has no `dot` option, so there is
+        // no way to opt a pattern into matching dotted path segments. A non-dotted pattern
+        // (e.g. "**/*.yml") therefore cannot reach a dotted path (e.g. ".github/workflows/ci.yml");
+        // the caller must write an explicitly dotted pattern (e.g. ".github/**/*.yml") to see it.
+        // Measured directly against fs.glob on Node v24.18.1 - passing `dot: true` is silently
+        // ignored, not rejected, which is why it must not be passed at all.
+        for await (const entry of glob(job.pattern, { cwd: job.mount.root, withFileTypes: true })) {
+          // The tool is called find_files: a bare directory name is indistinguishable from
+          // an extensionless file, and the model will call read_file on it.
+          if (entry.isDirectory()) continue
+          const rel = relative(job.mount.root, join(entry.parentPath, entry.name))
+          const segments = rel.split(sep)
+          if (segments.some((segment) => HIDDEN_SEGMENTS.has(segment.toLowerCase()))) continue
+          // Enumeration goes through the same jail as reading. glob is given the model's raw
+          // pattern, so containment and the secrets denylist have to be enforced on what
+          // comes back out, not on what went in.
+          const addressed = multi ? `${job.mount.name}/${segments.join('/')}` : rel
+          try {
+            ctx.workspace.resolve(addressed)
+          } catch {
+            continue
+          }
+          matches.push(multi ? addressed : segments.join('/'))
         }
-        matches.push(segments.join('/'))
+      } catch (e) {
+        // Held to the same bar as the other three read tools: no absolute path, no raw
+        // errno. Stated plainly because it matters: this branch is NOT covered by a test.
+        // fs.glob swallows per-entry failures rather than throwing — measured against a
+        // nonexistent root and against an ACL-denied subdirectory, both of which returned an
+        // ordinary result — so there is no honest way to reach it from the outside today.
+        return { ok: false, content: `Glob failed: ${fsErrorReason(job.mount.root, e)}` }
       }
-    } catch (e) {
-      // Held to the same bar as the other three read tools: no absolute path, no raw
-      // errno. Stated plainly because it matters: this branch is NOT covered by a test.
-      // fs.glob swallows per-entry failures rather than throwing — measured against a
-      // nonexistent root and against an ACL-denied subdirectory, both of which returned an
-      // ordinary result — so there is no honest way to reach it from the outside today.
-      return { ok: false, content: `Glob failed: ${fsErrorReason(ctx.workspace.root, e)}` }
     }
 
     if (matches.length === 0) return { ok: true, content: `No files match ${args.glob}` }

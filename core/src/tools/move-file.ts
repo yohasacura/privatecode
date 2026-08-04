@@ -58,13 +58,13 @@ export const moveFileTool: Tool<MoveFileArgs> = {
   async execute(args, ctx) {
     let fromAbs: string
     try {
-      fromAbs = ctx.workspace.resolve(args.from)
+      fromAbs = ctx.workspace.resolveForWrite(args.from)
     } catch (e) {
       return { ok: false, content: (e as Error).message }
     }
     let toAbs: string
     try {
-      toAbs = ctx.workspace.resolve(args.to)
+      toAbs = ctx.workspace.resolveForWrite(args.to)
     } catch (e) {
       return { ok: false, content: (e as Error).message }
     }

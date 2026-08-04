@@ -3,9 +3,12 @@ import { resolve } from 'node:path'
 import { Agent, type AgentEvents, type AgentOptions, type StepInfo, type TurnResult } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
 import { LoopDetector } from '../agent/loop-detector.js'
-import { CheckpointStore, type Checkpoint } from '../checkpoints/store.js'
+import type { Checkpoint } from '../checkpoints/store.js'
+import { CheckpointSet } from '../checkpoints/set.js'
+import { soleUnit, type SnapshotUnit } from '../checkpoints/units.js'
 import { commandsFrom, WorkLog } from './worklog.js'
 import { DecisionQueue, queueingPort } from './decisions.js'
+import type { Mount } from '../mounts.js'
 import type { LoadedMemory } from '../memory/project-memory.js'
 import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
@@ -58,6 +61,17 @@ export interface SessionOptions {
   client: LlamaClient
   toolset: Toolset // from createToolset()
   workspaceRoot: string
+  /**
+   * The folders this workspace is made of, primary first. Omit for a plain single-folder
+   * workspace, which is what every existing caller does and what the tests rely on.
+   */
+  mounts?: readonly Mount[]
+  /**
+   * What the undo store snapshots: one unit per writable folder, plus one per git
+   * repository nested inside one. Discovered by the caller (it needs a disk scan); omitted,
+   * this is the single store a plain workspace has always had.
+   */
+  units?: readonly SnapshotUnit[]
   mode?: AgentMode // default 'normal'
   interaction?: InteractionPort
   engine?: PermissionEngine
@@ -226,7 +240,7 @@ export class Session {
 
   constructor(opts: SessionOptions) {
     this.opts = opts
-    this.workspace = new Workspace(opts.workspaceRoot)
+    this.workspace = new Workspace(opts.mounts ?? opts.workspaceRoot)
     // Frozen here, once: both places that build a system message read this field, so they
     // cannot drift, and a mid-session edit to AGENTS.md cannot reach message 0.
     this.memoryText = opts.memory && opts.memory.text !== '' ? opts.memory.text : undefined
@@ -288,7 +302,14 @@ export class Session {
     // Built here rather than lazily so a long run's very first turn already has a baseline
     // to diff against -- the "before I touched anything" point is the one a morning rewind
     // most often wants, and it only exists if it is taken before any work happens.
-    this.checkpoints = opts.longRun ? new CheckpointStore(opts.workspaceRoot) : null
+    // A SET of units, not one store: a folder that contains its own git repository cannot be
+    // snapshotted as one tree (git records the nested one as a pointer and a rewind restores
+    // nothing inside it), so coverage is one shadow store per unit. `units` is discovered by
+    // the caller because that needs a disk scan and this constructor is synchronous; without
+    // it this is the single store it has always been.
+    this.checkpoints = opts.longRun
+      ? new CheckpointSet(opts.units ?? [soleUnit(opts.workspaceRoot)], opts.workspaceRoot)
+      : null
     this.workLog = opts.longRun ? new WorkLog(opts.workspaceRoot) : null
     // The queue exists for any long run; whether it INTERCEPTS is a separate, runtime
     // question. Sitting in front of the window, an approval must wait for the person, not
@@ -442,7 +463,9 @@ export class Session {
     const baseline = (await this.checkpoints.list()).at(-1)
     if (!baseline) throw new Error('this session has no baseline to restore from')
 
-    const result = await this.checkpoints.restoreFile(baseline.id, path)
+    // Absolute: which folder — and which nested repository inside it — holds this file is a
+    // fact about the disk, and a workspace-relative path cannot answer it.
+    const result = await this.checkpoints.restoreFile(baseline.id, this.workspace.resolve(path))
     this.transcript.append({
       role: 'user',
       content:
@@ -858,6 +881,9 @@ export class Session {
         mode: this.meta.mode,
         ...(this.memoryText !== undefined ? { memory: this.memoryText } : {}),
         ...(this.repoMapText !== undefined ? { repoMap: this.repoMapText } : {}),
+        ...(this.workspace.multi
+          ? { folders: this.workspace.mounts.map((m) => ({ name: m.name, access: m.access })) }
+          : {}),
       }),
     })
     next.append({ role: 'user', content: `${COMPACTION_BRIEFING_PREFIX}\n${summary}` })
@@ -973,7 +999,7 @@ export class Session {
   private readonly loopDetector = new LoopDetector()
 
   /** Built only for a long run; see `SessionOptions.longRun`. */
-  private readonly checkpoints: CheckpointStore | null
+  private readonly checkpoints: CheckpointSet | null
   private readonly workLog: WorkLog | null
   /** Present for any long run; see `SessionOptions.longRun`. */
   private readonly decisions: DecisionQueue | null

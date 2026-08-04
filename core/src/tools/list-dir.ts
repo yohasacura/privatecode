@@ -1,4 +1,5 @@
 import { readdir } from 'node:fs/promises'
+import { isRootPath } from '../workspace.js'
 import { fsErrorReason } from './atomic-write.js'
 import type { Tool } from './types.js'
 
@@ -36,6 +37,18 @@ export const listDirTool: Tool<ListDirArgs> = {
     return { ok: true, args: { path: r.path } }
   },
   async execute(args, ctx) {
+    // In a multi-folder workspace the root is not a directory on disk — it is the list of
+    // folders. Answering with them, rather than with the jail's "name a folder first"
+    // refusal, is what makes `list_dir(".")` the natural first move it looks like.
+    if (ctx.workspace.multi && isRootPath(args.path)) {
+      const lines = ctx.workspace.mounts.map((m) =>
+        `${m.name}/${m.access === 'read' ? '    (read-only reference)' : ''}`)
+      return {
+        ok: true,
+        content: `${lines.join('\n')}\n(these are the workspace's folders; every path starts with one of these names)`,
+      }
+    }
+
     // '.', './' and '' all resolve to the workspace root, which the jail allows.
     let target: string
     try {

@@ -171,14 +171,31 @@ export interface FsFindResult { paths: string[] }
  */
 export type GitStatusParams = Empty
 export interface GitFileChange { path: string; code: string; staged: boolean; untracked: boolean }
-export interface GitStatusResult {
-  isRepo: boolean
+
+/**
+ * One repository the workspace touches.
+ *
+ * `relation` is what stops the panel from lying about scope: `folder` is the ordinary case,
+ * `above` means a folder is a subdirectory of a bigger repository and only its own subtree is
+ * being shown, `nested` means the repository sits inside a folder and is its own project.
+ */
+export interface GitRepoView {
+  /** Absolute toplevel. The identity a commit is addressed to. */
+  root: string
+  label: string
   branch: string | null
+  relation: 'folder' | 'above' | 'nested'
   files: GitFileChange[]
-  problem?: string
-  /** A starting point for the commit message, derived from the files themselves -- never
-   * generated, because a generation is a turn against a single-slot server. */
+  /** A starting point for the message field, derived from the files themselves. */
   suggestion: string
+  problem?: string
+}
+
+export interface GitStatusResult {
+  repos: GitRepoView[]
+  /** Writable folders under no version control — nothing to commit, which is worth saying. */
+  unversioned: { mount: string }[]
+  problem?: string
 }
 
 /**

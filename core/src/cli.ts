@@ -4,6 +4,8 @@ import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import { LlamaClient } from './llama/client.js'
 import { Workspace } from './workspace.js'
+import { loadMounts } from './mounts.js'
+import { discoverUnits } from './checkpoints/units.js'
 import { createToolset, READ_ONLY_TOOLS } from './tools/default-set.js'
 import { loadBrowserSettings } from './browser/settings.js'
 import { loadServers } from './mcp/config.js'
@@ -288,6 +290,16 @@ async function main() {
     sessionOpts.longRun = true
     sessionOpts.unattended = {}
   }
+  // The folders this workspace is made of, and what an undo has to cover. Wired here as well
+  // as in the host, deliberately: the last time this path built its own options it quietly
+  // lost the formatter, the hooks, memory and verify, and nothing said so.
+  const loaded = loadMounts(values.workspace)
+  for (const p of loaded.problems) console.error(`workspace: ${p}`)
+  if (loaded.mounts.length > 1) sessionOpts.mounts = loaded.mounts
+  if (sessionOpts.longRun) {
+    sessionOpts.units = await discoverUnits(loaded.mounts, values.workspace)
+  }
+
   const session = new Session(sessionOpts)
 
   // The REPL's own shutdown() calls toolset.background.stopAll() so a background_task

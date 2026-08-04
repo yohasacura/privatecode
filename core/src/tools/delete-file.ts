@@ -52,7 +52,7 @@ export const deleteFileTool: Tool<DeleteFileArgs> = {
   async execute(args, ctx) {
     let abs: string
     try {
-      abs = ctx.workspace.resolve(args.path)
+      abs = ctx.workspace.resolveForWrite(args.path)
     } catch (e) {
       return { ok: false, content: (e as Error).message }
     }

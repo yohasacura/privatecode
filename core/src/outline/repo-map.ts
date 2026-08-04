@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { walkFiles } from '../host/file-search.js'
+import type { Mount } from '../mounts.js'
 import { outlineFile, SUPPORTED_EXTENSIONS, type OutlineEntry } from './tree-sitter.js'
 
 /**
@@ -201,41 +202,173 @@ export function renderFile(file: FileOutline): string {
  * the project" would take a truncated list as complete and conclude a file it cannot see
  * does not exist.
  */
-export function renderRepoMap(ranked: readonly FileOutline[], budget = DEFAULT_MAP_BUDGET): string {
-  if (ranked.length === 0) return ''
+const MAP_HEADER =
+  'PROJECT MAP\n' +
+  'A snapshot of this workspace\'s structure, taken when the session started. It lists ' +
+  'definitions only — not what they do — and it can be out of date, including because of ' +
+  'your own edits. Use it to know where to look; confirm with read_file or symbol_outline ' +
+  'before relying on it.\n'
 
-  const header =
-    'PROJECT MAP\n' +
-    'A snapshot of this workspace\'s structure, taken when the session started. It lists ' +
-    'definitions only — not what they do — and it can be out of date, including because of ' +
-    'your own edits. Use it to know where to look; confirm with read_file or symbol_outline ' +
-    'before relying on it.\n'
-
+/** As many whole file blocks as fit. Returns what it spent so a caller splitting one budget
+ * across folders can hand the remainder to the next one. */
+function fitBlocks(
+  ranked: readonly FileOutline[], budget: number,
+): { text: string; spent: number; shown: number } {
   const blocks: string[] = []
-  let spent = header.length
-  let shown = 0
+  let spent = 0
   for (const file of ranked) {
     const block = renderFile(file)
     if (spent + block.length + 2 > budget) break
     blocks.push(block)
     spent += block.length + 2
-    shown++
   }
+  return { text: blocks.join('\n\n'), spent, shown: blocks.length }
+}
 
-  if (shown === 0) return ''
-  const omitted = ranked.length - shown
-  const footer = omitted > 0
+function omissionNote(omitted: number): string {
+  return omitted > 0
     ? `\n\n(${omitted} more source file${omitted === 1 ? '' : 's'} are not listed here. ` +
       'find_files and search_code reach them.)'
     : ''
-  return `${header}\n${blocks.join('\n\n')}${footer}`
+}
+
+export function renderRepoMap(ranked: readonly FileOutline[], budget = DEFAULT_MAP_BUDGET): string {
+  if (ranked.length === 0) return ''
+  const fitted = fitBlocks(ranked, budget - MAP_HEADER.length)
+  if (fitted.shown === 0) return ''
+  return `${MAP_HEADER}\n${fitted.text}${omissionNote(ranked.length - fitted.shown)}`
+}
+
+/**
+ * A folder gets map space in proportion to how much source it holds — but never less than
+ * this, so a small folder is present rather than merely mentioned.
+ */
+const MIN_FOLDER_BUDGET = 1_200
+
+/**
+ * A read-only folder counts for half its size when the budget is divided.
+ *
+ * Not arbitrary: a reference folder is usually the biggest thing in the workspace (a whole
+ * upstream project attached to be consulted) and it is the one place no edit will ever land.
+ * What you need from it is "where is X", which search answers exactly; what you need from a
+ * folder you are editing is the shape of the thing you are changing, which only the map gives
+ * cheaply. Weighting by size alone let one attached reference push the working folders out of
+ * their own map.
+ */
+const READ_WEIGHT = 0.5
+
+export interface MappedFolder {
+  name: string
+  access: 'write' | 'read'
+  ranked: readonly FileOutline[]
+}
+
+/**
+ * One map covering several folders, each under its own heading, within one budget.
+ *
+ * The budget is divided by weighted file count and then spent in order, with whatever a
+ * folder does not use passed to the next one — so a two-file folder cannot sit on a fifth of
+ * the map, and a folder that came up short gets a second pass at the leftovers.
+ */
+export function renderMultiRepoMap(
+  folders: readonly MappedFolder[], budget = DEFAULT_MAP_BUDGET,
+): string {
+  const present = folders.filter((f) => f.ranked.length > 0)
+  if (present.length === 0) return ''
+
+  const heading = `${MAP_HEADER}\nThis workspace is made of ${present.length} folders. Every path below ` +
+    'starts with the folder it is in.\n'
+  const weights = present.map((f) => f.ranked.length * (f.access === 'read' ? READ_WEIGHT : 1))
+  const total = weights.reduce((a, b) => a + b, 0)
+  // The separators are part of the text: one newline after the heading and a blank line
+  // between sections. Small, but they are exactly the kind of thing that makes a budget an
+  // approximation that drifts with the number of folders.
+  const available = budget - heading.length - 1 - 2 * (present.length - 1)
+
+  const shares = weights.map((w) => Math.max(MIN_FOLDER_BUDGET, Math.floor((available * w) / total)))
+  const claimed = shares.reduce((a, b) => a + b, 0)
+  // Only reachable when the floors alone oversubscribe the budget — many small folders.
+  if (claimed > available) {
+    for (let i = 0; i < shares.length; i++) shares[i] = Math.floor((shares[i]! * available) / claimed)
+  }
+
+  /**
+   * One folder's whole section, guaranteed to fit in `allowance`, and what it actually cost.
+   *
+   * `spent` is the finished text's own length rather than a sum of the parts, because the
+   * parts do not add up: the block loop counts a separator per block where the join writes
+   * one per gap, and the "not listed here" note is not known until the loop has stopped.
+   * Measured with the arithmetic version, three folders overshot a 10,000-char budget by 73.
+   * The retry loop is what makes the bound hold rather than nearly hold — it converges
+   * because `cap` strictly decreases.
+   */
+  function section(folder: MappedFolder, allowance: number): { text: string; spent: number } {
+    const label = `## ${folder.name}/${folder.access === 'read' ? '   (read-only reference)' : ''}\n`
+    let cap = allowance - label.length
+    for (;;) {
+      const fitted = fitBlocks(folder.ranked, cap)
+      const note = omissionNote(folder.ranked.length - fitted.shown)
+      const body = fitted.shown === 0 ? '(nothing fitted in the map for this folder)' : fitted.text
+      const text = `${label}${body}${note}`
+      if (text.length <= allowance || fitted.shown === 0) return { text, spent: text.length }
+      cap -= text.length - allowance
+    }
+  }
+
+  const sections: string[] = []
+  const spentPer: number[] = []
+  const truncatedFirst: number[] = []
+  let leftover = 0
+  for (const [i, folder] of present.entries()) {
+    const rendered = section(folder, shares[i]! + leftover)
+    leftover = shares[i]! + leftover - rendered.spent
+    if (rendered.text.includes('not listed here')) truncatedFirst.push(i)
+    spentPer.push(rendered.spent)
+    sections.push(rendered.text)
+  }
+
+  // A folder later in the list finishing early leaves budget the earlier, truncated ones
+  // could have used. One re-run of the first such folder spends it.
+  //
+  // The allowance is what that folder ACTUALLY spent plus the leftover, not its original
+  // share plus the leftover: the difference is the part of its own share it failed to use,
+  // which would be handed out twice and put the whole map over budget.
+  const first = truncatedFirst[0]
+  if (leftover > MIN_FOLDER_BUDGET / 2 && first !== undefined) {
+    sections[first] = section(present[first]!, spentPer[first]! + leftover).text
+  }
+
+  return `${heading}\n${sections.join('\n\n')}`
 }
 
 /** Builds the map for a workspace. Never throws: a workspace it cannot index yields an empty
  * map, and a session with no map is exactly the session this feature did not exist for. */
-export async function buildRepoMap(root: string, budget = DEFAULT_MAP_BUDGET): Promise<string> {
+export async function buildRepoMap(
+  workspace: string | readonly Mount[], budget = DEFAULT_MAP_BUDGET,
+): Promise<string> {
   try {
-    return renderRepoMap(rankByReferences(await indexWorkspace(root)), budget)
+    if (typeof workspace === 'string' || workspace.length === 1) {
+      const root = typeof workspace === 'string' ? workspace : workspace[0]!.root
+      return renderRepoMap(rankByReferences(await indexWorkspace(root)), budget)
+    }
+    const folders: MappedFolder[] = []
+    for (const mount of workspace) {
+      // Ranked per folder, not across the whole workspace: the reference-count damping in
+      // rankByReferences is calibrated against how many files it is looking at, and pooling a
+      // 40-file project with a 900-file one silently retunes it for both.
+      folders.push({
+        name: mount.name,
+        access: mount.access,
+        // Prefixed here rather than left to the section heading: a model reads one of these
+        // lines and calls read_file with exactly the text it saw, and a bare `src/boot.ts`
+        // would be refused by the jail for not naming a folder.
+        ranked: rankByReferences(await indexWorkspace(mount.root)).map((file) => ({
+          ...file,
+          path: `${mount.name}/${file.path.split(/[\\/]/).join('/')}`,
+        })),
+      })
+    }
+    return renderMultiRepoMap(folders, budget)
   } catch {
     return ''
   }

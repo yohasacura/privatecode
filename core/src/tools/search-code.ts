@@ -1,8 +1,10 @@
 import { execa } from 'execa'
 import { statSync } from 'node:fs'
-import { delimiter, dirname, join } from 'node:path'
+import { delimiter, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Tool, ToolContext } from './types.js'
+import type { Mount } from '../mounts.js'
+import type { Workspace } from '../workspace.js'
+import type { Tool } from './types.js'
 
 export interface SearchCodeArgs {
   pattern: string
@@ -250,15 +252,21 @@ function resolveRg(): Promise<RgResolution> {
  * `--heading` and `--json` all change it. Dropping an unparseable line costs at most one
  * unhelpful line of output; forwarding it costs the guarantee.
  */
-function lineStaysInsideWorkspace(line: string, ctx: ToolContext): boolean {
+function addressLine(line: string, mount: Mount, workspace: Workspace): string | null {
   const match = /^(.*?):\d+:/.exec(line)
-  if (!match) return false
+  if (!match) return null
+  const rel = match[1] as string
+  const addressed = workspace.multi ? `${mount.name}/${rel}` : rel
   try {
-    ctx.workspace.resolve(match[1] as string)
-    return true
+    workspace.resolve(addressed)
   } catch {
-    return false
+    return null
   }
+  // A single-folder workspace gets ripgrep's own text back unchanged, down to the `.\`
+  // prefix it emits — this tool's output shape is not what multi-folder support is for.
+  if (!workspace.multi) return line
+  const clean = rel.split(/[\\/]/).filter((s) => s !== '' && s !== '.').join('/')
+  return `${mount.name}/${clean}${line.slice(rel.length)}`
 }
 
 function truncateLine(line: string): string {
@@ -396,118 +404,166 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
     // looks inside dot-directories -- which is what makes a saved output log under
     // `.privatecode/logs/` searchable at all. An unscoped search keeps ripgrep's default
     // (hidden paths skipped), so nothing about existing whole-workspace searches changes.
-    let target = '.'
+    //
+    // One ripgrep run per folder, because ripgrep searches a directory tree and a workspace
+    // of folders from three different drives is not one. A scoped search picks the folder out
+    // of the path and runs once; an unscoped one runs everywhere and merges.
+    const jobs: { mount: Mount; target: string }[] = []
     if (args.path !== undefined) {
+      let abs: string
       try {
-        ctx.workspace.resolve(args.path)
+        abs = ctx.workspace.resolve(args.path)
       } catch (e) {
         return { ok: false, content: (e as Error).message }
       }
-      target = args.path
+      const mount = ctx.workspace.mountFor(abs)
+      if (mount === undefined) return { ok: false, content: `${args.path} is not inside this workspace` }
+      // Single-folder: hand ripgrep the caller's own spelling, so its output is byte-for-byte
+      // what it has always been (`relative()` returns `src\auth.ts` where the model wrote
+      // `src/auth.ts`, and that separator reaches the transcript).
+      const within = ctx.workspace.multi ? relative(mount.root, abs) : args.path
+      jobs.push({ mount, target: within === '' ? '.' : within })
       argv.push('--hidden')
+    } else {
+      for (const mount of ctx.workspace.mounts) jobs.push({ mount, target: '.' })
     }
     for (const g of DENIED_GLOBS) argv.push('--iglob', g)
     if (args.glob) argv.push('--glob', args.glob)
-    argv.push('--regexp', args.pattern, target)
+    argv.push('--regexp', args.pattern)
 
-    // A local wrapper, spawned with concrete literal options, so `ReturnType<typeof spawn>`
-    // below resolves to the exact narrowed result shape (numeric exitCode, string stdout).
-    // Annotating with `ReturnType<typeof execa>` directly instead picks execa's most
-    // generic overload and widens `stdout` to a `string | string[] | Uint8Array` union.
-    const spawn = () =>
-      execa(resolution.path, argv, {
-        cwd: ctx.workspace.root,
-        reject: false,
-        timeout: 30_000,
-        env: RG_ENV,
-        ...(ctx.signal ? { cancelSignal: ctx.signal } : {}),
-      })
+    /** One ripgrep run, over one folder. Everything about how ripgrep reports itself lives
+     * here; the caller only merges. */
+    async function runOne(
+      job: { mount: Mount; target: string },
+    ): Promise<{ ok: true; lines: string[]; stderr: string } | { ok: false; content: string }> {
+      // A local wrapper, spawned with concrete literal options, so `ReturnType<typeof spawn>`
+      // below resolves to the exact narrowed result shape (numeric exitCode, string stdout).
+      // Annotating with `ReturnType<typeof execa>` directly instead picks execa's most
+      // generic overload and widens `stdout` to a `string | string[] | Uint8Array` union.
+      const spawn = () =>
+        execa((resolution as { path: string }).path, [...argv, job.target], {
+          cwd: job.mount.root,
+          reject: false,
+          timeout: 30_000,
+          env: RG_ENV,
+          ...(ctx.signal ? { cancelSignal: ctx.signal } : {}),
+        })
 
-    let result: Awaited<ReturnType<typeof spawn>>
-    try {
-      result = await spawn()
-    } catch (e) {
-      // A rejected promise here means ripgrep could not be run at all (e.g. the resolved
-      // path stopped existing between the handshake and now) - a spawn failure, never a
-      // search result.
-      return {
-        ok: false,
-        content: `search_code failed: ripgrep could not be run (${(e as Error).message})`,
+      let result: Awaited<ReturnType<typeof spawn>>
+      try {
+        result = await spawn()
+      } catch (e) {
+        // A rejected promise here means ripgrep could not be run at all (e.g. the resolved
+        // path stopped existing between the handshake and now) - a spawn failure, never a
+        // search result.
+        return {
+          ok: false,
+          content: `search_code failed: ripgrep could not be run (${(e as Error).message})`,
+        }
+      }
+
+      // Ripgrep's contract: 0 = matches found, 1 = ran fine, no matches, 2 = an error
+      // occurred (which may be per-file and non-fatal - see below). `reject: false` also
+      // resolves (rather than throws) when the process could not be spawned at all, and in
+      // that case `exitCode` is not a number. That must not fall through to "no matches": a
+      // search that never ran is not a successful empty result.
+      if (typeof result.exitCode !== 'number') {
+        return {
+          ok: false,
+          content:
+            `search_code failed: ripgrep did not run (${result.shortMessage ?? 'unknown spawn failure'})`,
+        }
+      }
+      const exitCode = result.exitCode
+      if (exitCode !== 0 && exitCode !== 1 && exitCode !== 2) {
+        return {
+          ok: false,
+          content:
+            `search_code failed: ripgrep exited with unexpected status ${exitCode}` +
+            `${result.stderr ? `: ${summariseStderr(result.stderr)}` : ''}`,
+        }
+      }
+
+      const stderr = result.stderr.trim()
+
+      // The two shapes a non-ripgrep binary produces when it survives the handshake or when
+      // ripgrep itself is wedged. Neither can be a real search result: ripgrep does not exit
+      // 0 without printing a match, and it does not exit 1 (no matches) while complaining.
+      if (exitCode === 0 && result.stdout.trim() === '') {
+        return {
+          ok: false,
+          content:
+            'search_code failed: ripgrep reported matches (exit 0) but printed nothing, so ' +
+            'the search cannot be trusted' + (stderr ? `: ${summariseStderr(stderr)}` : ''),
+        }
+      }
+      if (exitCode === 1 && hasNonRipgrepStderr(stderr)) {
+        return {
+          ok: false,
+          // Deliberately avoids the words "no matches": that phrase is what a successful
+          // empty search says, and callers (including this suite) key on it. Only reached
+          // when some stderr line lacks ripgrep's own `rg: ` prefix - a genuine ripgrep
+          // warning (e.g. a malformed ignore-file line) exits 1 with prefixed stderr and
+          // falls through to the ordinary "no matches" path below, warning attached.
+          content:
+            'search_code failed: ripgrep exited 1 (nothing found) but wrote to stderr that ' +
+            `is not one of its own diagnostics, so the search did not run as asked: ${summariseStderr(stderr)}`,
+        }
+      }
+
+      const lines = result.stdout
+        .split('\n')
+        .map((l) => l.replace(/\r$/, ''))
+        .filter((l) => l.trim() !== '')
+        .map((line) => addressLine(line, job.mount, ctx.workspace))
+        .filter((line): line is string => line !== null)
+
+      // Exit 2 is "an error happened", not "the search is void": ripgrep uses it for
+      // non-fatal per-file errors too, and still prints every good match. Verified by
+      // denying read access to one file beside a matching one - raw ripgrep printed the
+      // real match *and* exited 2, while this tool threw the match away and returned
+      // ok: false. One ACL-restricted file, cloud placeholder or locked file must not make
+      // search useless workspace-wide. Hard-fail only when there is nothing usable.
+      if (exitCode === 2 && lines.length === 0) {
+        return { ok: false, content: `search_code failed: ${summariseStderr(stderr) || 'ripgrep reported an error'}` }
+      }
+      return { ok: true, lines, stderr }
+    }
+
+    // Sequential, not parallel: `--sort path` already makes each run single-threaded, and
+    // the merge is only well defined if each folder's block arrives whole.
+    const lines: string[] = []
+    const notes: string[] = []
+    const failures: string[] = []
+    for (const job of jobs) {
+      const outcome = await runOne(job)
+      if (!outcome.ok) {
+        failures.push(ctx.workspace.multi ? `${job.mount.name}: ${outcome.content}` : outcome.content)
+        continue
+      }
+      lines.push(...outcome.lines)
+      if (outcome.stderr) {
+        notes.push(ctx.workspace.multi ? `${job.mount.name}: ${outcome.stderr}` : outcome.stderr)
       }
     }
 
-    // Ripgrep's contract: 0 = matches found, 1 = ran fine, no matches, 2 = an error
-    // occurred (which may be per-file and non-fatal - see below). `reject: false` also
-    // resolves (rather than throws) when the process could not be spawned at all, and in
-    // that case `exitCode` is not a number. That must not fall through to "no matches": a
-    // search that never ran is not a successful empty result.
-    if (typeof result.exitCode !== 'number') {
-      return {
-        ok: false,
-        content:
-          `search_code failed: ripgrep did not run (${result.shortMessage ?? 'unknown spawn failure'})`,
-      }
-    }
-    const exitCode = result.exitCode
-    if (exitCode !== 0 && exitCode !== 1 && exitCode !== 2) {
-      return {
-        ok: false,
-        content:
-          `search_code failed: ripgrep exited with unexpected status ${exitCode}` +
-          `${result.stderr ? `: ${summariseStderr(result.stderr)}` : ''}`,
-      }
-    }
-
-    const stderr = result.stderr.trim()
-
-    // The two shapes a non-ripgrep binary produces when it survives the handshake or when
-    // ripgrep itself is wedged. Neither can be a real search result: ripgrep does not exit
-    // 0 without printing a match, and it does not exit 1 (no matches) while complaining.
-    if (exitCode === 0 && result.stdout.trim() === '') {
-      return {
-        ok: false,
-        content:
-          'search_code failed: ripgrep reported matches (exit 0) but printed nothing, so ' +
-          'the search cannot be trusted' + (stderr ? `: ${summariseStderr(stderr)}` : ''),
-      }
-    }
-    if (exitCode === 1 && hasNonRipgrepStderr(stderr)) {
-      return {
-        ok: false,
-        // Deliberately avoids the words "no matches": that phrase is what a successful
-        // empty search says, and callers (including this suite) key on it. Only reached
-        // when some stderr line lacks ripgrep's own `rg: ` prefix - a genuine ripgrep
-        // warning (e.g. a malformed ignore-file line) exits 1 with prefixed stderr and
-        // falls through to the ordinary "no matches" path below, warning attached.
-        content:
-          'search_code failed: ripgrep exited 1 (nothing found) but wrote to stderr that ' +
-          `is not one of its own diagnostics, so the search did not run as asked: ${summariseStderr(stderr)}`,
-      }
-    }
-
-    const lines = result.stdout
-      .split('\n')
-      .map((l) => l.replace(/\r$/, ''))
-      .filter((l) => l.trim() !== '')
-      .filter((line) => lineStaysInsideWorkspace(line, ctx))
-
-    // Exit 2 is "an error happened", not "the search is void": ripgrep uses it for
-    // non-fatal per-file errors too, and still prints every good match. Verified by
-    // denying read access to one file beside a matching one - raw ripgrep printed the
-    // real match *and* exited 2, while this tool threw the match away and returned
-    // ok: false. One ACL-restricted file, cloud placeholder or locked file must not make
-    // search useless workspace-wide. Hard-fail only when there is nothing usable.
-    if (exitCode === 2 && lines.length === 0) {
-      return { ok: false, content: `search_code failed: ${summariseStderr(stderr) || 'ripgrep reported an error'}` }
-    }
+    // Every folder failed: there is no result to report, only the failure.
+    if (failures.length === jobs.length) return { ok: false, content: failures[0] as string }
+    // Some folder failed: the matches from the others are real and are worth more than a
+    // refusal, but a search that silently skipped a folder would be a lie by omission.
+    const trouble = failures.length > 0 ? `\n(not searched — ${failures.join('; ')})` : ''
+    const stderr = notes.join('; ')
 
     if (lines.length === 0) {
-      return { ok: true, content: `No matches for /${args.pattern}/${warningSuffix(stderr)}` }
+      return { ok: true, content: `No matches for /${args.pattern}/${warningSuffix(stderr)}${trouble}` }
     }
 
     // Computed from the pre-slice count: `>=` claimed truncation whenever exactly `max`
     // matches existed, which is the common case for a small max_results.
     const capped = lines.length > max ? `\n(stopped at ${max} ${max === 1 ? 'match' : 'matches'})` : ''
-    return { ok: true, content: lines.slice(0, max).map(truncateLine).join('\n') + capped + warningSuffix(stderr) }
+    return {
+      ok: true,
+      content: lines.slice(0, max).map(truncateLine).join('\n') + capped + warningSuffix(stderr) + trouble,
+    }
   },
 }
