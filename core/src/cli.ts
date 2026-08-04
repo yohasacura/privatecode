@@ -12,6 +12,9 @@ import { runUnattended } from './cli/unattended.js'
 import { PermissionEngine, type AgentMode } from './permissions/engine.js'
 import { loadLayers } from './permissions/settings.js'
 import { loadProjectMemory } from './memory/project-memory.js'
+import { loadFormatRules } from './format/config.js'
+import { loadHooks } from './hooks/hooks.js'
+import { loadVerify } from './verify/config.js'
 import { Session, type SessionOptions } from './session/session.js'
 import { SessionStore } from './session/store.js'
 import { createConsolePort, type ReadlineLike } from './cli/console-port.js'
@@ -241,6 +244,14 @@ async function main() {
   // same workspace, which is the kind of difference nobody ever thinks to check.
   const memory = loadProjectMemory(values.workspace)
   problems.push(...memory.problems)
+  // Same argument as the line above, applied to the rest of the workspace's configuration:
+  // a one-shot --task that quietly skipped the formatter, the after-tool hooks and the
+  // verify command was a second set of rules for the same project, and the comment warning
+  // against exactly that was already here, above `memory`.
+  const formatting = loadFormatRules(values.workspace)
+  const hooking = loadHooks(values.workspace)
+  const verifying = loadVerify(values.workspace)
+  problems.push(...formatting.problems, ...hooking.problems, ...verifying.problems)
   const engine = new PermissionEngine({ layers, mode, workspaceRoot: values.workspace, problems })
   for (const p of engine.problems) console.error(`settings: ${p}`)
 
@@ -258,6 +269,16 @@ async function main() {
     engine,
     maxSteps: stepsParsed.value,
     events: renderer.events,
+  }
+  if (memory.layers.length > 0) sessionOpts.memory = memory
+  if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
+  if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
+  if (verifying.verify) {
+    sessionOpts.verify = verifying.verify
+    sessionOpts.onVerify = (info) => {
+      const how = info.problem ?? (info.ok ? 'passed' : 'FAILED')
+      console.log(`[90m  verified with ${info.command}: ${how}[0m`)
+    }
   }
   if (oneShotReadline) sessionOpts.interaction = createConsolePort(oneShotReadline.adapter)
   if (values.unattended) {

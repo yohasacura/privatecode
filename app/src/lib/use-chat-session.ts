@@ -65,6 +65,11 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         void notify('PrivateCode has a question', d.question)
       }),
       client.on('todos', (d) => dispatch({ type: 'todos', items: d.items })),
+      client.on('verify', (d) => dispatch({
+        type: 'verify', command: d.command, ok: d.ok, attempt: d.attempt,
+        ...(d.exitCode !== undefined ? { exitCode: d.exitCode } : {}),
+        ...(d.problem !== undefined ? { problem: d.problem } : {}),
+      })),
       client.on('decisions.changed', (d) => {
         dispatch({ type: 'decisions.changed', pending: d.pending })
         // Only a RISE is news. The count also changes as you answer them, and being told

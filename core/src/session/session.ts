@@ -10,6 +10,8 @@ import type { LoadedMemory } from '../memory/project-memory.js'
 import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
 import { createHookRunner, type HookRunner, type HookSpec } from '../hooks/hooks.js'
+import type { VerifySpec } from '../verify/config.js'
+import { runVerify, verifyFailureMessage } from '../verify/runner.js'
 import type { InteractionPort, TodoItem } from '../interaction.js'
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage } from '../llama/types.js'
@@ -80,6 +82,15 @@ export interface SessionOptions {
   /** After-tool hooks from the settings layers, already parsed by the host. */
   hooks?: HookSpec[]
   /**
+   * The project's own check, run after any turn that wrote something. Absent means the
+   * feature is off, which is the right default: a verify command is a promise about how
+   * long every writing turn takes, and only the project's owner can make it.
+   */
+  verify?: VerifySpec
+  /** Fired for every verify run, pass or fail, so a window can show that it happened. A
+   * check that silently added thirty seconds to each turn would read as the app hanging. */
+  onVerify?(info: { command: string; ok: boolean; attempt: number; exitCode?: number; problem?: string }): void
+  /**
    * Snapshot the workspace after every turn that changed it, and record what changed in
    * a work log. Absent means neither happens, which is what every caller that predates
    * long runs gets — a one-shot task has nothing to review in the morning.
@@ -104,6 +115,13 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set(['edit_file', 'write_file', 'mo
 const COMMAND_TOOLS: ReadonlySet<string> = new Set(['run_command', 'background_task'])
 
 const PLAN_MODE_NOTE = '(mode is now plan: investigate and propose; do not edit)'
+
+/** How many times one turn may be handed its own verification failure.
+ *
+ * Two, not more: the first round is the fix a model can usually make from a compiler error,
+ * the second covers a fix that broke something adjacent. Past that it is guessing, and each
+ * guess is another write to a workspace that is already broken. */
+const MAX_VERIFY_ROUNDS = 2
 
 /** Important-5 guard (see `applyCompactionSwap`): a swap is abandoned, not applied, when
  * the NEW transcript's `approxTokens()` is still at least this fraction of the OLD
@@ -335,6 +353,53 @@ export class Session {
   }
 
   /**
+   * Runs the project's own check after a turn that changed something, and hands a failure
+   * back to the model before the turn is allowed to end.
+   *
+   * The failure this exists for: the agent finishes, says "done", and leaves a workspace
+   * that no longer compiles. Nobody finds out until a person runs the tests, and by then the
+   * turn is over and the context has moved on. Kept INSIDE the turn, so the fix happens
+   * where the model still knows what it was attempting and why.
+   *
+   * Four conditions gate it, and each rules out a way of being annoying rather than useful:
+   * a turn that wrote nothing cannot have broken anything; a turn that was aborted or timed
+   * out never claimed to be finished; a rounds cap stops a model that cannot fix the failure
+   * from grinding at it; and a verify command that cannot be STARTED is reported as a
+   * configuration problem rather than as "your change broke the build", which would send
+   * the model rewriting working code.
+   */
+  private async verifyAndFix(
+    result: TurnResult, writesThisTurn: number, signal?: AbortSignal,
+  ): Promise<TurnResult> {
+    const spec = this.opts.verify
+    if (!spec || writesThisTurn === 0 || result.stoppedBecause !== 'done') return result
+
+    let current = result
+    for (let attempt = 1; attempt <= MAX_VERIFY_ROUNDS; attempt++) {
+      if (signal?.aborted) return current
+      const outcome = await runVerify(spec, this.opts.workspaceRoot, signal)
+      this.opts.onVerify?.({
+        command: spec.command,
+        ok: outcome.ok,
+        attempt,
+        ...(outcome.exitCode !== null ? { exitCode: outcome.exitCode } : {}),
+        ...(outcome.problem !== undefined ? { problem: outcome.problem } : {}),
+      })
+      if (outcome.ok) return current
+      // A command that cannot run will not run any better on the second attempt, and the
+      // model has already been told it is not its fault.
+      if (outcome.problem !== undefined) return current
+
+      const fixer = this.buildAgent(signal)
+      current = await fixer.runTurn(verifyFailureMessage(spec, outcome))
+      // Aborted or out of steps: stop asking. The workspace is still broken and the
+      // transcript says so, which is the honest end state.
+      if (current.stoppedBecause !== 'done') return current
+    }
+    return current
+  }
+
+  /**
    * Records why the whole run stopped, as the last line of the work log.
    *
    * Separate from the per-turn entry because it is a different fact: the turns say what
@@ -532,7 +597,11 @@ export class Session {
       // transcript) and BEFORE runTurn(), so a length comparison after the call tells us,
       // directly, whether the user message actually reached the transcript.
       const beforeCount = this.transcript.messages().length
-      const result = await agent.runTurn(userText)
+      // `writeCount` is cumulative across the session (the unattended idle check needs it
+      // that way), so "did THIS turn change anything" is a difference, not a value.
+      const writesBefore = this.writeCount
+      let result = await agent.runTurn(userText)
+      result = await this.verifyAndFix(result, this.writeCount - writesBefore, signal)
 
       // Restore the note only when the user message itself never reached the transcript --
       // checked directly against the transcript rather than via `result.steps`, which counts

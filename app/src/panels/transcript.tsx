@@ -256,6 +256,20 @@ const TranscriptRow = memo(function TranscriptRow({
         </Row>
       )
 
+    // Shown on a pass as well as a failure: a check that silently added thirty seconds to
+    // every writing turn would read as the app having hung.
+    case 'verify-record':
+      return (
+        <Row
+          kind={`record record-${item.ok ? 'allow' : 'deny'}`}
+          marker={item.ok ? Icon.check() : Icon.alert()}
+        >
+          <span class="record-text">
+            verified with <b>{item.command}</b> — {item.detail}
+          </span>
+        </Row>
+      )
+
     case 'stopped': {
       const explain = STOP_REASONS[item.reason]
       return (

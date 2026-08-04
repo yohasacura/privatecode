@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, test } from 'vitest'
@@ -463,3 +463,45 @@ test('an explicit resume beats continueLast: they answer different questions', a
   expect(resultOf<{ sessionId: string }>(transport, 1).sessionId).toBe(oldest)
   await host.shutdown()
 })
+
+/**
+ * The verify loop's gating, through the host, because the condition most likely to regress
+ * is also the most annoying one to get wrong: a check that fires after a turn which only
+ * READ things would add its whole runtime to every question anyone asks.
+ */
+test('verify runs after a turn that wrote, and not after one that only read', async () => {
+  let call = 0
+  const fake = await makeServer((_body, _streaming) => {
+    call++
+    if (call === 1) return toolCallSSE('write_file', JSON.stringify({ path: 'a.txt', content: 'x' }))
+    return textSSE('done')
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  mkdirSync(join(root, '.privatecode'), { recursive: true })
+  // The verify command is observable by what it leaves behind, which is the only way to
+  // assert "it ran" without reaching inside the session.
+  writeFileSync(
+    join(root, '.privatecode', 'settings.json'),
+    JSON.stringify({
+      verify: 'Write-Output ran >> verified.log',
+      permissions: { allow: ['write_file(**)'] },
+    }),
+    'utf8',
+  )
+
+  const { host, transport } = await initHost(fake.url, root)
+  await host.handle({ id: 2, method: 'send', params: { text: 'write the file' } })
+
+  const log = join(root, 'verified.log')
+  expect(existsSync(log)).toBe(true)
+  const afterWrite = readFileSync(log, 'utf8')
+  expect(eventsNamed(transport, 'verify')).toHaveLength(1)
+  expect((eventsNamed(transport, 'verify')[0]?.data as { ok: boolean }).ok).toBe(true)
+
+  // A second turn that calls no write tool at all must leave the log untouched.
+  await host.handle({ id: 3, method: 'send', params: { text: 'and now just answer' } })
+  expect(readFileSync(log, 'utf8')).toBe(afterWrite)
+  expect(eventsNamed(transport, 'verify')).toHaveLength(1)
+  await host.shutdown()
+}, 30_000)

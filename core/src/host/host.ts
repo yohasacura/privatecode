@@ -9,6 +9,7 @@ import { PermissionEngine } from '../permissions/engine.js'
 import { loadLayers } from '../permissions/settings.js'
 import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
+import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory } from '../memory/project-memory.js'
 import { expandCommand, listCommands } from '../commands/custom.js'
 import { Session, type SessionOptions } from '../session/session.js'
@@ -464,6 +465,7 @@ export class SessionHost {
     const memory = loadProjectMemory(workspaceRoot)
     const formatting = loadFormatRules(workspaceRoot)
     const hooking = loadHooks(workspaceRoot)
+    const verifying = loadVerify(workspaceRoot)
     const engine = new PermissionEngine({
       layers, mode: 'normal', workspaceRoot, problems: settingsProblems,
     })
@@ -491,6 +493,10 @@ export class SessionHost {
     if (this.repoMap !== '') sessionOpts.repoMap = this.repoMap
     if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
     if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
+    if (verifying.verify) {
+      sessionOpts.verify = verifying.verify
+      sessionOpts.onVerify = (info) => this.emit('verify', info)
+    }
     if (resumeId !== undefined) sessionOpts.resume = resumeId
     if (this.contextLength !== null) sessionOpts.compaction = { contextLength: this.contextLength }
 
@@ -507,6 +513,7 @@ export class SessionHost {
     // sessions must not lose the notice that one of their MCP servers failed to start.
     const problems = [
       ...engine.problems, ...memory.problems, ...formatting.problems, ...hooking.problems,
+      ...verifying.problems,
       ...this.externalProblems,
     ]
     if (this.contextLength === null) {

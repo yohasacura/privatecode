@@ -7,6 +7,7 @@ import { PermissionEngine, type AgentMode } from '../permissions/engine.js'
 import { loadLayers } from '../permissions/settings.js'
 import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
+import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory, type LoadedMemory } from '../memory/project-memory.js'
 import { expandCommand, listCommands } from '../commands/custom.js'
 import { Session, type SessionOptions } from '../session/session.js'
@@ -223,6 +224,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     const memory = loadProjectMemory(opts.workspaceRoot)
     const formatting = loadFormatRules(opts.workspaceRoot)
     const hooking = loadHooks(opts.workspaceRoot)
+    const verifying = loadVerify(opts.workspaceRoot)
     loadedMemory = memory
     memoryProblems = [...memory.problems, ...formatting.problems, ...hooking.problems]
     const newEngine = new PermissionEngine({
@@ -240,6 +242,15 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       ...(memory.layers.length > 0 ? { memory } : {}),
       ...(formatting.rules.length > 0 ? { formatRules: formatting.rules } : {}),
       ...(hooking.hooks.length > 0 ? { hooks: hooking.hooks } : {}),
+      ...(verifying.verify ? {
+        verify: verifying.verify,
+        // The REPL is a front end like the window is: a check that adds seconds to every
+        // writing turn has to say that it ran.
+        onVerify: (info: { command: string; ok: boolean; problem?: string }) => {
+          const how = info.problem ?? (info.ok ? 'passed' : 'FAILED')
+          console.log(`\x1b[90m  verified with ${info.command}: ${how}\x1b[0m`)
+        },
+      } : {}),
       onCompaction: (info) => {
         const line = renderCompactionEvent(info)
         if (line === undefined) return

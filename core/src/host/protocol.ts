@@ -351,6 +351,22 @@ export interface ToolResultEvent {
   display?: string
 }
 
+/**
+ * One run of the project's own verify command, pass or fail.
+ *
+ * Emitted even on a pass: a check that silently added thirty seconds to every writing turn
+ * would read as the app hanging, and "it ran and the project is fine" is worth one line.
+ */
+export interface VerifyEvent {
+  command: string
+  ok: boolean
+  /** 1 for the check itself; 2 means the model's first fix was verified again. */
+  attempt: number
+  exitCode?: number
+  /** The command could not be run at all -- a configuration problem, not a broken project. */
+  problem?: string
+}
+
 /** `ApprovalRequest` (tool/summary/detail/suggestedRules) plus the id the UI's reply must
  * echo back via `approval.reply`. */
 export interface ApprovalRequestEvent extends ApprovalRequest { requestId: string }
@@ -391,6 +407,7 @@ export interface HostEventMap {
   'assistant.text': AssistantTextEvent
   'tool.call': ToolCallEvent
   'tool.result': ToolResultEvent
+  verify: VerifyEvent
   'approval.request': ApprovalRequestEvent
   'question.request': QuestionRequestEvent
   todos: TodosEvent
