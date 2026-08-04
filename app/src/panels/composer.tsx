@@ -47,6 +47,9 @@ export function Composer({
    */
   const [queued, setQueued] = useState<string | null>(null)
   const [pendingAutopilot, setPendingAutopilot] = useState(false)
+  /** The user's own slash commands. Re-fetched whenever the box starts with `/`, because
+   * these are files edited by hand while the app is open. */
+  const [commands, setCommands] = useState<{ name: string; description: string }[]>([])
   const [now, setNow] = useState(() => Date.now())
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const mode: AgentMode = state.session?.mode ?? 'normal'
@@ -74,6 +77,22 @@ export function Composer({
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [client])
+
+  // A command is expanded host-side in `send`, so this list is purely discovery: without
+  // it a feature the user configured in a directory is invisible in the window.
+  const slashPrefix = /^\/[a-z0-9-]*$/i.test(input.trim()) ? input.trim().slice(1).toLowerCase() : null
+  useEffect(() => {
+    if (slashPrefix === null) return
+    let cancelled = false
+    client.call('commands.list', {})
+      .then((r) => { if (!cancelled) setCommands(r.commands) })
+      .catch(() => { /* a workspace with no commands directory is the normal case */ })
+    return () => { cancelled = true }
+  }, [client, slashPrefix === null])
+
+  const matching = slashPrefix === null
+    ? []
+    : commands.filter((c) => c.name.startsWith(slashPrefix)).slice(0, 8)
 
   // Grow with the content up to a cap, then scroll -- a fixed two-line box makes writing a
   // real instruction (which is most of them) an exercise in scrolling blind.
@@ -204,6 +223,21 @@ export function Composer({
             Turn it on
           </button>
           <button class="btn" onClick={() => setPendingAutopilot(false)}>Cancel</button>
+        </div>
+      )}
+
+      {matching.length > 0 && (
+        <div class="command-picker">
+          {matching.map((c) => (
+            <button
+              key={c.name}
+              class="command-item"
+              onClick={() => { setInput(`/${c.name} `); textareaRef.current?.focus() }}
+            >
+              <span class="command-name">/{c.name}</span>
+              <span class="command-desc">{c.description}</span>
+            </button>
+          ))}
         </div>
       )}
 

@@ -146,6 +146,16 @@ export interface JobInfo {
   clipped: boolean
 }
 
+/**
+ * The user's own slash commands (`.privatecode/commands/<name>.md`). The app needs them to
+ * offer a picker; expansion itself happens host-side in `send`, so a front end that skips
+ * this method still gets working commands, just undiscoverable ones.
+ */
+export type CommandsListParams = Empty
+export interface CommandsListResult {
+  commands: { name: string; description: string }[]
+}
+
 /** Never errors before `init`: with no session there are simply no jobs. */
 export type JobsListParams = Empty
 export interface JobsListResult { jobs: JobInfo[] }
@@ -202,6 +212,7 @@ export interface HostMethodMap {
   'fs.tree': { params: FsTreeParams; result: FsTreeResult }
   'fs.read': { params: FsReadParams; result: FsReadResult }
   status: { params: StatusParams; result: StatusResult }
+  'commands.list': { params: CommandsListParams; result: CommandsListResult }
   'jobs.list': { params: JobsListParams; result: JobsListResult }
   'jobs.stop': { params: JobsStopParams; result: JobsStopResult }
   'terminal.run': { params: TerminalRunParams; result: TerminalRunResult }

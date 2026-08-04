@@ -7,6 +7,7 @@ import { LlamaClient } from '../llama/client.js'
 import { PermissionEngine } from '../permissions/engine.js'
 import { loadLayers } from '../permissions/settings.js'
 import { loadProjectMemory } from '../memory/project-memory.js'
+import { expandCommand, listCommands } from '../commands/custom.js'
 import { Session, type SessionOptions } from '../session/session.js'
 import { SessionStore } from '../session/store.js'
 import { createToolset, type Toolset } from '../tools/default-set.js'
@@ -15,6 +16,7 @@ import type {
   AbortResult,
   ApprovalReplyParams,
   ApprovalReplyResult,
+  CommandsListResult,
   CompactResult,
   ConfigGetResult,
   ConfigSetParams,
@@ -198,6 +200,7 @@ export class SessionHost {
       case 'fs.tree': return this.fsTree((params ?? {}) as FsTreeParams)
       case 'fs.read': return this.fsRead(params as FsReadParams)
       case 'status': return this.status()
+      case 'commands.list': return this.commandsList()
       case 'jobs.list': return this.jobsList()
       case 'jobs.stop': return this.jobsStop(params as JobsStopParams)
       case 'terminal.run': return this.terminalRun(params as TerminalRunParams)
@@ -396,7 +399,13 @@ export class SessionHost {
     this.sending = true
     this.currentAbort = new AbortController()
     try {
-      const result = await session.send(params.text, this.currentAbort.signal)
+      // A custom slash command expands HERE, not in the app: the same expansion then
+      // serves every front end, and the app's transcript keeps showing what the user
+      // typed while the model receives the whole template. A `/name` matching no command
+      // expands to null and is sent verbatim -- most lines starting with `/` are a path.
+      const { workspaceRoot } = this.requireInitialized()
+      const expanded = expandCommand(workspaceRoot, params.text)
+      const result = await session.send(expanded?.text ?? params.text, this.currentAbort.signal)
       const turn: TurnSummary = {
         steps: result.steps, finalText: result.finalText, stoppedBecause: result.stoppedBecause,
       }
@@ -618,6 +627,14 @@ export class SessionHost {
   /** No toolset yet (before `init`) means no processes, which is an empty list, not an
    * error -- the panel polls this on a timer and must not spew failures while the app is
    * still on its welcome screen. */
+  /** The custom slash commands available in this workspace, for the app's picker. Re-read
+   * on every call -- these files are edited by hand while the app is open. */
+  private commandsList(): CommandsListResult {
+    if (this.workspaceRoot === undefined) return { commands: [] }
+    const { commands } = listCommands(this.workspaceRoot)
+    return { commands: commands.map((c) => ({ name: c.name, description: c.description })) }
+  }
+
   private jobsList(): JobsListResult {
     if (!this.toolset) return { jobs: [] }
     return { jobs: this.toolset.background.snapshot() }
