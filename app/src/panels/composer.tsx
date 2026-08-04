@@ -309,6 +309,16 @@ export function Composer({
         </span>
       )
     }
+    // A compaction over a full context is a minute or more of a single non-streaming
+    // request: nothing streams, no step starts, and the only thing on screen was the word
+    // "working". Reported as a hang, twice. It stays up for as long as it actually runs.
+    if (state.lastCompaction?.state === 'started') {
+      return (
+        <span class="status-live">
+          compacting the conversation to fit the context window — this takes a minute
+        </span>
+      )
+    }
     if (state.turnRunning) {
       if (!step) return <span class="status-live">{runningTool ? `running ${runningTool}` : 'working'}</span>
       return (

@@ -16,7 +16,7 @@ import { createHookRunner, type HookRunner, type HookSpec } from '../hooks/hooks
 import type { VerifySpec } from '../verify/config.js'
 import { runVerify, verifyFailureMessage } from '../verify/runner.js'
 import type { InteractionPort, TodoItem } from '../interaction.js'
-import type { LlamaClient } from '../llama/client.js'
+import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
 import type { ChatMessage } from '../llama/types.js'
 import type { AgentMode, PermissionEngine } from '../permissions/engine.js'
 import type { Toolset } from '../tools/default-set.js'
@@ -170,6 +170,42 @@ const SUMMARY_OUTPUT_RESERVE = 8_000
  * when to compact, it is the backstop for a conversation that is already at the edge.
  */
 const PRE_TURN_HEADROOM = 4_000
+
+/**
+ * What every request carries that `Transcript.approxTokens()` cannot see: the tool schemas.
+ *
+ * Measured, not guessed — 15 tools, 10,149 characters of JSON schema, ~2,538 tokens by the
+ * same chars/4 rule. It is sent with every single request and was simply missing from the
+ * fill estimate, which is one of the reasons the estimate read low enough to let an
+ * over-long prompt through.
+ */
+const TOOL_SCHEMA_TOKENS = 2_600
+
+/** What the retry says instead of repeating the user's message, which is already in the
+ * compacted tail. */
+const OVERFLOW_RETRY_NOTE =
+  'The conversation had outgrown the context window and has just been compacted. Continue ' +
+  'with the request above, using the briefing for anything the summary replaced.'
+
+/**
+ * The prompt size llama.cpp reported when it refused, or null when this was some other
+ * failure.
+ *
+ * Reads the server's own JSON body (`exceed_context_size_error`, `n_prompt_tokens`) rather
+ * than the status code alone: a 400 can mean other things, and acting on the wrong one would
+ * compact a conversation for no reason.
+ */
+export function contextOverflowTokens(e: unknown): number | null {
+  if (!(e instanceof LlamaRequestError) || e.body === undefined) return null
+  try {
+    const parsed = JSON.parse(e.body) as { error?: { type?: string; n_prompt_tokens?: number } }
+    if (parsed.error?.type !== 'exceed_context_size_error') return null
+    const tokens = parsed.error.n_prompt_tokens
+    return typeof tokens === 'number' && tokens > 0 ? tokens : null
+  } catch {
+    return null
+  }
+}
 
 /** Important-5 guard (see `applyCompactionSwap`): a swap is abandoned, not applied, when
  * the NEW transcript's `approxTokens()` is still at least this fraction of the OLD
@@ -786,7 +822,27 @@ export class Session {
       // that way), so "did THIS turn change anything" is a difference, not a value.
       const writesBefore = this.writeCount
       this.writtenMounts.clear()
-      let result = await agent.runTurn(userText)
+      let result: TurnResult
+      try {
+        result = await agent.runTurn(userText)
+      } catch (e) {
+        // The server's own refusal is the only reliable signal that the prompt did not fit:
+        // every estimate this process can make is a guess, and the one it was making came in
+        // low (chars/4 sees neither the 2.5k of tool schemas nor the chat template, and code
+        // tokenizes denser than prose). Measured in the app: the pre-turn check passed and
+        // llama.cpp still answered `request (133029 tokens) exceeds the available context
+        // size (131072 tokens)`.
+        const measured = contextOverflowTokens(e)
+        if (measured === null) throw e
+        // Ground truth, recorded before anything else: the next check has a real number
+        // instead of an estimate.
+        this.latestPromptTokens = measured
+        await this.compactNow(signal)
+        // A continuation, not the same message again: `runTurn` already appended the user's
+        // text before the request failed, so it is sitting in the compacted tail. Re-sending
+        // it verbatim would put the request in the transcript twice.
+        result = await this.buildAgent(signal).runTurn(OVERFLOW_RETRY_NOTE)
+      }
       result = await this.verifyAndFix(result, this.writeCount - writesBefore, signal)
 
       // Restore the note only when the user message itself never reached the transcript --
@@ -952,12 +1008,17 @@ export class Session {
   private async compactIfOverWindow(signal?: AbortSignal): Promise<void> {
     const contextLength = this.opts.compaction?.contextLength
     if (contextLength === undefined || contextLength <= 0) return
-    // Scaled to the window, never a flat number: a fixed 4k reserve against a small context
-    // is larger than the context, so the check fired on every single send and compacted a
-    // transcript that had barely started. Caught by the host suite timing out.
-    const headroom = Math.min(PRE_TURN_HEADROOM, Math.floor(contextLength * 0.05))
-    const used = this.latestPromptTokens ?? this.approxTokens()
-    if (used + headroom < contextLength) return
+    // This check weighs an estimate against the window using two FIXED costs — the tool
+    // schemas that go with every request, and the headroom a turn needs. Below a window
+    // several times their combined size those costs dominate and the comparison says
+    // nothing but "compact", which is how a flat allowance came to fire on every send and
+    // hang the host suite. Twice. The retry on the server's own refusal is the safety net
+    // that works at any window size, so skipping here costs nothing.
+    if (contextLength < (TOOL_SCHEMA_TOKENS + PRE_TURN_HEADROOM) * 4) return
+    // The estimate has to carry what it cannot see, or it reads low exactly when it matters
+    // most. A real server count needs no such correction.
+    const used = this.latestPromptTokens ?? (this.approxTokens() + TOOL_SCHEMA_TOKENS)
+    if (used + PRE_TURN_HEADROOM < contextLength) return
     await this.compactNow(signal)
   }
 

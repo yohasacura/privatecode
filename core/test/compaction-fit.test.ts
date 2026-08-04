@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import { buildCompactionRequest, fitForSummary } from '../src/session/compaction.js'
 import type { ChatMessage } from '../src/llama/types.js'
+import { LlamaRequestError } from '../src/llama/client.js'
+import { contextOverflowTokens } from '../src/session/session.js'
 
 /**
  * The dead end this closes, reported from the running app:
@@ -79,5 +81,52 @@ describe('fitting a summary request into the window', () => {
   test('a transcript that is nothing but head and tail still comes back whole', () => {
     const tiny: ChatMessage[] = [msg('system', 'S'), msg('user', 'A'), msg('assistant', 'B')]
     expect(fitForSummary(tiny, 1)).toEqual(tiny)
+  })
+})
+
+/**
+ * Reacting to the server instead of predicting it.
+ *
+ * Every estimate this process can make is a guess: `chars/4` sees neither the ~2,538 tokens
+ * of tool schemas nor the chat template, and code tokenizes denser than prose. The pre-turn
+ * check passed and llama.cpp still refused. Its refusal carries the real number, and that is
+ * the one worth acting on.
+ */
+describe('recognising the server\'s own overflow refusal', () => {
+  /** The exact body llama.cpp returned in the app. */
+  const REAL_BODY = JSON.stringify({
+    error: {
+      code: 400,
+      message: 'request (133029 tokens) exceeds the available context size (131072 tokens), try increasing it',
+      type: 'exceed_context_size_error',
+      n_prompt_tokens: 133029,
+      n_ctx: 131072,
+    },
+  })
+
+  test('reads the prompt size out of it', () => {
+    const err = new LlamaRequestError('llama.cpp request failed: HTTP 400', {
+      status: 400, body: REAL_BODY, answered: true,
+    })
+    expect(contextOverflowTokens(err)).toBe(133029)
+  })
+
+  test('a different 400 is not treated as an overflow', () => {
+    // Compacting someone's conversation because of an unrelated bad request would be a
+    // destructive answer to the wrong question.
+    const err = new LlamaRequestError('llama.cpp request failed: HTTP 400', {
+      status: 400,
+      body: JSON.stringify({ error: { code: 400, type: 'invalid_request_error', message: 'bad grammar' } }),
+      answered: true,
+    })
+    expect(contextOverflowTokens(err)).toBeNull()
+  })
+
+  test('a transport failure, an unparseable body and a plain Error are all not overflows', () => {
+    expect(contextOverflowTokens(new Error('socket hang up'))).toBeNull()
+    expect(contextOverflowTokens(new LlamaRequestError('x', { answered: false }))).toBeNull()
+    expect(contextOverflowTokens(new LlamaRequestError('x', {
+      status: 400, body: '<html>proxy error</html>', answered: true,
+    }))).toBeNull()
   })
 })
