@@ -4,6 +4,7 @@ import type { CheckpointInfo } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { Markdown } from '../lib/markdown'
 import { Icon } from '../components/icons'
+import { PanelEmpty, PanelError, PanelRow, PanelSection } from '../components/panel'
 
 /**
  * What the agent changed, and how to put it back.
@@ -19,7 +20,7 @@ import { Icon } from '../components/icons'
 
 type Rewinding =
   | { kind: 'idle' }
-  | { kind: 'confirming'; checkpoint: CheckpointInfo }
+  | { kind: 'confirming'; id: string }
   | { kind: 'working' }
   | { kind: 'done'; undo: CheckpointInfo }
   | { kind: 'failed'; why: string }
@@ -67,80 +68,97 @@ export function HistoryTab({
     }
   }
 
-  if (error !== null) return <div class="panel-error">{error}</div>
+  if (error !== null) return <PanelError message={error} onRetry={load} />
   if (checkpoints === null) return <div class="panel-placeholder">loading…</div>
 
   return (
     <div class="history">
       {rewind.kind === 'done' && (
         <div class="history-note">
-          Rolled back. <button class="link-button" onClick={() => void doRewind(rewind.undo.id)}>
+          Rolled back.{' '}
+          <button class="link-button" onClick={() => void doRewind(rewind.undo.id)}>
             Undo this rollback
           </button>
         </div>
       )}
-      {rewind.kind === 'failed' && <div class="panel-error">{rewind.why}</div>}
+      {rewind.kind === 'failed' && <PanelError message={rewind.why} />}
 
       {checkpoints.length === 0
         ? (
-          <div class="panel-placeholder">
-            No checkpoints yet. One is taken before the first turn, and after any turn that
-            changes a file.
-          </div>
-        )
+          <PanelEmpty
+            icon={Icon.history()}
+            title="No checkpoints yet"
+            hint="One is taken before the first turn, and after any turn that changes a file."
+          />
+          )
         : (
-          <ul class="ckpt-list">
+          <PanelSection title="Checkpoints" count={checkpoints.length}>
             {checkpoints.map((c, i) => (
-              <li key={c.id} class="ckpt">
-                <div class="ckpt-head">
-                  <span class="ckpt-when">{timeOf(c.at)}</span>
-                  <span class="ckpt-what">
+              <PanelRow
+                key={c.id}
+                icon={Icon.history()}
+                label={
+                  <>
+                    <span class="ckpt-when">{timeOf(c.at)}</span>
                     {c.turn !== undefined ? `after turn ${c.turn}` : 'before anything changed'}
-                  </span>
-                  {/* The newest checkpoint IS the current state, so offering to restore it
-                      would be a button that does nothing -- worse than absent, because it
-                      implies the others are different in kind. */}
-                  {i > 0 && (
-                    <button
-                      class="btn btn-small"
-                      onClick={() => setRewind({ kind: 'confirming', checkpoint: c })}
-                      disabled={rewind.kind === 'working'}
-                    >
-                      Restore
+                  </>
+                }
+                title={`checkpoint ${c.id}`}
+                meta={c.summary}
+                open={rewind.kind === 'confirming' && rewind.id === c.id}
+                {...(i > 0
+                  ? {
+                      // The newest checkpoint IS the current state, so offering to restore
+                      // it would be a button that does nothing -- worse than absent,
+                      // because it implies the others are different in kind.
+                      actions: (
+                        <button
+                          class="btn btn-small"
+                          onClick={() => setRewind({ kind: 'confirming', id: c.id })}
+                          disabled={rewind.kind === 'working'}
+                        >
+                          Restore
+                        </button>
+                      ),
+                    }
+                  : {})}
+              >
+                <div class="ckpt-confirm">
+                  <p>
+                    Put every file back as it was {c.turn !== undefined ? `after turn ${c.turn}` : 'at the start'}.
+                    Files created since are <b>deleted</b>. Ignored files — <code>node_modules</code>,
+                    build output — are left alone, so this costs no rebuild.
+                  </p>
+                  <p class="ckpt-confirm-undo">You will be able to undo it straight afterwards.</p>
+                  <div class="ckpt-confirm-actions">
+                    <button class="btn btn-danger btn-small" onClick={() => void doRewind(c.id)}>
+                      Restore it
                     </button>
-                  )}
-                </div>
-                <div class="ckpt-summary">{c.summary} · <code>{c.id}</code></div>
-
-                {rewind.kind === 'confirming' && rewind.checkpoint.id === c.id && (
-                  <div class="ckpt-confirm">
-                    <p>
-                      Put every file back as it was {c.turn !== undefined ? `after turn ${c.turn}` : 'at the start'}.
-                      Files created since are <b>deleted</b>. Ignored files — <code>node_modules</code>,
-                      build output — are left alone, so this costs no rebuild.
-                    </p>
-                    <p class="ckpt-confirm-undo">You will be able to undo it straight afterwards.</p>
-                    <div class="ckpt-confirm-actions">
-                      <button class="btn btn-danger" onClick={() => void doRewind(c.id)}>Restore it</button>
-                      <button class="btn" onClick={() => setRewind({ kind: 'idle' })}>Cancel</button>
-                    </div>
+                    <button class="btn btn-small" onClick={() => setRewind({ kind: 'idle' })}>
+                      Cancel
+                    </button>
                   </div>
-                )}
-              </li>
+                </div>
+              </PanelRow>
             ))}
-          </ul>
-        )}
+          </PanelSection>
+          )}
 
-      <div class="history-log">
-        <button class="history-log-toggle" onClick={() => setShowLog(!showLog)}>
-          {showLog ? Icon.chevronDown() : Icon.chevronRight()}
-          Work log
-          {log === '' && <span class="history-log-empty">nothing recorded yet</span>}
-        </button>
-        {showLog && log !== '' && (
-          <div class="history-log-body"><Markdown text={log} /></div>
-        )}
-      </div>
+      <PanelSection title="Work log">
+        {log === ''
+          ? <PanelRow icon={Icon.file()} label="Nothing recorded yet" />
+          : (
+            <PanelRow
+              open={showLog}
+              onToggle={() => setShowLog((s) => !s)}
+              icon={Icon.file()}
+              label="What each turn did"
+              meta={`${log.trimEnd().split('\n').length} lines`}
+            >
+              <div class="history-log-body"><Markdown text={log} /></div>
+            </PanelRow>
+            )}
+      </PanelSection>
     </div>
   )
 }

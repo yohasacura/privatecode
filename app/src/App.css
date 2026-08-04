@@ -1449,36 +1449,19 @@ kbd {
 .preview-wrap { white-space: pre-wrap; word-break: break-word; }
 
 /* changes */
-.changes-tab { overflow-y: auto; padding: 6px; }
-.change { border-bottom: 1px solid var(--border-soft); }
-.change-head { display: flex; align-items: center; gap: 6px; padding: 6px 4px; }
-.change-toggle {
+.changes-tab { overflow-y: auto; }
+/* The total, once, at the top: the transcript already shows each diff where it happened,
+   and "how much of my workspace has moved" is the question a per-row stat never answers. */
+.changes-total {
   display: flex;
-  border: none;
-  background: transparent;
-  color: var(--text-faint);
-  cursor: pointer;
-  padding: 1px;
-}
-.change-toggle:hover { color: var(--text); }
-.change-path {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: none;
-  padding: 0;
-  text-align: left;
-  font-family: var(--mono);
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px var(--row-pad);
+  border-bottom: 1px solid var(--border);
   font-size: 11.5px;
   color: var(--text-dim);
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.change-path:hover { color: var(--accent); }
-.change-failed .change-path { color: var(--red); }
-.change-body { padding: 0 4px 8px 22px; }
 
 /* terminal (and, since they were one question asked twice, the processes) */
 .terminal-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -1777,11 +1760,11 @@ kbd {
 
 /* --- History: checkpoints and the work log ------------------------------------------- */
 
-.history { padding: 8px; overflow-y: auto; }
+.history { overflow-y: auto; }
 
 .history-note {
   padding: 8px 10px;
-  margin-bottom: 8px;
+  margin: 8px;
   border: 1px solid var(--border-soft);
   border-radius: 6px;
   background: var(--bg-raised);
@@ -1797,18 +1780,13 @@ kbd {
   font: inherit;
 }
 
-.ckpt-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.ckpt {
-  border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 6px 8px;
+.ckpt-when {
+  margin-right: 8px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--text-faint);
 }
-.ckpt:hover { border-color: var(--border); background: var(--bg-raised); }
-.ckpt-head { display: flex; align-items: baseline; gap: 8px; }
-.ckpt-when { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 11px; }
-.ckpt-what { flex: 1; font-size: 12px; }
-.ckpt-summary { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-.ckpt-summary code { font-size: 10px; opacity: 0.8; }
 
 /* The one destructive action in the app, so it explains itself before it happens --
    including the part people do not expect (new files go) and the part that reassures
@@ -1829,22 +1807,7 @@ kbd {
    app lost its red. */
 .btn-small { padding: 2px 8px; font-size: 11px; height: 22px; }
 
-.history-log { margin-top: 12px; border-top: 1px solid var(--border-soft); padding-top: 8px; }
-.history-log-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  background: none;
-  border: none;
-  color: var(--text);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  padding: 4px 2px;
-}
-.history-log-empty { color: var(--text-dim); font-size: 11px; margin-left: auto; }
-.history-log-body { font-size: 12px; padding: 4px 2px 12px; }
+.history-log-body { font-size: 12px; }
 .history-log-body h1 { font-size: 13px; }
 .history-log-body h2 { font-size: 12px; margin-top: 12px; }
 

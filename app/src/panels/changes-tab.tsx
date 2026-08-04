@@ -4,6 +4,7 @@ import type { ChatItem } from '../lib/state'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
 import { WRITE_TOOLS, presentTool } from '../lib/tools'
 import { Icon } from '../components/icons'
+import { PanelEmpty, PanelRow } from '../components/panel'
 
 /**
  * Changes tab: every write this session made, in one list, newest first.
@@ -60,10 +61,33 @@ export function ChangesTab({
   onOpenFile: (path: string) => void
 }): VNode {
   if (entries.length === 0) {
-    return <div class="panel-placeholder">No files changed in this session yet.</div>
+    return (
+      <PanelEmpty
+        icon={Icon.diff()}
+        title="Nothing changed yet"
+        hint="Every file the agent writes in this session lands here, with its diff and a way back to the file."
+      />
+    )
   }
+
+  // The total, once, at the top. The transcript shows each diff where it happened; the
+  // question this tab exists to answer is the one the transcript is bad at -- how much of
+  // my workspace has moved -- and a per-row stat never adds up to that on its own.
+  let added = 0
+  let removed = 0
+  for (const entry of entries) {
+    if (!entry.ok) continue
+    const stat = diffStat(entry.content)
+    added += stat.added
+    removed += stat.removed
+  }
+
   return (
     <div class="changes-tab">
+      <div class="changes-total">
+        <span>{entries.length} file{entries.length === 1 ? '' : 's'}</span>
+        <DiffStatBadge stat={{ added, removed }} />
+      </div>
       {entries.map((entry) => <ChangeRow key={entry.id} entry={entry} onOpenFile={onOpenFile} />)}
     </div>
   )
@@ -79,23 +103,24 @@ function ChangeRow({
   const stat = entry.ok ? diffStat(entry.content) : null
 
   return (
-    <div class={`change ${entry.ok ? '' : 'change-failed'}`}>
-      <div class="change-head">
-        <button class="change-toggle" onClick={() => setOpen((o) => !o)}>
-          {open ? Icon.chevronDown() : Icon.chevronRight()}
-        </button>
-        <button class="change-path" onClick={() => onOpenFile(entry.openPath)} title={entry.path}>
-          {entry.path}
-        </button>
-        {entry.revisions > 1 && <span class="tag">{entry.revisions}×</span>}
-        {stat && <DiffStatBadge stat={stat} />}
-        {!entry.ok && <span class="tag tag-danger">failed</span>}
-      </div>
-      {open && (
-        <div class="change-body">
-          <DiffView content={entry.content} dense />
-        </div>
-      )}
-    </div>
+    <PanelRow
+      open={open}
+      onToggle={() => setOpen((o) => !o)}
+      icon={Icon.file()}
+      label={entry.path}
+      mono
+      title={entry.path}
+      onOpen={() => onOpenFile(entry.openPath)}
+      {...(entry.ok ? {} : { tone: 'bad' as const })}
+      meta={
+        <>
+          {entry.revisions > 1 && <span class="tag">{entry.revisions}×</span>}
+          {stat && <DiffStatBadge stat={stat} />}
+          {!entry.ok && <span class="tag tag-danger">failed</span>}
+        </>
+      }
+    >
+      <DiffView content={entry.content} dense />
+    </PanelRow>
   )
 }
