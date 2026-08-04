@@ -182,6 +182,21 @@ export interface AgentOptions {
    */
   stepTimeoutMs?: number
   /**
+   * A separate, larger deadline for the FIRST step only.
+   *
+   * `stepTimeoutMs` is sized for generation against a WARM prompt cache — "roughly two
+   * generations plus headroom". The first step of a turn whose prompt prefix just changed is
+   * not that: llama.cpp matches its cache by longest common prefix, so a compaction swap or
+   * a session resumed in a fresh process makes the server re-prefill the entire prompt
+   * before it emits a single token. Measured in this repo (Transcript's own benchmark):
+   * 27.7 s to re-prefill a ~14.9k-token history. At a hundred thousand tokens the ordinary
+   * 90 s budget is spent before generation begins.
+   *
+   * Reported from the running app: a session was compacted successfully and the very next
+   * step died with "a step took longer than its time limit".
+   */
+  firstStepTimeoutMs?: number
+  /**
    * `tool_choice` for the first call of each step. Defaults to `'auto'`.
    *
    * Measured on a hard edit at max_tokens=8000 (docs/DESIGN.md §7): `'auto'` completes
@@ -456,7 +471,11 @@ export class Agent {
     schemas: ReturnType<ToolRegistry['schemas']>,
   ): Promise<StepOutcome> {
     const started = performance.now()
-    const timeoutMs = this.opts.stepTimeoutMs
+    // Only the first step can face a cold cache: every later one in the same turn appends to
+    // a prefix the server has just processed.
+    const timeoutMs = step === 1
+      ? this.opts.firstStepTimeoutMs ?? this.opts.stepTimeoutMs
+      : this.opts.stepTimeoutMs
     const deadline = AbortSignal.timeout(timeoutMs)
     this.opts.events?.onStepStart?.({ step, timeoutMs })
 

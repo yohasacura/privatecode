@@ -1,6 +1,9 @@
 import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
-import { Agent, type AgentEvents, type AgentOptions, type StepInfo, type TurnResult } from '../agent/loop.js'
+import {
+  Agent, DEFAULT_STEP_TIMEOUT_MS,
+  type AgentEvents, type AgentOptions, type StepInfo, type TurnResult,
+} from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
 import { LoopDetector } from '../agent/loop-detector.js'
 import type { Checkpoint } from '../checkpoints/store.js'
@@ -170,6 +173,12 @@ const SUMMARY_OUTPUT_RESERVE = 8_000
  * when to compact, it is the backstop for a conversation that is already at the edge.
  */
 const PRE_TURN_HEADROOM = 4_000
+
+/** ~1.9 ms/token, from Transcript's own benchmark (27.7 s for a ~14.9k-token history),
+ * rounded up. See `coldStartTimeout`. */
+const PREFILL_MS_PER_TOKEN = 2
+/** Below the client's ten-minute transport timeout, so a silent server is still caught. */
+const MAX_COLD_START_MS = 8 * 60_000
 
 /**
  * What every request carries that `Transcript.approxTokens()` cannot see: the tool schemas.
@@ -573,6 +582,20 @@ export class Session {
     return Math.max(0, contextLength - SUMMARY_OUTPUT_RESERVE)
   }
 
+  /**
+   * The deadline for a step that has to prefill the whole prompt before generating.
+   *
+   * Derived from this repo's own measurement rather than picked: `Transcript`'s benchmark
+   * recorded 27.7 s to re-prefill a ~14.9k-token history, which is ~1.9 ms per token. At
+   * 130k tokens that is four minutes of work the ordinary 90 s budget does not contain.
+   * Capped below the client's own transport timeout, so a server that accepts the connection
+   * and then goes quiet is still caught by something.
+   */
+  private coldStartTimeout(): number {
+    const prefillMs = Math.ceil(this.approxTokens() * PREFILL_MS_PER_TOKEN)
+    return Math.min(MAX_COLD_START_MS, DEFAULT_STEP_TIMEOUT_MS + prefillMs)
+  }
+
   /** The checkpoints taken in this workspace, newest first. Empty when not a long run. */
   async listCheckpoints(limit?: number): Promise<Checkpoint[]> {
     return this.checkpoints ? this.checkpoints.list(limit) : []
@@ -727,6 +750,8 @@ export class Session {
   private composeEvents(host: AgentEvents | undefined): AgentEvents {
     const captureStepDone = (info: StepInfo): void => {
       if (info.promptTokens !== undefined) this.latestPromptTokens = info.promptTokens
+      // A step finished, so the server has this prompt in its cache now.
+      this.promptCacheCold = false
       if (info.completionTokens !== undefined) {
         this.cumulativeCompletionTokens += info.completionTokens
       }
@@ -1177,6 +1202,9 @@ export class Session {
 
     this.transcript = next
     this.persistedCount = next.messages().length
+    // The swap rewrote the prefix: nothing the server cached still matches, and the next
+    // request pays a full prefill.
+    this.promptCacheCold = true
     // fillRatio must wait for a real measurement against the NEW transcript -- the stale
     // pre-swap prompt-token count would otherwise immediately look "still over threshold"
     // against the just-shrunk transcript and re-trigger a pointless compaction of the
@@ -1283,6 +1311,19 @@ export class Session {
   /** Folders written to in the CURRENT turn, cleared at the start of each one. Verify
    * runs where the change landed, not everywhere. */
   private writtenMounts = new Set<string>()
+  /**
+   * Whether the next request's prompt is one llama.cpp has NOT already processed.
+   *
+   * True at construction (a resumed session's transcript has never been sent by this process)
+   * and again after every compaction swap (the swap rewrites the prefix, so the server's
+   * longest-common-prefix cache match is worthless). Cleared by the first completed step,
+   * which is the proof the prompt is now warm.
+   *
+   * It exists because of a measured failure: a session compacted successfully and its very
+   * next step died on the 90 s step timeout — a budget sized for GENERATION against a warm
+   * cache, spent entirely on prefill before a token was produced.
+   */
+  private promptCacheCold = true
   private commandCount = 0
 
   /**
@@ -1342,6 +1383,9 @@ export class Session {
     // one-shot CLI call, or a test, may never pass `events` at all).
     agentOpts.events = this.composeEvents(this.opts.events)
     if (this.opts.maxSteps !== undefined) agentOpts.maxSteps = this.opts.maxSteps
+    // The first step of a turn whose prompt prefix the server has not seen must be allowed
+    // to PREFILL before it generates. See `promptCacheCold`.
+    if (this.promptCacheCold) agentOpts.firstStepTimeoutMs = this.coldStartTimeout()
     if (signal) agentOpts.signal = signal
 
     return new Agent(agentOpts)
