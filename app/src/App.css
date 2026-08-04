@@ -2142,3 +2142,51 @@ kbd {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
+
+/* ---------------------------------------------------------------------------------------
+   What a compaction did, in the transcript, at the point it did it.
+
+   The numbers are the row; the briefing folds open beneath. It is what the model reads from
+   then on, so it is the honest answer to "what does it still know" — and long enough that
+   it cannot be the default state of the row.
+   --------------------------------------------------------------------------------------- */
+.compaction-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.compaction-toggle {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.compaction-head:hover .compaction-toggle { color: var(--accent); }
+.compaction-body {
+  margin-top: 8px;
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+.compaction-note {
+  margin-bottom: 6px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.compaction-summary {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

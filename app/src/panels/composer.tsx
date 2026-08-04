@@ -107,9 +107,13 @@ export function Composer({
     return () => { cancelled = true }
   }, [client, slashPrefix === null])
 
+  const BUILT_IN = [{
+    name: 'compact',
+    description: 'Summarise the conversation now and free the context it occupies',
+  }]
   const matching = slashPrefix === null
     ? []
-    : commands.filter((c) => c.name.startsWith(slashPrefix)).slice(0, 8)
+    : [...BUILT_IN, ...commands].filter((c) => c.name.startsWith(slashPrefix)).slice(0, 8)
 
   useEffect(() => {
     if (mention === null) { setMentionHits([]); return }
@@ -204,6 +208,19 @@ export function Composer({
   function send(): void {
     const text = input.trim()
     if (text === '') return
+
+    // `/compact` is the window's own command, not the model's and not the user's: the
+    // context-overflow message has advised "compact it" since Plan 2 while the window had no
+    // way to do it, and waiting for the automatic trigger means waiting for a long turn to
+    // end first. Handled here rather than sent, because it is not a message to anyone.
+    if (text === '/compact') {
+      setInput('')
+      setMention(null)
+      client.call('compact', {}).catch((e: unknown) => {
+        dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
+      })
+      return
+    }
 
     // Reading an earlier session, and about to write into it: SENDING is what commits to the
     // switch. Clicking a session in the rail only reads it, so the running one keeps going;

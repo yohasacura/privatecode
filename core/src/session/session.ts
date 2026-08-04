@@ -58,6 +58,23 @@ export interface CompactionOptions {
 export interface CompactionEvent {
   state: 'started' | 'ready' | 'applied' | 'postponed' | 'failed'
   droppedMessages?: number
+  /**
+   * What the swap actually did, present only on `'applied'`.
+   *
+   * A compaction used to pass almost invisibly — five seconds of status text — while being
+   * the single most consequential thing that happens to a session: from then on the model
+   * works from the briefing, not from the conversation. If something was lost, that is worth
+   * seeing at the moment it happens rather than inferring it three turns later from odd
+   * behaviour.
+   */
+  detail?: {
+    beforeTokens: number
+    afterTokens: number
+    /** The briefing the model wrote for itself, verbatim. */
+    summary: string
+    /** How many recent messages were carried over untouched. */
+    keptMessages: number
+  }
 }
 
 export interface SessionOptions {
@@ -1259,7 +1276,16 @@ export class Session {
     // against the just-shrunk transcript and re-trigger a pointless compaction of the
     // transcript this very call just produced.
     this.latestPromptTokens = null
-    this.opts.onCompaction?.({ state: 'applied', droppedMessages })
+    this.opts.onCompaction?.({
+      state: 'applied',
+      droppedMessages,
+      detail: {
+        beforeTokens: oldApproxTokens,
+        afterTokens: next.approxTokens(),
+        summary,
+        keptMessages: tail.length,
+      },
+    })
     return true
   }
 

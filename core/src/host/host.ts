@@ -591,6 +591,7 @@ export class SessionHost {
         this.emit('compaction', {
           state: info.state,
           ...(info.droppedMessages !== undefined ? { droppedMessages: info.droppedMessages } : {}),
+          ...(info.detail !== undefined ? { detail: info.detail } : {}),
         })
       },
     }

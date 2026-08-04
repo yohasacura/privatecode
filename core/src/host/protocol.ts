@@ -517,6 +517,20 @@ export interface CompactionEvent {
   state: CompactionState
   /** Only ever present on `'applied'`. */
   droppedMessages?: number
+  /**
+   * What the swap did, present only on `'applied'`.
+   *
+   * A compaction is the most consequential thing that happens to a session — from then on the
+   * model works from this briefing rather than from the conversation — and it used to pass as
+   * five seconds of status text. This is what the window needs to show it.
+   */
+  detail?: {
+    beforeTokens: number
+    afterTokens: number
+    /** The briefing the model wrote for itself, verbatim. */
+    summary: string
+    keptMessages: number
+  }
 }
 
 export interface SettingsProblemEvent { text: string }

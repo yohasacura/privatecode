@@ -88,6 +88,23 @@ export type ChatItem =
    * what this app used to do -- is that the agent simply goes quiet mid-task and the only
    * honest description of the UI's behaviour is "it stopped for some reason". */
   | { kind: 'stopped'; id: number; reason: Exclude<StoppedBecause, 'done'> }
+  /**
+   * A compaction that landed, where it landed.
+   *
+   * The most consequential thing that happens to a session — from here on the model works
+   * from this briefing rather than from the conversation above it — and it used to pass as
+   * five seconds of status text. If the briefing lost something, this is where you find out,
+   * rather than three turns later from odd behaviour.
+   */
+  | {
+    kind: 'compaction-record'
+    id: number
+    beforeTokens: number
+    afterTokens: number
+    droppedMessages: number
+    keptMessages: number
+    summary: string
+  }
 
 /** The turn-paused card `approvals.tsx` renders above the input while the sidecar awaits
  * a reply -- at most one at a time, matching the protocol: `SessionHost` awaits one
@@ -264,7 +281,10 @@ export type ChatAction =
   | { type: 'viewing-started'; sessionId: string; title: string; entries: readonly TranscriptEntry[] }
   | { type: 'viewing-ended' }
   | { type: 'mode-changed'; mode: AgentMode }
-  | { type: 'compaction'; state: CompactionState; droppedMessages?: number }
+  | {
+    type: 'compaction'; state: CompactionState; droppedMessages?: number
+    detail?: { beforeTokens: number; afterTokens: number; summary: string; keptMessages: number }
+  }
   | { type: 'approval.request'; requestId: string; tool: string; summary: string; detail: string; suggestedRules: string[] }
   /** Fired locally by `approvals.tsx` the instant the user clicks Allow/Deny -- BEFORE the
    * `approval.reply` RPC even resolves. This is what makes "pending -> answered" a
@@ -678,13 +698,27 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         session: state.session ? { ...state.session, mode: action.mode } : state.session,
       }
 
-    case 'compaction':
-      return {
+    case 'compaction': {
+      const next = {
         ...state,
         lastCompaction: {
           state: action.state, droppedMessages: action.droppedMessages, seq: (state.lastCompaction?.seq ?? 0) + 1,
         },
       }
+      // A record in the transcript, at the point in the conversation where it happened —
+      // which is the only place it means anything.
+      if (action.state !== 'applied' || action.detail === undefined) return next
+      const item: ChatItem = {
+        kind: 'compaction-record',
+        id: state.nextId,
+        beforeTokens: action.detail.beforeTokens,
+        afterTokens: action.detail.afterTokens,
+        droppedMessages: action.droppedMessages ?? 0,
+        keptMessages: action.detail.keptMessages,
+        summary: action.detail.summary,
+      }
+      return { ...next, items: [...state.items, item], nextId: state.nextId + 1 }
+    }
 
     default: {
       const _exhaustive: never = action

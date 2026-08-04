@@ -161,6 +161,45 @@ export function Transcript({
   )
 }
 
+/**
+ * What a compaction actually did, at the point it did it.
+ *
+ * The numbers first, because "did it help" is the immediate question and a compaction that
+ * frees 14% is one this project shipped for a while. The briefing folds open: it is what the
+ * model works from now, so it is the honest answer to "what does it still know".
+ */
+function CompactionRecord({ item }: { item: Extract<ChatItem, { kind: 'compaction-record' }> }): VNode {
+  const [open, setOpen] = useState(false)
+  const freed = item.beforeTokens > 0
+    ? Math.round((1 - item.afterTokens / item.beforeTokens) * 100)
+    : 0
+  return (
+    <Row kind="record record-compaction" marker={Icon.chat()}>
+      <button class="compaction-head" onClick={() => setOpen((o) => !o)}>
+        <span class="record-text">
+          compacted — <b>{tokens(item.beforeTokens)} → {tokens(item.afterTokens)}</b> ({freed}% freed),
+          {' '}{item.droppedMessages} message{item.droppedMessages === 1 ? '' : 's'} replaced by a briefing,
+          {' '}{item.keptMessages} kept as they were
+        </span>
+        <span class="compaction-toggle">{open ? 'hide the briefing' : 'what it kept'}</span>
+      </button>
+      {open && (
+        <div class="compaction-body">
+          <div class="compaction-note">
+            From here on the model reads this instead of the conversation above it.
+          </div>
+          <pre class="compaction-summary">{item.summary}</pre>
+        </div>
+      )}
+    </Row>
+  )
+}
+
+/** `8.3k`, the same shape the status bar uses. */
+function tokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+}
+
 /** True when nothing on screen is currently moving on its own -- which is when a plain
  * "working…" line is the honest thing to show, and only then. */
 function isQuiet(last: ChatItem | undefined): boolean {
@@ -288,6 +327,12 @@ const TranscriptRow = memo(function TranscriptRow({
           </span>
         </Row>
       )
+
+    // Where the conversation the model can see was replaced by a briefing about it. Shown
+    // in place, because "what does it still know" is only answerable relative to a point in
+    // the conversation.
+    case 'compaction-record':
+      return <CompactionRecord item={item} />
 
     case 'stopped': {
       const explain = STOP_REASONS[item.reason]

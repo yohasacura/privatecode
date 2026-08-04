@@ -278,5 +278,36 @@ export function selectCompactionTail(
   // `start - floor` excludes the old leading system message from the count -- `floor` is
   // 1 exactly when one was present, 0 otherwise, so this is a no-op subtraction when
   // there was nothing to exclude.
-  return { tail: messages.slice(start), droppedMessages: start - floor }
+  const tail = messages.slice(start).map((m) => clipToBudget(m, maxTailTokens))
+  return { tail, droppedMessages: start - floor }
 }
+
+/**
+ * The hole the size cap alone leaves: ONE message bigger than the whole budget.
+ *
+ * Dropping messages cannot help when a single one is the problem — and the last message can
+ * never be dropped, since it carries what was asked. In a coding session that message is
+ * routinely a whole file. So its TEXT is clipped, with a line saying so and naming the tool
+ * to read it again with, which is exactly what the model would do next anyway.
+ *
+ * Editing history would normally be forbidden here; this is not that. `applyCompactionSwap`
+ * is building a brand-new transcript, and the original file on disk keeps every byte — the
+ * append-only law is about the record, and the record is untouched.
+ */
+function clipToBudget(message: ChatMessage, maxTailTokens: number): ChatMessage {
+  if (maxTailTokens <= 0) return message
+  const content = message.content
+  if (typeof content !== 'string') return message
+  const limit = maxTailTokens * CHARS_PER_TOKEN
+  if (content.length <= limit) return message
+  return {
+    ...message,
+    content:
+      `${content.slice(0, limit)}\n\n[...this message was ${content.length} characters and ` +
+      'was clipped here so the conversation fits in the context window. Read the file again ' +
+      'with read_file if you need the rest.]',
+  }
+}
+
+/** The same ratio `approxTokensOf` divides by, going the other way. */
+const CHARS_PER_TOKEN = 4

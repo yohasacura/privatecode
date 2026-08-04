@@ -116,6 +116,21 @@ describe('the tail a compaction keeps', () => {
   test('no cap is the old behaviour exactly', () => {
     expect(selectCompactionTail(heavy, 6)).toEqual(selectCompactionTail(heavy, 6, 0))
   })
+
+  test('one message bigger than the whole budget is clipped, not carried', () => {
+    // Dropping cannot help when a single message IS the problem, and the last one can never
+    // be dropped — it carries what was asked. In a coding session that message is routinely
+    // a whole file.
+    const single: ChatMessage[] = [
+      msg('system', 'SYS'),
+      { role: 'user', content: `ASK ${'z'.repeat(400_000)}` } as ChatMessage,
+    ]
+    const { tail } = selectCompactionTail(single, 6, 5_000)
+    const kept = tail.reduce((sum, m) => sum + Math.ceil((m.content?.length ?? 0) / 4), 0)
+    expect(kept).toBeLessThan(6_000)
+    expect(tail.at(-1)?.content).toContain('ASK')
+    expect(tail.at(-1)?.content).toContain('was clipped here')
+  })
 })
 
 /**
