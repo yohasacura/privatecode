@@ -3,6 +3,15 @@ import type { AgentMode } from '../permissions/engine.js'
 export interface PromptOptions {
   workspaceRoot: string
   mode: AgentMode
+  /**
+   * The assembled `AGENTS.md` block (see `memory/project-memory.ts`), or absent.
+   *
+   * It goes LAST, after the mode paragraph, for two reasons: the mode paragraph belongs
+   * next to the base rules it modifies, and standing project facts read best as the final
+   * thing before the conversation starts. When absent this function returns byte-for-byte
+   * what it returned before memory existed.
+   */
+  memory?: string
 }
 
 /**
@@ -34,24 +43,27 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     'command output exactly as they are, in whatever language they are already in.',
   ]
 
+  const parts = [...common]
   if (opts.mode === 'plan') {
-    return [
-      ...common,
+    parts.push(
       '',
       'You are in PLAN mode. You cannot modify anything: no editing tools are available to',
       'you at all. Investigate, then reply with a concrete plan — which files change and',
       'how. The user will approve it before any change is made.',
-    ].join('\n')
-  }
-  if (opts.mode === 'autopilot') {
-    return [
-      ...common,
+    )
+  } else if (opts.mode === 'autopilot') {
+    parts.push(
       '',
       'You are in AUTOPILOT mode: act without waiting for confirmations, but stay strictly ' +
       'inside the workspace.',
-    ].join('\n')
+    )
   }
-  // 'normal' and 'auto-edit' both use the common prompt verbatim: what differs between
-  // them is which tool calls the permission engine gates, not what the model is told.
-  return common.join('\n')
+  // 'normal' and 'auto-edit' add nothing: what differs between them is which tool calls the
+  // permission engine gates, not what the model is told.
+
+  // Memory goes LAST -- see PromptOptions.memory. An absent or empty block leaves this
+  // function returning byte-for-byte what it returned before memory existed, which is what
+  // keeps every existing assertion about this prompt meaningful.
+  if (opts.memory !== undefined && opts.memory !== '') parts.push('', opts.memory)
+  return parts.join('\n')
 }

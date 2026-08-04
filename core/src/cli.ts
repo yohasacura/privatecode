@@ -6,6 +6,7 @@ import { Workspace } from './workspace.js'
 import { createToolset, READ_ONLY_TOOLS } from './tools/default-set.js'
 import { PermissionEngine, type AgentMode } from './permissions/engine.js'
 import { loadLayers } from './permissions/settings.js'
+import { loadProjectMemory } from './memory/project-memory.js'
 import { Session, type SessionOptions } from './session/session.js'
 import { SessionStore } from './session/store.js'
 import { createConsolePort, type ReadlineLike } from './cli/console-port.js'
@@ -180,6 +181,10 @@ async function main() {
   }
 
   const { layers, problems } = loadLayers(values.workspace)
+  // Without this a one-shot --task would silently behave differently from the REPL in the
+  // same workspace, which is the kind of difference nobody ever thinks to check.
+  const memory = loadProjectMemory(values.workspace)
+  problems.push(...memory.problems)
   const engine = new PermissionEngine({ layers, mode, workspaceRoot: values.workspace, problems })
   for (const p of engine.problems) console.error(`settings: ${p}`)
 

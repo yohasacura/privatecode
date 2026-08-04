@@ -118,6 +118,10 @@ export interface AgentOptions {
   client: LlamaClient
   registry: ToolRegistry
   context: ToolContext
+  /** The assembled AGENTS.md block, if the caller loaded one. Read once, here, and never
+   * re-read: it lands in the system message, which is message 0 of an append-only
+   * transcript. */
+  memory?: string
   /**
    * Tool names the model may use this turn. Omit for all of them.
    *
@@ -269,6 +273,9 @@ export class Agent {
         content: buildSystemPrompt({
           workspaceRoot: opts.context.workspace.root,
           mode: this.opts.mode,
+          // Conditional spread, not `memory: opts.memory`: tsconfig sets
+          // exactOptionalPropertyTypes, so an explicit undefined is not the same as absent.
+          ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
         }),
       })
     }

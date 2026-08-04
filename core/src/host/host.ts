@@ -6,6 +6,7 @@ import type { ApprovalDecision, InteractionPort } from '../interaction.js'
 import { LlamaClient } from '../llama/client.js'
 import { PermissionEngine } from '../permissions/engine.js'
 import { loadLayers } from '../permissions/settings.js'
+import { loadProjectMemory } from '../memory/project-memory.js'
 import { Session, type SessionOptions } from '../session/session.js'
 import { SessionStore } from '../session/store.js'
 import { createToolset, type Toolset } from '../tools/default-set.js'
@@ -305,6 +306,9 @@ export class SessionHost {
     const { client, toolset, store, workspaceRoot } = this.requireInitialized()
 
     const { layers, problems: settingsProblems } = loadLayers(workspaceRoot)
+    // Loaded here, beside the settings layers, for the same reason: the Session is handed
+    // ready-made state rather than reading files itself.
+    const memory = loadProjectMemory(workspaceRoot)
     const engine = new PermissionEngine({
       layers, mode: 'normal', workspaceRoot, problems: settingsProblems,
     })
@@ -325,6 +329,7 @@ export class SessionHost {
         })
       },
     }
+    if (memory.layers.length > 0) sessionOpts.memory = memory
     if (resumeId !== undefined) sessionOpts.resume = resumeId
     if (this.contextLength !== null) sessionOpts.compaction = { contextLength: this.contextLength }
 
@@ -332,7 +337,8 @@ export class SessionHost {
     this.session = session
     this.engine = engine
 
-    const problems = [...engine.problems]
+    // Memory problems ride the channel settings problems already use -- no new event.
+    const problems = [...engine.problems, ...memory.problems]
     if (this.contextLength === null) {
       problems.push(
         'the server did not report a context length (GET /props); automatic compaction is disabled for this session',

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 import { Agent, type AgentEvents, type AgentOptions, type StepInfo, type TurnResult } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
+import type { LoadedMemory } from '../memory/project-memory.js'
 import type { InteractionPort } from '../interaction.js'
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage } from '../llama/types.js'
@@ -55,6 +56,13 @@ export interface SessionOptions {
   resume?: string // session id to load
   maxSteps?: number
   events?: AgentEvents
+  /**
+   * Project memory, ALREADY LOADED by the host (mirroring how `engine` is handed
+   * pre-loaded layers rather than reading files itself). Frozen for this session's life:
+   * it lives in the system message, and rewriting message 0 is what the append-only
+   * transcript discipline forbids.
+   */
+  memory?: LoadedMemory
   /** Absent -> the feature is off; see `CompactionOptions`. */
   compaction?: CompactionOptions
   onCompaction?(info: CompactionEvent): void
@@ -128,6 +136,10 @@ export class Session {
   private titled: boolean
   /** Set by setMode(), consumed (and cleared) by the next send(). */
   private pendingModeNote: string | undefined
+  /** The assembled AGENTS.md block, or undefined when nothing loaded. Read once from
+   * `opts.memory` so both build sites — `buildAgent` and `applyCompactionSwap` — use the
+   * same text and cannot drift. */
+  private readonly memoryText: string | undefined
   /** Guard against concurrent send() calls. persistedCount and pendingModeNote are not concurrency-safe. */
   private sending = false
   /** The newest server-reported `usage.prompt_tokens`, from the latest completed step
@@ -157,6 +169,9 @@ export class Session {
   constructor(opts: SessionOptions) {
     this.opts = opts
     this.workspace = new Workspace(opts.workspaceRoot)
+    // Frozen here, once: both places that build a system message read this field, so they
+    // cannot drift, and a mid-session edit to AGENTS.md cannot reach message 0.
+    this.memoryText = opts.memory && opts.memory.text !== '' ? opts.memory.text : undefined
 
     if (opts.resume !== undefined) {
       if (!opts.store) {
@@ -487,7 +502,16 @@ export class Session {
     const next = new Transcript()
     next.append({
       role: 'system',
-      content: buildSystemPrompt({ workspaceRoot: this.workspace.root, mode: this.meta.mode }),
+      // THE re-anchor. Compaction rebuilds the system message for a fresh Transcript, so
+      // passing the same memory here is what carries it across every swap -- no new
+      // mechanism, and nothing to forget. It is the memory the session STARTED with, which
+      // is also why a mid-session edit to AGENTS.md never appears: message 0 is not
+      // rewritten, it is rebuilt from the same frozen text.
+      content: buildSystemPrompt({
+        workspaceRoot: this.workspace.root,
+        mode: this.meta.mode,
+        ...(this.memoryText !== undefined ? { memory: this.memoryText } : {}),
+      }),
     })
     next.append({ role: 'user', content: `${COMPACTION_BRIEFING_PREFIX}\n${summary}` })
     next.append({ role: 'assistant', content: COMPACTION_ACK_TEXT })
@@ -604,6 +628,7 @@ export class Session {
       context,
       transcript: this.transcript,
     }
+    if (this.memoryText !== undefined) agentOpts.memory = this.memoryText
     if (this.opts.engine) {
       // mode intentionally omitted here -- see the constructor's invariant note. Agent
       // resolves opts.permissions.mode instead, which is always meta.mode by now.

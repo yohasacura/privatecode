@@ -5,6 +5,7 @@ import type { TurnResult } from '../agent/loop.js'
 import { LlamaClient } from '../llama/client.js'
 import { PermissionEngine, type AgentMode } from '../permissions/engine.js'
 import { loadLayers } from '../permissions/settings.js'
+import { loadProjectMemory, type LoadedMemory } from '../memory/project-memory.js'
 import { Session, type SessionOptions } from '../session/session.js'
 import type { SessionStore } from '../session/store.js'
 import type { Toolset } from '../tools/default-set.js'
@@ -187,6 +188,10 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   /** Guards rebuild()'s abortCompaction call below: false only before the very first
    * rebuild() (startup), when there is no old session yet to abort anything on. */
   let sessionBuilt = false
+  /** The AGENTS.md layers this session was built with, and anything that went wrong
+   * loading them -- printed beside `engine.problems` and reported by `/memory`. */
+  let loadedMemory: LoadedMemory | undefined
+  let memoryProblems: string[] = []
 
   /**
    * Loads settings layers fresh, builds a new PermissionEngine around them, and builds a
@@ -209,6 +214,9 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     if (sessionBuilt) await session.abortCompaction()
 
     const { layers, problems } = loadLayers(opts.workspaceRoot)
+    const memory = loadProjectMemory(opts.workspaceRoot)
+    loadedMemory = memory
+    memoryProblems = memory.problems
     const newEngine = new PermissionEngine({
       layers, mode: explicitMode ?? 'normal', workspaceRoot: opts.workspaceRoot, problems,
     })
@@ -221,6 +229,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       maxSteps: opts.maxSteps,
       events: turnRenderer.events,
       interaction: port,
+      ...(memory.layers.length > 0 ? { memory } : {}),
       onCompaction: (info) => {
         const line = renderCompactionEvent(info)
         if (line === undefined) return
@@ -409,6 +418,30 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     }
   }
 
+  /**
+   * What AGENTS.md actually loaded. Worth a command because memory that loaded correctly
+   * is invisible by design -- you notice it only because the model already knows things --
+   * so "did my file get picked up" has no other answer.
+   */
+  function handleMemory(): void {
+    const mem = loadedMemory
+    if (!mem || mem.checked.length === 0) {
+      process.stdout.write('No memory files were checked yet.\n')
+      return
+    }
+    for (const layer of mem.layers) {
+      const kb = (layer.bytes / 1024).toFixed(1)
+      const mark = layer.truncated ? ', truncated' : ''
+      process.stdout.write(`  ${layer.scope}: ${layer.path} (${kb} KB${mark})\n`)
+    }
+    for (const c of mem.checked.filter((x) => !x.loaded)) {
+      process.stdout.write(`  ${c.scope}: ${c.path} (not found)\n`)
+    }
+    for (const p of mem.problems) process.stdout.write(`  problem: ${p}\n`)
+    process.stdout.write(
+      'Edit these files and run /new to reload; a running session cannot pick them up.\n')
+  }
+
   function handleTodos(): void {
     const todos = opts.toolset.todos.list()
     if (todos.length === 0) {
@@ -463,6 +496,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       case '/sessions': handleSessions(); return
       case '/resume': await handleResume(arg); return
       case '/todos': handleTodos(); return
+      case '/memory': handleMemory(); return
       case '/compact': await handleCompact(); return
       case '/exit': await shutdown(); return
       default: process.stdout.write(`Unknown command "${cmd}". Type /help for the list.\n`); return
