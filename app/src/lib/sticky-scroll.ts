@@ -71,6 +71,14 @@ export function useStickToBottom(ref: RefObject<HTMLElement>): {
     }
 
     function onKeyDown(e: KeyboardEvent): void {
+      // Home/ArrowUp inside the approval card's comment field are TEXT navigation, not a
+      // request to scroll the transcript -- and unpinning there is sticky: nothing re-pins
+      // until a scroll event, which growing content alone does not produce.
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' ||
+                     target.tagName === 'SELECT' || target.isContentEditable)) {
+        return
+      }
       if (NAV_KEYS.has(e.key)) setStuck(false)
     }
 

@@ -22,6 +22,10 @@ export interface ChangeEntry {
   ok: boolean
   content: string
   revisions: number
+  /** What to actually open. `path` is for DISPLAY and for move_file reads "from → to",
+   * which is not a path anything can read -- clicking such a row asked the host to open a
+   * file that cannot exist and produced an ENOENT banner. */
+  openPath: string
 }
 
 export function collectChanges(items: ChatItem[]): ChangeEntry[] {
@@ -40,6 +44,7 @@ export function collectChanges(items: ChatItem[]): ChangeEntry[] {
       ok: item.result.ok,
       content: item.result.content,
       revisions: (previous?.revisions ?? 0) + 1,
+      openPath: p.path ?? key,
     })
   }
   return [...byPath.values()].sort((a, b) => b.id - a.id)
@@ -79,7 +84,7 @@ function ChangeRow({
         <button class="change-toggle" onClick={() => setOpen((o) => !o)}>
           {open ? Icon.chevronDown() : Icon.chevronRight()}
         </button>
-        <button class="change-path" onClick={() => onOpenFile(entry.path)} title={entry.path}>
+        <button class="change-path" onClick={() => onOpenFile(entry.openPath)} title={entry.path}>
           {entry.path}
         </button>
         {entry.revisions > 1 && <span class="tag">{entry.revisions}×</span>}

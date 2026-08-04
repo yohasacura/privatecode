@@ -57,6 +57,10 @@ export type ChatItem =
     id: number
     name: string
     args: string
+    /** When the call was announced, from the action's optional `atMs`. Used to order the
+     * Terminal tab, which interleaves the agent's commands with the user's own. `0` when
+     * the caller had no clock (a test). */
+    startedAtMs: number
     result?: {
       ok: boolean
       preview: string
@@ -347,7 +351,10 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       // The other way a step's reasoning ends -- and the one the original code missed,
       // which is why every tool-calling step used to leave a live "thinking…" row behind.
       const items = closeThinking(state.items, action.atMs)
-      const item: ChatItem = { kind: 'tool', id: state.nextId, name: action.name, args: action.args }
+      const item: ChatItem = {
+        kind: 'tool', id: state.nextId, name: action.name, args: action.args,
+        startedAtMs: action.atMs ?? 0,
+      }
       return { ...state, items: [...items, item], nextId: state.nextId + 1 }
     }
 
@@ -373,12 +380,17 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         // call -- e.g. it hit its timeout) still has to stop animating.
         items: closeThinking(state.items, action.atMs),
         currentStep: null,
+        // Merged, not replaced. A step that was aborted or timed out reports no
+        // promptTokens, and replacing wholesale then wiped the count an EARLIER step in
+        // the same turn had already reported -- taking the whole context bar, tok/s and
+        // MTP readout off the status bar for the entire idle period afterwards, which is
+        // exactly when the user looks at them.
         lastStepDone: {
           step: action.step,
           seconds: action.seconds,
-          tokensPerSecond: action.tokensPerSecond,
-          promptTokens: action.promptTokens,
-          draftAcceptance: action.draftAcceptance,
+          tokensPerSecond: action.tokensPerSecond ?? state.lastStepDone?.tokensPerSecond,
+          promptTokens: action.promptTokens ?? state.lastStepDone?.promptTokens,
+          draftAcceptance: action.draftAcceptance ?? state.lastStepDone?.draftAcceptance,
         },
       }
 

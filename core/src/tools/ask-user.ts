@@ -67,6 +67,17 @@ export const askUserTool: Tool<AskUserArgs> = {
     }
 
     const answer = await ctx.interaction.askUser({ question: args.question, options: args.options })
+    // An abort resolves the pending question rather than rejecting it, so without this
+    // check the tool reported `ok` with "The user answered: cancelled" -- a statement the
+    // user never made, written permanently into the session JSONL and fed back to the
+    // model on the next turn or on resume as a genuine choice. The approval path already
+    // gets this right ("Not run: the turn was cancelled"); this makes the two agree.
+    if (ctx.signal?.aborted) {
+      return {
+        ok: false,
+        content: 'Not answered: the turn was cancelled while this question was open.',
+      }
+    }
     return { ok: true, content: `The user answered: ${answer}` }
   },
 }

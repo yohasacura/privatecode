@@ -3,14 +3,14 @@ import type { ChatItem } from '../lib/state'
 import { collectChanges } from './changes-tab'
 
 function tool(id: number, name: string, args: string, content = 'diff body', ok = true): ChatItem {
-  return { kind: 'tool', id, name, args, result: { ok, preview: 'p', content, display: content } }
+  return { kind: 'tool', id, name, args, startedAtMs: id, result: { ok, preview: 'p', content, display: content } }
 }
 
 describe('collectChanges', () => {
   it('keeps only completed write-family calls', () => {
     const items: ChatItem[] = [
       tool(1, 'read_file', '{"path":"a.ts"}'),
-      { kind: 'tool', id: 2, name: 'edit_file', args: '{"path":"b.ts"}' }, // still running
+      { kind: 'tool', id: 2, name: 'edit_file', args: '{"path":"b.ts"}', startedAtMs: 2 }, // still running
       tool(3, 'edit_file', '{"path":"c.ts"}'),
       { kind: 'user', id: 4, text: 'hi' },
     ]

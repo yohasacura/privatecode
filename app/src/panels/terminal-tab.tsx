@@ -20,6 +20,11 @@ import { Icon } from '../components/icons'
 
 interface Line {
   key: string
+  /** Epoch ms, for ordering. The agent's commands carry the `atMs` the reducer already
+   * stamps on `tool.call`; yours carry the job's `startedAt`. Concatenating the two lists
+   * instead pushed every new agent command ABOVE your older ones, so the live output this
+   * panel exists to show scrolled off the top while the view parked on a stale `git log`. */
+  at: number
   origin: 'agent' | 'you'
   command: string
   state: string
@@ -37,6 +42,7 @@ function agentCommands(items: ChatItem[]): Line[] {
     const p = presentTool(item.name, item.args)
     lines.push({
       key: `t${item.id}`,
+      at: item.startedAtMs ?? 0,
       origin: 'agent',
       command: p.target,
       state: item.result === undefined ? 'running' : item.result.ok ? 'done' : 'failed',
@@ -68,6 +74,7 @@ export function TerminalTab({
     .filter((j) => j.origin === 'user')
     .map((j) => ({
       key: j.id,
+      at: j.startedAt,
       origin: 'you' as const,
       command: j.command,
       state: j.running ? 'running' : j.stopped ? 'stopped' : `exit ${j.exitCode ?? '?'}`,
@@ -76,7 +83,7 @@ export function TerminalTab({
       clipped: j.clipped,
     }))
 
-  const lines = [...agentCommands(items), ...yourCommands]
+  const lines = [...agentCommands(items), ...yourCommands].sort((a, b) => a.at - b.at)
 
   // Follow the output while new lines arrive. This console is short-lived and always read
   // from the bottom, so it pins unconditionally rather than tracking intent the way the

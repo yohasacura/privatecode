@@ -151,6 +151,24 @@ export default function App() {
   useEffect(() => { saveLayout('railWidth', railWidth) }, [railWidth])
   useEffect(() => { saveLayout('contextWidth', contextWidth) }, [contextWidth])
 
+  // Widths persist, window sizes do not. Restoring a layout saved on a wide monitor onto a
+  // narrow one could compute the chat column to 0px -- transcript and composer gone
+  // entirely, and reproduced on every relaunch because the numbers are on disk. Re-clamped
+  // on load and on every resize, always leaving the centre column a floor.
+  useEffect(() => {
+    function clamp(): void {
+      const floor = 380
+      const available = window.innerWidth - floor
+      if (railWidth + contextWidth <= available) return
+      const scale = Math.max(0, available) / (railWidth + contextWidth)
+      setRailWidth(Math.max(180, Math.floor(railWidth * scale)))
+      setContextWidth(Math.max(280, Math.floor(contextWidth * scale)))
+    }
+    clamp()
+    window.addEventListener('resize', clamp)
+    return () => window.removeEventListener('resize', clamp)
+  }, [railWidth, contextWidth])
+
   useEffect(() => {
     const c: ProtocolClient = createClient(wsUrlFromSearch(window.location.search))
     setClient(c)

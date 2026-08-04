@@ -136,6 +136,12 @@ export class SessionHost {
    * the turn that IS legitimately running (see `send()`'s own doc comment). */
   private sending = false
   private currentAbort: AbortController | undefined
+  /** The in-flight turn's promise, so a session switch can AWAIT the abort it just fired
+   * instead of racing it. Without this, `sending` stayed true against a session that had
+   * never run a turn -- the user's first send in the freshly opened session was refused
+   * with "a turn is already running" -- and the dying turn's events streamed into the new
+   * session's view. Never rejects: `send`'s own try/finally owns the error path. */
+  private currentTurn: Promise<unknown> | undefined
 
   /** Every `approval.request`/`question.request` this process has emitted and not yet
    * resolved, keyed by its single-use `requestId`. See the class doc comment for the
@@ -234,6 +240,7 @@ export class SessionHost {
     // replaces the toolset object below, and an orphaned dev server would otherwise run
     // until app exit (the polish review's Minor 6).
     if (this.currentAbort && !this.currentAbort.signal.aborted) this.currentAbort.abort()
+    await this.currentTurn?.catch(() => {})
     if (this.session) await this.session.abortCompaction()
     this.denyAllPending()
     if (this.toolset) await this.toolset.background.stopAll()
@@ -294,6 +301,9 @@ export class SessionHost {
   private async switchSession(resumeId: string | undefined): Promise<InitResult> {
     this.requireInitialized()
     if (this.currentAbort && !this.currentAbort.signal.aborted) this.currentAbort.abort()
+    // Awaited, not merely signalled: the turn must be OVER before the new session exists,
+    // or its trailing events land in a view that has already been reset.
+    await this.currentTurn?.catch(() => {})
     if (this.session) await this.session.abortCompaction()
     this.denyAllPending()
     return this.buildSession(resumeId)
@@ -374,11 +384,28 @@ export class SessionHost {
     return {}
   }
 
+  /**
+   * A manual compaction is a model generation like any other, so it goes through the same
+   * single-slot bookkeeping a turn does. Untracked, it could not be cancelled, `shutdown()`
+   * resolved while it was still running, and a session switch during it left a generation
+   * writing into a Session nothing referenced any more.
+   */
   private async compact(): Promise<CompactResult> {
     const session = this.requireSession()
+    if (this.sending) throw new Error('a turn is already running in this session')
     this.lastCompactionApplied = false
-    await session.forceCompact()
-    return { applied: this.lastCompactionApplied }
+    this.sending = true
+    this.currentAbort = new AbortController()
+    try {
+      const work = session.forceCompact()
+      this.currentTurn = work
+      await work
+      return { applied: this.lastCompactionApplied }
+    } finally {
+      this.sending = false
+      this.currentAbort = undefined
+      this.currentTurn = undefined
+    }
   }
 
   // -----------------------------------------------------------------------------------
@@ -411,7 +438,9 @@ export class SessionHost {
       // expands to null and is sent verbatim -- most lines starting with `/` are a path.
       const { workspaceRoot } = this.requireInitialized()
       const expanded = expandCommand(workspaceRoot, params.text)
-      const result = await session.send(expanded?.text ?? params.text, this.currentAbort.signal)
+      const running = session.send(expanded?.text ?? params.text, this.currentAbort.signal)
+      this.currentTurn = running
+      const result = await running
       const turn: TurnSummary = {
         steps: result.steps, finalText: result.finalText, stoppedBecause: result.stoppedBecause,
       }
@@ -420,6 +449,7 @@ export class SessionHost {
     } finally {
       this.sending = false
       this.currentAbort = undefined
+      this.currentTurn = undefined
     }
   }
 

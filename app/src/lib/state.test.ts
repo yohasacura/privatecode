@@ -195,11 +195,11 @@ describe('reduceChat: tool calls', () => {
 
   it('opens a tool row on tool.call and patches it in place on tool.result', () => {
     const opened = run([{ type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' }])
-    expect(opened.items).toEqual([{ kind: 'tool', id: 1, name: 'read_file', args: '{"path":"a.ts"}' }])
+    expect(opened.items).toEqual([{ kind: 'tool', id: 1, name: 'read_file', args: '{"path":"a.ts"}', startedAtMs: 0 }])
 
     const done = reduceChat(opened, { type: 'tool.result', name: 'read_file', ok: true, content: 'line one\nline two' })
     expect(done.items).toEqual([
-      { kind: 'tool', id: 1, name: 'read_file', args: '{"path":"a.ts"}',
+      { kind: 'tool', id: 1, name: 'read_file', args: '{"path":"a.ts"}', startedAtMs: 0,
         // No `display` on the wire means the tool did not clip anything, so what the
         // person sees and what the model saw are the same string.
         result: { ok: true, preview: 'line one', content: 'line one\nline two', display: 'line one\nline two' } },
