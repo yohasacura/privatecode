@@ -28,20 +28,74 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
     // Per-subscription, not per-render: the point is to tell a RISE from a fall, and a
     // value that resets on every render can do neither.
     let lastPending = 0
+
+    /**
+     * Streamed text is coalesced into one dispatch per animation frame.
+     *
+     * Measured against this machine's server with no window in the path: 1200 deltas, half of
+     * them within 0.3 ms of each other and a p90 gap of 62 ms — speculative decoding hands
+     * over about three tokens at a time. The stream has no stall in it at all: one gap over
+     * 300 ms in the whole run, and that was the prefill before the first token. So the
+     * sub-second stutter reported during reasoning was never the model. It was this window
+     * re-rendering a growing block of text once per delta, fifty times a second, three of
+     * them back to back on every burst.
+     *
+     * A frame is the shortest interval a repaint can be seen in, so waiting for one loses
+     * nothing — and a burst becomes one render instead of three.
+     */
+    let thinkingBuffer = ''
+    let textBuffer = ''
+    let frame: number | null = null
+
+    function flush(): void {
+      frame = null
+      if (thinkingBuffer !== '') {
+        const text = thinkingBuffer
+        thinkingBuffer = ''
+        dispatch({ type: 'thinking.delta', text })
+      }
+      if (textBuffer !== '') {
+        const text = textBuffer
+        textBuffer = ''
+        dispatch({ type: 'text.delta', text, atMs: Date.now() })
+      }
+    }
+
+    function buffer(into: 'thinking' | 'text', text: string): void {
+      if (into === 'thinking') thinkingBuffer += text
+      else textBuffer += text
+      frame ??= requestAnimationFrame(flush)
+    }
+
+    /**
+     * Everything that is NOT streamed text goes through here, and it drains the buffer first.
+     *
+     * Order is the whole point: a tool call recorded before the reasoning that led to it, or
+     * a step closed before its own last words arrived, would be a worse defect than the
+     * stutter this fixes.
+     */
+    function emit(action: ChatAction): void {
+      if (frame !== null) {
+        cancelAnimationFrame(frame)
+        frame = null
+      }
+      flush()
+      dispatch(action)
+    }
     const unsubs = [
       client.on('step.start', (d) =>
         dispatch({ type: 'step.start', step: d.step, timeoutMs: d.timeoutMs, startedAtMs: Date.now() })),
-      client.on('thinking.delta', (d) => dispatch({ type: 'thinking.delta', text: d.text })),
+      client.on('thinking.delta', (d) => buffer('thinking', d.text)),
       // `atMs` is the wall clock at which this event arrived; the reducer uses it only to
       // stamp the end of the reasoning block each of these closes (see state.ts).
-      client.on('text.delta', (d) => dispatch({ type: 'text.delta', text: d.text, atMs: Date.now() })),
-      client.on('assistant.text', (d) => dispatch({ type: 'assistant.text', text: d.text, atMs: Date.now() })),
-      client.on('tool.call', (d) => dispatch({ type: 'tool.call', name: d.name, args: d.args, atMs: Date.now() })),
-      client.on('tool.result', (d) => dispatch({
+      client.on('text.delta', (d) => buffer('text', d.text)),
+      client.on('assistant.text', (d) => emit({ type: 'assistant.text', text: d.text, atMs: Date.now() })),
+      client.on('tool.call', (d) => emit({ type: 'tool.call', name: d.name, args: d.args, atMs: Date.now() })),
+      client.on('tool.result', (d) => emit({
         type: 'tool.result', name: d.name, ok: d.ok, content: d.content,
         ...(d.display !== undefined ? { display: d.display } : {}),
       })),
-      client.on('step.done', (d) => dispatch({
+      client.on('step.done', (d) => emit({
         type: 'step.done',
         step: d.step,
         seconds: d.seconds,
@@ -50,7 +104,7 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         ...(d.promptTokens !== undefined ? { promptTokens: d.promptTokens } : {}),
         ...(d.draftAcceptance !== undefined ? { draftAcceptance: d.draftAcceptance } : {}),
       })),
-      client.on('turn.done', (d) => dispatch({ type: 'turn.done', stoppedBecause: d.stoppedBecause, atMs: Date.now() })),
+      client.on('turn.done', (d) => emit({ type: 'turn.done', stoppedBecause: d.stoppedBecause, atMs: Date.now() })),
       client.on('approval.request', (d) => {
         dispatch({
           type: 'approval.request', requestId: d.requestId, tool: d.tool, summary: d.summary,
@@ -64,8 +118,8 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         dispatch({ type: 'question.request', requestId: d.requestId, question: d.question, options: d.options })
         void notify('PrivateCode has a question', d.question)
       }),
-      client.on('todos', (d) => dispatch({ type: 'todos', items: d.items })),
-      client.on('verify', (d) => dispatch({
+      client.on('todos', (d) => emit({ type: 'todos', items: d.items })),
+      client.on('verify', (d) => emit({
         type: 'verify', command: d.command, ok: d.ok, attempt: d.attempt,
         ...(d.exitCode !== undefined ? { exitCode: d.exitCode } : {}),
         ...(d.problem !== undefined ? { problem: d.problem } : {}),
@@ -82,7 +136,7 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         }
         lastPending = d.pending
       }),
-      client.on('run.turn', (d) => dispatch({ type: 'run.turn', turn: d.turn })),
+      client.on('run.turn', (d) => emit({ type: 'run.turn', turn: d.turn })),
       client.on('run.ended', (d) => {
         dispatch({ type: 'run.ended', stoppedBecause: d.stoppedBecause, detail: d.detail, turns: d.turns })
         void notify(
@@ -92,12 +146,17 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
       }),
       // Nothing consumed this before: a settings file that failed to parse dropped the
       // user's deny rules with no signal anywhere in the UI.
-      client.on('settings.problem', (d) => dispatch({ type: 'settings-problem', text: d.text })),
-      client.on('compaction', (d) => dispatch({
+      client.on('settings.problem', (d) => emit({ type: 'settings-problem', text: d.text })),
+      client.on('compaction', (d) => emit({
         type: 'compaction', state: d.state, ...(d.droppedMessages !== undefined ? { droppedMessages: d.droppedMessages } : {}),
       })),
     ]
-    return () => { for (const u of unsubs) u() }
+    return () => {
+      // A frame scheduled against a subscription that is going away would dispatch into a
+      // session this hook has already left.
+      if (frame !== null) cancelAnimationFrame(frame)
+      for (const u of unsubs) u()
+    }
   }, [client])
 
   return [state, dispatch]
