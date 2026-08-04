@@ -43,21 +43,34 @@ function isCompactionMarker(parsed: unknown): parsed is CompactionMarker {
  * caller feeding `text` into `Transcript.fromJSONL` can report a corrupt line's number
  * against the actual file, not just against this post-marker slice. Zero when there was
  * no marker at all (the common case), since then `text` IS the whole file.
+ *
+ * And the marker itself, which this scan has always found and always thrown away. It is the
+ * only surviving record of how much history the returned `text` is standing in for: the
+ * live messages open on a briefing whose own message cannot say how many messages it
+ * replaced. A restored session that did not carry it forward presented the briefing as a
+ * user's own words -- see `replayEntries`.
  */
-function liveTextAfterLastMarker(text: string): { text: string; lineOffset: number } {
+function liveTextAfterLastMarker(
+  text: string,
+): { text: string; lineOffset: number; marker: CompactionMarker | null } {
   const lines = text.split('\n')
   let lastMarkerLine = -1
+  let marker: CompactionMarker | null = null
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
     if (!line.trim()) continue
     try {
-      if (isCompactionMarker(JSON.parse(line))) lastMarkerLine = i
+      const parsed: unknown = JSON.parse(line)
+      if (isCompactionMarker(parsed)) {
+        lastMarkerLine = i
+        marker = parsed
+      }
     } catch {
       // Not a marker -- see doc comment above.
     }
   }
-  if (lastMarkerLine === -1) return { text, lineOffset: 0 }
-  return { text: lines.slice(lastMarkerLine + 1).join('\n'), lineOffset: lastMarkerLine + 1 }
+  if (lastMarkerLine === -1) return { text, lineOffset: 0, marker: null }
+  return { text: lines.slice(lastMarkerLine + 1).join('\n'), lineOffset: lastMarkerLine + 1, marker }
 }
 
 /**
@@ -167,7 +180,7 @@ export class SessionStore {
    * transcript that silently dropped or misread an entry would be worse than refusing to
    * load it at all.
    */
-  load(id: string): { meta: SessionMeta; transcript: Transcript } {
+  load(id: string): { meta: SessionMeta; transcript: Transcript; compaction: CompactionMarker | null } {
     const metaFile = this.metaPath(id)
     if (!existsSync(metaFile)) {
       throw new Error(`session "${id}" not found: no ${id}.meta.json in ${this.dir}`)
@@ -195,7 +208,10 @@ export class SessionStore {
     const text = existsSync(jsonlFile) ? readFileSync(jsonlFile, 'utf8') : ''
     const live = liveTextAfterLastMarker(text)
     const transcript = Transcript.fromJSONL(live.text, live.lineOffset)
-    return { meta, transcript }
+    // `compaction` describes the transcript being returned, not the session's whole history:
+    // it is the LAST swap, the one the live messages open on. Null for the common case of a
+    // session that never compacted.
+    return { meta, transcript, compaction: live.marker }
   }
 
   saveMeta(meta: SessionMeta): void {

@@ -654,7 +654,11 @@ export class SessionHost {
       // messages already in memory, not a second read of the session file.
       items: resumeId === undefined
         ? []
-        : replayEntries(session.messages(), toolOutcomes(workspaceRoot, session.id)),
+        : replayEntries(
+          session.messages(),
+          toolOutcomes(workspaceRoot, session.id),
+          session.loadedCompaction,
+        ),
     }
   }
 
@@ -667,13 +671,13 @@ export class SessionHost {
    */
   private sessionsRead(params: SessionsReadParams): SessionsReadResult {
     const { store, workspaceRoot } = this.requireInitialized()
-    const { meta, transcript } = store.load(params.id)
+    const { meta, transcript, compaction } = store.load(params.id)
     return {
       sessionId: meta.id,
       title: meta.title,
       mode: meta.mode,
       updatedAt: meta.updatedAt,
-      items: replayEntries(transcript.messages(), toolOutcomes(workspaceRoot, meta.id)),
+      items: replayEntries(transcript.messages(), toolOutcomes(workspaceRoot, meta.id), compaction),
     }
   }
 

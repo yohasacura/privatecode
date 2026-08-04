@@ -29,7 +29,7 @@ import { Workspace } from '../workspace.js'
 import {
   COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, generateCompaction, selectCompactionTail,
 } from './compaction.js'
-import { SessionStore, type SessionMeta } from './store.js'
+import { SessionStore, type CompactionMarker, type SessionMeta } from './store.js'
 
 /** Task 9: background auto-compaction. Omitting this entirely from `SessionOptions`
  * turns the feature off completely -- no trigger check ever runs, no background
@@ -333,6 +333,16 @@ function generateId(now: Date = new Date()): string {
 export class Session {
   readonly id: string
   readonly meta: SessionMeta
+  /**
+   * The compaction the RESUMED transcript opens on, or null -- for a session created fresh,
+   * or resumed from a file that never compacted.
+   *
+   * Set once, at construction, and deliberately NOT updated by swaps this process performs:
+   * it exists so a resumed conversation can be shown with its history-fold in it, and a
+   * swap that happens while the window is open is already on screen as a live event. Its
+   * one reader is the host's replay at resume time.
+   */
+  readonly loadedCompaction: CompactionMarker | null
 
   private readonly opts: SessionOptions
   private transcript: Transcript
@@ -398,7 +408,7 @@ export class Session {
       if (!opts.store) {
         throw new Error('Session: "resume" requires a "store" to load the session from')
       }
-      const { meta, transcript } = opts.store.load(opts.resume)
+      const { meta, transcript, compaction } = opts.store.load(opts.resume)
 
       // A transcript replayed against a different workspace tree would silently lie about
       // what it did and did not touch -- refuse rather than proceed.
@@ -415,6 +425,7 @@ export class Session {
       this.id = meta.id
       this.meta = meta
       this.transcript = transcript
+      this.loadedCompaction = compaction
       this.persistedCount = transcript.count()
       this.titled = meta.title !== ''
     } else {
@@ -429,6 +440,7 @@ export class Session {
         mode: opts.mode ?? opts.engine?.mode ?? 'normal',
       }
       this.transcript = new Transcript()
+      this.loadedCompaction = null
       this.persistedCount = 0
       this.titled = false
     }

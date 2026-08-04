@@ -130,6 +130,21 @@ export type TranscriptEntry =
    * see `toolOutcomes` for why that is the honest default and what records the real one. */
   | { kind: 'tool-result'; name: string; ok: boolean; content: string }
   | { kind: 'assistant'; text: string }
+  /**
+   * Where the conversation was folded away, and what replaced it.
+   *
+   * A compaction rewrites the transcript into a briefing plus a tail, and the briefing is
+   * carried in a `user` message so the model reads it as instruction. Replayed literally,
+   * that message came back as something the USER had written -- five thousand characters of
+   * "Session briefing from the earlier part of this conversation", attributed to a person
+   * who never typed it, followed by an assistant "Understood; continuing from the briefing."
+   * The single most consequential event in a session appeared in its record as a forgery and
+   * nowhere as itself.
+   *
+   * `droppedMessages` comes from the on-disk marker and is absent for a transcript whose
+   * marker could not be read; the briefing is always available, since it IS the message.
+   */
+  | { kind: 'compaction'; summary: string; droppedMessages?: number }
 
 export interface SendParams {
   text: string

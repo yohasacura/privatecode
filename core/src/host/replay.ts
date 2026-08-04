@@ -2,6 +2,7 @@ import { appendFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChatMessage } from '../llama/types.js'
 import { PRIVATE_DIR } from '../private-dir.js'
+import { COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX } from '../session/compaction.js'
 import type { TranscriptEntry } from './protocol.js'
 
 /**
@@ -90,15 +91,56 @@ function assumedOk(content: string): boolean {
   return !content.startsWith('Not run:') && !content.startsWith('Not executed:')
 }
 
+/**
+ * The two synthetic messages a compaction swap inserts, recognised so they can be shown as
+ * what they are.
+ *
+ * Recognition is by the briefing's own opening line rather than by position, because
+ * position is not reliable: `load()` slices at the LAST marker, so the pair is usually at
+ * the front, but a transcript assembled any other way would put it anywhere. The prefix is
+ * a constant this codebase writes itself, exported from `compaction.ts` for exactly this.
+ *
+ * The `assistant` acknowledgement that follows is dropped rather than rendered: it is the
+ * other half of one synthetic round-trip, and a model that "said" it never generated a word.
+ */
+function briefingIn(message: ChatMessage): string | null {
+  if (message.role !== 'user' || typeof message.content !== 'string') return null
+  if (!message.content.startsWith(COMPACTION_BRIEFING_PREFIX)) return null
+  return message.content.slice(COMPACTION_BRIEFING_PREFIX.length).trim()
+}
+
+function isCompactionAck(message: ChatMessage): boolean {
+  return message.role === 'assistant' && message.content === COMPACTION_ACK_TEXT
+}
+
 export function replayEntries(
   messages: readonly ChatMessage[],
   outcomes: ReadonlyMap<string, boolean> = new Map(),
+  /** The swap the transcript opens on, from `SessionStore.load`. Only its `droppedMessages`
+   * is used; everything else the card shows is recoverable from the messages themselves. */
+  compaction: { droppedMessages: number } | null = null,
 ): TranscriptEntry[] {
   const entries: TranscriptEntry[] = []
   const nameById = new Map<string, string>()
   let step = 0
+  // Only the FIRST briefing takes the marker's count. A transcript containing two would mean
+  // a file whose slice point moved, and the marker describes exactly one of them; guessing
+  // which for the others would be inventing numbers.
+  let markerSpent = false
 
   for (const message of messages) {
+    if (isCompactionAck(message)) continue
+    const briefing = briefingIn(message)
+    if (briefing !== null) {
+      entries.push({
+        kind: 'compaction',
+        summary: briefing,
+        ...(compaction !== null && !markerSpent ? { droppedMessages: compaction.droppedMessages } : {}),
+      })
+      markerSpent = true
+      continue
+    }
+
     switch (message.role) {
       case 'system':
         break

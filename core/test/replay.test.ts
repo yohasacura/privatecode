@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import type { ChatMessage } from '../src/llama/types.js'
 import { recordToolOutcome, replayEntries, toolOutcomes } from '../src/host/replay.js'
+import { COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX } from '../src/session/compaction.js'
 
 /**
  * Showing a session you resumed.
@@ -155,5 +156,71 @@ describe('whether each call worked', () => {
     writeFileSync(file, 'x', 'utf8')
     expect(() => recordToolOutcome(file, 's3', 'c1', true)).not.toThrow()
     expect(toolOutcomes(file, 's3').size).toBe(0)
+  })
+})
+
+/**
+ * A compaction is the most consequential thing that happens to a session, and it used to
+ * come back from disk as a forgery: the briefing is carried in a `user` message so the model
+ * reads it as instruction, so a literal replay attributed five thousand characters of
+ * "Session briefing from the earlier part of this conversation" to the person, who had
+ * written none of it — and said nothing anywhere about a compaction having happened.
+ */
+describe('a compaction in a restored conversation', () => {
+  const briefing = (body: string): ChatMessage =>
+    ({ role: 'user', content: `${COMPACTION_BRIEFING_PREFIX}\n${body}` })
+  const ack = (): ChatMessage => ({ role: 'assistant', content: COMPACTION_ACK_TEXT })
+
+  test('the briefing is a compaction, not something the user said', () => {
+    const entries = replayEntries([
+      { role: 'system', content: 'you are an agent' },
+      briefing('# Continuation Briefing\n1. Task state: half done.'),
+      ack(),
+      user('carry on'),
+    ], new Map(), { droppedMessages: 214 })
+
+    expect(entries).toEqual([
+      {
+        kind: 'compaction',
+        summary: '# Continuation Briefing\n1. Task state: half done.',
+        droppedMessages: 214,
+      },
+      { kind: 'user', text: 'carry on' },
+    ])
+  })
+
+  test('the synthetic acknowledgement is not shown as something the model said', () => {
+    // It is the other half of one synthetic round-trip; the model never generated a word of
+    // it. Rendered, it reads as the assistant answering a message the user never sent.
+    const entries = replayEntries([briefing('x'), ack()])
+    expect(entries.filter((e) => e.kind === 'assistant')).toEqual([])
+  })
+
+  test('without the marker the briefing still shows, just without a count', () => {
+    // The count lives only in the on-disk marker. The briefing IS the message, so a
+    // transcript replayed with no marker (an older file, or `sessions.read` on one) loses
+    // the number and nothing else.
+    const entries = replayEntries([briefing('x')])
+    expect(entries[0]).toEqual({ kind: 'compaction', summary: 'x' })
+  })
+
+  test('the count is claimed by one briefing only', () => {
+    // The marker describes exactly ONE swap — the one the live messages open on. A
+    // transcript carrying two briefings must not report the same count for both, which
+    // would be inventing a number for the other.
+    const entries = replayEntries(
+      [briefing('first'), ack(), briefing('second'), ack()],
+      new Map(),
+      { droppedMessages: 9 },
+    )
+    expect(entries).toEqual([
+      { kind: 'compaction', summary: 'first', droppedMessages: 9 },
+      { kind: 'compaction', summary: 'second' },
+    ])
+  })
+
+  test('a user message that merely mentions compaction is still the user talking', () => {
+    const entries = replayEntries([user('why did the session briefing vanish?')])
+    expect(entries[0]).toEqual({ kind: 'user', text: 'why did the session briefing vanish?' })
   })
 })

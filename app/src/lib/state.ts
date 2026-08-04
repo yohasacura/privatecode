@@ -296,6 +296,15 @@ export type ChatAction =
     reason?: 'nothing-to-gain'
     detail?: { beforeTokens: number; afterTokens: number; summary: string; keptMessages: number }
   }
+  /**
+   * A compaction read back off disk, NOT one happening now.
+   *
+   * Separate from `compaction` on purpose: that action also sets `lastCompaction`, which the
+   * status bar renders as a self-clearing flash. Restoring through it would announce
+   * "compacted — N messages summarised" every time a compacted session was opened, about
+   * something that happened days ago. A record in the transcript is history; a flash is news.
+   */
+  | { type: 'compaction-restored'; summary: string; droppedMessages?: number }
   | { type: 'approval.request'; requestId: string; tool: string; summary: string; detail: string; suggestedRules: string[] }
   /** Fired locally by `approvals.tsx` the instant the user clicks Allow/Deny -- BEFORE the
    * `approval.reply` RPC even resolves. This is what makes "pending -> answered" a
@@ -379,6 +388,12 @@ function restoreAction(entry: TranscriptEntry): ChatAction {
     case 'tool-result':
       return { type: 'tool.result', name: entry.name, ok: entry.ok, content: entry.content }
     case 'assistant': return { type: 'assistant.text', text: entry.text }
+    case 'compaction':
+      return {
+        type: 'compaction-restored',
+        summary: entry.summary,
+        ...(entry.droppedMessages !== undefined ? { droppedMessages: entry.droppedMessages } : {}),
+      }
   }
 }
 
@@ -708,6 +723,21 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         ...state,
         session: state.session ? { ...state.session, mode: action.mode } : state.session,
       }
+
+    case 'compaction-restored': {
+      // No token sizes: they were live measurements of a moment that is over, and the file
+      // records only the briefing and how many messages it replaced. The card shows what is
+      // known rather than defaulting the rest to zero — which is precisely how a real
+      // 214-message compaction once came back as "0 → 0 (0% freed)".
+      const item: ChatItem = {
+        kind: 'compaction-record',
+        id: state.nextId,
+        state: 'applied',
+        summary: action.summary,
+        ...(action.droppedMessages !== undefined ? { droppedMessages: action.droppedMessages } : {}),
+      }
+      return { ...state, items: [...state.items, item], nextId: state.nextId + 1 }
+    }
 
     case 'compaction': {
       const next = {

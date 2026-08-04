@@ -606,3 +606,47 @@ describe('reduceChat: transcript-restored', () => {
     expect(run([{ type: 'transcript-restored', entries: [] }]).items).toEqual([])
   })
 })
+
+describe('reduceChat: a compaction read back off disk', () => {
+  it('lands as a record in the transcript, carrying the briefing', () => {
+    const state = run([
+      {
+        type: 'transcript-restored',
+        entries: [
+          { kind: 'compaction', summary: '# Continuation Briefing', droppedMessages: 214 },
+          { kind: 'user', text: 'carry on' },
+        ],
+      },
+    ])
+    expect(state.items).toEqual([
+      {
+        kind: 'compaction-record',
+        id: 1,
+        state: 'applied',
+        summary: '# Continuation Briefing',
+        droppedMessages: 214,
+      },
+      { kind: 'user', id: 2, text: 'carry on' },
+    ])
+  })
+
+  it('records no token sizes, because none were ever written down', () => {
+    // The before/after numbers were live measurements of a moment that is over. Defaulting
+    // them to zero is exactly how a real 214-message compaction once displayed as
+    // "0 → 0 (0% freed)"; absent is the only honest value.
+    const [item] = run([
+      { type: 'transcript-restored', entries: [{ kind: 'compaction', summary: 'x' }] },
+    ]).items
+    expect(item).toEqual({ kind: 'compaction-record', id: 1, state: 'applied', summary: 'x' })
+  })
+
+  it('does not flash the status bar about something that happened days ago', () => {
+    // `lastCompaction` drives a self-clearing "compacted — N messages summarised" flash.
+    // Restoring through the live `compaction` action would fire it on every launch of a
+    // session that had ever been compacted. A record is history; a flash is news.
+    const state = run([
+      { type: 'transcript-restored', entries: [{ kind: 'compaction', summary: 'x' }] },
+    ])
+    expect(state.lastCompaction).toBeNull()
+  })
+})

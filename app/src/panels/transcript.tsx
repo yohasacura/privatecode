@@ -209,23 +209,31 @@ function CompactionRecord({ item }: { item: Extract<ChatItem, { kind: 'compactio
     )
   }
 
-  const before = item.beforeTokens ?? 0
-  const after = item.afterTokens ?? 0
-  const freed = before > 0 ? Math.round((1 - after / before) * 100) : 0
+  // Every number here is optional, and a missing one is NOT zero. A restored compaction has
+  // only its briefing and the count from the on-disk marker -- the before/after sizes were
+  // measurements of a moment that has passed and were never written down. Defaulting them to
+  // zero is what printed "0 → 0 (0% freed)" over a real 214-message compaction, so each
+  // clause now appears only when there is something true to put in it.
+  const { beforeTokens: before, afterTokens: after, droppedMessages: dropped } = item
+  const sizes = before !== undefined && after !== undefined && before > 0
+    ? <> — <b>{tokens(before)} → {tokens(after)}</b> ({Math.round((1 - after / before) * 100)}% freed)</>
+    : null
   return (
     <Row kind="record record-compaction" marker={Icon.check()}>
       <button class="compaction-head" onClick={() => setOpen((o) => !o)}>
         <span class="record-text">
-          compacted — <b>{tokens(before)} → {tokens(after)}</b> ({freed}% freed),
-          {' '}{item.droppedMessages ?? 0} message{(item.droppedMessages ?? 0) === 1 ? '' : 's'} replaced
-          by a briefing, {item.keptMessages ?? 0} kept as they were
+          compacted{sizes}
+          {dropped !== undefined && (
+            <>{sizes ? ',' : ' —'} {dropped} message{dropped === 1 ? '' : 's'} replaced by a briefing</>
+          )}
+          {item.keptMessages !== undefined && <>, {item.keptMessages} kept as they were</>}
         </span>
         <span class="compaction-toggle">{open ? 'hide the briefing' : 'what it kept'}</span>
       </button>
       {open && (
         <div class="compaction-body">
           <div class="compaction-note">
-            From here on the model reads this instead of the conversation above it.
+            From here on the model reads this briefing instead of the conversation it replaced.
           </div>
           <pre class="compaction-summary">{item.summary ?? '(the briefing was not recorded)'}</pre>
         </div>
