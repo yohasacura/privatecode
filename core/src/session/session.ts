@@ -176,6 +176,15 @@ const SUMMARY_OUTPUT_RESERVE = 8_000
 const SUMMARY_MAX_INPUT_TOKENS = 40_000
 
 /**
+ * The share of the window a compaction may leave occupied by kept-verbatim recent messages.
+ *
+ * A fifth, so a compacted session starts with room to work rather than one turn from the
+ * ceiling again. Measured before this: keeping six messages by count alone left 111.7k of
+ * 131.1k, and the very next turn was back at the wall.
+ */
+const TAIL_SHARE = 0.2
+
+/**
  * How much room a turn needs beyond what the transcript already occupies: the user's message
  * plus a few steps of tool results and reasoning.
  *
@@ -1183,7 +1192,14 @@ export class Session {
    */
   private applyCompactionSwap(summary: string): boolean {
     const keepRecent = this.opts.compaction?.keepRecent ?? 6
-    const { tail, droppedMessages } = selectCompactionTail(this.transcript.messages(), keepRecent)
+    // The kept tail is capped by SIZE as well as by count. Six messages carrying whole
+    // files left 111.7k of a 131.1k window in place — a compaction that bought one turn.
+    const tailBudget = this.opts.compaction?.contextLength === undefined
+      ? 0
+      : Math.floor(this.opts.compaction.contextLength * TAIL_SHARE)
+    const { tail, droppedMessages } = selectCompactionTail(
+      this.transcript.messages(), keepRecent, tailBudget,
+    )
 
     const next = new Transcript()
     next.append({

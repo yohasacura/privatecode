@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { buildCompactionRequest, fitForSummary } from '../src/session/compaction.js'
+import { buildCompactionRequest, fitForSummary, selectCompactionTail } from '../src/session/compaction.js'
 import type { ChatMessage } from '../src/llama/types.js'
 import { LlamaRequestError } from '../src/llama/client.js'
 import { contextOverflowTokens } from '../src/session/session.js'
@@ -81,6 +81,40 @@ describe('fitting a summary request into the window', () => {
   test('a transcript that is nothing but head and tail still comes back whole', () => {
     const tiny: ChatMessage[] = [msg('system', 'S'), msg('user', 'A'), msg('assistant', 'B')]
     expect(fitForSummary(tiny, 1)).toEqual(tiny)
+  })
+})
+
+/**
+ * What a compaction LEAVES behind.
+ *
+ * Measured in the app: keeping six messages by count alone left 111.7k of a 131.1k window,
+ * because those six carried whole files. A compaction that frees 14% has bought one turn.
+ */
+describe('the tail a compaction keeps', () => {
+  /** Six small messages, then one enormous one — a whole-file tool result. */
+  const heavy: ChatMessage[] = [
+    msg('system', 'SYS'),
+    ...Array.from({ length: 20 }, (_, i) => msg('user', `OLD-${i}`)),
+    { role: 'assistant', content: `HUGE ${'y'.repeat(400_000)}` } as ChatMessage,
+    msg('user', 'LATEST'),
+  ]
+
+  test('by count alone, one giant message drags the whole thing along', () => {
+    const { tail } = selectCompactionTail(heavy, 6)
+    const kept = tail.reduce((sum, m) => sum + Math.ceil((m.content?.length ?? 0) / 4), 0)
+    expect(kept).toBeGreaterThan(90_000)
+  })
+
+  test('with a size cap it does not, and the most recent message still survives', () => {
+    const { tail } = selectCompactionTail(heavy, 6, 26_000)
+    const kept = tail.reduce((sum, m) => sum + Math.ceil((m.content?.length ?? 0) / 4), 0)
+    expect(kept).toBeLessThan(26_000)
+    // What was last asked is the one thing a continuation cannot do without.
+    expect(tail.at(-1)?.content).toContain('LATEST')
+  })
+
+  test('no cap is the old behaviour exactly', () => {
+    expect(selectCompactionTail(heavy, 6)).toEqual(selectCompactionTail(heavy, 6, 0))
   })
 })
 

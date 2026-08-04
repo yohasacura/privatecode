@@ -249,10 +249,30 @@ function isCleanTailStart(m: ChatMessage): boolean {
  * as-is, since there is nothing more conservative to walk back to.
  */
 export function selectCompactionTail(
-  messages: readonly ChatMessage[], keepRecent: number,
+  messages: readonly ChatMessage[], keepRecent: number, maxTailTokens = 0,
 ): CompactionTail {
   const floor = messages.length > 0 && messages[0]!.role === 'system' ? 1 : 0
-  const desiredStart = Math.max(floor, messages.length - keepRecent)
+  let desiredStart = Math.max(floor, messages.length - keepRecent)
+
+  // A COUNT is the wrong unit on its own. Six messages of prose is nothing; six messages
+  // carrying whole files is a hundred thousand tokens, and a compaction that leaves 85% of
+  // the context in place has not compacted. Measured in the app: 130.2k -> 111.7k, which
+  // bought one more turn.
+  //
+  // So the count is a ceiling and the budget is the other one: drop from the FRONT of the
+  // intended tail until it fits, always keeping the most recent message, which carries what
+  // was last asked.
+  if (maxTailTokens > 0) {
+    let spent = 0
+    for (let i = messages.length - 1; i >= desiredStart; i--) {
+      spent += approxTokensOf(messages[i]!)
+      if (spent > maxTailTokens && i < messages.length - 1) {
+        desiredStart = i + 1
+        break
+      }
+    }
+  }
+
   let start = desiredStart
   while (start > floor && !isCleanTailStart(messages[start]!)) start--
   // `start - floor` excludes the old leading system message from the count -- `floor` is
