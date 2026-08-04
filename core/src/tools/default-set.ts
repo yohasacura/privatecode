@@ -14,25 +14,35 @@ import { TodoStore } from '../interaction.js'
 import { todoWriteTool } from './todo-write.js'
 import { askUserTool } from './ask-user.js'
 import { symbolOutlineTool } from './symbol-outline.js'
+import { browserTool } from './browser.js'
+import { BrowserManager, type BrowserOptions } from '../browser/manager.js'
 
 export interface Toolset {
   registry: ToolRegistry
   /** Owned by the host: call stopAll() on shutdown so no orphan processes survive. */
   background: BackgroundTasks
   todos: TodoStore
+  /** Owned by the host in the same way: call close() on shutdown. Lazy — constructing it
+   * starts no browser, so a session that never opens a page never pays for one. */
+  browser: BrowserManager
 }
 
-export function createToolset(): Toolset {
+export interface ToolsetOptions {
+  browser?: BrowserOptions
+}
+
+export function createToolset(opts: ToolsetOptions = {}): Toolset {
   const registry = new ToolRegistry()
   const background = new BackgroundTasks()
   const todos = new TodoStore()
+  const browser = new BrowserManager(opts.browser ?? {})
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
-                   symbolOutlineTool]) {
+                   symbolOutlineTool, browserTool]) {
     registry.register(t)
   }
-  return { registry, background, todos }
+  return { registry, background, todos, browser }
 }
 
 /** Back-compat for existing callers/tests that only need the registry. */

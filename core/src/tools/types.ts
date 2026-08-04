@@ -1,12 +1,15 @@
 import type { Workspace } from '../workspace.js'
 import type { InteractionPort, TodoStore } from '../interaction.js'
 import type { FormatRunner } from '../format/runner.js'
+import type { BrowserManager } from '../browser/manager.js'
 
 export interface ToolContext {
   workspace: Workspace
   signal?: AbortSignal
   interaction?: InteractionPort
   todos?: TodoStore
+  /** The browser, when this host provides one. Lazy: holding it starts nothing. */
+  browser?: BrowserManager
   /** The project's formatter, when one is configured. Absent means "no formatting", which
    * is the normal case. See `format/runner.ts` for why this runs inside the write tools
    * rather than as an after-tool hook. */
@@ -80,8 +83,19 @@ export interface Tool<A> {
    */
   validate(raw: unknown): Validation<A>
   execute(args: A, ctx: ToolContext): Promise<ToolResult>
-  /** Return a permission key for this invocation; used by the permission system. */
-  permissionKey?(args: A): PermissionKey
+  /**
+   * Return a permission key for this invocation; used by the permission system.
+   *
+   * `ctx` is offered for a tool whose key depends on state the arguments do not carry — the
+   * browser keys most of its actions on the page that is currently open, not on anything
+   * the model wrote. Every other implementation declares one parameter and ignores it,
+   * which satisfies this type fine.
+   *
+   * Optional, so a caller that has no context (a test, a tool inspecting its own key) can
+   * still ask for one. An implementation that reads `ctx` must therefore tolerate its
+   * absence rather than assume the agent loop is the only caller.
+   */
+  permissionKey?(args: A, ctx?: ToolContext): PermissionKey
   /**
    * Return human-readable text for approvals. `ctx` is offered for a tool that needs it
    * (e.g. to describe a path relative to the workspace root) but every current

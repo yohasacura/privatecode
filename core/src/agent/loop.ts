@@ -549,7 +549,8 @@ export class Agent {
     try {
       const engine = this.opts.permissions
       if (engine) {
-        const key: PermissionKey = prepared.tool.permissionKey?.(prepared.args) ?? { tool: name }
+        const key: PermissionKey =
+          prepared.tool.permissionKey?.(prepared.args, this.toolContext()) ?? { tool: name }
         const decision = engine.decide(key)
         if (decision.verdict === 'deny') {
           return { ok: false, content: `Not run. ${decision.reason}` }
@@ -628,7 +629,8 @@ export class Agent {
     // engine does properly, before.
     const hooks = this.opts.hooks
     if (!hooks) return result
-    const key: PermissionKey = prepared.tool.permissionKey?.(prepared.args) ?? { tool: name }
+    const key: PermissionKey =
+      prepared.tool.permissionKey?.(prepared.args, this.toolContext()) ?? { tool: name }
     return hooks.afterTool(key, result, this.opts.context.signal)
   }
 

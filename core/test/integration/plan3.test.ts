@@ -10,6 +10,7 @@ import { COMPACTION_BRIEFING_PREFIX } from '../../src/session/compaction.js'
 import { Session, type CompactionEvent } from '../../src/session/session.js'
 import { SessionStore } from '../../src/session/store.js'
 import { BackgroundTasks } from '../../src/tools/background-task.js'
+import { BrowserManager } from '../../src/browser/manager.js'
 import { createToolset, buildRegistry, type Toolset } from '../../src/tools/default-set.js'
 import { ToolRegistry } from '../../src/tools/registry.js'
 import { Workspace } from '../../src/workspace.js'
@@ -342,6 +343,7 @@ describe.runIf(enabled)('Plan 3 live acceptance suite', () => {
         registry: new ToolRegistry(),
         background: new BackgroundTasks(),
         todos: new TodoStore(),
+        browser: new BrowserManager(),
       }
       const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })
       const compactionEvents: CompactionEvent[] = []
