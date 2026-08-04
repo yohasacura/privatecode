@@ -43,6 +43,8 @@ import type {
   FsReadParams,
   FsReadResult,
   FsTreeEntry,
+  FsFindParams,
+  FsFindResult,
   FsTreeParams,
   FsTreeResult,
   HostEventMap,
@@ -71,6 +73,8 @@ import type {
 } from './protocol.js'
 import { loadUiConfig, saveUiConfig } from './ui-config.js'
 import { recordToolOutcome, replayEntries, toolOutcomes } from './replay.js'
+import { rankFiles, walkFiles } from './file-search.js'
+import { attachFiles } from './attachments.js'
 
 /**
  * What `SessionHost` needs from whatever carries its messages to the UI: fire-and-forget
@@ -155,6 +159,9 @@ export class SessionHost {
   // Set once by init(); reused by every later sessions.new/resume/send/fs.*/status call.
   // A second init() call rebuilds all five from scratch (see init()'s own doc comment).
   private workspaceRoot: string | undefined
+  /** Built once per workspace on the first `fs.find`; see that method for why it is not
+   * rebuilt per keystroke. Cleared by `init`, which replaces the whole host state. */
+  private fileIndex: string[] | undefined
   private workspace: Workspace | undefined
   private client: LlamaClient | undefined
   private toolset: Toolset | undefined
@@ -273,6 +280,7 @@ export class SessionHost {
       case 'approval.reply': return this.approvalReply(params as ApprovalReplyParams)
       case 'question.reply': return this.questionReply(params as QuestionReplyParams)
       case 'fs.tree': return this.fsTree((params ?? {}) as FsTreeParams)
+      case 'fs.find': return this.fsFind(params as FsFindParams)
       case 'fs.read': return this.fsRead(params as FsReadParams)
       case 'status': return this.status()
       case 'commands.list': return this.commandsList()
@@ -322,6 +330,7 @@ export class SessionHost {
     await this.stopExternal()
 
     this.workspaceRoot = params.workspaceRoot
+    this.fileIndex = undefined
     this.workspace = new Workspace(params.workspaceRoot)
     this.client = new LlamaClient({ baseUrl: params.serverUrl, model: MODEL })
     const browserSettings = loadBrowserSettings(params.workspaceRoot)
@@ -575,9 +584,14 @@ export class SessionHost {
       // serves every front end, and the app's transcript keeps showing what the user
       // typed while the model receives the whole template. A `/name` matching no command
       // expands to null and is sent verbatim -- most lines starting with `/` are a path.
-      const { workspaceRoot } = this.requireInitialized()
+      const { workspaceRoot, workspace } = this.requireInitialized()
       const expanded = expandCommand(workspaceRoot, params.text)
-      const running = session.send(expanded?.text ?? params.text, this.currentAbort.signal)
+      // Attachments are added AFTER command expansion, so `@file` works with a slash
+      // command too, and each problem (missing, clipped, over budget) is emitted on the
+      // channel the app already renders rather than being swallowed.
+      const attached = await attachFiles(workspace, params.attach ?? [], expanded?.text ?? params.text)
+      for (const note of attached.notes) this.emit('settings.problem', { text: note })
+      const running = session.send(attached.text, this.currentAbort.signal)
       this.currentTurn = running
       const result = await running
       const turn: TurnSummary = {
@@ -739,6 +753,22 @@ export class SessionHost {
 
   /** `params.path` omitted (or `''`) lists the workspace root itself -- `Workspace.resolve`
    * already treats `''`/`'.'`/`'./'` as the root. */
+  /**
+   * Fuzzy file lookup for the composer's `@` picker and the palette.
+   *
+   * The walk is cached for the life of a workspace: it fires on every keystroke, and a
+   * repository is not going to grow a new file between two of them often enough to justify
+   * re-walking. `init` replaces the whole host state anyway, and a file created mid-session
+   * appears after the next workspace open — a picker that is one file stale is a far smaller
+   * cost than one that stats the tree sixty times a minute.
+   */
+  private async fsFind(params: FsFindParams): Promise<FsFindResult> {
+    const { workspaceRoot } = this.requireInitialized()
+    this.fileIndex ??= await walkFiles(workspaceRoot)
+    const limit = Math.min(Math.max(params.limit ?? 20, 1), 100)
+    return { paths: rankFiles(this.fileIndex, params.query, limit).map((m) => m.path) }
+  }
+
   private async fsTree(params: FsTreeParams): Promise<FsTreeResult> {
     const { workspace } = this.requireInitialized()
     const abs = workspace.resolve(params.path ?? '')

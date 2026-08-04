@@ -4,6 +4,7 @@ import type { AgentMode } from '@core/permissions/engine'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatAction, ChatState } from '../lib/state'
 import { formatDuration } from '../lib/format'
+import { applyMention, mentionAtCaret, type Mention } from '../lib/mentions'
 import { Icon } from '../components/icons'
 
 /**
@@ -45,8 +46,21 @@ export function Composer({
    * Typing a follow-up while the agent works is the normal thing to do on a long run, so
    * the promise is the part worth keeping.
    */
-  const [queued, setQueued] = useState<string | null>(null)
+  const [queued, setQueued] = useState<{ text: string; attach: string[] } | null>(null)
   const [pendingAutopilot, setPendingAutopilot] = useState(false)
+  /**
+   * Files picked with `@`, and the open picker's state.
+   *
+   * `attached` is what the PICKER added, never a re-parse of the text: `@Component`,
+   * `@media` and an email address are all `@something`, and silently attaching a file
+   * because a decorator happened to name one would be the worst kind of surprise. What
+   * actually gets sent is `attached` filtered by what is still written in the box, so
+   * deleting the mention un-attaches the file, which is the obvious way to undo it.
+   */
+  const [attached, setAttached] = useState<string[]>([])
+  const [mention, setMention] = useState<Mention | null>(null)
+  const [mentionHits, setMentionHits] = useState<string[]>([])
+  const [mentionPick, setMentionPick] = useState(0)
   /** The user's own slash commands. Re-fetched whenever the box starts with `/`, because
    * these are files edited by hand while the app is open. */
   const [commands, setCommands] = useState<{ name: string; description: string }[]>([])
@@ -94,6 +108,30 @@ export function Composer({
     ? []
     : commands.filter((c) => c.name.startsWith(slashPrefix)).slice(0, 8)
 
+  useEffect(() => {
+    if (mention === null) { setMentionHits([]); return }
+    let cancelled = false
+    client.call('fs.find', { query: mention.query, limit: 8 })
+      .then((r) => { if (!cancelled) { setMentionHits(r.paths); setMentionPick(0) } })
+      .catch(() => { if (!cancelled) setMentionHits([]) })
+    return () => { cancelled = true }
+  }, [client, mention?.query])
+
+  /** Replaces the `@…` being typed with the chosen path, and remembers the attachment. */
+  function choose(path: string): void {
+    const el = textareaRef.current
+    if (!el || mention === null) return
+    const next = applyMention(input, mention, el.selectionStart ?? input.length, path)
+    setInput(next.text)
+    setAttached((a) => (a.includes(path) ? a : [...a, path]))
+    setMention(null)
+    requestAnimationFrame(() => { el.focus(); el.setSelectionRange(next.caret, next.caret) })
+  }
+
+  /** What will actually be sent: a picked file counts only while its mention is still
+   * written in the box. */
+  const liveAttachments = attached.filter((p) => input.includes(`@${p}`))
+
   // Grow with the content up to a cap, then scroll -- a fixed two-line box makes writing a
   // real instruction (which is most of them) an exercise in scrolling blind.
   useEffect(() => {
@@ -115,7 +153,7 @@ export function Composer({
   useEffect(() => {
     if (state.turnRunning || queued === null) return
     setQueued(null)
-    submit(queued)
+    submit(queued.text, queued.attach)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- submit is recreated per render
   }, [state.turnRunning, queued])
 
@@ -154,17 +192,25 @@ export function Composer({
   function send(): void {
     const text = input.trim()
     if (text === '') return
+    // A queued message carries its OWN attachments. Leaving them in the shared picker state
+    // meant the files you picked for the NEXT message were cleared when the queued one
+    // finally drained.
+    const attach = liveAttachments
     if (state.turnRunning) {
       // Appended, not replaced: two thoughts typed during one long turn are both worth
       // keeping, and losing one silently is the bug this whole thing exists to fix.
-      setQueued((q) => (q === null ? text : `${q}\n${text}`))
+      setQueued((q) => (q === null
+        ? { text, attach }
+        : { text: `${q.text}\n${text}`, attach: [...new Set([...q.attach, ...attach])] }))
       setInput('')
+      setAttached([])
+      setMention(null)
       return
     }
-    submit(text)
+    submit(text, attach)
   }
 
-  function submit(text: string): void {
+  function submit(text: string, attach: string[] = []): void {
     if (text.length > MAX_SEND_CHARS) {
       dispatch({
         type: 'send-failed',
@@ -175,9 +221,11 @@ export function Composer({
       return
     }
     setInput('')
+    setAttached([])
+    setMention(null)
     dispatch({ type: 'user-message', text })
     dispatch({ type: 'turn-started' })
-    client.call('send', { text }).catch((e: unknown) => {
+    client.call('send', { text, ...(attach.length > 0 ? { attach } : {}) }).catch((e: unknown) => {
       dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
     })
   }
@@ -279,13 +327,47 @@ export function Composer({
         </div>
       )}
 
+      {mention !== null && mentionHits.length > 0 && (
+        <div class="command-picker">
+          {mentionHits.map((path, i) => (
+            <button
+              key={path}
+              class={`command-item ${i === mentionPick ? 'command-item-on' : ''}`}
+              onMouseEnter={() => setMentionPick(i)}
+              onClick={() => choose(path)}
+            >
+              <span class="command-icon">{Icon.file()}</span>
+              <span class="command-desc" title={path}>{path}</span>
+            </button>
+          ))}
+          <div class="picker-hint">
+            <kbd>↑↓</kbd> pick · <kbd>↵</kbd> attach · the file's contents go with your message
+          </div>
+        </div>
+      )}
+
+      {liveAttachments.length > 0 && (
+        <div class="attach-row">
+          {liveAttachments.map((path) => (
+            <span key={path} class="attach-chip" title={`${path} is sent with this message`}>
+              {Icon.file()}
+              <span class="attach-name">{path}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
       {queued !== null && (
         <div class="queued-note">
           <span class="queued-label">Queued</span>
-          <span class="queued-text" title={queued}>{queued}</span>
+          <span class="queued-text" title={queued.text}>{queued.text}</span>
           <button
             class="queued-edit"
-            onClick={() => { setInput((i) => (i === '' ? queued : `${queued}\n${i}`)); setQueued(null) }}
+            onClick={() => {
+              setInput((i) => (i === '' ? queued.text : `${queued.text}\n${i}`))
+              setAttached((a) => [...new Set([...a, ...queued.attach])])
+              setQueued(null)
+            }}
             title="Put it back in the box"
           >
             edit
@@ -307,8 +389,47 @@ export function Composer({
           class="composer-input"
           value={input}
           rows={1}
-          onInput={(e) => setInput(e.currentTarget.value)}
+          onInput={(e) => {
+            const el = e.currentTarget
+            setInput(el.value)
+            setMention(mentionAtCaret(el.value, el.selectionStart ?? el.value.length))
+          }}
+          // The caret can move without the text changing, and an `@` two words back is no
+          // longer the one you are typing.
+          onKeyUp={(e) => {
+            const el = e.currentTarget
+            if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') {
+              setMention(mentionAtCaret(el.value, el.selectionStart ?? el.value.length))
+            }
+          }}
+          onClick={(e) => {
+            const el = e.currentTarget
+            setMention(mentionAtCaret(el.value, el.selectionStart ?? el.value.length))
+          }}
           onKeyDown={(e) => {
+            const picking = mention !== null && mentionHits.length > 0
+            if (picking) {
+              // Escape closes the picker and STOPS THERE: the window's Escape listener
+              // aborts the running turn, and dismissing a dropdown is not a request to
+              // stop the agent.
+              if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setMention(null); return }
+              if (e.key === 'ArrowDown') {
+                e.preventDefault()
+                setMentionPick((i) => (i + 1) % mentionHits.length)
+                return
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault()
+                setMentionPick((i) => (i - 1 + mentionHits.length) % mentionHits.length)
+                return
+              }
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault()
+                const path = mentionHits[mentionPick]
+                if (path !== undefined) choose(path)
+                return
+              }
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               send()

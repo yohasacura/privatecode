@@ -1091,6 +1091,42 @@ kbd {
 .command-item:hover { background: var(--bg-hover); color: var(--text); }
 .command-name { font-family: var(--mono); color: var(--accent); flex: none; }
 .command-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-icon { display: flex; flex: none; color: var(--text-faint); align-self: center; }
+.command-icon .icon { width: 13px; height: 13px; }
+/* Keyboard selection, which is the way this picker is actually used -- the mouse is a
+   fallback, so hover and the arrow keys drive the same highlight. */
+.command-item-on { background: var(--bg-hover); color: var(--text); }
+.picker-hint {
+  padding: 5px 11px 6px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.picker-hint kbd { font-size: 9.5px; padding: 0 4px; }
+
+/* Files going with the next message. Present only while their `@mention` is still written
+   in the box, so deleting the mention is how you take one back. */
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-width: var(--read);
+  margin: 0 auto 7px;
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.attach-chip .icon { width: 12px; height: 12px; color: var(--accent); }
+.attach-name { max-width: 42ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .queued-note {
   display: flex;

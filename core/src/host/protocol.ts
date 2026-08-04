@@ -117,7 +117,17 @@ export type TranscriptEntry =
   | { kind: 'tool-result'; name: string; ok: boolean; content: string }
   | { kind: 'assistant'; text: string }
 
-export interface SendParams { text: string }
+export interface SendParams {
+  text: string
+  /**
+   * Workspace-relative paths the user attached with `@`. Read host-side and placed before
+   * the text, so the model does not spend a step on a `read_file` for a path the person
+   * already knew. Budgeted — see `attachFiles` — and every path still goes through the
+   * workspace jail, because protocol params are not trusted just because a picker produced
+   * them.
+   */
+  attach?: string[]
+}
 export interface SendResult { turn: TurnSummary }
 
 export type AbortParams = Empty
@@ -145,6 +155,11 @@ export type ApprovalReplyResult = Empty
 
 export interface QuestionReplyParams { requestId: string; answer: string }
 export type QuestionReplyResult = Empty
+
+/** Fuzzy file lookup for the composer's `@` picker and the command palette. Not the model's
+ * `find_files`, which takes a glob: a person typing `@stat` is half-remembering a name. */
+export interface FsFindParams { query: string; limit?: number }
+export interface FsFindResult { paths: string[] }
 
 export interface FsTreeEntry { name: string; dir: boolean }
 /** Jailed to the workspace root, like every other path the sidecar accepts from the UI. */
@@ -272,6 +287,7 @@ export interface HostMethodMap {
   'approval.reply': { params: ApprovalReplyParams; result: ApprovalReplyResult }
   'question.reply': { params: QuestionReplyParams; result: QuestionReplyResult }
   'fs.tree': { params: FsTreeParams; result: FsTreeResult }
+  'fs.find': { params: FsFindParams; result: FsFindResult }
   'fs.read': { params: FsReadParams; result: FsReadResult }
   status: { params: StatusParams; result: StatusResult }
   'commands.list': { params: CommandsListParams; result: CommandsListResult }
