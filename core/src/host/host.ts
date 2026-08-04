@@ -74,6 +74,8 @@ import type {
   SendResult,
   SessionsListResult,
   SessionsNewResult,
+  SessionsReadParams,
+  SessionsReadResult,
   SessionsResumeParams,
   SessionsResumeResult,
   SessionsSearchParams,
@@ -346,6 +348,7 @@ export class SessionHost {
       case 'sessions.list': return this.sessionsList()
       case 'sessions.new': return this.sessionsNew()
       case 'sessions.resume': return this.sessionsResume(params as SessionsResumeParams)
+      case 'sessions.read': return this.sessionsRead(params as SessionsReadParams)
       case 'sessions.search': return this.sessionsSearch(params as SessionsSearchParams)
       case 'compact': return this.compact()
       case 'approval.reply': return this.approvalReply(params as ApprovalReplyParams)
@@ -650,6 +653,25 @@ export class SessionHost {
       items: resumeId === undefined
         ? []
         : replayEntries(session.messages(), toolOutcomes(workspaceRoot, session.id)),
+    }
+  }
+
+  /**
+   * One stored session, read off disk, with nothing about the live one disturbed.
+   *
+   * Deliberately does NOT go through `switchSession`: that aborts the running turn, which is
+   * the whole reason browsing used to cost you your work. Nothing here touches `this.session`,
+   * the abort controller, or the pending interactions.
+   */
+  private sessionsRead(params: SessionsReadParams): SessionsReadResult {
+    const { store, workspaceRoot } = this.requireInitialized()
+    const { meta, transcript } = store.load(params.id)
+    return {
+      sessionId: meta.id,
+      title: meta.title,
+      mode: meta.mode,
+      updatedAt: meta.updatedAt,
+      items: replayEntries(transcript.messages(), toolOutcomes(workspaceRoot, meta.id)),
     }
   }
 

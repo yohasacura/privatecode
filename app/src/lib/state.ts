@@ -148,11 +148,27 @@ export interface SessionInfo {
   title: string
 }
 
+/**
+ * A stored session being READ while another one keeps working.
+ *
+ * Browsing used to cost you the running turn, because selecting a session and becoming it
+ * were one action. They are two: this is the one you are looking at, `session` is the one the
+ * composer talks to, and the running turn's events keep folding into `items` the whole time —
+ * so coming back shows everything that happened while you were away.
+ */
+export interface ViewedSession {
+  sessionId: string
+  title: string
+  items: ChatItem[]
+}
+
 export interface ChatState {
   items: ChatItem[]
   turnRunning: boolean
   currentStep: StepTiming | null
   lastStepDone: LastStepStats | null
+  /** Null means the view IS the live session. */
+  viewing: ViewedSession | null
   /** Monotonic counter backing every `ChatItem.id` -- deterministic and reducer-owned
    * (not a module-level global) so two independent `reduceChat` call chains in the same
    * test file never collide on ids. */
@@ -202,7 +218,7 @@ export interface ChatState {
 
 export function initialChatState(): ChatState {
   return {
-    items: [], turnRunning: false, currentStep: null, lastStepDone: null, nextId: 1,
+    items: [], turnRunning: false, currentStep: null, lastStepDone: null, viewing: null, nextId: 1,
     pendingApproval: null, pendingQuestion: null, todos: [], session: null, lastCompaction: null,
     problems: [], pendingDecisions: 0, run: null, lastRun: null,
   }
@@ -243,6 +259,10 @@ export type ChatAction =
    * `session-switched` that cleared the view. Folded through this same reducer one entry at
    * a time (see the case), so history is assembled by the code that assembles the present. */
   | { type: 'transcript-restored'; entries: readonly TranscriptEntry[] }
+  /** Look at a stored session without becoming it. The live session keeps running and keeps
+   * accumulating into `items`. */
+  | { type: 'viewing-started'; sessionId: string; title: string; entries: readonly TranscriptEntry[] }
+  | { type: 'viewing-ended' }
   | { type: 'mode-changed'; mode: AgentMode }
   | { type: 'compaction'; state: CompactionState; droppedMessages?: number }
   | { type: 'approval.request'; requestId: string; tool: string; summary: string; detail: string; suggestedRules: string[] }
@@ -398,6 +418,24 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
      * between them would otherwise accumulate into one wall of text. The step number is the
      * boundary, so a change in it closes the open block.
      */
+    case 'viewing-started':
+      // Assembled by the SAME folding that assembles a resumed session, run against a
+      // scratch state so the live session's items are not touched. A second renderer for
+      // "history you are only looking at" would be a second thing to keep in step.
+      return {
+        ...state,
+        viewing: {
+          sessionId: action.sessionId,
+          title: action.title,
+          items: reduceChat(initialChatState(), {
+            type: 'transcript-restored', entries: action.entries,
+          }).items,
+        },
+      }
+
+    case 'viewing-ended':
+      return { ...state, viewing: null }
+
     case 'transcript-restored': {
       let next = state
       for (const entry of action.entries) {

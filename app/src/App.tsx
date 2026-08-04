@@ -287,6 +287,33 @@ export default function App() {
     if (typeof result === 'string') setWorkspaceInput(result)
   }
 
+  /**
+   * Read a stored session without becoming it: the live one keeps running, and its events
+   * keep folding into the state behind this view.
+   *
+   * Clicking the session that IS live simply ends the reading and shows it again.
+   */
+  function viewSession(c: ProtocolClient, id: string): void {
+    if (id === chatState.session?.sessionId) { dispatch({ type: 'viewing-ended' }); return }
+    c.call('sessions.read', { id })
+      .then((r) => dispatch({
+        type: 'viewing-started', sessionId: r.sessionId, title: r.title, entries: r.items,
+      }))
+      .catch((e: Error) => dispatch({ type: 'send-failed', message: e.message }))
+  }
+
+  /** Become the session being read. Called from the composer, on send, and nowhere else. */
+  async function adoptViewed(): Promise<void> {
+    const id = chatState.viewing?.sessionId
+    if (client === null || id === undefined) return
+    const r = await client.call('sessions.resume', { id })
+    onSessionSwitched({
+      sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
+      problems: r.problems, items: r.items, contextUsed: r.contextUsed,
+    })
+    setSessionsKey((k) => k + 1)
+  }
+
   function onSessionSwitched(info: SessionSwitch): void {
     dispatch({ type: 'session-switched', ...info })
     if (info.items.length > 0) dispatch({ type: 'transcript-restored', entries: info.items })
@@ -399,7 +426,10 @@ export default function App() {
                     client={client}
                     workspaceRoot={workspaceRoot}
                     activeSessionId={chatState.session?.sessionId ?? null}
+                    viewingSessionId={chatState.viewing?.sessionId ?? null}
+                    turnRunning={chatState.turnRunning}
                     onSessionSwitched={onSessionSwitched}
+                    onView={(id) => viewSession(client, id)}
                     onOpenSettings={() => setSettingsOpen(true)}
                     reloadKey={sessionsKey}
                   />
@@ -414,6 +444,7 @@ export default function App() {
                 state={chatState}
                 dispatch={dispatch}
                 onOpenFile={openFileFromTranscript}
+                onBackToLive={() => dispatch({ type: 'viewing-ended' })}
               />
               {chatState.problems.length > 0 && (
                 <div class="problem-strip">
@@ -430,7 +461,13 @@ export default function App() {
                   </button>
                 </div>
               )}
-              <Composer client={client} state={chatState} dispatch={dispatch} modalOpen={settingsOpen} />
+              <Composer
+                client={client}
+                state={chatState}
+                dispatch={dispatch}
+                modalOpen={settingsOpen}
+                onAdoptViewed={adoptViewed}
+              />
             </main>
 
             {contextShown && (

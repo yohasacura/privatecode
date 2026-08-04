@@ -41,12 +41,19 @@ type SessionMeta = {
 }
 
 export function SessionsRail({
-  client, workspaceRoot, activeSessionId, onSessionSwitched, onOpenSettings, reloadKey,
+  client, workspaceRoot, activeSessionId, viewingSessionId, turnRunning,
+  onSessionSwitched, onView, onOpenSettings, reloadKey,
 }: {
   client: ProtocolClient
   workspaceRoot: string
+  /** The session the composer talks to — the one that is, or can be, working. */
   activeSessionId: string | null
+  /** The session being READ, when that is not the active one. */
+  viewingSessionId: string | null
+  turnRunning: boolean
   onSessionSwitched: (info: SessionSwitch) => void
+  /** Clicking a session READS it. Becoming it happens when you send — see the composer. */
+  onView: (id: string) => void
   onOpenSettings: () => void
   /** Bumped by the shell whenever the session set may have changed (a turn finished, so a
    * title may have been written; a session was created). */
@@ -79,13 +86,10 @@ export function SessionsRail({
     })))
   }
 
-  function resume(id: string): void {
-    if (id === activeSessionId) return
-    switchTo(client.call('sessions.resume', { id }).then((r) => ({
-      sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
-      problems: r.problems, items: r.items, contextUsed: r.contextUsed,
-    })))
-  }
+  // No `resume` here any more. Clicking a session used to BECOME it, which tore down the
+  // live session and aborted whatever turn was running: "let me glance at yesterday" and
+  // "abandon what I am doing" were the same click. Now the click reads, and sending is what
+  // commits to the switch.
 
   return (
     <div class="rail">
@@ -109,13 +113,28 @@ export function SessionsRail({
         {sessions?.map((s) => (
           <button
             key={s.id}
-            class={`rail-item ${s.id === activeSessionId ? 'rail-item-active' : ''}`}
-            onClick={() => resume(s.id)}
+            class={[
+              'rail-item',
+              s.id === activeSessionId ? 'rail-item-active' : '',
+              // The one you are LOOKING at, when that is not the one that works.
+              s.id === viewingSessionId && s.id !== activeSessionId ? 'rail-item-viewing' : '',
+            ].filter(Boolean).join(' ')}
+            onClick={() => onView(s.id)}
             disabled={busy}
-            title={s.title || '(untitled)'}
+            title={s.id === activeSessionId
+              ? `${s.title || '(untitled)'}\nthis is the session that works`
+              : `${s.title || '(untitled)'}\nclick to read it — the running session keeps going`}
           >
             <span class="rail-item-title">{s.title || '(untitled)'}</span>
             <span class="rail-item-meta">
+              {s.id === activeSessionId && (
+                <span
+                  class={`rail-item-live ${turnRunning ? 'rail-item-live-busy' : ''}`}
+                  title={turnRunning ? 'working right now' : 'the active session'}
+                >
+                  {turnRunning ? 'working' : 'active'}
+                </span>
+              )}
               {relativeTime(s.updatedAt)}
               <span class={`rail-item-mode mode-${s.mode}`}>{s.mode}</span>
             </span>

@@ -29,13 +29,16 @@ const MODES: readonly { value: AgentMode; label: string; hint: string }[] = [
 const MAX_SEND_CHARS = 500_000
 
 export function Composer({
-  client, state, dispatch, modalOpen,
+  client, state, dispatch, modalOpen, onAdoptViewed,
 }: {
   client: ProtocolClient
   state: ChatState
   dispatch: (action: ChatAction) => void
   /** A dialog is on screen and owns Escape. See the keydown effect below. */
   modalOpen: boolean
+  /** Become the session currently being read. Called by `send()` and nowhere else: the
+   * message is what commits to the switch. */
+  onAdoptViewed: () => Promise<void>
 }): VNode {
   const [input, setInput] = useState('')
   /**
@@ -132,6 +135,15 @@ export function Composer({
    * written in the box. */
   const liveAttachments = attached.filter((p) => input.includes(`@${p}`))
 
+  /**
+   * Reading an earlier session WHILE the live one is mid-turn.
+   *
+   * Sending here would tear the running session down — the exact thing the rail no longer
+   * does behind a click, so it must not happen behind a keystroke either. The wait is short
+   * and it is visible; the alternative is losing a turn you are in the middle of.
+   */
+  const blockedByRun = state.viewing !== null && state.turnRunning
+
   // Grow with the content up to a cap, then scroll -- a fixed two-line box makes writing a
   // real instruction (which is most of them) an exercise in scrolling blind.
   useEffect(() => {
@@ -192,6 +204,25 @@ export function Composer({
   function send(): void {
     const text = input.trim()
     if (text === '') return
+
+    // Reading an earlier session, and about to write into it: SENDING is what commits to the
+    // switch. Clicking a session in the rail only reads it, so the running one keeps going;
+    // this is the moment you said you wanted it instead. Guarded above by the composer being
+    // disabled while a turn is still running — becoming another session tears the live one
+    // down, and doing that behind a keystroke is the bug this whole change removes.
+    if (blockedByRun) return
+    if (state.viewing !== null) {
+      const pending = { text, attach: liveAttachments }
+      setInput('')
+      setAttached([])
+      setMention(null)
+      onAdoptViewed()
+        .then(() => submit(pending.text, pending.attach))
+        .catch((e: unknown) => {
+          dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
+        })
+      return
+    }
     // A queued message carries its OWN attachments. Leaving them in the shared picker state
     // meant the files you picked for the NEXT message were cleared when the queued one
     // finally drained.
@@ -435,9 +466,13 @@ export function Composer({
               send()
             }
           }}
-          placeholder={state.turnRunning
-            ? 'Type your next message — it is sent when this turn ends. Esc stops.'
-            : 'Ask for a change, a review, or an explanation'}
+          placeholder={blockedByRun
+            ? 'Reading an earlier session. Wait for the running turn, or go back to it, then write here to continue this one.'
+            : state.viewing !== null
+              ? 'Write here to continue this session from now on — the current one stops being the active one'
+              : state.turnRunning
+                ? 'Type your next message — it is sent when this turn ends. Esc stops.'
+                : 'Ask for a change, a review, or an explanation'}
         />
 
         <div class="composer-bar">
@@ -483,8 +518,12 @@ export function Composer({
           <button
             class={`composer-send ${state.turnRunning ? 'composer-send-stop' : ''}`}
             onClick={state.turnRunning ? abort : send}
-            disabled={!state.turnRunning && input.trim() === ''}
-            title={state.turnRunning ? 'Stop this turn (Esc)' : 'Send (Enter)'}
+            disabled={(!state.turnRunning && input.trim() === '') || blockedByRun}
+            title={state.turnRunning
+              ? 'Stop this turn (Esc)'
+              : state.viewing !== null
+                ? `Send here and continue "${state.viewing.title || 'this session'}" from now on`
+                : 'Send (Enter)'}
           >
             {state.turnRunning ? Icon.stop() : Icon.send()}
           </button>

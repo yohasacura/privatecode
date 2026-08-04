@@ -142,6 +142,53 @@ describe('reduceChat: step reset', () => {
     expect(restored.lastStepDone?.tokensPerSecond).toBeUndefined()
   })
 
+  /**
+   * Browsing used to cost you the running turn, because selecting a session and BECOMING it
+   * were one click. They are two now, and the part that matters is what happens to the live
+   * session while you read: nothing.
+   */
+  it('reading an earlier session leaves the live one accumulating behind it', () => {
+    const live = run([
+      { type: 'user-message', text: 'do the thing' },
+      { type: 'turn-started' },
+    ])
+    const reading = reduceChat(live, {
+      type: 'viewing-started',
+      sessionId: 'older',
+      title: 'yesterday',
+      entries: [{ kind: 'user', text: 'what did I ask then' }],
+    })
+    expect(reading.viewing?.items.map((i) => i.kind)).toEqual(['user'])
+    // The live transcript is untouched, and the turn is still running.
+    expect(reading.items).toEqual(live.items)
+    expect(reading.turnRunning).toBe(true)
+
+    // Events that arrive while reading still land in the live session, not in the view.
+    const later = reduceChat(reading, { type: 'assistant.text', text: 'done' })
+    expect(later.viewing?.items.map((i) => i.kind)).toEqual(['user'])
+    expect(later.items.length).toBe(live.items.length + 1)
+
+    // And going back shows what happened meanwhile.
+    const back = reduceChat(later, { type: 'viewing-ended' })
+    expect(back.viewing).toBeNull()
+    expect(back.items.length).toBe(live.items.length + 1)
+  })
+
+  it('becoming a session ends the reading', () => {
+    const reading = reduceChat(initialChatState(), {
+      type: 'viewing-started', sessionId: 'older', title: 'yesterday', entries: [],
+    })
+    expect(reading.viewing).not.toBeNull()
+    const adopted = reduceChat(reading, {
+      type: 'session-switched',
+      sessionId: 'older',
+      mode: 'normal',
+      contextLength: null,
+      title: 'yesterday',
+    })
+    expect(adopted.viewing).toBeNull()
+  })
+
   it('prefers the server\'s own count over the estimate when this process has one', () => {
     const restored = reduceChat(initialChatState(), {
       type: 'session-switched',

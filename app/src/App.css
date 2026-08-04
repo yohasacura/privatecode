@@ -118,6 +118,8 @@ kbd {
   .reasoning-live .row-gutter { animation: none; }
   .caret { animation: none; }
   .composer-shell-live .composer-activity { animation: none; background: var(--accent); }
+  /* Its resting state, not a frozen frame: "working" still has to READ as working. */
+  .rail-item-live-busy { animation: none; opacity: 1; }
 }
 
 /* ---------------------------------------------------------------------- controls ----- */
@@ -2093,4 +2095,50 @@ kbd {
   font-size: 11px;
   line-height: 1.5;
   color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------------------------------
+   Reading an earlier session while another one works.
+
+   A bar rather than a tint: the transcript below it looks exactly like a live one, and the
+   difference -- that nothing you type goes here yet -- is the kind of thing that has to be
+   said in words, not implied by a colour.
+   --------------------------------------------------------------------------------------- */
+.viewing-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.viewing-icon { color: var(--accent); flex: none; display: flex; }
+.viewing-text { flex: 1; line-height: 1.45; }
+.viewing-text b { color: var(--text); font-weight: 600; }
+
+/* Which session actually works, said in the rail. "active" and "working" are different
+   facts and the second one changes minute to minute, so it gets the animation. */
+.rail-item-live {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--bg-active);
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+.rail-item-live-busy {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+  animation: workingPulse 1.6s ease-in-out infinite;
+}
+@keyframes workingPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+/* The one you are READING, when that is not the one that works. */
+.rail-item-viewing {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }

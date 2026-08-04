@@ -44,12 +44,14 @@ import { DecisionsCard } from './decisions'
  */
 
 export function Transcript({
-  client, state, dispatch, onOpenFile,
+  client, state, dispatch, onOpenFile, onBackToLive,
 }: {
   client: ProtocolClient
   state: ChatState
   dispatch: (action: ChatAction) => void
   onOpenFile: (path: string) => void
+  /** Stop reading an earlier session and go back to the one that works. */
+  onBackToLive: () => void
 }): VNode {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -76,14 +78,31 @@ export function Transcript({
     ? lastItem.id
     : null
 
+  // Reading an earlier session shows ITS conversation; the live one keeps accumulating into
+  // `state.items` behind this view, so going back shows everything that happened meanwhile.
+  const viewing = state.viewing
+  const shown = viewing === null ? state.items : viewing.items
+
   return (
     <div class="transcript-wrap">
-      <TodosCard todos={state.todos} />
+      {viewing !== null && (
+        <div class="viewing-bar">
+          <span class="viewing-icon" aria-hidden="true">{Icon.chat()}</span>
+          <span class="viewing-text">
+            Reading <b>{viewing.title || '(untitled)'}</b>. The active session is still
+            {state.turnRunning ? ' working' : ' where your messages go'} — write below to
+            continue this one instead.
+          </span>
+          <button class="btn btn-small" onClick={onBackToLive}>Back to the active session</button>
+        </div>
+      )}
+
+      {viewing === null && <TodosCard todos={state.todos} />}
 
       <div class="transcript" ref={scrollRef}>
-        {state.items.length === 0 && !state.turnRunning
+        {shown.length === 0 && !state.turnRunning
           ? <EmptyState />
-          : state.items.map((item) => (
+          : shown.map((item) => (
             item.id === suppressedId
               ? null
               : <TranscriptRow key={item.id} item={item} onOpenFile={onOpenFile} client={client} />

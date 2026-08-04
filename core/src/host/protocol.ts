@@ -157,6 +157,23 @@ export type SessionsNewParams = Empty
 /** Same shape as `init`'s result -- a fresh session, described the same way. */
 export type SessionsNewResult = InitResult
 
+/**
+ * READS a stored session without becoming it.
+ *
+ * `sessions.resume` is a switch: it tears down the live session, which aborts whatever turn
+ * is running. That made "let me glance at yesterday's conversation" and "abandon what I am
+ * doing" the same click. This is the other half — the transcript, off disk, with the running
+ * session untouched.
+ */
+export interface SessionsReadParams { id: string }
+export interface SessionsReadResult {
+  sessionId: string
+  title: string
+  mode: AgentMode
+  updatedAt: string
+  items: TranscriptEntry[]
+}
+
 export interface SessionsResumeParams { id: string }
 /** Same shape as `init`'s result -- see `SessionsNewResult`. */
 export type SessionsResumeResult = InitResult
@@ -382,6 +399,7 @@ export interface HostMethodMap {
   'sessions.list': { params: SessionsListParams; result: SessionsListResult }
   'sessions.new': { params: SessionsNewParams; result: SessionsNewResult }
   'sessions.resume': { params: SessionsResumeParams; result: SessionsResumeResult }
+  'sessions.read': { params: SessionsReadParams; result: SessionsReadResult }
   'sessions.search': { params: SessionsSearchParams; result: SessionsSearchResult }
   'workspace.get': { params: WorkspaceGetParams; result: WorkspaceGetResult }
   'workspace.set': { params: WorkspaceSetParams; result: WorkspaceSetResult }
