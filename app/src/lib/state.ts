@@ -99,11 +99,19 @@ export type ChatItem =
   | {
     kind: 'compaction-record'
     id: number
-    beforeTokens: number
-    afterTokens: number
-    droppedMessages: number
-    keptMessages: number
-    summary: string
+    /**
+     * Every compaction ends in one of these, and every one of them is SHOWN.
+     *
+     * The three that are not `applied` used to be silent: a `/compact` that could not help
+     * cleared the box and printed nothing at all, which reads as the app ignoring you. An
+     * operation that occupies the model for minutes and then changes nothing has to say so.
+     */
+    state: 'running' | 'applied' | 'skipped' | 'failed'
+    beforeTokens?: number
+    afterTokens?: number
+    droppedMessages?: number
+    keptMessages?: number
+    summary?: string
   }
 
 /** The turn-paused card `approvals.tsx` renders above the input while the sidecar awaits
@@ -705,19 +713,45 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           state: action.state, droppedMessages: action.droppedMessages, seq: (state.lastCompaction?.seq ?? 0) + 1,
         },
       }
-      // A record in the transcript, at the point in the conversation where it happened —
-      // which is the only place it means anything.
-      if (action.state !== 'applied' || action.detail === undefined) return next
-      const item: ChatItem = {
-        kind: 'compaction-record',
-        id: state.nextId,
-        beforeTokens: action.detail.beforeTokens,
-        afterTokens: action.detail.afterTokens,
-        droppedMessages: action.droppedMessages ?? 0,
-        keptMessages: action.detail.keptMessages,
-        summary: action.detail.summary,
+
+      // ONE row per compaction, live from the moment it starts, updated in place to whatever
+      // it turns out to be. In the transcript rather than the status bar, because it happens
+      // at a point in the conversation and means nothing away from it — and because a status
+      // line that outlives its event is what made this look stuck in the first place.
+      if (action.state === 'started') {
+        const item: ChatItem = { kind: 'compaction-record', id: state.nextId, state: 'running' }
+        return { ...next, items: [...state.items, item], nextId: state.nextId + 1 }
       }
-      return { ...next, items: [...state.items, item], nextId: state.nextId + 1 }
+      // `ready` is the summary arriving, not the swap landing: nothing to say yet.
+      if (action.state === 'ready') return next
+
+      const outcome: 'applied' | 'skipped' | 'failed' = action.state === 'applied'
+        ? 'applied'
+        : action.state === 'postponed' ? 'skipped' : 'failed'
+      let updated = false
+      const items: ChatItem[] = [...state.items].reverse().map((item): ChatItem => {
+        if (updated || item.kind !== 'compaction-record' || item.state !== 'running') return item
+        updated = true
+        return {
+          ...item,
+          state: outcome,
+          ...(action.droppedMessages !== undefined ? { droppedMessages: action.droppedMessages } : {}),
+          ...(action.detail ?? {}),
+        }
+      }).reverse()
+      // No live row to close — a compaction whose 'started' this window never saw, because
+      // it was opened mid-flight. The outcome is still worth a row of its own.
+      if (!updated) {
+        const item: ChatItem = {
+          kind: 'compaction-record',
+          id: state.nextId,
+          state: outcome,
+          ...(action.droppedMessages !== undefined ? { droppedMessages: action.droppedMessages } : {}),
+          ...(action.detail ?? {}),
+        }
+        return { ...next, items: [...state.items, item], nextId: state.nextId + 1 }
+      }
+      return { ...next, items }
     }
 
     default: {

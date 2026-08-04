@@ -356,19 +356,11 @@ export function Composer({
       )
     }
     if (state.turnRunning) {
-      // A compaction over a full context is minutes of a single non-streaming request:
-      // nothing streams, no step starts, and the only thing on screen was the word
-      // "working". But it is only TRUE while no step is in flight — `lastCompaction` is the
-      // last event seen, not a live flag, and a 'started' with no terminal event after it
-      // (the sidecar was restarted mid-generation) left this line up forever, next to a
-      // running step. Seen in a screenshot: "compacting…" beside step 2.
-      if (!step && state.lastCompaction?.state === 'started') {
-        return (
-          <span class="status-live">
-            compacting the conversation to fit the context window — this takes a few minutes
-          </span>
-        )
-      }
+      // Nothing about compaction here any more. It has its own live row in the transcript,
+      // which starts when it starts and ends stating what it did — and a status line driven
+      // by `lastCompaction` (the last EVENT seen, not a live flag) is what left "compacting…"
+      // on screen next to a running step, and next to a queued message, with no way to tell
+      // whether anything was happening at all.
       if (!step) return <span class="status-live">{runningTool ? `running ${runningTool}` : 'working'}</span>
       return (
         <span class="status-live">

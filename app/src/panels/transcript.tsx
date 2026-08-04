@@ -170,16 +170,50 @@ export function Transcript({
  */
 function CompactionRecord({ item }: { item: Extract<ChatItem, { kind: 'compaction-record' }> }): VNode {
   const [open, setOpen] = useState(false)
-  const freed = item.beforeTokens > 0
-    ? Math.round((1 - item.afterTokens / item.beforeTokens) * 100)
-    : 0
+
+  if (item.state === 'running') {
+    return (
+      <Row kind="record record-compaction" marker={<span class="pulse-dot" />}>
+        <span class="record-text">
+          compacting the conversation — summarising what happened so far so it fits in the
+          context window. This takes a few minutes on a full one.
+        </span>
+      </Row>
+    )
+  }
+
+  // The two outcomes that change nothing used to print nothing at all, so a `/compact` that
+  // could not help looked exactly like a `/compact` that was ignored.
+  if (item.state === 'skipped') {
+    return (
+      <Row kind="record record-compaction" marker={Icon.alert()}>
+        <span class="record-text">
+          compaction made no difference — the summary would not have been meaningfully
+          smaller than the conversation, so nothing was changed.
+        </span>
+      </Row>
+    )
+  }
+  if (item.state === 'failed') {
+    return (
+      <Row kind="record record-deny" marker={Icon.alert()}>
+        <span class="record-text">
+          compaction failed, and nothing was changed. The conversation is exactly as it was.
+        </span>
+      </Row>
+    )
+  }
+
+  const before = item.beforeTokens ?? 0
+  const after = item.afterTokens ?? 0
+  const freed = before > 0 ? Math.round((1 - after / before) * 100) : 0
   return (
-    <Row kind="record record-compaction" marker={Icon.chat()}>
+    <Row kind="record record-compaction" marker={Icon.check()}>
       <button class="compaction-head" onClick={() => setOpen((o) => !o)}>
         <span class="record-text">
-          compacted — <b>{tokens(item.beforeTokens)} → {tokens(item.afterTokens)}</b> ({freed}% freed),
-          {' '}{item.droppedMessages} message{item.droppedMessages === 1 ? '' : 's'} replaced by a briefing,
-          {' '}{item.keptMessages} kept as they were
+          compacted — <b>{tokens(before)} → {tokens(after)}</b> ({freed}% freed),
+          {' '}{item.droppedMessages ?? 0} message{(item.droppedMessages ?? 0) === 1 ? '' : 's'} replaced
+          by a briefing, {item.keptMessages ?? 0} kept as they were
         </span>
         <span class="compaction-toggle">{open ? 'hide the briefing' : 'what it kept'}</span>
       </button>
@@ -188,7 +222,7 @@ function CompactionRecord({ item }: { item: Extract<ChatItem, { kind: 'compactio
           <div class="compaction-note">
             From here on the model reads this instead of the conversation above it.
           </div>
-          <pre class="compaction-summary">{item.summary}</pre>
+          <pre class="compaction-summary">{item.summary ?? '(the briefing was not recorded)'}</pre>
         </div>
       )}
     </Row>
