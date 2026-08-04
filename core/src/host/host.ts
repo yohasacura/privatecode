@@ -181,6 +181,8 @@ export class SessionHost {
   // Set once by init(); reused by every later sessions.new/resume/send/fs.*/status call.
   // A second init() call rebuilds all five from scratch (see init()'s own doc comment).
   private workspaceRoot: string | undefined
+  /** Kept so a session build can re-probe a server that was still loading at `init`. */
+  private serverUrl: string | undefined
   /** Built once per workspace on the first `fs.find`; see that method for why it is not
    * rebuilt per keystroke. Cleared by `init`, which replaces the whole host state. */
   private fileIndex: string[] | undefined
@@ -399,6 +401,7 @@ export class SessionHost {
     const browserSettings = loadBrowserSettings(params.workspaceRoot)
     this.toolset = createToolset({ browser: browserSettings.options })
     this.store = new SessionStore(params.workspaceRoot)
+    this.serverUrl = params.serverUrl
     this.contextLength = await this.probeContextLength(params.serverUrl)
     this.externalProblems = [
       ...browserSettings.problems,
@@ -516,6 +519,17 @@ export class SessionHost {
   private async buildSession(resumeId: string | undefined): Promise<InitResult> {
     const { client, toolset, store, workspaceRoot } = this.requireInitialized()
 
+    // Re-probed here, and ONLY when the first attempt came back empty.
+    //
+    // The model server takes minutes to load twenty gigabytes off disk, and the window opens
+    // in a second. Probing once in `init` meant that opening the app first — the ordinary
+    // order — left compaction off for the whole life of that workspace, with a warning that
+    // named the symptom and no way back except knowing to re-open the workspace. Now New
+    // session is the cure, and it costs one short GET on a path that is already broken.
+    if (this.contextLength === null && this.serverUrl !== undefined) {
+      this.contextLength = await this.probeContextLength(this.serverUrl)
+    }
+
     const { layers, problems: settingsProblems } = loadLayers(workspaceRoot)
     // Loaded here, beside the settings layers, for the same reason: the Session is handed
     // ready-made state rather than reading files itself.
@@ -591,7 +605,9 @@ export class SessionHost {
     ]
     if (this.contextLength === null) {
       problems.push(
-        'the server did not report a context length (GET /props); automatic compaction is disabled for this session',
+        'the model server did not answer GET /props, so automatic compaction is off for this ' +
+        'session. It is usually still loading — start a new session once it is up and this ' +
+        'goes away.',
       )
     }
     for (const p of problems) this.emit('settings.problem', { text: p })
