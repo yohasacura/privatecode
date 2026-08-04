@@ -46,3 +46,34 @@ test('normal mode still asks rather than denying, so the fix did not widen the d
   expect(engine.decide({ tool: 'write_file', paths: ['a.ts'] }).verdict).toBe('ask')
   expect(engine.decide({ tool: 'run_command', command: 'npm test' }).verdict).toBe('ask')
 })
+
+/**
+ * `.privatecode/` holds the settings this run's own permission rules were loaded from,
+ * plus its saved sessions and (soon) its hooks. A model able to write there could grant
+ * itself permissions. It sits above the rule layers so no rule can unwrite it; reading
+ * stays allowed, because the model is deliberately told to read back its own output logs.
+ */
+test('writes under .privatecode are denied in every mode', () => {
+  for (const mode of ['normal', 'auto-edit', 'autopilot', 'plan'] as const) {
+    const engine = new PermissionEngine({ layers: [], mode, workspaceRoot: root })
+    // String.raw for the Windows separator: this is the spelling the tools actually
+    // receive on this platform, and it must be caught as surely as the forward-slash one.
+    for (const p of ['.privatecode/settings.json', '.privatecode', String.raw`.PrivateCode\hooks.json`,
+                     'a/../.privatecode/settings.json']) {
+      const d = engine.decide({ tool: 'write_file', paths: [p] })
+      expect(d.verdict, `${mode}: ${p}`).toBe('deny')
+      expect(d.source, `${mode}: ${p}`).toBe('builtin')
+    }
+  }
+})
+
+test('reading inside .privatecode stays allowed', () => {
+  const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })
+  expect(engine.decide({ tool: 'read_file', paths: ['.privatecode/logs/run.log'] }).verdict).toBe('allow')
+})
+
+test('a path that merely starts with the same letters is untouched', () => {
+  const engine = new PermissionEngine({ layers: [], mode: 'auto-edit', workspaceRoot: root })
+  expect(engine.decide({ tool: 'write_file', paths: ['privatecode.md'] }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'write_file', paths: ['src/.privatecoded/a.ts'] }).verdict).toBe('allow')
+})

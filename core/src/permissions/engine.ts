@@ -90,6 +90,44 @@ function scopeLabel(scope: SettingsLayer['scope']): string {
 // workspace.ts) is the actual backstop against a tool reaching outside the workspace root
 // regardless of what this engine decides -- this check only hardens the path-bearing half
 // of the deny tier, not a substitute for the jail.
+/** `.privatecode`, `.privatecode/x`, `.PrivateCode\x` -- but not `privatecode.md` or
+ * `src/.privatecoded/`. Case-insensitive because NTFS is. */
+const PRIVATE_DIR_PATH = /^\.privatecode([\\/]|$)/i
+
+/** The same segment anywhere in a path, for the case where canonicalization gave up (an
+ * absolute path, say) and the only honest reading is "this mentions the directory". */
+const ANY_PRIVATE_DIR_SEGMENT = /(^|[\\/])\.privatecode([\\/]|$)/i
+
+/**
+ * Denies a model-issued WRITE anywhere under `.privatecode/`. See `decide`'s doc comment
+ * for why this is a built-in rather than a rule the user writes.
+ *
+ * Canonicalization failure denies too, rather than falling through: a path this engine
+ * cannot reduce to a comparable form is exactly the shape an escape attempt takes, and
+ * the cost of being wrong in that direction is one refused write.
+ */
+function builtinPrivateDirDeny(key: PermissionKey): Decision | null {
+  if (!FILE_WRITE_TOOLS.has(key.tool) || key.paths === undefined) return null
+  const hit = key.paths.some((p) => {
+    // `canonicalizePath` returns null for an absolute path or one it cannot reduce -- it
+    // does not throw. A null is not a pass: an unreducible path is exactly the shape an
+    // escape attempt takes, so fall back to looking for the segment ANYWHERE in the raw
+    // text. The cost of being wrong in this direction is one refused write.
+    const canonical = canonicalizePath(p)
+    if (canonical !== null) return PRIVATE_DIR_PATH.test(canonical)
+    return ANY_PRIVATE_DIR_SEGMENT.test(p)
+  })
+  if (!hit) return null
+  return {
+    verdict: 'deny',
+    source: 'builtin',
+    reason:
+      'Blocked by built-in protection: .privatecode/ holds the permission settings, hooks ' +
+      'and saved sessions this run is operating under, so nothing here may write to it. ' +
+      'Reading is allowed. If a change there is genuinely needed, ask the user to make it.',
+  }
+}
+
 function denyMatchesUncanonicalizablePath(rule: ParsedRule, key: PermissionKey): boolean {
   if (rule.tool !== key.tool || rule.spec === undefined) return false
   if (key.paths === undefined) return false
@@ -178,6 +216,21 @@ export class PermissionEngine {
     return result
   }
 
+  /**
+   * A built-in deny tier for paths, alongside the command-only `HARD_DENY` table.
+   *
+   * `.privatecode/` holds the settings this very session's permission rules were loaded
+   * from, plus (once they exist) its hooks and slash-command templates. A model able to
+   * write there can grant itself permissions, or plant a command in a hook that runs
+   * without ever being offered for approval. That is not a rule the user should have to
+   * remember to write, and it is not one any rule should be able to unwrite -- so it sits
+   * above the layer loops, exactly like the hard-denied commands.
+   *
+   * This costs nothing legitimate: the tool's own sessions and logs are written directly
+   * by the engine, not through a model-issued tool call, so nothing that should work
+   * passes through here. Reading stays allowed -- the model is meant to be able to read
+   * back a log it was told about.
+   */
   decide(key: PermissionKey): Decision {
     if (key.command !== undefined) {
       const normalized = normalizeForHardDeny(key.command)
@@ -190,6 +243,9 @@ export class PermissionEngine {
         }
       }
     }
+
+    const ownState = builtinPrivateDirDeny(key)
+    if (ownState) return ownState
 
     for (const layer of this.layers) {
       const rule = layer.deny.find((r) => ruleMatches(r, key) || denyMatchesUncanonicalizablePath(r, key))
