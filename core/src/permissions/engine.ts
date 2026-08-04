@@ -1,6 +1,13 @@
 import type { RememberLayer } from '../interaction.js'
 import type { PermissionKey } from '../tools/types.js'
-import { canonicalizePath, type ParsedRule, parseRule, ruleMatches, specHasNonCanonicalSyntax } from './rules.js'
+import {
+  canonicalizePath,
+  MCP_TOOL_PREFIX,
+  type ParsedRule,
+  parseRule,
+  ruleMatches,
+  specHasNonCanonicalSyntax,
+} from './rules.js'
 import {
   addRuleToSettings,
   localSettingsPath,
@@ -40,6 +47,70 @@ export const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['edit_file', 'writ
 
 /** Tools whose grantable act is running something outside the workspace jail. */
 export const EXEC_TOOLS: ReadonlySet<string> = new Set(['run_command', 'background_task'])
+
+/** The single browser tool. Named here so the engine does not import the tool module. */
+export const BROWSER_TOOL = 'browser'
+
+// Re-exported so every caller has one place to import the MCP namespace from; it is
+// declared in rules.ts because `ruleMatches` needs it and the dependency only runs one way.
+export { MCP_TOOL_PREFIX }
+
+/**
+ * Tools whose grantable act is reaching something outside this machine's filesystem: an
+ * MCP server, or a web page.
+ *
+ * A predicate, not a `Set`, because MCP tool names are not known until a server has been
+ * contacted -- a fixed set would have to be mutated at runtime by whatever registers them,
+ * and a family whose membership can be edited is not a gate.
+ *
+ * This is also the fix for the defect `docs/DESIGN.md` §6 recorded when MCP was first cut:
+ * `modeDefault` knew two families and auto-allowed everything else, so a tool contributed
+ * by a third-party server -- the least trustworthy code in the process -- would have been
+ * the only ungated one in it.
+ */
+export function isExternalTool(name: string): boolean {
+  return name === BROWSER_TOOL || name.startsWith(MCP_TOOL_PREFIX)
+}
+
+/**
+ * Tools whose `PermissionKey` carries something a rule spec can match: a command, a target
+ * URL, or paths. A spec on anything else can never fire, which is worth telling the user
+ * about (see `specProblem`).
+ */
+function acceptsSpec(tool: string): boolean {
+  // An MCP key carries none of the three: `mcp__x__y(anything)` is always a dead rule.
+  if (tool.startsWith(MCP_TOOL_PREFIX)) return false
+  return FILE_WRITE_TOOLS.has(tool) || EXEC_TOOLS.has(tool) || tool === BROWSER_TOOL
+}
+
+/**
+ * Is this tool's spec a workspace path, as opposed to a command line or a URL? Only path
+ * specs are subject to `specHasNonCanonicalSyntax`: `//` is a red flag in a path and
+ * unremarkable in `run_command(git clone https://...)` or `browser(https://x)`.
+ */
+function specIsPathShaped(tool: string): boolean {
+  return !EXEC_TOOLS.has(tool) && !isExternalTool(tool)
+}
+
+/**
+ * The one problem a rule's spec can earn, or `null` when the spec is fine. Shared by all
+ * three places that validate a rule (settings loading, `addSessionRule`, `remember`) so the
+ * three can never drift apart -- they did drift once, and the cost was an "always allow"
+ * the user believed had taken effect.
+ */
+function specProblem(parsed: ParsedRule, where: string): string | null {
+  if (parsed.spec === undefined) return null
+  if (!acceptsSpec(parsed.tool)) {
+    return `rule "${parsed.raw}" in ${where} has a (${parsed.spec}) qualifier, but ` +
+      `${parsed.tool} calls carry nothing for it to match; the rule can never fire — ` +
+      'use the bare tool name'
+  }
+  if (specIsPathShaped(parsed.tool) && specHasNonCanonicalSyntax(parsed.spec)) {
+    return `rule "${parsed.raw}" in ${where} can never match a workspace path ` +
+      '(non-canonical syntax); rewrite it without ./ .. // or an absolute prefix'
+  }
+  return null
+}
 
 // Amended by the Task-7 review: the original rm/git patterns missed `rm -rfv`,
 // `rm -r -f`, `rm --recursive --force`, `git -C . push`, and `git.exe push`.
@@ -202,15 +273,8 @@ export class PermissionEngine {
         this.problems.push(`ignored malformed rule "${raw}" in ${scopeLabel(scope)}`)
         continue
       }
-      if (parsed.spec !== undefined && !FILE_WRITE_TOOLS.has(parsed.tool) && !EXEC_TOOLS.has(parsed.tool)) {
-        this.problems.push(
-          `rule "${parsed.raw}" in ${scopeLabel(scope)} has a (${parsed.spec}) qualifier, but ${parsed.tool} calls carry no command or paths to match it; the rule can never fire — use the bare tool name`,
-        )
-      } else if (!EXEC_TOOLS.has(parsed.tool) && parsed.spec !== undefined && specHasNonCanonicalSyntax(parsed.spec)) {
-        this.problems.push(
-          `rule "${parsed.raw}" in ${scopeLabel(scope)} can never match a workspace path (non-canonical syntax); rewrite it without ./ .. // or an absolute prefix`,
-        )
-      }
+      const problem = specProblem(parsed, scopeLabel(scope))
+      if (problem !== null) this.problems.push(problem)
       result.push(parsed)
     }
     return result
@@ -313,7 +377,7 @@ export class PermissionEngine {
         // `readOnly: false`, so `registry.readOnlyNames()` never offers one to a
         // plan-mode Agent and decide() is never reached for it. It fires only in the
         // desync case, which is precisely when something must.
-        if (FILE_WRITE_TOOLS.has(key.tool) || EXEC_TOOLS.has(key.tool)) {
+        if (FILE_WRITE_TOOLS.has(key.tool) || EXEC_TOOLS.has(key.tool) || isExternalTool(key.tool)) {
           return { verdict: 'deny', reason: 'plan mode is read-only', source: 'mode' }
         }
         return { verdict: 'allow', reason: 'plan mode', source: 'mode' }
@@ -321,10 +385,14 @@ export class PermissionEngine {
         return { verdict: 'allow', reason: 'autopilot mode', source: 'mode' }
       case 'auto-edit':
         if (FILE_WRITE_TOOLS.has(key.tool)) return { verdict: 'allow', reason: 'auto-edit mode', source: 'mode' }
-        if (EXEC_TOOLS.has(key.tool)) return { verdict: 'ask', reason: 'auto-edit mode', source: 'mode' }
+        // Auto-edit auto-approves EDITS. Running a command and reaching a network service
+        // are the two things it deliberately still asks about.
+        if (EXEC_TOOLS.has(key.tool) || isExternalTool(key.tool)) {
+          return { verdict: 'ask', reason: 'auto-edit mode', source: 'mode' }
+        }
         return { verdict: 'allow', reason: 'auto-edit mode', source: 'mode' }
       case 'normal':
-        if (FILE_WRITE_TOOLS.has(key.tool) || EXEC_TOOLS.has(key.tool)) {
+        if (FILE_WRITE_TOOLS.has(key.tool) || EXEC_TOOLS.has(key.tool) || isExternalTool(key.tool)) {
           return { verdict: 'ask', reason: 'normal mode', source: 'mode' }
         }
         return { verdict: 'allow', reason: 'normal mode', source: 'mode' }
@@ -355,16 +423,9 @@ export class PermissionEngine {
       this.problems.push(`ignored malformed rule "${rule}" from an approval`)
       return
     }
-    if (parsed.spec !== undefined && !FILE_WRITE_TOOLS.has(parsed.tool) && !EXEC_TOOLS.has(parsed.tool)) {
-      this.problems.push(
-        `rule "${parsed.raw}" from an approval has a (${parsed.spec}) qualifier, but ${parsed.tool} calls carry no command or paths to match it; the rule can never fire — use the bare tool name`,
-      )
-      return
-    }
-    if (!EXEC_TOOLS.has(parsed.tool) && parsed.spec !== undefined && specHasNonCanonicalSyntax(parsed.spec)) {
-      this.problems.push(
-        `rule "${parsed.raw}" from an approval can never match a workspace path (non-canonical syntax); rewrite it without ./ .. // or an absolute prefix`,
-      )
+    const problem = specProblem(parsed, 'an approval')
+    if (problem !== null) {
+      this.problems.push(problem)
       return
     }
     this.sessionAllow.push(parsed)
@@ -413,16 +474,9 @@ export class PermissionEngine {
       this.problems.push(`ignored malformed rule "${rule}" from an approval`)
       return
     }
-    if (parsed.spec !== undefined && !FILE_WRITE_TOOLS.has(parsed.tool) && !EXEC_TOOLS.has(parsed.tool)) {
-      this.problems.push(
-        `rule "${parsed.raw}" from an approval has a (${parsed.spec}) qualifier, but ${parsed.tool} calls carry no command or paths to match it; the rule can never fire — use the bare tool name`,
-      )
-      return
-    }
-    if (!EXEC_TOOLS.has(parsed.tool) && parsed.spec !== undefined && specHasNonCanonicalSyntax(parsed.spec)) {
-      this.problems.push(
-        `rule "${parsed.raw}" from an approval can never match a workspace path (non-canonical syntax); rewrite it without ./ .. // or an absolute prefix`,
-      )
+    const problem = specProblem(parsed, 'an approval')
+    if (problem !== null) {
+      this.problems.push(problem)
       return
     }
 

@@ -39,6 +39,18 @@ export interface PermissionKey {
   command?: string
   /** For file tools: workspace-relative paths this call touches. */
   paths?: string[]
+  /**
+   * For tools that reach something outside this machine's filesystem: the resource this
+   * call acts on, as a URL or origin. Matched with the same exact-or-`:*`-prefix semantics
+   * as `command`, so `browser(http://localhost:*)` reads the way a person expects.
+   *
+   * Deliberately NOT `command`, even though the matching is identical: `command` keys are
+   * run through the engine's `HARD_DENY` table first, and those patterns fire on ordinary
+   * URLs — `https://github.com/git/push` matches the git-push pattern and `.../format c:`
+   * matches the format-volume one. Reusing the field would mean a browser could not open a
+   * page whose path happened to contain the word "push".
+   */
+  target?: string
 }
 
 export interface ApprovalPreview {

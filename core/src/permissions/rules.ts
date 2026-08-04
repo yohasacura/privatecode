@@ -13,6 +13,35 @@ export interface ParsedRule {
 
 const TOOL_NAME_RE = /^[a-z_][a-z0-9_]*$/i
 
+/**
+ * The namespace every MCP-contributed tool is registered under: `mcp__<server>__<tool>`.
+ * Declared here rather than in `engine.ts` because `toolNameMatches` below needs it and
+ * the dependency only runs one way (engine.ts imports rules.ts, never the reverse);
+ * `engine.ts` re-exports it so callers have one place to import from.
+ */
+export const MCP_TOOL_PREFIX = 'mcp__'
+
+/**
+ * Does `ruleTool` cover `keyTool`? Normally exact equality — a rule names one tool.
+ *
+ * The one exception is an MCP server rule: `mcp__github` covers every tool that server
+ * contributes (`mcp__github__create_issue`, ...), which is the granularity people actually
+ * want to grant and the one the approval dialog offers as its second suggestion.
+ *
+ * The boundary is the `__` separator, checked explicitly: `mcp__git` does NOT cover
+ * `mcp__github__create_issue`, because `mcp__git__` is not a prefix of it. A bare
+ * `startsWith(ruleTool)` would let a shorter server name silently authorize a longer one's
+ * tools, which is the whole class of bug this function exists to close.
+ *
+ * Scoped to rules that themselves begin with `mcp__`, so no built-in tool name can acquire
+ * prefix semantics by accident.
+ */
+function toolNameMatches(ruleTool: string, keyTool: string): boolean {
+  if (ruleTool === keyTool) return true
+  if (!ruleTool.startsWith(MCP_TOOL_PREFIX)) return false
+  return keyTool.startsWith(`${ruleTool}__`)
+}
+
 // Collapses runs of adjacent `**` segments -- however many, whether directly touching
 // (`a/****b`) or `/`-joined (`a/**/**/b`) -- into a single `**`, since they're
 // equivalent to it. Applied before matching (so `a/**/**/b` behaves like `a/**/b`,
@@ -143,6 +172,54 @@ function commandMatches(spec: string, command: string): boolean {
     return normCmd === prefix || normCmd.startsWith(prefix + ' ')
   }
   return normCmd === normalizeCommand(spec)
+}
+
+// Trim + lowercase, and nothing else. Deliberately NOT `normalizeCommand`: that collapses
+// internal whitespace runs, which is right for a command line and meaningless for a URL
+// (a real space in a URL is %20). Lowercasing matches the rest of this rule language and
+// is correct for the part that decides the boundary -- scheme and host are
+// case-insensitive by spec. It does mean a path rule is case-insensitive too, so
+// `browser(https://x.dev/admin)` also covers `/ADMIN`; that is the same server the user
+// already approved, and the alternative -- a rule that silently fails to match because the
+// model spelled a path differently -- costs a re-approval every time.
+function normalizeTarget(target: string): string {
+  return target.trim().toLowerCase()
+}
+
+// Characters that may follow a `:*` prefix. The prefix must land on a component boundary,
+// so `browser(https://example.dev:*)` covers `https://example.dev/app` and NOT
+// `https://example.dev.evil.com` -- a different host that merely starts the same way, which
+// is the one over-grant that would actually matter.
+//
+// `:` is in the set, which has a consequence worth stating: `https://example.dev:*` also
+// covers `https://example.dev:8443/x`, a different port and therefore a different origin.
+// That is deliberate. The `:*` marker consumes a colon (`http://localhost:*` has the prefix
+// `http://localhost`), so excluding `:` here would make "any port on localhost" -- the single
+// most useful rule a person developing locally can write -- unspellable. What the rule buys
+// in exchange is bounded: a different port on a host the user just approved, on their own
+// machine or one they named. A different HOST is still refused, which is the boundary that
+// carries the security weight.
+const TARGET_BOUNDARY = new Set(['/', '?', '#', ':'])
+
+/**
+ * Matches a rule spec against a `PermissionKey.target` (a URL). Same `:*` prefix marker the
+ * command rules use, with a boundary that understands URLs instead of argv -- `commandMatches`
+ * breaks on a space, and a URL has none.
+ *
+ * A prefix that already ends in a separator (`:` or `/`) matches anything after it, so
+ * `browser(http://localhost:5173/admin/:*)` covers everything below that path.
+ */
+function targetMatches(spec: string, target: string): boolean {
+  const trimmedSpec = spec.trim()
+  const t = normalizeTarget(target)
+  if (!trimmedSpec.endsWith(':*')) return t === normalizeTarget(trimmedSpec)
+
+  const prefix = normalizeTarget(trimmedSpec.slice(0, -2))
+  if (prefix === '') return false // `browser(:*)` would otherwise authorize every URL
+  if (t === prefix) return true
+  if (!t.startsWith(prefix)) return false
+  if (prefix.endsWith(':') || prefix.endsWith('/')) return true
+  return TARGET_BOUNDARY.has(t[prefix.length]!)
 }
 
 // Placeholder used to protect `**` while the surrounding text goes through the
@@ -350,23 +427,28 @@ function pathMatches(spec: string, path: string): boolean {
 
 /**
  * Does `rule` authorize the call described by `key`? A bare rule (no spec) matches
- * every invocation of the same tool. A spec'd rule matches only when the key carries
- * the kind of data the spec describes: a `command` key is matched by prefix/exact
- * command comparison, a `paths` key is matched only if it has at least one path AND
- * every path in it matches the glob (so a move needs both its source and destination
- * covered, and an empty `paths` array fails closed rather than vacuously matching), and
- * a key with neither `command` nor `paths` can never satisfy a spec'd rule. When a key
- * carries BOTH `command` and `paths`, `command` is checked first and wins by design --
- * `paths` is never consulted in that case.
+ * every invocation of the same tool -- or, for an MCP server rule, of every tool that
+ * server contributes (see `toolNameMatches`). A spec'd rule matches only when the key
+ * carries the kind of data the spec describes: a `command` key is matched by prefix/exact
+ * command comparison, a `target` key (a URL, for tools that reach outside the machine) by
+ * the same comparison, a `paths` key only if it has at least one path AND every path in it
+ * matches the glob (so a move needs both its source and destination covered, and an empty
+ * `paths` array fails closed rather than vacuously matching), and a key with none of the
+ * three can never satisfy a spec'd rule. When a key carries more than one, the priority is
+ * `command`, then `target`, then `paths`, and the first one present wins by design -- the
+ * later fields are never consulted in that case.
  */
 export function ruleMatches(rule: ParsedRule, key: PermissionKey): boolean {
-  if (rule.tool !== key.tool) return false
+  if (!toolNameMatches(rule.tool, key.tool)) return false
 
   const spec = rule.spec
   if (spec === undefined) return true
 
   if (key.command !== undefined) {
     return commandMatches(spec, key.command)
+  }
+  if (key.target !== undefined) {
+    return targetMatches(spec, key.target)
   }
   if (key.paths !== undefined) {
     return key.paths.length > 0 && key.paths.every((p) => pathMatches(spec, p))
@@ -386,6 +468,37 @@ function commandSuggestions(tool: string, command: string): string[] {
     suggestions.push(`${tool}(${tokens[0]!}:*)`)
   }
   return suggestions
+}
+
+/**
+ * Most specific first: this exact URL, then everything on this origin.
+ *
+ * The origin is the suggestion that matters -- it is the decision a person can actually
+ * make ("may this agent drive my dev server at localhost:5173") as opposed to one URL at a
+ * time, which would train them to approve reflexively. A target that does not parse as a
+ * URL yields only the exact rule: guessing at an origin we could not extract would offer a
+ * rule that grants more than it appears to.
+ */
+function targetSuggestions(tool: string, target: string): string[] {
+  const suggestions = [`${tool}(${target})`]
+  try {
+    const origin = new URL(target).origin
+    // `origin` is the string "null" for opaque origins (data:, blob:, and — the case that
+    // matters here — about:blank), which is not a prefix of anything.
+    if (origin !== 'null' && origin !== target) suggestions.push(`${tool}(${origin}:*)`)
+  } catch { /* not a URL: the exact rule is the only honest offer */ }
+  return suggestions
+}
+
+/**
+ * `mcp__github__create_issue` -> [that tool, `mcp__github`]. The server rule is what most
+ * people want after the first approval, and `toolNameMatches` makes it mean exactly "every
+ * tool this server contributes". A name with no second separator is malformed (nothing
+ * registers one) and gets only the exact rule rather than a guess.
+ */
+function mcpSuggestions(tool: string): string[] {
+  const cut = tool.indexOf('__', MCP_TOOL_PREFIX.length)
+  return cut === -1 ? [tool] : [tool, tool.slice(0, cut)]
 }
 
 function singlePathSuggestions(tool: string, path: string): string[] {
@@ -453,6 +566,12 @@ function dedupe(items: string[]): string[] {
 export function suggestRules(key: PermissionKey): string[] {
   if (key.command !== undefined) {
     return dedupe(commandSuggestions(key.tool, key.command))
+  }
+  if (key.target !== undefined) {
+    return dedupe(targetSuggestions(key.tool, key.target))
+  }
+  if (key.tool.startsWith(MCP_TOOL_PREFIX)) {
+    return dedupe(mcpSuggestions(key.tool))
   }
   if (key.paths !== undefined && key.paths.length === 1) {
     const canonical = canonicalizePath(key.paths[0]!)
