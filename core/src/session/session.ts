@@ -3,6 +3,8 @@ import { resolve } from 'node:path'
 import { Agent, type AgentEvents, type AgentOptions, type StepInfo, type TurnResult } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
 import { LoopDetector } from '../agent/loop-detector.js'
+import { CheckpointStore, type Checkpoint } from '../checkpoints/store.js'
+import { commandsFrom, WorkLog } from './worklog.js'
 import type { LoadedMemory } from '../memory/project-memory.js'
 import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
@@ -72,6 +74,12 @@ export interface SessionOptions {
   formatRules?: FormatRule[]
   /** After-tool hooks from the settings layers, already parsed by the host. */
   hooks?: HookSpec[]
+  /**
+   * Snapshot the workspace after every turn that changed it, and record what changed in
+   * a work log. Absent means neither happens, which is what every caller that predates
+   * long runs gets — a one-shot task has nothing to review in the morning.
+   */
+  longRun?: boolean
   /** Absent -> the feature is off; see `CompactionOptions`. */
   compaction?: CompactionOptions
   onCompaction?(info: CompactionEvent): void
@@ -238,6 +246,65 @@ export class Session {
     // is exactly the desync a prior review found (Agent would otherwise write the stale
     // value back onto the engine and clobber it).
     if (this.opts.engine) this.opts.engine.mode = this.meta.mode
+
+    // Built here rather than lazily so a long run's very first turn already has a baseline
+    // to diff against -- the "before I touched anything" point is the one a morning rewind
+    // most often wants, and it only exists if it is taken before any work happens.
+    this.checkpoints = opts.longRun ? new CheckpointStore(opts.workspaceRoot) : null
+    this.workLog = opts.longRun ? new WorkLog(opts.workspaceRoot) : null
+  }
+
+  /**
+   * Problems from the long-run machinery, for a host to surface alongside settings problems.
+   * Read after each turn: the store reports lazily, as it discovers git is missing or the
+   * workspace cannot be written.
+   */
+  longRunProblems(): string[] {
+    return [...(this.checkpoints?.problems ?? []), ...(this.workLog?.problems ?? [])]
+  }
+
+  /** The checkpoints taken in this workspace, newest first. Empty when not a long run. */
+  async listCheckpoints(limit?: number): Promise<Checkpoint[]> {
+    return this.checkpoints ? this.checkpoints.list(limit) : []
+  }
+
+  /**
+   * Restores the workspace to a checkpoint and APPENDS a note saying so.
+   *
+   * The append is the whole point and is not bookkeeping: the transcript is append-only by
+   * law, and the model has just been told, in messages it still believes, that it edited
+   * files that no longer contain those edits. Silently restoring the files would leave it
+   * acting on a workspace it thinks it knows. It is told instead.
+   */
+  async rewind(checkpointId: string): Promise<{ restored: Checkpoint; undo: Checkpoint }> {
+    if (!this.checkpoints) throw new Error('this session is not keeping checkpoints')
+    if (this.sending) throw new Error('a turn is running; stop it before rewinding')
+    const result = await this.checkpoints.rewind(checkpointId)
+    this.lastCheckpoint = result.restored
+    this.transcript.append({
+      role: 'user',
+      content:
+        `The workspace was rolled back to checkpoint ${result.restored.id} by the user. ` +
+        'Any file changes you made after that point are gone from disk, whatever earlier ' +
+        `messages say. Re-read any file before editing it. To undo this rollback the user ` +
+        `can restore checkpoint ${result.undo.id}.`,
+    })
+    this.persistIfPossible()
+    return result
+  }
+
+  /** Writes any transcript messages the store has not seen yet. Shared by send() and
+   * rewind(), which both append outside a turn's own persistence path. */
+  private persistIfPossible(): void {
+    const store = this.opts.store
+    if (!store) return
+    const all = this.transcript.messages()
+    const fresh = all.slice(this.persistedCount)
+    if (fresh.length > 0) {
+      store.appendMessages(this.id, fresh)
+      this.persistedCount = all.length
+    }
+    store.saveMeta(this.meta)
   }
 
   get mode(): AgentMode {
@@ -307,7 +374,19 @@ export class Session {
       }
       host?.onStepDone?.(info)
     }
-    return { ...host, onStepDone: captureStepDone }
+    // The work log's "Ran" line is built from what the tools ACTUALLY returned, tapped here
+    // rather than reconstructed from the transcript afterwards: run_command's first result
+    // line carries the real exit code, and the alternative -- trusting the model's prose
+    // about whether the tests passed -- is exactly what the log exists not to do.
+    const captureToolResult = (name: string, result: { ok: boolean; content: string }): void => {
+      if (this.workLog) this.turnCommands.push({ name, args: this.lastToolArgs.get(name) ?? '', content: result.content, ok: result.ok })
+      host?.onToolResult?.(name, result as never)
+    }
+    const captureToolCall = (name: string, args: string): void => {
+      if (this.workLog) this.lastToolArgs.set(name, args)
+      host?.onToolCall?.(name, args)
+    }
+    return { ...host, onStepDone: captureStepDone, onToolCall: captureToolCall, onToolResult: captureToolResult }
   }
 
   /**
@@ -335,6 +414,16 @@ export class Session {
       const note = this.pendingModeNote
       this.pendingModeNote = undefined
       const userText = note ? `${note}\n${text}` : text
+
+      this.turnNumber += 1
+      this.turnCommands = []
+      this.lastToolArgs.clear()
+      // The baseline: the state before this session touched anything. Taken lazily on the
+      // first turn rather than in the constructor, because a session that is only resumed
+      // to be read should not commit anything at all.
+      if (this.checkpoints && this.lastCheckpoint === null) {
+        this.lastCheckpoint = await this.checkpoints.take({})
+      }
 
       const agent = this.buildAgent(signal)
       // Captured AFTER buildAgent() (which may append the system prompt on a fresh
@@ -377,6 +466,8 @@ export class Session {
         store.saveMeta(this.meta)
       }
 
+      await this.recordTurn(text, result)
+
       // Last, so it observes this turn's own final fillRatio (a step just completed above,
       // so latestPromptTokens is as fresh as it will be until the NEXT send()).
       this.maybeStartBackgroundCompaction()
@@ -385,6 +476,38 @@ export class Session {
     } finally {
       this.sending = false
     }
+  }
+
+  /**
+   * Snapshots what the turn changed and writes one work-log entry.
+   *
+   * Runs after persistence and before the compaction trigger, and never throws: a session
+   * whose log or checkpoint failed is worse off, but failing the user's turn over it —
+   * after the work is already done and saved — would be worse still.
+   */
+  private async recordTurn(ask: string, result: TurnResult): Promise<void> {
+    if (!this.checkpoints || !this.workLog) return
+    try {
+      const previous = this.lastCheckpoint
+      const taken = await this.checkpoints.take({ sessionId: this.id, turn: this.turnNumber })
+      if (taken) this.lastCheckpoint = taken
+
+      // Only when something actually changed: `take` returns null for a read-only turn, and
+      // diffing a checkpoint against itself would print an empty stat that reads as an
+      // answer rather than as "nothing happened".
+      const diffStat = taken && previous ? await this.checkpoints.diffStat(previous.id, taken.id) : ''
+
+      this.workLog.append({
+        at: new Date(),
+        turn: this.turnNumber,
+        ask,
+        ...(taken ? { checkpoint: taken.id } : {}),
+        ...(diffStat !== '' ? { diffStat } : {}),
+        commands: commandsFrom(this.turnCommands),
+        ended: result.stoppedBecause,
+        steps: result.steps,
+      })
+    } catch { /* see the doc comment: never at the cost of the turn */ }
   }
 
   /**
@@ -643,6 +766,21 @@ export class Session {
    * turn and is the exact failure an overnight run has to survive.
    */
   private readonly loopDetector = new LoopDetector()
+
+  /** Built only for a long run; see `SessionOptions.longRun`. */
+  private readonly checkpoints: CheckpointStore | null
+  private readonly workLog: WorkLog | null
+  /** The checkpoint the last turn ended on, so the next one can diff against it. */
+  private lastCheckpoint: Checkpoint | null = null
+  /** 1-based, counted by this session rather than read off the transcript: a compaction
+   * swap changes the message count and must not renumber the log. */
+  private turnNumber = 0
+  /** Filled by the event tap during a turn, read and cleared when it ends. */
+  private turnCommands: { name: string; args: string; content: string; ok: boolean }[] = []
+  /** `onToolCall` carries the arguments and `onToolResult` does not, so the last call's
+   * arguments are held here to be paired with its result. One tool runs per step, so a
+   * single slot per name is exact. */
+  private readonly lastToolArgs = new Map<string, string>()
 
   private buildAgent(signal?: AbortSignal): Agent {
     const context: ToolContext = {
