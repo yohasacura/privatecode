@@ -912,7 +912,13 @@ export class Session {
    */
   private composeEvents(host: AgentEvents | undefined): AgentEvents {
     const captureStepDone = (info: StepInfo): void => {
-      if (info.promptTokens !== undefined) this.latestPromptTokens = info.promptTokens
+      if (info.promptTokens !== undefined) {
+        this.latestPromptTokens = info.promptTokens
+        // The moment the truth was measured, in transcript characters. Everything appended
+        // after this — a batched step's tool results above all — is invisible to that
+        // number, and the fill check has to carry the difference itself.
+        this.charsAtPromptCount = this.transcriptChars()
+      }
       // Only when the server actually PROCESSED the prompt, which is what having counted its
       // tokens proves.
       //
@@ -1083,7 +1089,23 @@ export class Session {
         // A continuation, not the same message again: `runTurn` already appended the user's
         // text before the request failed, so it is sitting in the compacted tail. Re-sending
         // it verbatim would put the request in the transcript twice.
-        result = await this.buildAgent(signal).runTurn(OVERFLOW_RETRY_NOTE)
+        try {
+          result = await this.buildAgent(signal).runTurn(OVERFLOW_RETRY_NOTE)
+        } catch (retryError) {
+          const still = contextOverflowTokens(retryError)
+          if (still === null) throw retryError
+          // The retry met the same refusal, which means compaction could not make room —
+          // the protected tail alone is bigger than the window. That state is normally
+          // unreachable now (the loop's per-step result budget bounds what one step can
+          // append), but a session recorded before the budget existed can still resume
+          // into it, and the raw HTTP error it used to escape with sent an unattended run
+          // chasing a server that was answering fine. Named for what it is instead.
+          throw new Error(
+            `the conversation's most recent messages alone are ${still} tokens against a ` +
+            `${this.opts.compaction?.contextLength ?? 'smaller'}-token window, so compaction cannot make room. ` +
+            'Start a new session; this tail cannot be replayed.',
+          )
+        }
       }
       result = await this.verifyAndFix(result, this.writeCount - writesBefore, signal)
 
@@ -1325,8 +1347,15 @@ export class Session {
     // that works at any window size, so skipping here costs nothing.
     if (contextLength < (TOOL_SCHEMA_TOKENS + PRE_TURN_HEADROOM) * 4) return
     // The estimate has to carry what it cannot see, or it reads low exactly when it matters
-    // most. A real server count needs no such correction.
-    const used = this.latestPromptTokens ?? (this.approxTokens() + TOOL_SCHEMA_TOKENS)
+    // most. That is true of BOTH branches now: the server count is ground truth for the
+    // moment it was measured, and everything appended since — a batched step's results
+    // above all — is exactly what it cannot see. Watched at the real window: one step
+    // appended ~198k tokens, the check compared 3,552 against 131,072 and passed, and the
+    // server refused the next request at 201,584.
+    const appendedSince = Math.max(0, this.transcriptChars() - this.charsAtPromptCount)
+    const used = this.latestPromptTokens !== null
+      ? this.latestPromptTokens + Math.ceil(appendedSince / 4)
+      : this.approxTokens() + TOOL_SCHEMA_TOKENS
     if (used + PRE_TURN_HEADROOM < contextLength) return
     await this.compactNow(signal)
   }
@@ -1693,7 +1722,15 @@ export class Session {
    * cache, spent entirely on prefill before a token was produced.
    */
   private promptCacheCold = true
+  /** Transcript size when `latestPromptTokens` was recorded; see `compactIfOverWindow`. */
+  private charsAtPromptCount = 0
   private commandCount = 0
+
+  /** The transcript's current weight in characters, message content plus reasoning. */
+  private transcriptChars(): number {
+    return this.transcript.messages().reduce(
+      (n, m) => n + (m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0), 0)
+  }
 
   /**
    * The port the agent and the tools consult, wrapped for an unattended run.
@@ -1737,6 +1774,15 @@ export class Session {
       loopDetector: this.loopDetector,
     }
     if (this.memoryText !== undefined) agentOpts.memory = this.memoryText
+    // One step may append at most the tail allowance. The two constants are the same
+    // number on purpose: a batched step is atomic to the tail selector (one assistant
+    // message and its N replies cannot be split without invalidating the transcript), so
+    // as long as a step fits the tail budget, compaction can always work AROUND it — and
+    // the moment one may exceed it, a step can bury the whole window and no compaction
+    // can dig it out. Watched happen at 131,072: twelve batched reads, HTTP 400.
+    if (this.opts.compaction !== undefined) {
+      agentOpts.stepResultBudgetChars = Math.floor(this.opts.compaction.contextLength * TAIL_SHARE * 4)
+    }
     if (this.repoMapText !== undefined) agentOpts.repoMap = this.repoMapText
     if (this.opts.engine) {
       // mode intentionally omitted here -- see the constructor's invariant note. Agent

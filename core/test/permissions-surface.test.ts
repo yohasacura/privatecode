@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { PermissionEngine } from '../src/permissions/engine.js'
 import {
   addRuleToSettings, loadLayers, projectSettingsPath, removeRuleFromSettings,
 } from '../src/permissions/settings.js'
@@ -106,6 +107,50 @@ describe('withdrawing a rule', () => {
     expect(existsSync(path)).toBe(false)
     expect(removeRuleFromSettings(path, 'allow', 'anything')).toBe(false)
     expect(existsSync(path)).toBe(false)
+  })
+
+  test('revoking reaches the LIVE engine, not only the file', () => {
+    // The audit's highest finding, verified live before the fix: a grant applies to the
+    // running engine the moment it is made (`engine.remember` patches the in-memory layers),
+    // but revocation edited only the file — so the screen showed the rule gone while
+    // `decide()` kept auto-allowing on the in-memory copy, citing a settings file that no
+    // longer contained the rule. Until the next session build, which mid-overnight-run is
+    // never, the revocation was a decoration.
+    const engine = new PermissionEngine({
+      layers: [
+        { scope: 'project', path: projectSettingsPath(root), permissions: { allow: [], ask: [], deny: [] } },
+      ],
+      mode: 'normal',
+      workspaceRoot: root,
+    })
+    engine.remember('run_command(npm test:*)', 'project')
+    expect(engine.decide({ tool: 'run_command', command: 'npm test --watch' }).verdict).toBe('allow')
+
+    engine.forget('project', 'allow', 'run_command(npm test:*)')
+
+    // The same key now falls through to the mode default — asked, not auto-allowed.
+    expect(engine.decide({ tool: 'run_command', command: 'npm test --watch' }).verdict).toBe('ask')
+  })
+
+  test('lifting a deny reaches the live engine the same way', () => {
+    // The mirror: a lifted restriction that the engine kept enforcing would be the same
+    // asymmetry pointing the other direction — safer, but still a screen showing one thing
+    // while the gate does another.
+    const engine = new PermissionEngine({
+      layers: [
+        {
+          scope: 'project', path: projectSettingsPath(root),
+          permissions: { allow: [], ask: [], deny: ['run_command(npm publish:*)'] },
+        },
+      ],
+      mode: 'autopilot',
+      workspaceRoot: root,
+    })
+    expect(engine.decide({ tool: 'run_command', command: 'npm publish --tag next' }).verdict).toBe('deny')
+
+    engine.forget('project', 'deny', 'run_command(npm publish:*)')
+
+    expect(engine.decide({ tool: 'run_command', command: 'npm publish --tag next' }).verdict).toBe('allow')
   })
 
   test('a broken file is refused rather than overwritten', () => {

@@ -34,11 +34,11 @@ const MODE_SUMMARY: Record<AgentMode, { title: string; detail: string; tone?: 'w
   },
   'auto-edit': {
     title: 'Edits freely, asks before running commands',
-    detail: 'Writes inside the workspace go through without asking. Commands still stop for you, unless a rule below covers them.',
+    detail: 'Writes inside the workspace go through without asking — unless a deny or ask rule below names them. Commands still stop for you.',
   },
   autopilot: {
     title: 'Acts without asking',
-    detail: 'Writes and commands both proceed unattended, inside the workspace. The rules below add nothing while this mode is on — but they are what remains when you leave it.',
+    detail: 'Writes and commands proceed unattended, inside the workspace. Deny and ask rules below STILL apply — a deny still blocks, an ask still parks a decision for you. Only the allow rules are redundant while this is on.',
     tone: 'warn',
   },
 }
@@ -55,7 +55,14 @@ const LIST_TONE: Record<PermissionRuleView['list'], { label: string; cls: string
   allow: { label: 'allowed', cls: 'rule-allow' },
 }
 
-export function Permissions({ client }: { client: ProtocolClient }): VNode {
+export function Permissions({ client, liveMode }: {
+  client: ProtocolClient
+  /** The mode as the WINDOW knows it, which updates the moment it is switched — including
+   * from the Ctrl+K palette while this modal is open. The fetched mode is a snapshot from
+   * when the panel mounted, and the palette renders over the modal, so the snapshot can go
+   * stale while the block built to describe the mode is on screen. */
+  liveMode?: AgentMode
+}): VNode {
   const [layers, setLayers] = useState<PermissionLayerView[] | null>(null)
   const [mode, setMode] = useState<AgentMode>('normal')
   const [problems, setProblems] = useState<string[]>([])
@@ -88,7 +95,7 @@ export function Permissions({ client }: { client: ProtocolClient }): VNode {
       .finally(() => setBusy(null))
   }
 
-  const summary = MODE_SUMMARY[mode]
+  const summary = MODE_SUMMARY[liveMode ?? mode]
   const total = (layers ?? []).reduce((n, l) => n + l.rules.length, 0)
 
   return (

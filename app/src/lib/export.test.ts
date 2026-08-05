@@ -43,6 +43,20 @@ describe('conversationAsMarkdown', () => {
     expect(md).not.toContain('I should look at fetcher.ts')
   })
 
+  it('keeps a question with its answer, and does not call a running call finished', () => {
+    // Two audit findings with one shape: the export said things that were not true. An
+    // answer without its question read as 'answered: Yes' with no referent; a call still
+    // running at copy time was labelled 'never finished' — a verdict on something that had
+    // not ended.
+    const md = conversationAsMarkdown([
+      { kind: 'question-record', id: 1, question: 'Deploy to staging first?', answer: 'Yes' },
+      { kind: 'tool', id: 2, name: 'run_command', args: '{"command":"npm test"}', startedAtMs: 0 },
+    ], 't')
+    expect(md).toContain('asked: "Deploy to staging first?" — answered: "Yes"')
+    expect(md).toContain('still running when this was copied')
+    expect(md).not.toContain('never finished')
+  })
+
   it('an untitled session still opens with a heading', () => {
     expect(conversationAsMarkdown([], '')).toContain('# PrivateCode session')
   })

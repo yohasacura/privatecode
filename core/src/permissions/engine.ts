@@ -492,4 +492,28 @@ export class PermissionEngine {
     }
     this.addParsedRuleToLayer(layer, parsed)
   }
+
+  /**
+   * Make a revoked rule stop mattering NOW, not at the next session build.
+   *
+   * The other half of `remember`, and it was missing in the dangerous direction: a grant
+   * applied to this live engine immediately (see above — "a `decide()` call for the same
+   * key right after this one already sees it"), while a revocation edited only the file on
+   * disk. The permissions screen then showed the rule as gone while this engine kept
+   * auto-allowing on it — verified live: `decide()` answered `Allowed by rule ...` citing
+   * a settings file that no longer contained the rule, and would have kept doing so for
+   * the whole of an overnight run, since nothing rebuilds the session mid-run.
+   *
+   * Comparison is by the rule's raw text, trimmed — the same identity `addRuleToSettings`
+   * and `removeRuleFromSettings` use for the file, so the screen, the file and this engine
+   * agree on what "that rule" means. Removing from `deny`/`ask` lifts a restriction;
+   * removing from `allow` withdraws a grant; a rule this engine never held (a file edited
+   * by hand after this engine was built) is a no-op, exactly like the file-side remover.
+   */
+  forget(scope: SettingsLayer['scope'], list: 'allow' | 'ask' | 'deny', rule: string): void {
+    const layer = this.layers.find((l) => l.scope === scope)
+    if (!layer) return
+    const trimmed = rule.trim()
+    layer[list] = layer[list].filter((parsed) => parsed.raw.trim() !== trimmed)
+  }
 }

@@ -149,7 +149,14 @@ export function Composer({
    * does behind a click, so it must not happen behind a keystroke either. The wait is short
    * and it is visible; the alternative is losing a turn you are in the middle of.
    */
-  const blockedByRun = state.viewing !== null && state.turnRunning
+  // A manual turn and an unattended run hold the same single slot host-side, and every
+  // guard in this file has to treat them as one thing. They were treated as unrelated —
+  // `turnRunning` is false during a run's turns, since runs emit `run.turn`, never
+  // `turn.done` — and the audit confirmed four distinct failures through that gap, two of
+  // them wedging the composer permanently and one aborting an hours-long run with a
+  // single keystroke into a viewed session.
+  const busy = state.turnRunning || state.run !== null
+  const blockedByRun = state.viewing !== null && busy
 
   // Grow with the content up to a cap, then scroll -- a fixed two-line box makes writing a
   // real instruction (which is most of them) an exercise in scrolling blind.
@@ -170,7 +177,7 @@ export function Composer({
   // direction. It is visible and cancellable the whole time it waits, so this is never a
   // surprise.
   useEffect(() => {
-    if (state.turnRunning || queued === null) return
+    if (state.turnRunning || state.run !== null || queued === null) return
     setQueued(null)
     if (queued.text === COMPACT_COMMAND) runCompact()
     else submit(queued.text, queued.attach)
@@ -197,6 +204,10 @@ export function Composer({
    * would be the worse surprise.
    */
   const [runConfigOpen, setRunConfigOpen] = useState(false)
+  /** The task as it stood when the popover opened. `startRun` used to re-read the live
+   * composer text at click time, so anything that happened in between — the textarea is
+   * never disabled — changed or emptied the task under the open card. */
+  const [runTask, setRunTask] = useState('')
   const [maxTurnsText, setMaxTurnsText] = useState('')
   const [maxHoursText, setMaxHoursText] = useState('')
 
@@ -209,6 +220,7 @@ export function Composer({
       })
       return
     }
+    setRunTask(task)
     setRunConfigOpen(true)
   }
 
@@ -222,7 +234,22 @@ export function Composer({
   }
 
   function startRun(): void {
-    const task = input.trim()
+    // The CAPTURED task, and the world re-checked at click time. The popover has no focus
+    // trap and the textarea under it stays live, so anything can have happened since it
+    // opened — the audited case: press Enter in the textarea (the task goes out as a manual
+    // turn, the input empties), then click Start run. The old code read the now-empty input,
+    // started a phantom run, and its failure handler reset `turnRunning` for the REAL turn
+    // still streaming — after which its `turn.done` was dropped and every writing card
+    // leaked to the next same-name call.
+    const task = runTask
+    if (busy) {
+      setRunConfigOpen(false)
+      dispatch({
+        type: 'send-failed',
+        message: 'A turn started while the run card was open — let it finish (or stop it), then start the run.',
+      })
+      return
+    }
     const maxTurns = parseBudget(maxTurnsText)
     const maxHours = parseBudget(maxHoursText)
     if (maxTurns === null || maxHours === null) {
@@ -242,7 +269,10 @@ export function Composer({
       ...(maxTurns !== undefined ? { maxTurns } : {}),
       ...(maxHours !== undefined ? { maxHours } : {}),
     }).catch((e: Error) => {
-      dispatch({ type: 'send-failed', message: e.message })
+      // ONLY the run's own bookkeeping. This used to also dispatch `send-failed`, whose
+      // reducer resets `turnRunning` — poisoning a real manual turn when the failure was
+      // "a turn is already running". The ended banner carries the reason; nothing else
+      // needs to change state that does not belong to the run.
       dispatch({ type: 'run.ended', turns: 0, stoppedBecause: 'error', detail: e.message })
     })
   }
@@ -254,6 +284,10 @@ export function Composer({
   function send(): void {
     const text = input.trim()
     if (text === '') return
+    // A manual send makes the open run card stale — its captured task may be the very text
+    // being sent right now — so the card closes rather than offering to start a run whose
+    // description no longer matches anything.
+    setRunConfigOpen(false)
 
     // `/compact` is the window's own command, not the model's and not the user's: the
     // context-overflow message has advised "compact it" since Plan 2 while the window had no
@@ -267,7 +301,7 @@ export function Composer({
     if (text === COMPACT_COMMAND) {
       setInput('')
       setMention(null)
-      if (state.turnRunning) {
+      if (busy) {
         setQueued({ text: COMPACT_COMMAND, attach: [] })
         return
       }
@@ -297,7 +331,7 @@ export function Composer({
     // meant the files you picked for the NEXT message were cleared when the queued one
     // finally drained.
     const attach = liveAttachments
-    if (state.turnRunning) {
+    if (busy) {
       // Appended, not replaced: two thoughts typed during one long turn are both worth
       // keeping, and losing one silently is the bug this whole thing exists to fix.
       setQueued((q) => (q === null
@@ -638,7 +672,7 @@ export function Composer({
 
           {runConfigOpen && (
             <div class="run-config" role="dialog" aria-label="Start an unattended run">
-              <div class="run-config-task" title={input.trim()}>{input.trim()}</div>
+              <div class="run-config-task" title={runTask}>{runTask}</div>
               <div class="run-config-fields">
                 <label class="run-config-field">
                   <span>Turn budget</span>

@@ -22,13 +22,19 @@ export function conversationAsMarkdown(items: ChatItem[], title: string): string
         break
       case 'tool': {
         const outcome = item.result === undefined
-          ? 'never finished'
+          ? 'still running when this was copied'
           : item.result.ok
           ? item.result.preview
           : `failed: ${item.result.preview}`
         lines.push(`- \`${item.name}\` — ${outcome}`)
         break
       }
+      case 'question-record':
+        // The answer without its question reads as 'The user answered: Yes' with no
+        // referent — and the answer often shapes everything the model does next, so a
+        // reader elsewhere needs both halves or neither.
+        lines.push(`- asked: ${JSON.stringify(item.question)} — answered: ${JSON.stringify(item.answer)}`)
+        break
       case 'verify-record':
         lines.push(`- verify \`${item.command}\` — ${item.ok ? 'passed' : item.detail}`)
         break

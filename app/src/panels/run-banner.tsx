@@ -44,7 +44,9 @@ export function RunBanner({
   if (run !== null) {
     // A run this window did not start (startedAtMs 0) has no clock to show; claiming
     // "0:00" for a run hours old would be worse than saying nothing.
-    const elapsed = run.startedAtMs > 0 ? formatDuration(now - run.startedAtMs) : null
+    // Clamped: `now` is mount-time state and `run-started` stamps a LATER wall clock,
+    // so the first second of a new run over a visible ended card read as negative.
+    const elapsed = run.startedAtMs > 0 ? formatDuration(Math.max(0, now - run.startedAtMs)) : null
     const budget: string[] = []
     if (run.maxTurns !== undefined) budget.push(`of ${run.maxTurns}`)
     if (run.maxHours !== undefined) {

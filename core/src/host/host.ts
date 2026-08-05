@@ -1264,7 +1264,16 @@ export class SessionHost {
       : params.scope === 'project'
       ? projectSettingsPath(workspaceRoot)
       : localSettingsPath(workspaceRoot)
-    return { removed: removeRuleFromSettings(path, params.list, params.rule) }
+    const removed = removeRuleFromSettings(path, params.list, params.rule)
+    // The LIVE engine too, not only the file — and this line is the whole difference
+    // between a permissions screen and a permissions-shaped decoration. A grant applies to
+    // the running engine the moment it is made (`engine.remember`), so a revocation that
+    // only edited the file left the two permanently asymmetric: the screen showed the rule
+    // gone while `decide()` kept auto-allowing on the in-memory copy until the next session
+    // build — which, mid-overnight-run, is never. Verified live before the fix: the engine
+    // answered `Allowed by rule ...` citing a file that no longer contained the rule.
+    this.engine?.forget(params.scope, params.list, params.rule)
+    return { removed }
   }
 
   /**

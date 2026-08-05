@@ -151,6 +151,25 @@ describe('an unattended run, as state', () => {
   })
 })
 
+describe('the optimistic turn, refused', () => {
+  it('send-rolled-back undoes exactly what turn-started claimed', () => {
+    // The wedge the audit confirmed twice over: submit() optimistically dispatches
+    // turn-started, the host refuses ("a turn is already running" — an unattended run holds
+    // the slot), and nothing ever cleared turnRunning again, because a run's turns emit no
+    // turn.done and run.ended does not touch it. Stop button stuck, status line showing a
+    // phantom step, forever.
+    const state = run([
+      { type: 'run-started', task: 'the night task', atMs: 0 },
+      { type: 'turn-started' },
+      { type: 'send-rolled-back' },
+    ])
+    expect(state.turnRunning).toBe(false)
+    expect(state.currentStep).toBeNull()
+    // The run itself is untouched — it was never this window's to roll back.
+    expect(state.run).toMatchObject({ task: 'the night task' })
+  })
+})
+
 describe('reduceChat: delta accumulation', () => {
   it('accumulates the reasoning TEXT on successive thinking.delta events', () => {
     const state = run([

@@ -207,7 +207,10 @@ export function Transcript({
         {/* The run, above everything else that can appear here: while it is active it is
             the reason the other cards exist, and after it ends its reason-for-stopping is
             the first thing wanted. */}
-        {(state.run !== null || state.lastRun !== null) && (
+        {/* Live-session state only, same rule as the TodosCard gate: rendered inside a
+            VIEWED transcript it read as THAT session having run unattended, live clock,
+            Stop button and all. */}
+        {state.viewing === null && (state.run !== null || state.lastRun !== null) && (
           <Row kind="card-row" marker={Icon.play()}>
             <RunBanner client={client} state={state} dispatch={dispatch} />
           </Row>

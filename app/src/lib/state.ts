@@ -301,6 +301,10 @@ export type ChatAction =
   | { type: 'run.ended'; turns: number; stoppedBecause: string; detail: string }
   /** The ended-run card was read and dismissed. */
   | { type: 'run-dismissed' }
+  /** The optimistic `turn-started` was refused by the host (the slot was taken). Undoes
+   * exactly what the optimism did — without it, nothing ever clears `turnRunning`, since a
+   * run's turns emit no `turn.done`, and the composer wedges on Stop forever. */
+  | { type: 'send-rolled-back' }
   | { type: 'turn-started' }
   | { type: 'step.start'; step: number; timeoutMs: number; startedAtMs: number }
   /** Something streamed, so the step is alive: restarts the silence countdown. Dispatched
@@ -859,6 +863,9 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 
     case 'run-dismissed':
       return { ...state, lastRun: null }
+
+    case 'send-rolled-back':
+      return { ...state, turnRunning: false, currentStep: null }
 
     case 'todos':
       return { ...state, todos: action.items }

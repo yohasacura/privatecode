@@ -209,6 +209,19 @@ export interface AgentOptions {
    */
   interaction?: InteractionPort
   /**
+   * A ceiling on the CHARACTERS one step's executed tool results may append, in total.
+   * Absent means unbounded, which is what every caller that predates it gets.
+   *
+   * It exists because a batched step is atomic: one assistant message and its N tool
+   * replies cannot be split by the compaction tail selector without invalidating the
+   * transcript. So a step whose results exceed the context window can neither be kept nor
+   * summarised away — the server refuses the next request and no amount of after-the-fact
+   * compaction helps. Watched at the real 131,072 window: twelve batched reads, ~198k
+   * tokens appended by one step, HTTP 400. The Session sets this from the window size;
+   * the loop only enforces it, because the loop does not know the window.
+   */
+  stepResultBudgetChars?: number
+  /**
    * A ceiling on the steps ONE turn may take. Unbounded by default.
    *
    * It used to default to 40, which is about ten minutes of work, and a turn that reached it
@@ -542,6 +555,10 @@ export class Agent {
       // its result through a single slot per tool NAME, which holds for as long as no second
       // call of the same name is announced before the first one's result.
       let halted: string | undefined
+      // What this step's executed calls have appended so far, in characters. The budget is
+      // the third halt condition, same shape as failure and abort: crossing it answers the
+      // remaining calls instead of executing them.
+      let resultChars = 0
       for (const call of calls) {
         // Re-read every iteration, not once: Esc lands wherever it lands, and a step running
         // four calls is four times the window it can land in. The remaining calls are still
@@ -549,6 +566,19 @@ export class Agent {
         // leave the transcript it returns invalid on the way out.
         if (halted === undefined && this.opts.signal?.aborted) {
           halted = 'the turn was cancelled partway through this step'
+        }
+        // Checked BEFORE each call, so the call that crosses the budget still lands — a
+        // result's size cannot be known before executing it — and only what follows is
+        // refused. Found at the real 131k window, not by reading: the model batched twelve
+        // reads into one step, the loop ran them all, and ~198k tokens of results landed in
+        // the transcript in one go. Compaction could not save it afterwards, because a
+        // batched step is ATOMIC to the tail selector — one assistant message whose twelve
+        // tool replies cannot be split from it without invalidating the transcript — so a
+        // step bigger than the window can neither be kept nor summarised away. The only
+        // place this can be prevented is here, before the block exists.
+        const budget = this.opts.stepResultBudgetChars
+        if (halted === undefined && budget !== undefined && resultChars > budget) {
+          halted = 'this step\'s results already filled the room a single step may take'
         }
         if (halted !== undefined) {
           // `Not run:`, which is this codebase's existing contract for a call STOPPED BEFORE
@@ -572,6 +602,7 @@ export class Agent {
         this.opts.events?.onToolCall?.(call.function.name, call.function.arguments)
         const result = await this.runTool(call.function.name, call.function.arguments)
         this.answer(call, result)
+        resultChars += result.content.length
         if (!result.ok) halted = `${call.function.name} failed earlier in this step`
       }
     }

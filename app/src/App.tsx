@@ -571,6 +571,7 @@ export default function App() {
         <SettingsModal
           client={client}
           isDevBridge={isDevBridge}
+          {...(chatState.session !== null ? { liveMode: chatState.session.mode } : {})}
           onClose={() => setSettingsOpen(false)}
           onSessionSwitched={(info) => {
             dispatch({ type: 'session-switched', ...info })

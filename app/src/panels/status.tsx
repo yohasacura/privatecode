@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
 import type { McpServerInfo } from '@core/host/protocol'
+import type { AgentMode } from '@core/permissions/engine'
 import type { ChatState } from '../lib/state'
 import { formatTokenCount } from '../lib/format'
 import { Icon } from '../components/icons'
@@ -167,12 +168,14 @@ function McpServers({ client }: { client: ProtocolClient }): VNode | null {
 }
 
 export function SettingsModal({
-  client, isDevBridge, onClose, onSessionSwitched,
+  client, isDevBridge, onClose, onSessionSwitched, liveMode,
 }: {
   client: ProtocolClient
   /** Dev-bridge mode (a `?ws=` URL) has no Tauri window behind it to own a native folder
    * dialog, so it gets a plain text field instead. */
   isDevBridge: boolean
+  /** See Permissions.liveMode. */
+  liveMode?: AgentMode
   onClose: () => void
   /** Opening a workspace is the one moment its name and folder count can change, so they
    * ride this callback rather than every session switch. */
@@ -286,7 +289,7 @@ export function SettingsModal({
             and this is what you came here to CHECK. It is also the only section that can
             take something away, which is not a thing to put beside a Browse button. */}
         <div class="field-label">What the agent may do</div>
-        <Permissions client={client} />
+        <Permissions client={client} {...(liveMode !== undefined ? { liveMode } : {})} />
 
         {error && <div class="panel-error">{error}</div>}
 
