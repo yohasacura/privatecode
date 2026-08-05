@@ -98,8 +98,21 @@ describe('stopping a job stops what the job started', () => {
 
     // Let it actually get going, or "it stopped" would be indistinguishable from "it never
     // started" -- the failure mode that makes this kind of test pass while proving nothing.
-    await new Promise((r) => setTimeout(r, 1500))
-    const whileRunning = statSync(marker).size
+    //
+    // WAITED FOR, not slept through. A fixed 1500 ms was enough on an idle machine and not
+    // enough when the rest of the suite is competing for CPU: this failed in full runs and
+    // passed alone, always on this first assertion — the grandchild had not written yet, not
+    // the thing under test at all. Polling for the effect keeps the check and removes the
+    // dependence on how busy the machine is.
+    const deadline = Date.now() + 20_000
+    let whileRunning = 0
+    while (Date.now() < deadline) {
+      try {
+        whileRunning = statSync(marker).size
+        if (whileRunning > 0) break
+      } catch { /* not created yet */ }
+      await new Promise((r) => setTimeout(r, 50))
+    }
     expect(whileRunning).toBeGreaterThan(0)
 
     await call({ action: 'stop', id })
@@ -176,5 +189,27 @@ describe('the registry does not grow forever', () => {
     const kept = new Set(t.snapshot().map((j) => j.id))
     expect(kept.has(ids[ids.length - 1]!)).toBe(true)
     expect(kept.has(ids[0]!)).toBe(false)
+  })
+  it('drops the agent\'s jobs before the user\'s own commands', async () => {
+    // The registry is shared: `terminal.run` inserts through the same `start()`. The Terminal
+    // panel renders finished entries straight from `snapshot()` and keeps nothing of its own,
+    // and its output is deliberately kept out of the transcript — so this registry IS the
+    // scrollback. Evicting by age alone deleted the user's own commands and their output,
+    // mid-session, with no marker anywhere.
+    const t = new BackgroundTasks()
+    const mine: string[] = []
+    for (let i = 0; i < 5; i++) {
+      mine.push(t.start('cmd /c exit 0', null, ownRoot, 'user').id)
+      finishAll(t)
+    }
+    for (let i = 0; i < 60; i++) {
+      t.start('cmd /c exit 0', null, ownRoot, 'agent')
+      finishAll(t)
+    }
+    await t.stopAll()
+
+    const kept = new Set(t.snapshot().map((j) => j.id))
+    for (const id of mine) expect(kept.has(id)).toBe(true)
+    expect(t.snapshot().length).toBeLessThanOrEqual(MAX_FINISHED + 1)
   })
 })

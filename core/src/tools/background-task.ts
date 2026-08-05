@@ -152,11 +152,25 @@ export class BackgroundTasks {
     if (finished <= MAX_FINISHED) return
 
     let toDrop = finished - MAX_FINISHED
-    for (const [id, entry] of this.entries) {
-      if (toDrop === 0) break
-      if (entry.exit === null) continue
-      this.entries.delete(id)
-      toDrop--
+    // The AGENT's jobs go first, and the user's typed commands only if there are none left.
+    //
+    // The registry is shared: `terminal.run` inserts through this same `start()`. The
+    // Terminal panel renders finished entries straight from `snapshot()` and keeps nothing
+    // of its own, and its output is deliberately kept out of the transcript and the model's
+    // context — so this registry IS the scrollback. Evicting by age alone deleted the user's
+    // own commands and their output, mid-session, with no marker: the panel's
+    // "…earlier output dropped…" note only ever meant one job's ring buffer clipping.
+    //
+    // Typed commands are also the ones there are fewest of and the ones someone might scroll
+    // back to; agent jobs are the churn a long run produces. Two passes, oldest-first within
+    // each, and the cap still holds however long the run goes.
+    for (const origin of ['agent', 'user'] as const) {
+      for (const [id, entry] of this.entries) {
+        if (toDrop === 0) return
+        if (entry.exit === null || entry.origin !== origin) continue
+        this.entries.delete(id)
+        toDrop--
+      }
     }
   }
 

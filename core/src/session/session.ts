@@ -799,6 +799,16 @@ export class Session {
     if (!this.checkpoints) throw new Error('this session is not keeping checkpoints')
     if (this.sending) throw new Error('a turn is running; stop it before rewinding')
     const result = await this.checkpoints.rewind(checkpointId)
+    // `undo` is a snapshot of the tree as it was a moment ago — which, on a session that has
+    // not sent anything yet, IS the state it started from.
+    //
+    // Without this, a rewind before the first turn set `lastCheckpoint` and so made send()'s
+    // "take a baseline" branch permanently false, leaving `sessionBaseline` null forever:
+    // "Put back" on any file then answered "this session has no baseline to restore from"
+    // for the rest of the session. Reaching it takes one click — open a workspace with
+    // earlier checkpoints, restore one before typing anything — and it also catches a
+    // RESUMED session that has not been sent to yet in this run.
+    this.sessionBaseline ??= result.undo
     this.lastCheckpoint = result.restored
     this.transcript.append({
       role: 'user',
@@ -901,8 +911,17 @@ export class Session {
   private composeEvents(host: AgentEvents | undefined): AgentEvents {
     const captureStepDone = (info: StepInfo): void => {
       if (info.promptTokens !== undefined) this.latestPromptTokens = info.promptTokens
-      // A step finished, so the server has this prompt in its cache now.
-      this.promptCacheCold = false
+      // Only when the server actually PROCESSED the prompt, which is what having counted its
+      // tokens proves.
+      //
+      // `onStepDone` fires from `runStep`'s `finally`, so it also fires for a step that timed
+      // out or was aborted — exactly the cases where the prefill did not finish. Clearing the
+      // flag there told every later turn the cache was warm when nothing had been put in it,
+      // and the session was handed the 90 s budget for a prompt needing several minutes. The
+      // way in is ordinary: resume a large session and press Escape a few seconds into the
+      // first step because you mistyped. Measured by an auditor: a 50k-token session given
+      // 291,380 ms for its first step, aborted at 60 ms, and 9,000 ms for the next.
+      if (info.promptTokens !== undefined) this.promptCacheCold = false
       if (info.completionTokens !== undefined) {
         this.cumulativeCompletionTokens += info.completionTokens
       }

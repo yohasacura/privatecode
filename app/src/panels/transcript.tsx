@@ -111,7 +111,14 @@ export function Transcript({
   // detail, with the diff or the command text -- by the card itself. Rendering the bare
   // pending stub above it says the same thing twice. It comes back the moment the decision
   // is made, carrying the outcome.
-  const suppressedId = state.pendingApproval !== null && lastItem?.kind === 'tool' && lastItem.result === undefined
+  //
+  // Only while the LIVE conversation is the one on screen. The id it computes comes from
+  // `state.items`, and a viewed session's items are numbered by their own counter starting
+  // from 1 — so the two id spaces overlap, and a pending approval on live item 37 blanked
+  // the 37th row of whatever stored session was being read: a hole in the middle of someone
+  // else's conversation, with no bar, no note and nothing to explain it.
+  const suppressedId = state.viewing === null &&
+    state.pendingApproval !== null && lastItem?.kind === 'tool' && lastItem.result === undefined
     ? lastItem.id
     : null
 

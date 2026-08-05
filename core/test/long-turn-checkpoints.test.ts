@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, test } from 'vitest'
@@ -166,4 +166,45 @@ test('only the tools the log actually uses are retained during the turn', async 
   const held = (session as unknown as { turnCommands: { content: string; args: string }[] }).turnCommands
   const bytes = held.reduce((n, c) => n + c.content.length + c.args.length, 0)
   expect(bytes).toBeLessThan(1_000)
+})
+
+test('a rewind before the first turn still leaves a point to put files back to', async () => {
+  // `sessionBaseline` was set only inside send()'s "no checkpoint yet" branch, and rewind()
+  // sets `lastCheckpoint` — so a rewind before the first send made that branch false forever
+  // and "Put back" answered "this session has no baseline to restore from" for the rest of
+  // the session. One click reaches it: open a workspace with earlier checkpoints, restore one
+  // before typing anything.
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: 8000 } }
+    if (req.url === '/health') return { status: 'ok' }
+    return textStep('done')
+  })
+  stop = fake.close
+  const root = mkdtempSync(join(tmpdir(), 'pc-rw-'))
+  roots.push(root)
+  writeFileSync(join(root, 'a.txt'), 'original', 'utf8')
+
+  const make = (): Session => new Session({
+    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+    toolset: createToolset({}),
+    workspaceRoot: root,
+    mode: 'autopilot',
+    longRun: true,
+  })
+
+  // A first session gives the workspace two checkpoints to choose between.
+  const first = make()
+  await first.send('touch nothing')
+  writeFileSync(join(root, 'a.txt'), 'changed', 'utf8')
+  await first.send('touch nothing again')
+  const points = await first.listCheckpoints(50)
+  expect(points.length).toBeGreaterThanOrEqual(2)
+
+  // A fresh session rewinds before it has sent anything...
+  const second = make()
+  await second.rewind(points[points.length - 1]!.id)
+
+  // ...and "Put back" still works, which is the whole point.
+  writeFileSync(join(root, 'a.txt'), 'edited by the agent', 'utf8')
+  await expect(second.restoreFile('a.txt')).resolves.toBeDefined()
 })
