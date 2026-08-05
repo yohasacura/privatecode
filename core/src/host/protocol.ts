@@ -621,7 +621,15 @@ export interface CheckpointInfo {
   summary: string
 }
 
-export type CheckpointsListParams = Empty
+/**
+ * `limit` is how far back the panel can reach, and it needs to be askable.
+ *
+ * The store's own default is fifty, which spanned days of work while a turn contributed one
+ * checkpoint. A long turn now contributes one every two minutes it writes in, so fifty rows
+ * cover a few hours — and the panel had no way to look past them, because there was no
+ * parameter to send. Absent keeps the store's default.
+ */
+export interface CheckpointsListParams { limit?: number }
 export interface CheckpointsListResult { checkpoints: CheckpointInfo[] }
 
 export interface CheckpointsRewindParams { id: string }

@@ -240,6 +240,11 @@ const PRE_TURN_HEADROOM = 4_000
  * minutes however long the turn runs. See `Session.checkpointLongTurn`. */
 const MID_TURN_CHECKPOINT_MS = 120_000
 
+/** The only tools the work log's "Ran" line is built from — `commandsFrom` drops everything
+ * else. Kept beside the capture rather than only inside the formatter, because the point is
+ * to not RETAIN what will be discarded. */
+const LOGGED_TOOLS = new Set(['run_command', 'background_task'])
+
 /**
  * Prefill cost per token, with margin.
  *
@@ -908,7 +913,20 @@ export class Session {
     // line carries the real exit code, and the alternative -- trusting the model's prose
     // about whether the tests passed -- is exactly what the log exists not to do.
     const captureToolResult = (name: string, result: { ok: boolean; content: string }, callId: string): void => {
-      if (this.workLog) this.turnCommands.push({ name, args: this.lastToolArgs.get(name) ?? '', content: result.content, ok: result.ok })
+      // Only what the log will actually use. `commandsFrom` discards every entry that is not
+      // a command, at the end of the turn — so retaining the rest kept the full result text
+      // of every read, search and edit alive until then, plus each call's arguments, which
+      // for a write is the entire new file. With a turn capped at forty steps the array
+      // could not hold more than forty entries; a turn measured in days retains everything
+      // it ever did, to throw almost all of it away at the end.
+      //
+      // `Not run:` still has to be kept whole: `commandsFrom` reads that prefix to tell a
+      // command that was refused from one that ran and failed.
+      if (this.workLog && LOGGED_TOOLS.has(name)) {
+        this.turnCommands.push({
+          name, args: this.lastToolArgs.get(name) ?? '', content: result.content, ok: result.ok,
+        })
+      }
       // Only SUCCESSFUL calls count as work: a refused edit and a failed command both leave
       // the workspace exactly as it was, and counting them would make a turn that achieved
       // nothing look busy to the idle check.
@@ -1103,13 +1121,22 @@ export class Session {
     const now = Date.now()
     if (now - this.lastCheckpointAtMs < (this.opts.checkpointIntervalMs ?? MID_TURN_CHECKPOINT_MS)) return
     try {
+      const previous = this.lastCheckpoint
       const taken = await this.checkpoints.take({ sessionId: this.id, turn: this.turnNumber, step })
       // Recorded even when nothing was committed: the tree was unchanged after all, and
       // re-asking git on the very next step would spend the same process to learn the same
       // thing.
       this.writesAtLastCheckpoint = this.writeCount
       this.lastCheckpointAtMs = now
-      if (taken) this.lastCheckpoint = taken
+      if (taken) {
+        // A line in the log for every snapshot, so a night that was one turn reads as a
+        // timeline instead of a single entry written when it finally ended.
+        if (this.workLog && previous) {
+          const diff = await this.checkpoints.diffStat(previous.id, taken.id)
+          this.workLog.appendProgress(new Date(), this.turnNumber, step, taken.id, diff)
+        }
+        this.lastCheckpoint = taken
+      }
     } catch {
       // See the doc comment.
     }

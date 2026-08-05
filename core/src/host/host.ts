@@ -35,6 +35,7 @@ import type {
   ConfigGetResult,
   ConfigSetParams,
   ConfigSetResult,
+  CheckpointsListParams,
   CheckpointsListResult,
   CheckpointsRestoreFileParams,
   CheckpointsRewindParams,
@@ -368,7 +369,7 @@ export class SessionHost {
       case 'terminal.run': return this.terminalRun(params as TerminalRunParams)
       case 'config.get': return this.configGet()
       case 'config.set': return this.configSet(params as ConfigSetParams)
-      case 'checkpoints.list': return this.checkpointsList()
+      case 'checkpoints.list': return this.checkpointsList(params as CheckpointsListParams)
       case 'checkpoints.rewind': return this.checkpointsRewind(params as CheckpointsRewindParams)
       case 'checkpoints.restoreFile':
         return this.requireSession().restoreFile(
@@ -1141,9 +1142,9 @@ export class SessionHost {
   // Long runs: checkpoints, parked decisions, the work log, the unattended runner
   // -----------------------------------------------------------------------------------
 
-  private async checkpointsList(): Promise<CheckpointsListResult> {
+  private async checkpointsList(params: CheckpointsListParams = {}): Promise<CheckpointsListResult> {
     const session = this.requireSession()
-    return { checkpoints: await session.listCheckpoints() }
+    return { checkpoints: await session.listCheckpoints(params.limit) }
   }
 
   /**

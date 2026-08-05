@@ -92,3 +92,78 @@ test('a turn that writes for a long time leaves a checkpoint per stretch of work
   expect(checkpoints.length).toBeGreaterThan(2)
   expect(midTurn.length).toBeGreaterThan(0)
 })
+
+test('a long turn leaves a readable timeline, not one entry written at the end', async () => {
+  // The work log gets one entry per turn, which described a night exactly while a turn was
+  // capped at forty steps. A six-hour turn produced one heading, one collapsed diff and at
+  // most eight commands for the whole night — and the morning review, which is the only
+  // reason the file exists, had nothing to read.
+  let call = 0
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: 8000 } }
+    if (req.url === '/health') return { status: 'ok' }
+    call++
+    return call <= 3 ? writeStep(`note${call}.txt`, `contents ${call}`) : textStep('done')
+  })
+  stop = fake.close
+  const root = mkdtempSync(join(tmpdir(), 'pc-wl-'))
+  roots.push(root)
+
+  const session = new Session({
+    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+    toolset: createToolset({}),
+    workspaceRoot: root,
+    mode: 'autopilot',
+    longRun: true,
+    checkpointIntervalMs: 0,
+  })
+  await session.send('write three notes')
+
+  const log = readFileSync(join(root, '.privatecode', 'worklog.md'), 'utf8')
+  // The turn's own entry is still there...
+  expect(log).toContain('write three notes')
+  // ...and so is the progress inside it, naming the step it was at.
+  expect(log).toMatch(/still running, at step \d+/)
+})
+
+test('only the tools the log actually uses are retained during the turn', async () => {
+  // `commandsFrom` discards every entry that is not a command, at the END of the turn — so
+  // retaining the rest kept the full result text of every read, search and edit alive until
+  // then, plus each call's arguments, which for a write is the entire new file. Bounded at
+  // forty entries while a turn was capped; a turn measured in days retained everything it
+  // ever did in order to throw almost all of it away.
+  let call = 0
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: 8000 } }
+    if (req.url === '/health') return { status: 'ok' }
+    call++
+    // One big write, then done. A write is not a command, so nothing about it should be
+    // held for the log.
+    return call === 1
+      ? writeStep('big.txt', 'y'.repeat(50_000))
+      : textStep('done')
+  })
+  stop = fake.close
+  const root = mkdtempSync(join(tmpdir(), 'pc-tc2-'))
+  roots.push(root)
+
+  const session = new Session({
+    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+    toolset: createToolset({}),
+    workspaceRoot: root,
+    mode: 'autopilot',
+    longRun: true,
+  })
+  await session.send('write a big file')
+
+  // Reaching into the private field on purpose: the whole point of the change is what is
+  // NOT held there, and there is no public surface for "what did you keep".
+  //
+  // ARGS as well as content, and args is where the weight actually is — the first version of
+  // this test measured `content` alone and passed with the fix removed, because a write's
+  // RESULT is one short line while its ARGUMENTS carry the entire new file. A test that
+  // cannot fail proves nothing; this one was checked by taking the filter out.
+  const held = (session as unknown as { turnCommands: { content: string; args: string }[] }).turnCommands
+  const bytes = held.reduce((n, c) => n + c.content.length + c.args.length, 0)
+  expect(bytes).toBeLessThan(1_000)
+})

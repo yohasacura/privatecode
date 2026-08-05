@@ -175,6 +175,23 @@ export class WorkLog {
     this.write(renderEntry(entry), entry.at)
   }
 
+  /**
+   * A note from INSIDE a turn that is still running.
+   *
+   * The log gets one entry per turn, which described a night exactly while a turn was capped
+   * at forty steps. A six-hour turn produces one heading, one collapsed diff and at most
+   * eight commands for the whole night — and the morning review, which is the only reason
+   * this file exists, has nothing to read. This is the timeline that was missing: one line
+   * per mid-turn checkpoint, saying what changed since the last one, so the night can be
+   * scanned rather than reconstructed.
+   */
+  appendProgress(at: Date, turn: number, step: number, checkpoint: string, diffStat: string): void {
+    const time = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+    const changed = diffStat ? summarizeDiff(diffStat) : ''
+    const head = `### ${time} · turn ${turn} still running, at step ${step} · checkpoint ${checkpoint}`
+    this.write(changed === '' ? `${head}\n\n` : `${head}\n**Changed since the last note:** ${changed}\n\n`, at)
+  }
+
   /** The last line of the night. See `renderRunEnd`. */
   appendRunEnd(at: Date, turns: number, detail: string): void {
     this.write(renderRunEnd(at, turns, detail), at)

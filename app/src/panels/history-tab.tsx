@@ -18,6 +18,12 @@ import { PanelEmpty, PanelError, PanelRow, PanelSection } from '../components/pa
  * so `node_modules` and build output, are left alone).
  */
 
+/** What the store returns when asked for nothing in particular. Matched here so the first
+ * load costs exactly what it always did. */
+const DEFAULT_LIMIT = 50
+/** Each "further back" step. Enough to cross several hours of a long turn in one click. */
+const LIMIT_STEP = 200
+
 type Rewinding =
   | { kind: 'idle' }
   | { kind: 'confirming'; id: string }
@@ -45,15 +51,22 @@ export function HistoryTab({
   const [error, setError] = useState<string | null>(null)
   const [rewind, setRewind] = useState<Rewinding>({ kind: 'idle' })
   const [showLog, setShowLog] = useState(false)
+  /**
+   * How far back to ask for. The store's own default is fifty, which used to span days:
+   * a turn contributed one checkpoint. A long turn now contributes one every two minutes it
+   * writes in, so fifty rows can be a single afternoon, and the point someone actually wants
+   * to roll back to sits just past the end of the list with no way to ask for it.
+   */
+  const [limit, setLimit] = useState(DEFAULT_LIMIT)
 
   const load = useCallback(() => {
-    client.call('checkpoints.list', {})
+    client.call('checkpoints.list', { limit })
       .then((r) => { setCheckpoints(r.checkpoints); setError(null) })
       .catch((e: Error) => setError(e.message))
     client.call('worklog.read', {})
       .then((r) => setLog(r.text))
       .catch(() => { /* an absent log is the normal state, not something to report */ })
-  }, [client])
+  }, [client, limit])
 
   useEffect(() => { load() }, [load, reloadKey])
 
@@ -141,6 +154,16 @@ export function HistoryTab({
                 </div>
               </PanelRow>
             ))}
+            {/* Offered only when the list came back full, which is the one case where there
+                might be more behind it. A button that reloads the same rows would be a
+                button that lies about there being something further back. */}
+            {checkpoints.length >= limit && (
+              <div class="history-note">
+                <button class="link-button" onClick={() => setLimit((n) => n + LIMIT_STEP)}>
+                  Look further back
+                </button>
+              </div>
+            )}
           </PanelSection>
           )}
 
