@@ -26,9 +26,17 @@ Next worth doing, in rough order:
    several of the confirmed ones were mine from the same session. Run it again over the
    NEW surfaces — streaming tool-call deltas, the transcript window, mid-turn work-log
    entries, the eviction in BackgroundTasks — before adding features on top of them.
-2. **A long live run.** Everything above is verified against a fake server. The one thing
-   never done is an actual multi-hour turn against the real model, watching for what only
-   shows up there. This is the highest-value remaining check and it needs the server up.
+2. ~~**A long live run.**~~ DONE — `core/test/integration/long-turn.test.ts` (d0d324b).
+   Two compaction swaps inside one real turn, 253 s, against Qwen3.6. Task completed on the
+   far side of having its history replaced twice; flush held; zero orphaned tool replies in
+   the rebuilt transcript. Run it with
+   `npx vitest run --config vitest.integration.config.ts test/integration/long-turn.test.ts`
+   from `core/`, with the server up.
+
+   The lesson worth keeping: the first attempt set the pretend window to 12,000 and proved
+   nothing. `compactIfOverWindow` does nothing below 26,400 by design, so the mid-turn path
+   never ran — the BACKGROUND trigger fired instead and the output looked plausible. A run
+   that exercises none of the code under test is exactly what this kind of test is for.
 3. **Throughput** — see the measured section below. The tool_choice lever is spent; the
    remaining question is whether anything else reduces generated tokens.
 
