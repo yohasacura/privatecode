@@ -33,10 +33,30 @@ Ordered by value to "very stable, very efficient, large development processes".
    run for hours. Everything that was only ever exercised for ~40 steps is newly load-bearing:
    repeated mid-turn compaction, the work log, checkpoints per turn, memory growth.
 
-3. **Throughput** — get more out of the model per unit of wall clock. Measure first:
-   where does the time actually go on a long turn.
+3. **Throughput** — get more out of the model per unit of wall clock.
+
+   The prefix half is DONE and locked (see below). The half that needs the live model:
+   - `llama-server` is NOT running by default. Start it with
+     `powershell -NoProfile -ExecutionPolicy Bypass -File D:\LocalAgentAI\Start-QwenServer.ps1`
+     — it is a manual on/off switch that kills the model when the script exits, so run it
+     detached, measure, then stop it. Do not leave 16 GB of VRAM held for nothing.
+   - The measured lever already in the docs and still unused: `toolChoice: 'required'`
+     completes a hard edit 4/5 with 1262 median thinking tokens; `'auto'` completes 2/5 with
+     5591 (docs/DESIGN.md §7). That is 4.4x fewer generated tokens AND more reliable. The
+     stated blocker is per-STEP selection — "required while work remains, auto once it does
+     not" — which needs a signal the loop does not have. Do NOT guess at that signal; measure
+     candidate signals against the live model before changing anything.
 
 ## Done
+
+- **The prompt-prefix property is now held by a test** (core/test/prompt-cache.test.ts).
+  llama.cpp reuses its KV cache by longest common prefix; a diverging prompt re-prefills
+  everything, which at 393 tok/s is ~4 min on a 100k conversation — every step, forever, and
+  invisible to every behavioural test because the answers are identical either way. Asserted:
+  tool list byte-identical across a turn, messages strictly appended, second turn keeps the
+  first turn's portion, and buildSystemPrompt is deterministic. Verified the tests have teeth
+  by injecting a timestamp: only the determinism one caught it, and the reason is recorded in
+  the file (message 0 is reused from the transcript, not rebuilt).
 
 - **Mid-turn checkpoints.** Removing the step ceiling silently made the undo useless for
   long turns: recordTurn snapshots once, AFTER the turn, so hours of work had one point to
