@@ -16,6 +16,22 @@ Standing constraints carried from the user, never lifted:
 
 ## Queue
 
+**All 15 confirmed audit findings are closed** (a759855, 687c671, 3a6fea1, 9230577).
+The long-run hardening item is done. What is left below is the throughput item and
+whatever the next audit finds.
+
+Next worth doing, in rough order:
+
+1. **Re-audit.** The last one paid for itself: 32 raised, 15 confirmed, 17 refuted, and
+   several of the confirmed ones were mine from the same session. Run it again over the
+   NEW surfaces — streaming tool-call deltas, the transcript window, mid-turn work-log
+   entries, the eviction in BackgroundTasks — before adding features on top of them.
+2. **A long live run.** Everything above is verified against a fake server. The one thing
+   never done is an actual multi-hour turn against the real model, watching for what only
+   shows up there. This is the highest-value remaining check and it needs the server up.
+3. **Throughput** — see the measured section below. The tool_choice lever is spent; the
+   remaining question is whether anything else reduces generated tokens.
+
 Ordered by value to "very stable, very efficient, large development processes".
 
 1. **Streaming tool-call arguments** — DONE (see below)
