@@ -45,3 +45,57 @@ describe('collectChanges', () => {
     expect(changes[0]?.ok).toBe(false)
   })
 })
+
+describe('the cost of collecting them', () => {
+  it('parses each write once, however many times the list is rebuilt', () => {
+    // `collectChanges` runs on every appended item and every tool resolution — roughly three
+    // times per write step — and re-parsed every earlier write on each. A write's arguments
+    // carry the entire new file, so that is O(N²) parses of file-sized documents on the UI
+    // thread, whichever tab happens to be open.
+    // File-sized arguments, because that is what a write call actually carries and the whole
+    // cost being removed is parsing them. At 2 KB the difference was 1.2x — real, and far too
+    // thin to assert without flaking on a busy machine.
+    const items: ChatItem[] = []
+    for (let i = 1; i <= 60; i++) {
+      items.push({
+        kind: 'tool', id: i, name: 'write_file',
+        args: JSON.stringify({ path: `f${i}.ts`, content: 'x'.repeat(120_000) }),
+        startedAtMs: i,
+        result: { ok: true, preview: 'p', content: 'wrote', display: 'wrote' },
+      })
+    }
+
+    // Rebuilding the list many times must not cost more parsing than building it once: the
+    // second pass and every one after it are served from the cache. Measured by time because
+    // the parse is the only thing in this loop that costs anything.
+    const first = performance.now()
+    collectChanges(items)
+    const firstMs = performance.now() - first
+
+    const repeat = performance.now()
+    for (let i = 0; i < 20; i++) collectChanges(items)
+    const repeatMs = (performance.now() - repeat) / 20
+
+    // A ratio, not a benchmark. Uncached, every repeat costs what the first did; cached, it
+    // is the loop alone. A tenth is far inside the real gap and far outside the noise.
+    expect(repeatMs).toBeLessThan(firstMs / 10)
+  })
+
+  it('never serves one item\'s parse for another', () => {
+    // The cache is keyed on the item OBJECT, not its id: ids are unique across the live
+    // transcript but a VIEWED session numbers its own from 1, and that overlap has already
+    // caused one defect today. Two items sharing an id must still parse as themselves.
+    const a: ChatItem = {
+      kind: 'tool', id: 7, name: 'write_file', startedAtMs: 1,
+      args: JSON.stringify({ path: 'first.ts', content: 'a' }),
+      result: { ok: true, preview: 'p', content: 'wrote', display: 'wrote' },
+    }
+    const b: ChatItem = {
+      kind: 'tool', id: 7, name: 'write_file', startedAtMs: 2,
+      args: JSON.stringify({ path: 'second.ts', content: 'b' }),
+      result: { ok: true, preview: 'p', content: 'wrote', display: 'wrote' },
+    }
+    expect(collectChanges([a]).map((c) => c.path)).toEqual(['first.ts'])
+    expect(collectChanges([b]).map((c) => c.path)).toEqual(['second.ts'])
+  })
+})

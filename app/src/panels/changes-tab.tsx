@@ -31,12 +31,41 @@ export interface ChangeEntry {
   openPath: string
 }
 
+/**
+ * Parsed targets, keyed by the ITEM OBJECT.
+ *
+ * `presentTool` is a `JSON.parse` of a write call's arguments, and those arguments carry the
+ * ENTIRE new file. `collectChanges` runs on every appended item and every tool resolution —
+ * roughly three times per write step — and re-parsed every earlier write each time: O(N²)
+ * parses of file-sized documents, on the UI thread, whichever tab happens to be open.
+ *
+ * A `WeakMap` on the object, rather than a `Map` on `item.id`. The reducer never mutates an
+ * item; it replaces the object, so the same object always means the same arguments and the
+ * cache cannot go stale. Keying on the id would instead rest on ids being unique across the
+ * whole app run — true today for the live transcript, and NOT true of a viewed session, which
+ * numbers its own items from 1. That is the same overlap that put a hole in someone else's
+ * conversation earlier today, and the app-side tests found it here immediately: they reuse
+ * ids 1, 2, 3 across cases with different arguments, and the id-keyed version handed the
+ * second case the first case's file.
+ *
+ * It also needs no clearing. An item the transcript has dropped is collectable.
+ */
+const parsedTargets = new WeakMap<ChatItem, ReturnType<typeof presentTool>>()
+
+function targetOf(item: ChatItem & { kind: 'tool' }): ReturnType<typeof presentTool> {
+  const hit = parsedTargets.get(item)
+  if (hit) return hit
+  const parsed = presentTool(item.name, item.args)
+  parsedTargets.set(item, parsed)
+  return parsed
+}
+
 export function collectChanges(items: ChatItem[]): ChangeEntry[] {
   const byPath = new Map<string, ChangeEntry>()
   for (const item of items) {
     if (item.kind !== 'tool' || item.result === undefined) continue
     if (!WRITE_TOOLS.has(item.name)) continue
-    const p = presentTool(item.name, item.args)
+    const p = targetOf(item)
     const key = p.path ?? p.target
     if (key === '') continue
     const previous = byPath.get(key)

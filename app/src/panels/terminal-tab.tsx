@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import { memo } from 'preact/compat'
 import type { VNode } from 'preact'
 import type { JobInfo } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
@@ -42,6 +43,11 @@ interface Line {
   clipped: boolean
 }
 
+/** How many of the newest command rows are mounted. Each keeps its command whole output in
+ * a <pre>, and a turn with no step ceiling can run thousands — the same reason the transcript
+ * is capped, in the sibling panel that was handed the same array and given neither guard. */
+const VISIBLE_COMMANDS = 200
+
 const TONE_CLASS: Record<Line['tone'], string> = {
   running: 'job-running', ok: 'job-ok', fail: 'job-fail', stopped: 'job-stopped',
 }
@@ -83,7 +89,7 @@ function jobLine(job: JobInfo, now: number): Line {
   }
 }
 
-function CommandRow({
+const CommandRow = memo(function CommandRow({
   line, defaultOpen, onStop,
 }: {
   line: Line
@@ -120,7 +126,7 @@ function CommandRow({
       </pre>
     </PanelRow>
   )
-}
+})
 
 export function TerminalTab({
   client, items, active, canRun,
@@ -141,8 +147,29 @@ export function TerminalTab({
 
   const running = jobs.filter((j) => j.running)
   const finished = jobs.filter((j) => !j.running)
-  const lines = [...agentCommands(items), ...finished.map((j) => jobLine(j, now))]
-    .sort((a, b) => a.at - b.at)
+
+  // The agent's commands are re-derived only when the transcript can actually have gained
+  // one — an item appended, or a tool resolving. `items` is a new array on every streamed
+  // token, so memoising on it directly would never hit; this is the same key the Changes tab
+  // uses, and for the same reason. Without it, every frame of a streaming step re-walked the
+  // whole transcript and re-JSON.parsed the arguments of every command the turn had ever run.
+  const resolvedTools = items.reduce((n, i) => n + (i.kind === 'tool' && i.result !== undefined ? 1 : 0), 0)
+  const agentLines = useMemo(
+    () => agentCommands(items),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the two counts above
+    [items.length, resolvedTools],
+  )
+  const jobsKey = finished.map((j) => `${j.id}:${j.output.length}`).join(',')
+  const allLines = useMemo(
+    () => [...agentLines, ...finished.map((j) => jobLine(j, now))].sort((a, b) => a.at - b.at),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `now` only moves a running job's
+    // clock, and running jobs are rendered in their own section above this list
+    [agentLines, jobsKey],
+  )
+  // And only the newest are mounted, for the reason the transcript is capped: every row keeps
+  // its command's whole output in a <pre>, and a turn with no step ceiling can run thousands.
+  const lines = allLines.length > VISIBLE_COMMANDS ? allLines.slice(-VISIBLE_COMMANDS) : allLines
+  const hiddenCommands = allLines.length - lines.length
 
   // Follow the output while new lines arrive. This console is short-lived and always read
   // from the bottom, so it pins unconditionally rather than tracking intent the way the
@@ -207,6 +234,12 @@ export function TerminalTab({
             title="Nothing has run yet"
             hint="Commands the agent runs appear here, and so do the ones you type below."
           />
+        )}
+        {hiddenCommands > 0 && (
+          <div class="term-earlier">
+            {hiddenCommands} earlier command{hiddenCommands === 1 ? '' : 's'} not shown — this
+            console keeps the newest so a long run stays responsive.
+          </div>
         )}
         {lines.map((line) => <CommandRow key={line.key} line={line} defaultOpen={false} />)}
       </div>
