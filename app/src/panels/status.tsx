@@ -7,6 +7,7 @@ import { formatTokenCount } from '../lib/format'
 import { Icon } from '../components/icons'
 import type { SessionSwitch } from './sessions-rail'
 import { Folders } from './folders'
+import { Permissions } from './permissions'
 
 /**
  * The status bar and the settings modal.
@@ -280,6 +281,12 @@ export function SettingsModal({
         />
 
         <McpServers client={client} />
+
+        {/* Last, and deliberately: the two fields above are what you came here to change,
+            and this is what you came here to CHECK. It is also the only section that can
+            take something away, which is not a thing to put beside a Browse button. */}
+        <div class="field-label">What the agent may do</div>
+        <Permissions client={client} />
 
         {error && <div class="panel-error">{error}</div>}
 
