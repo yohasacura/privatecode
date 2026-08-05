@@ -51,69 +51,45 @@ Next worth doing, in rough order:
    nothing. `compactIfOverWindow` does nothing below 26,400 by design, so the mid-turn path
    never ran — the BACKGROUND trigger fired instead and the output looked plausible. A run
    that exercises none of the code under test is exactly what this kind of test is for.
-3. **Throughput** — see the measured section below. The tool_choice lever is spent; the
-   remaining question is whether anything else reduces generated tokens.
+3. **Execute the tool calls the model proposes** — the measured ~20% lever. Full evidence and
+   the design question are in "The biggest remaining throughput lever, measured" below. This
+   is the top live item. It changes the agent's core execution contract, so it wants a
+   careful pass, not a quick one.
 
-4. **A third audit**, over what the last two rounds of fixing changed. The second audit found
-   two defects inside `a759855` — the commit whose entire subject was fixing things — so the
-   rate at which fixing introduces new defects is not zero and is worth measuring rather than
-   assuming. Cover: the flush cursor, the consumed cold-cache flag, the announced skipped
-   calls, `closeWritingCalls`, the WeakMap parse cache, the Terminal cap, and
-   `sessionBaseline` now being set from a rewind's undo point.
+4. **A third audit** — RUNNING as wf_bf0ac8a1-44a, over the two rounds of fixing themselves.
+   The second audit found two defects inside `a759855`, the commit whose entire subject was
+   fixing things, so the rate at which fixing introduces defects is not zero. One of its three
+   lenses is aimed at the TESTS written today: which of them cannot fail.
 
-Ordered by value to "very stable, very efficient, large development processes".
+5. **Throughput, the rest.** `tool_choice` is measured and spent (see below). The prompt-prefix
+   half is locked by `core/test/prompt-cache.test.ts`. After item 3, the open question is
+   whether anything else reduces generated tokens.
 
-1. **Streaming tool-call arguments** — DONE (see below)
-   The user diagnosed this himself: "Нейронка генерирует что нужно отредактировать - на это
-   тратится время, а я в чате увижу это только тогда когда полное изменение будет
-   сгенерированно, а до этого у меня чат просто замирает." The chat freezes for the whole
-   time a large `edit_file` argument is generated. Needs the tool-call fragments carried from
-   the llama client through the agent events and the protocol into the window — four layers.
+Everything below this line is history — measurements and closed items, kept because the
+reasoning is worth more than the conclusion. The list above is the only live queue.
 
-2. **Long-run hardening** — IN PROGRESS. Mid-turn checkpoints DONE. Still to look at:
-   memory growth across thousands of steps, the work log on a turn that never ends, and
-   whether repeated compaction inside one turn degrades the briefing.
+To start the model server (it is a manual on/off switch that kills the model when the script
+exits — run it detached, measure, then stop it rather than holding 16 GB of VRAM):
+`powershell -NoProfile -ExecutionPolicy Bypass -File D:\LocalAgentAI\Start-QwenServer.ps1`
 
-   (original note) — after the step ceiling came off (commit 6d2e7aa), a turn can now
-   run for hours. Everything that was only ever exercised for ~40 steps is newly load-bearing:
-   repeated mid-turn compaction, the work log, checkpoints per turn, memory growth.
+## Closed: long-run hardening (both audits, 34 findings raised, 21 fixed)
 
-3. **Throughput** — get more out of the model per unit of wall clock.
+The step ceiling came off in 6d2e7aa and made everything that had only ever run for ~40
+steps load-bearing. Two audits over it and over the fixes themselves; every confirmed finding
+is fixed. The ones worth remembering:
 
-   The prefix half is DONE and locked (see below). The half that needs the live model:
-   - `llama-server` is NOT running by default. Start it with
-     `powershell -NoProfile -ExecutionPolicy Bypass -File D:\LocalAgentAI\Start-QwenServer.ps1`
-     — it is a manual on/off switch that kills the model when the script exits, so run it
-     detached, measure, then stop it. Do not leave 16 GB of VRAM held for nothing.
-   - The measured lever already in the docs and still unused: `toolChoice: 'required'`
-     completes a hard edit 4/5 with 1262 median thinking tokens; `'auto'` completes 2/5 with
-     5591 (docs/DESIGN.md §7). That is 4.4x fewer generated tokens AND more reliable. The
-     stated blocker is per-STEP selection — "required while work remains, auto once it does
-     not" — which needs a signal the loop does not have. Do NOT guess at that signal; measure
-     candidate signals against the live model before changing anything.
-
-## Audit findings still open (from wf_a59ed946-0db, 15 confirmed of 32 raised)
-
-Five fixed in a759855, four more in 687c671 and 3a6fea1. Remaining:
-
-- **A six-hour turn is one work-log entry** (core/src/session/worklog.ts:94) — one heading,
-  one collapsed diff, at most eight commands. Consider a mid-turn entry alongside the
-  mid-turn checkpoint that already exists.
-- **Session.turnCommands retains full tool-result text for the whole turn** (session.ts:887)
-  and throws almost all of it away. 2-18 MB over 6 h, ~130 MB over a day of large reads.
-- **Mid-turn checkpoints run `git add -A` over the whole tree every 2 min** (session.ts:1072);
-  a 12-hour turn is up to 360 whole-tree commits, each blocking the step it sits on. MEASURE
-  the real cost on this workspace before touching the interval — the audit's own numbers here
-  were an upper bound, and the verifier trimmed two of its three claims.
-
-Done from this list:
-- Transcript windowing (687c671) — the tail is mounted, the rest is a click away. The
-  verifier's measurement is what shaped it: 9.4 ms/frame of VNode diffing at 25k items is
-  the CHEAP half; DOM size and forced layout are what actually stop the window.
-- BackgroundTasks eviction (687c671) — 30 newest finished kept, running ones never dropped.
-- Long-turn completion notification (3a6fea1).
-- Checkpoint problems reach the user (3a6fea1) — the single-unit path skipped collection, so
-  "no git on PATH" was unreportable on every ordinary workspace.
+- Transcript windowing (687c671). The verifier's measurement shaped it: 9.4 ms/frame of VNode
+  diffing at 25k items is the CHEAP half; DOM size and forced layout are what stop the window.
+- BackgroundTasks eviction (687c671, 5cf1ef8) — 30 newest finished kept, running ones never
+  dropped, and the user's own terminal commands dropped last, because that registry IS the
+  Terminal panel's scrollback.
+- Checkpoint problems reach the user (3a6fea1). The single-unit path skipped collection, so
+  "no git on PATH" was unreportable on every ordinary workspace — the loudest case, and not
+  the mid-run disk failure the finding was written about.
+- Mid-turn work-log entries and `LOGGED_TOOLS` (9230577).
+- `checkpoints.list` takes a limit and History can page (9230577). The `git add -A` cost that
+  finding was really about was REFUTED by measurement: ~250 ms per warm snapshot on this
+  workspace, ~90 s across a 12-hour turn, 0.2%.
 
 ## Measured, and settled: tool_choice is NOT a lever any more
 
