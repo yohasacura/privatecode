@@ -618,7 +618,13 @@ export class Session {
 
       const where = this.workspace.multi ? `In the "${job.folder}" folder: ` : ''
       const fixer = this.buildAgent(signal)
-      current = await fixer.runTurn(`${where}${verifyFailureMessage(job.spec, outcome)}`)
+      const fixed = await fixer.runTurn(`${where}${verifyFailureMessage(job.spec, outcome)}`)
+      // The fixer's result REPLACES the outcome — it is the later, truer statement of how the
+      // turn ended — but its step count is its own, not the turn's. Replacing that outright
+      // is what made the work log say "1 step" for a turn that had taken thirteen, and
+      // `steps` is the only number in that log that says how much a turn did. It is now the
+      // total: the work, plus the work of fixing what the work broke.
+      current = { ...fixed, steps: current.steps + fixed.steps }
       // Aborted or out of steps: stop asking. The workspace is still broken and the
       // transcript says so, which is the honest end state.
       if (current.stoppedBecause !== 'done') return current
@@ -747,7 +753,19 @@ export class Session {
   async restoreFile(path: string, note?: string): Promise<{ removed: boolean }> {
     if (!this.checkpoints) throw new Error('this session is not keeping checkpoints')
     if (this.sending) throw new Error('a turn is running; stop it before reverting a file')
-    const baseline = (await this.checkpoints.list()).at(-1)
+    // The baseline this session actually recorded, not "the oldest checkpoint still in the
+    // listing". That was `(await this.checkpoints.list()).at(-1)`, and it was never the
+    // session's baseline: `list()` defaults to fifty and the shadow repo is per WORKSPACE,
+    // never pruned, so it returned the fiftieth-newest commit — or, in any session after the
+    // first, the workspace's oldest commit, from someone else's work days ago.
+    //
+    // Mid-turn checkpoints turned a slow-burning wrongness into a fast one: a writing turn
+    // now commits every two minutes, so a hundred-minute turn slides the whole fifty-entry
+    // window on its own and "put it back" would restore a file to something the agent wrote
+    // an hour into the very turn being undone. The message appended below states the
+    // pre-session state as fact, so the model would then act on a description of the disk
+    // that is false.
+    const baseline = this.sessionBaseline
     if (!baseline) throw new Error('this session has no baseline to restore from')
 
     // Absolute: which folder — and which nested repository inside it — holds this file is a
@@ -957,7 +975,15 @@ export class Session {
       // first turn rather than in the constructor, because a session that is only resumed
       // to be read should not commit anything at all.
       if (this.checkpoints && this.lastCheckpoint === null) {
+        // `take` returns null when the tree is unchanged, which is the common case for a
+        // workspace that already has checkpoints — and then the newest existing one
+        // describes the pre-session state exactly, so it IS the baseline.
         this.lastCheckpoint = await this.checkpoints.take({})
+          ?? (await this.checkpoints.list(1))[0] ?? null
+        // Kept for the life of the session, unlike `lastCheckpoint`, which every mid-turn
+        // and end-of-turn snapshot moves forward. `restoreFile` needs the point the session
+        // STARTED from — see there.
+        this.sessionBaseline = this.lastCheckpoint
       }
       // The mid-turn clock runs from the last snapshot of any kind, so a turn that starts
       // right after one does not immediately take another.
@@ -1174,6 +1200,9 @@ export class Session {
       }
 
       this.opts.onCompaction?.({ state: 'started' })
+      // Set BEFORE the request, not after it succeeds: the cache is displaced by the prefill,
+      // which happens whatever the generation goes on to do. See `beforeStep`.
+      this.compactionDisplacedCache = true
       try {
         const result = await generateCompaction(
           this.opts.client,
@@ -1395,6 +1424,27 @@ export class Session {
 
     const store = this.opts.store
     if (store) {
+      // FLUSH FIRST. The `.jsonl` is documented as the full audit trail, never trimmed, and
+      // until compaction could run mid-turn that was true: a turn's messages were written
+      // when it ended, and the only compaction that ever ran happened between turns, with
+      // nothing unwritten.
+      //
+      // Between the steps of a turn that is still running, everything since `persistedCount`
+      // is in memory and nowhere else. The swap below advances that cursor past all of it,
+      // so without this line every mid-turn compaction silently and permanently deletes the
+      // work of the stretch it summarises — for a 131k window, on the order of 97k tokens of
+      // reasoning, tool calls and results per swap. The resumed conversation would not
+      // notice (load() slices at the last marker either way), which is exactly why this
+      // could have gone unseen: what is destroyed is the record. Session search reads the
+      // whole file, history included, so text produced during a long turn would simply stop
+      // being findable, forever.
+      //
+      // Two writes rather than one, and the order is the safety argument: if the process
+      // dies between them the file holds the messages and no marker, so `load()` rebuilds
+      // the FULL pre-swap transcript. Nothing is lost either way; the swap is simply not
+      // applied yet.
+      const pending = this.transcript.messages().slice(this.persistedCount)
+      if (pending.length > 0) store.appendMessages(this.id, pending)
       store.appendCompactionSwap(this.id, { summary, droppedMessages }, next.messages())
     }
 
@@ -1510,6 +1560,13 @@ export class Session {
   private lastCheckpointAtMs = 0
   /** Where the current turn began, for the work log's own diff. See `recordTurn`. */
   private turnStartCheckpoint: Checkpoint | null = null
+  /** Where this SESSION began — the one point "put it back" means. Set once, on the first
+   * turn, and never moved. See `restoreFile`. */
+  private sessionBaseline: Checkpoint | null = null
+  /** Whether a summary generation went out since `beforeStep` last looked. Its prefill is
+   * what evicts the server's cache, so it is owed a cold budget whether or not the swap it
+   * was for ever landed. See `beforeStep`. */
+  private compactionDisplacedCache = false
   /** 1-based, counted by this session rather than read off the transcript: a compaction
    * swap changes the message count and must not renumber the log. */
   private turnNumber = 0
@@ -1605,14 +1662,27 @@ export class Session {
     // path caught the refusal afterwards and restarted the whole turn -- one wasted prefill,
     // one wasted request, and only ever once.
     //
-    // Comparing the object identity is what tells us a swap actually happened: a compaction
-    // that was postponed (nothing to gain) or failed leaves it untouched, and neither is a
-    // reason to make the next step pay a cold-cache budget.
+    // The cold budget is owed whenever a summary GENERATION ran, not only when the swap
+    // landed — and those are different events.
+    //
+    // The first version compared object identity and gave the next step a cold budget only
+    // if the transcript had been replaced, reasoning that a postponed or failed compaction
+    // changed nothing. It changed nothing about the transcript and everything about the
+    // server. `summaryBudget()` is capped at SUMMARY_MAX_INPUT_TOKENS, so on the large
+    // session where mid-turn compaction actually fires, `fitForSummary` always drops the
+    // middle — the request that goes out has a DIFFERENT prefix from the conversation, and
+    // prefilling it evicts what the cache held. A compaction that then failed left the next
+    // step re-prefilling the whole conversation against the 90 s warm-cache deadline, which
+    // it cannot make: at the 2.54 ms/token this file's own PREFILL_MS_PER_TOKEN records,
+    // 125k tokens is over five minutes. The step would time out, and the turn would end
+    // reporting a timeout, having been broken by the thing sent to rescue it.
     agentOpts.beforeStep = async (step): Promise<StepPreamble | undefined> => {
       await this.checkpointLongTurn(step)
       const before = this.transcript
+      this.compactionDisplacedCache = false
       await this.compactIfOverWindow(signal)
-      if (this.transcript === before) return undefined
+      const swapped = this.transcript !== before
+      if (!swapped && !this.compactionDisplacedCache) return undefined
       return { transcript: this.transcript, timeoutMs: this.coldStartTimeout() }
     }
     // The first step of a turn whose prompt prefix the server has not seen must be allowed

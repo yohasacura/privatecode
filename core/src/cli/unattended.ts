@@ -120,10 +120,21 @@ export async function runUnattended(opts: UnattendedOptions): Promise<RunSummary
     turns += 1
     opts.onTurn?.({ turn: turns, text: next })
 
+    // The hour budget has to be able to cut a turn OFF, not merely decline to start another.
+    //
+    // Both budgets used to be checked only here, between turns, which was sound while a turn
+    // was capped at forty steps: the longest a run could overshoot was one turn. With the
+    // step ceiling gone a turn can run indefinitely, and a single turn that never ends means
+    // `now() >= deadline` is a line the loop cannot reach. Someone sets an eight-hour budget,
+    // goes to bed, and at hour twenty it has still never been evaluated — which is the
+    // opposite of what a budget is for.
+    const budget = AbortSignal.timeout(Math.max(1, deadline - now()))
+    const turnSignal = opts.signal ? AbortSignal.any([opts.signal, budget]) : budget
+
     let result: TurnResult
     const before = opts.session.turnFootprint()
     try {
-      result = await opts.session.send(next, opts.signal)
+      result = await opts.session.send(next, turnSignal)
       serverFailures = 0
     } catch (e) {
       // A transport failure is not a turn outcome — `Session.send` folds abort and timeout
@@ -140,6 +151,14 @@ export async function runUnattended(opts: UnattendedOptions): Promise<RunSummary
     }
 
     if (result.stoppedBecause === 'aborted') {
+      // Which abort it was matters: a turn cut off by its own budget reported as "the run
+      // was stopped by the user" would be a run reporting something that did not happen, to
+      // someone who was asleep for it.
+      if (budget.aborted && opts.signal?.aborted !== true) {
+        return finish('max-hours',
+          `the ${maxHours}-hour budget was reached, and the turn that was still running was ` +
+          'stopped at it')
+      }
       return finish('aborted', 'the run was stopped by the user')
     }
 

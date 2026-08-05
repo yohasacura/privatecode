@@ -218,3 +218,67 @@ describe('the summary', () => {
     }
   })
 })
+
+describe('a turn that does not end on its own', () => {
+  /** A session whose turn runs until something aborts it — which is what a turn can now be,
+   * since the step ceiling came off. */
+  function hangingSession() {
+    let aborted = false
+    const session = {
+      send: async (_text: string, signal?: AbortSignal): Promise<TurnResult> => {
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) { resolve(); return }
+          signal?.addEventListener('abort', () => resolve(), { once: true })
+        })
+        aborted = true
+        return { steps: 400, finalText: '', stoppedBecause: 'aborted' }
+      },
+      turnFootprint: () => ({ writes: 0, commands: 0 }),
+      todos: () => [],
+      pendingDecisions: () => [],
+      noteRunEnded: () => {},
+    } as unknown as Session
+    return { session, wasAborted: () => aborted }
+  }
+
+  test('the hour budget cuts the turn off instead of waiting for it', async () => {
+    // Both budgets used to be checked only BETWEEN turns, which was sound while a turn was
+    // capped at forty steps: the worst overshoot was one turn. With no ceiling, one turn
+    // that never ends means the deadline is a line the loop cannot reach — someone sets
+    // eight hours, goes to bed, and at hour twenty it has still never been evaluated.
+    const { session, wasAborted } = hangingSession()
+    const summary = await runUnattended({
+      session,
+      task: 'work forever',
+      maxTurns: 10,
+      // Real milliseconds: the cut-off is a real timer, because the turn it has to
+      // interrupt is doing real work.
+      maxHours: 30 / 3_600_000,
+    })
+    expect(wasAborted()).toBe(true)
+    expect(summary.stoppedBecause).toBe('max-hours')
+  })
+
+  test('a budget cut-off is not reported as the user stopping the run', async () => {
+    // The turn comes back `aborted` either way, and the two are not the same thing. Telling
+    // someone who was asleep that they stopped their own run is a run reporting something
+    // that did not happen.
+    const { session } = hangingSession()
+    const summary = await runUnattended({
+      session, task: 'work forever', maxTurns: 10, maxHours: 30 / 3_600_000,
+    })
+    expect(summary.detail).toContain('budget')
+    expect(summary.detail).not.toContain('stopped by the user')
+  })
+
+  test('the user stopping it still reads as the user stopping it', async () => {
+    const { session } = hangingSession()
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 20)
+    const summary = await runUnattended({
+      session, task: 'work forever', maxTurns: 10, maxHours: 1, signal: controller.signal,
+    })
+    expect(summary.stoppedBecause).toBe('aborted')
+    expect(summary.detail).toContain('stopped by the user')
+  })
+})
