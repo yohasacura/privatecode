@@ -22,10 +22,26 @@ whatever the next audit finds.
 
 Next worth doing, in rough order:
 
-1. **Re-audit.** The last one paid for itself: 32 raised, 15 confirmed, 17 refuted, and
-   several of the confirmed ones were mine from the same session. Run it again over the
-   NEW surfaces — streaming tool-call deltas, the transcript window, mid-turn work-log
-   entries, the eviction in BackgroundTasks — before adding features on top of them.
+1. ~~**Re-audit.**~~ DONE (wf_32665d58-487): 23 raised, 19 confirmed, 4 refuted. Six fixed in
+   d54267e, including TWO inside a759855 — the commit whose entire subject was fixing things.
+   Auditing your own morning's work before building on it is not optional; it found data
+   corruption and a fix that covered every path except the one it was written for.
+
+   **Still open from that audit**, in rough order:
+   - `promptCacheCold` is cleared by a step that timed out or was aborted, permanently
+     downgrading a large session to the 90 s budget (session.ts:905).
+   - A rewind taken before the session's first turn permanently disables "Put back" for that
+     session — `sessionBaseline` is never set because the baseline branch is skipped
+     (session.ts ~1001).
+   - `suppressedId` is computed from the LIVE transcript and applied to the VIEWED one, so
+     reading a stored session can blank an unrelated row (transcript.tsx:114).
+   - The Terminal tab is uncapped and re-walks + re-sorts every transcript item per render;
+     `collectChanges` re-parses every previous write on every tool result (quadratic), and
+     runs whichever tab is open (terminal-tab.tsx:144, context-panel.tsx:53).
+   - Background-task eviction can drop an id the model still holds, and erases the user's own
+     terminal scrollback (background-task.ts:149).
+   - The streaming test drives a sequence the core cannot produce — two `tool.call` events for
+     one step. It passes and proves nothing. Rewrite it against the real event order.
 2. ~~**A long live run.**~~ DONE — `core/test/integration/long-turn.test.ts` (d0d324b).
    Two compaction swaps inside one real turn, 253 s, against Qwen3.6. Task completed on the
    far side of having its history replaced twice; flush held; zero orphaned tool replies in
