@@ -47,6 +47,51 @@ Ordered by value to "very stable, very efficient, large development processes".
      not" — which needs a signal the loop does not have. Do NOT guess at that signal; measure
      candidate signals against the live model before changing anything.
 
+## Audit findings still open (from wf_a59ed946-0db, 15 confirmed of 32 raised)
+
+Five are fixed in a759855. These are the rest, roughly in value order:
+
+- **Transcript re-creates and re-diffs every row per animation frame** (app/src/panels/transcript.tsx:105).
+  At ~25k items a streaming frame is ~1.5M element ops. Needs windowing or memoised rows.
+- **BackgroundTasks never evicts** (core/src/tools/background-task.ts:119), and the app
+  re-serialises every job, dead ones included, every 2 s for the process lifetime.
+- **A six-hour turn is one work-log entry** (core/src/session/worklog.ts:94) — one heading,
+  one collapsed diff, at most eight commands. Consider a mid-turn entry alongside the
+  mid-turn checkpoint that already exists.
+- **A long manual turn finishing sends no notification** (app/src/lib/use-chat-session.ts:132);
+  only unattended runs do. A turn is now a walk-away event.
+- **Checkpoint failures during a long turn cannot reach the user** (core/src/checkpoints/set.ts:77):
+  collected on a path single-folder workspaces never take, drained only when a run ends.
+- **Session.turnCommands retains full tool-result text for the whole turn** (session.ts:887)
+  and throws almost all of it away. 2-18 MB over 6 h, ~130 MB over a day of large reads.
+- **Mid-turn checkpoints run `git add -A` over the whole tree every 2 min** (session.ts:1072);
+  a 12-hour turn is up to 360 whole-tree commits, each blocking the step it sits on. Measure
+  the real cost on this workspace before changing the interval.
+
+## Measured, and settled: tool_choice is NOT a lever any more
+
+docs/DESIGN.md §7 recorded `required` beating `auto` 4/5 vs 2/5 with 1262 vs 5591 median
+thinking tokens. Re-measured against the live model on the spike's OWN task
+(`spike/edit_probe.py`'s PathRules.cs), n=3 per arm, same tool list in both arms plus a
+`finish` tool so `required` was satisfiable: **1/3 vs 1/3 correct, no thinking runaway in
+either arm** (max 676 tokens, against the 5591 recorded). The prompt paragraph "do not
+deliberate at length, and do not re-check a decision you have already made" — which
+prompt.ts already calls one of the two levers that stop the runaway — has taken it. Do not
+build a turn-ending tool for this reason; there is nothing left to win.
+
+Also worth keeping: the first attempt used an easy TypeScript refactor and found no
+difference either, but that proved nothing — the task never provoked the failure. And the
+checker was wrong at first: it rejected `$@"...""{p}"""`, which is correct C#. A verdict
+without the produced text beside it is how a strict checker gets mistaken for a failing model.
+
+## Where the wall clock goes (measured, live model, 7-step turn)
+
+- prefill 403 tok/s, generation **57 tok/s** — a generated token costs 7x a prefilled one.
+- prompt cache hit **85.9%**; steps 2-7 prefilled 22-115 tokens each, not thousands. The
+  structural property core/test/prompt-cache.test.ts asserts is real in practice.
+- speculative decoding: 85% of draft tokens accepted.
+- So the only large lever left is generating fewer tokens, and tool_choice is not it.
+
 ## Done
 
 - **The prompt-prefix property is now held by a test** (core/test/prompt-cache.test.ts).
