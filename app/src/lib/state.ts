@@ -399,7 +399,7 @@ function lastAssistantItem(items: ChatItem[]): (ChatItem & { kind: 'assistant' }
  * the next call of the same name would complete it, taking its arguments and later its
  * result: one call's diff shown against another call's file.
  *
- * The core answers every abandoned call in the transcript with a `Not executed:` line and now
+ * The core answers every abandoned call in the transcript with a `Not run:` line and now
  * announces them too, so this is the remaining case: the ones cut off before the step even
  * finished, which no event can describe because the step produced none.
  */
@@ -466,7 +466,14 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       // This is the same lesson `step.done` already learned WITHIN a turn (see its own
       // comment about aborted steps wiping the count) applied ACROSS turns, where it was
       // simply never carried over.
-      return { ...state, turnRunning: true, currentStep: null }
+      //
+      // Writing cards are closed here as well as on `turn.done`, and that is the belt to its
+      // braces: an unattended RUN takes turn after turn without a `turn.done` between them,
+      // and a `send` the host refuses never produces one at all. A card left open by any of
+      // those would pulse until the session ended, and the next call of the same name would
+      // complete it — one call's arguments, then one call's result, against another call's
+      // card. A new turn starting is proof the last one is over, whatever the last one did.
+      return { ...state, items: closeWritingCalls(state.items), turnRunning: true, currentStep: null }
 
     case 'step.start':
       return {
@@ -710,7 +717,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     }
 
     case 'send-failed': {
-      const items = closeThinking(state.items, action.atMs)
+      const items = closeWritingCalls(closeThinking(state.items, action.atMs))
       const item: ChatItem = { kind: 'error', id: state.nextId, message: action.message }
       return { ...state, items: [...items, item], turnRunning: false, currentStep: null, nextId: state.nextId + 1 }
     }

@@ -65,6 +65,13 @@ export function collectChanges(items: ChatItem[]): ChangeEntry[] {
   for (const item of items) {
     if (item.kind !== 'tool' || item.result === undefined) continue
     if (!WRITE_TOOLS.has(item.name)) continue
+    // A call that was stopped before it executed changed nothing, so it is not a change.
+    // `Not run:` is the core's contract for that — a permission denial, a deferral, a
+    // loop-detector refusal, or an extra call in a step that already acted. Listing them put
+    // a phantom row here, and worse: last-write-wins meant a refused write to a path REPLACED
+    // the successful write to the same path, taking its diff and its "Put back" button with
+    // it.
+    if (item.result.content.startsWith('Not run:')) continue
     const p = targetOf(item)
     const key = p.path ?? p.target
     if (key === '') continue

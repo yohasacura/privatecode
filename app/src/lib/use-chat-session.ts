@@ -198,7 +198,13 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         }
         lastPending = d.pending
       }),
-      client.on('run.turn', (d) => emit({ type: 'run.turn', turn: d.turn })),
+      client.on('run.turn', (d) => {
+        // A run's turns do not each produce a `turn.done`, so this is where the clock has to
+        // be released: without it, `turnStartedAtMs` kept the FIRST turn's start for the
+        // whole run and the notification reported hours for a turn that took minutes.
+        turnStartedAtMs = 0
+        emit({ type: 'run.turn', turn: d.turn })
+      }),
       client.on('run.ended', (d) => {
         dispatch({ type: 'run.ended', stoppedBecause: d.stoppedBecause, detail: d.detail, turns: d.turns })
         void notify(

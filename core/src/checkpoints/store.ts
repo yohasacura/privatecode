@@ -152,7 +152,26 @@ export class CheckpointStore {
     const added = await this.git(['add', '-A'])
     if (added === null) return null
 
-    const commit = await this.git([...IDENTITY, 'commit', '--quiet', '-m', message], { allowFail: true })
+    // An EMPTY baseline is allowed, and only the baseline.
+    //
+    // A brand-new project is an empty folder, so the session's first `take({})` had nothing
+    // to commit and returned null — and with no commits in the repo, `list(1)` was empty too.
+    // The session therefore had no baseline at all, and "Put back" could never work in the
+    // one workspace where it matters most: the one the agent built from nothing. There was no
+    // commit representing "nothing existed yet", so there was nothing to restore to.
+    //
+    // `--allow-empty` makes that state representable. `restoreFile` already deletes a file
+    // absent from the target checkpoint, which is exactly right against an empty root: the
+    // file did not exist then, so putting it back means removing it.
+    //
+    // Confined to the baseline (`label.turn === undefined`) on purpose. Letting every
+    // read-only turn commit an empty snapshot would fill History with rows that describe
+    // nothing, which is what returning null for an unchanged tree exists to avoid.
+    const isBaseline = label.turn === undefined
+    const commit = await this.git(
+      [...IDENTITY, 'commit', '--quiet', ...(isBaseline ? ['--allow-empty'] : []), '-m', message],
+      { allowFail: true },
+    )
     // `commit` exits non-zero with "nothing to commit" when the tree is unchanged, which is
     // the common case for a read-only turn -- distinguished from a real failure by asking
     // git whether anything is staged rather than by parsing its prose.

@@ -499,7 +499,15 @@ export class Agent {
         content: result.content,
       })
       for (const skipped of calls.slice(1)) {
-        const content = `Not executed: one tool call per step, and ${call.function.name} ran ` +
+        // `Not run:`, which is this codebase's existing contract for a call STOPPED BEFORE IT
+        // EXECUTED — the same prefix a permission denial, a deferral and a loop-detector
+        // refusal use. It said `Not executed:` instead, and the difference was not cosmetic:
+        // `commandsFrom` decides whether a command ran by testing exactly `/^Not run[:.]/`,
+        // so a skipped `run_command` was written into the work log under "**Ran:** `npm test`
+        // → failed". Someone reading the night's log would conclude the suite was run and is
+        // broken, when it never executed — which is the precise failure `CommandRecord.ran`
+        // was added to prevent, defeated by the event I added this morning to close a card.
+        const content = `Not run: one tool call per step, and ${call.function.name} ran ` +
                         'first. Re-issue this one on a later step if it is still needed.'
         this.transcript.append({
           role: 'tool',
@@ -508,7 +516,7 @@ export class Agent {
           content,
         })
         // Announced, not only recorded. A skipped call is already in the transcript, so a
-        // resumed session shows it — `replayEntries` reads the `Not executed:` prefix as a
+        // resumed session shows it — `replayEntries` reads the `Not run:` prefix as a
         // failure — but nothing told a WATCHING window, and once arguments streamed there was
         // a card open for it. Every extra call the model proposed left a row pulsing forever.
         // Seen in a live run and not recognised: `-> find_files -> find_files -> find_files`

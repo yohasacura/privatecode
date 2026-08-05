@@ -99,3 +99,45 @@ describe('the cost of collecting them', () => {
     expect(collectChanges([b]).map((c) => c.path)).toEqual(['second.ts'])
   })
 })
+
+describe('a call that never ran is not a change', () => {
+  const ok = (id: number, path: string) => ({
+    kind: 'tool' as const, id, name: 'write_file', startedAtMs: id,
+    args: JSON.stringify({ path, content: 'real' }),
+    result: { ok: true, preview: 'p', content: 'wrote 4 lines', display: 'wrote 4 lines' },
+  })
+  const refused = (id: number, path: string) => ({
+    kind: 'tool' as const, id, name: 'write_file', startedAtMs: id,
+    args: JSON.stringify({ path, content: 'never happened' }),
+    result: {
+      ok: false, preview: 'p',
+      content: 'Not run: one tool call per step, and read_file ran first.',
+      display: 'Not run: one tool call per step, and read_file ran first.',
+    },
+  })
+
+  it('leaves a refused write out of the list entirely', () => {
+    expect(collectChanges([refused(1, 'a.ts')])).toEqual([])
+  })
+
+  it('does not let a refused write take a successful one\'s place', () => {
+    // The list keeps the LAST write per path. A refused call to the same path therefore
+    // replaced the real one — taking its diff and its "Put back" button with it, and showing
+    // the refusal text where the change should be. The model proposing two calls in one step
+    // is all it takes.
+    const entries = collectChanges([ok(1, 'a.ts'), refused(2, 'a.ts')])
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ path: 'a.ts', ok: true })
+    expect(entries[0]!.content).toContain('wrote')
+  })
+
+  it('still shows a write that genuinely failed', () => {
+    // "Never ran" and "ran and failed" are different, and only the first is not a change.
+    const failed = {
+      kind: 'tool' as const, id: 3, name: 'write_file', startedAtMs: 3,
+      args: JSON.stringify({ path: 'b.ts', content: 'x' }),
+      result: { ok: false, preview: 'p', content: 'EACCES: permission denied', display: 'EACCES' },
+    }
+    expect(collectChanges([failed]).map((c) => c.path)).toEqual(['b.ts'])
+  })
+})

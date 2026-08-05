@@ -177,7 +177,10 @@ export function TerminalTab({
   useEffect(() => {
     const el = bodyRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [lines.length, jobs.map((j) => j.output.length).join(',')])
+    // Keyed on the UNCAPPED count: `lines.length` stops changing once the cap is reached, so
+    // this console — whose whole job is to show what is happening now — would have stopped
+    // following the moment a run passed two hundred commands.
+  }, [allLines.length, jobs.map((j) => j.output.length).join(',')])
 
   function stop(id: string): void {
     client.call('jobs.stop', { id })

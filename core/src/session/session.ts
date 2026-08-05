@@ -808,7 +808,16 @@ export class Session {
     // for the rest of the session. Reaching it takes one click — open a workspace with
     // earlier checkpoints, restore one before typing anything — and it also catches a
     // RESUMED session that has not been sent to yet in this run.
-    this.sessionBaseline ??= result.undo
+    //
+    // Only when nothing has been sent. The first version guarded on "no baseline was ever
+    // recorded", and those are not the same condition: in a brand-new empty folder the
+    // first turn's `take({})` had nothing to commit, so `sessionBaseline` stayed null for
+    // the whole session — and this line then installed `result.undo`, a snapshot of the tree
+    // as it stood at the REWIND, containing everything the agent had written. "Put back"
+    // would have restored a file to the state the user had just rolled away from while the
+    // transcript told the model it was the pre-session state: worse than the honest refusal
+    // it replaced. The empty case is fixed where it belongs, in the store's baseline commit.
+    if (this.turnNumber === 0) this.sessionBaseline ??= result.undo
     this.lastCheckpoint = result.restored
     this.transcript.append({
       role: 'user',

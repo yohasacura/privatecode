@@ -794,3 +794,39 @@ test('a call whose answer keeps changing is never refused', async () => {
   await agent.runTurn('go')
   expect(n).toBe(5)
 })
+
+test('a call the step skipped is announced, not only recorded', async () => {
+  // The loop runs `calls[0]` and refuses the rest. It always wrote the refusal into the
+  // transcript, so a RESUMED session showed it — and told a watching window nothing. Once
+  // arguments streamed, that meant a card opened for every proposed call and only the first
+  // ever closed: the rest pulsed for the life of the session, and the next call of the same
+  // name inherited one, taking its arguments and then its result.
+  //
+  // This is the test that was missing when the announcement was added: the only other
+  // two-call test in this file asserts on `messages` and builds its Agent without an events
+  // recorder, so deleting the announcement left the whole suite green.
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    return n === 1 ? twoToolCallResponse() : textResponse('ok')
+  })
+  stop = fake.close
+  const { handlers, events } = recorder()
+  const agent = makeAgent(fake.url, { events: handlers })
+
+  await agent.runTurn('go')
+
+  // Both calls announced, both answered — the live view and the stored transcript agree.
+  const announced = events.filter((e) => e[0] === 'toolCall')
+  expect(announced).toHaveLength(2)
+
+  const results = events.filter((e) => e[0] === 'toolResult')
+  expect(results).toHaveLength(2)
+  // And the second is reported as what it is: refused, with the prefix `commandsFrom` and
+  // `assumedOk` both read as "this never ran".
+  const skipped = results[1]![2] as { ok: boolean; content: string }
+  expect(skipped.ok).toBe(false)
+  expect(skipped.content.startsWith('Not run:')).toBe(true)
+  // Only the first actually executed.
+  expect(pingCalls).toBe(1)
+})

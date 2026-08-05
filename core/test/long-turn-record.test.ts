@@ -111,36 +111,71 @@ test('a mid-turn compaction writes the work it is about to summarise away', asyn
   expect(beforeMarker).toContain('f1.txt')
 })
 
-test('a long turn that is cut off still has its work on disk', async () => {
-  // The crash case, and the reason the flush is ordered messages-then-marker: if the process
-  // dies between the two writes the file holds the messages and no marker, so a reload
-  // rebuilds the full pre-swap transcript. Nothing is lost either way.
-  const root = mkdtempSync(join(tmpdir(), 'pc-rec2-'))
-  roots.push(root)
-  const fake = await startFakeServer((_b, req) => {
-    if (req.url === '/props') return { default_generation_settings: { n_ctx: 8000 } }
+test('a crash between the two writes leaves the full pre-swap transcript', async () => {
+  // The ordering argument, tested for the first time. The flush writes messages and THEN the
+  // marker, so a process that dies between them leaves a file with the messages and no
+  // marker — and `load()`, which slices at the last marker, rebuilds everything. Nothing is
+  // lost; the swap is simply not applied yet.
+  //
+  // The version this replaces named that argument in its comment and ran no compaction at
+  // all: no `compaction` option, so `compactIfOverWindow` returned immediately,
+  // `applyCompactionSwap` was never entered, and its single assertion was fed entirely by
+  // send()'s ordinary tail write. Deleting the whole flush block left it green.
+  const CONTEXT = 40_000
+  let streamed = 0
+  const fake = await startFakeServer((body, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: CONTEXT } }
     if (req.url === '/health') return { status: 'ok' }
-    return tool('c1', 'write_file', JSON.stringify({ path: 'a.txt', content: 'hi' }))
+    const last = body.messages?.[body.messages.length - 1]
+    if (typeof last?.content === 'string' && last.content.includes('compacted to free up context')) {
+      return text('BRIEFING: earlier work, summarised.')
+    }
+    streamed++
+    if (streamed <= 3) {
+      return {
+        choices: [{
+          message: {
+            role: 'assistant', content: null,
+            reasoning_content: 'x'.repeat(60_000),
+            tool_calls: [{
+              id: `c${streamed}`, type: 'function',
+              function: { name: 'write_file', arguments: JSON.stringify({ path: `p${streamed}.txt`, content: 'x' }) },
+            }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: streamed <= 2 ? 38_000 : 9_000, completion_tokens: 20 },
+      }
+    }
+    return text('finished')
   })
   stop = fake.close
+  const root = mkdtempSync(join(tmpdir(), 'pc-rec2-'))
+  roots.push(root)
 
   const store = new SessionStore(root)
-  const controller = new AbortController()
+  // The crash: the marker write never lands, exactly as a power cut between the two
+  // `appendFileSync` calls would leave it.
+  store.appendCompactionSwap = () => { throw new Error('the process died here') }
+
   const session = new Session({
     client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
     toolset: createToolset({}),
     workspaceRoot: root,
     mode: 'autopilot',
-    maxSteps: 3,
     store,
+    compaction: { contextLength: CONTEXT },
   })
-  setTimeout(() => controller.abort(), 50)
-  await session.send('write something', controller.signal).catch(() => {})
+  await session.send('do the work')
 
-  // Whatever the abort did to the turn, the session exists and is loadable — the failure
-  // this guards against is a session file that cannot be resumed at all.
-  const { transcript } = store.load(session.id)
-  expect(transcript.messages().length).toBeGreaterThan(0)
+  const raw = readFileSync(join(root, '.privatecode', 'sessions', `${session.id}.jsonl`), 'utf8')
+  // No marker landed...
+  expect(raw).not.toContain('"__event":"compaction"')
+  // ...and everything the turn had produced up to that point is on disk, so a reload
+  // rebuilds the whole conversation rather than half of one.
+  const rebuilt = store.load(session.id).transcript.messages()
+  expect(rebuilt.some((m) => m.content === 'do the work')).toBe(true)
+  expect(rebuilt.filter((m) => m.role === 'tool')).not.toHaveLength(0)
 })
 
 test('the work log counts the turn\'s steps, not the verify-fixer\'s', async () => {

@@ -124,7 +124,7 @@ describe('whether each call worked', () => {
     // on the same contract. It is also the most common failure in an overnight run.
     const entries = replayEntries([
       toolResult('c1', 'run_command', 'Not run: nobody is available to approve this…'),
-      toolResult('c2', 'edit_file', 'Not executed: one tool call per step'),
+      toolResult('c2', 'edit_file', 'Not run: one tool call per step'),
     ])
     expect(entries).toMatchObject([{ ok: false }, { ok: false }])
   })

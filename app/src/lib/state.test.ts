@@ -719,7 +719,7 @@ describe('reduceChat: a tool call arriving as it is written', () => {
       { type: 'tool.call', name: 'read_file', args: '{"path":"second.ts"}' },
       {
         type: 'tool.result', name: 'read_file', ok: false,
-        content: 'Not executed: one tool call per step, and read_file ran first.',
+        content: 'Not run: one tool call per step, and read_file ran first.',
       },
     ])
 
@@ -733,7 +733,7 @@ describe('reduceChat: a tool call arriving as it is written', () => {
     // And each card carries ITS OWN outcome — the run and the refusal cannot be swapped.
     expect(cards[0]!.result).toMatchObject({ ok: true })
     expect(cards[1]!.result).toMatchObject({ ok: false })
-    expect(cards[1]!.result?.content).toContain('Not executed')
+    expect(cards[1]!.result?.content).toContain('Not run')
   })
 
   it('does not hand a result to a call that is still being written', () => {
