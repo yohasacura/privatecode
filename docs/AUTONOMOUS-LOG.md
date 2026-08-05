@@ -110,6 +110,24 @@ difference either, but that proved nothing — the task never provoked the failu
 checker was wrong at first: it rejected `$@"...""{p}"""`, which is correct C#. A verdict
 without the produced text beside it is how a strict checker gets mistaken for a failing model.
 
+## An observation from the live long run, NOT yet a finding
+
+In that run the model read all three files at steps 4-6, and read them AGAIN at steps 11-14 —
+about a quarter of the turn spent re-acquiring what it had already had. The cause is not
+mysterious: a compaction had removed the contents from its context, so re-reading was the
+correct move, not a mistake.
+
+What is NOT established is whether this matters at a real window. The test forces a 30,000-
+token window to make swaps happen in minutes; at the real 131,072 there would have been no
+swap at all in a turn that size, and the re-reads would not have happened. Two compactions in
+fifteen steps is an artefact of the harness.
+
+So: do not "fix" this from the run above. The honest experiment is a turn long enough to
+compact at the REAL window, measuring what fraction of steps after a swap are re-acquisition.
+If that fraction is large, the lever is what the briefing carries — `COMPACTION_INSTRUCTION`
+in core/src/session/compaction.ts already asks for every path touched, but a path is not the
+contents, and there may be a cheaper way to hand the model back what it just lost.
+
 ## Where the wall clock goes (measured, live model, 7-step turn)
 
 - prefill 403 tok/s, generation **57 tok/s** — a generated token costs 7x a prefilled one.
