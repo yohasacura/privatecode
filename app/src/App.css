@@ -45,6 +45,12 @@
 
   --radius: 10px;
   --radius-sm: 6px;
+  /* Two elevations, not four ad-hoc shadows: things that float a little (jump-to-latest,
+     the run-config popover) and things that own the screen (modal, palette). A surface
+     picks a level; it does not tune its own shadow. The inset hairline is the light
+     source — on a near-black UI it is what separates "layered" from "flat with borders". */
+  --shadow-pop: 0 6px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-overlay: 0 24px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   --read: 860px;
   /* The right column's rhythm. One row padding and one leading-control width for every
      list in the column, so rows in different tabs line up with each other -- which is most
@@ -56,6 +62,13 @@
 }
 
 * { box-sizing: border-box; }
+
+/* One speed for state changes on interactive things, matching the composer shell's 130ms.
+   Instant flips beside eased ones read as two different applications. Transform and layout
+   properties are deliberately absent: nothing here moves, it only changes shade. */
+button, .btn, .icon-button, .mode-chip, .tab, .prow-label-button, .recent-item {
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
 
 html, body, #root {
   height: 100%;
@@ -541,7 +554,7 @@ kbd {
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
 }
 .jump-latest:hover { background: var(--bg-hover); color: var(--text); }
 
@@ -1096,6 +1109,7 @@ kbd {
 .mode-group::-webkit-scrollbar { height: 0; }
 
 .composer-meta {
+  font-variant-numeric: tabular-nums;
   flex: 1;
   min-width: 0;
   text-align: right;
@@ -1633,6 +1647,7 @@ kbd {
 /* ---------------------------------------------------------------------- statusbar ---- */
 
 .statusbar {
+  font-variant-numeric: tabular-nums;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1733,7 +1748,7 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--bg-panel);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--shadow-overlay);
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; font-size: 14px; }
 .modal-primary { width: 100%; justify-content: center; margin-top: 20px; height: 32px; }
@@ -2003,7 +2018,7 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-panel);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--shadow-overlay);
   overflow: hidden;
 }
 .palette-input {
@@ -2336,7 +2351,7 @@ kbd {
 
 .run-banner-body { flex: 1; min-width: 0; }
 .run-banner-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.run-banner-state { font-size: 12px; font-weight: 600; color: var(--text); }
+.run-banner-state { font-size: 12px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .run-banner-parked { font-size: 11px; color: var(--accent); }
 /* The task verbatim, clamped: it distinguishes "it is working" from "it is working on the
    wrong thing", and three lines is enough to tell. */
@@ -2363,7 +2378,7 @@ kbd {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-raised);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
   z-index: 30;
 }
 .run-config-task {
