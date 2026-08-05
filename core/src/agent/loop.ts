@@ -24,6 +24,30 @@ import type { HookRunner } from '../hooks/hooks.js'
 export const DEFAULT_STEP_TIMEOUT_MS = 90_000
 
 /**
+ * Prefill cost per token, with margin — the one unavoidable silence.
+ *
+ * llama.cpp emits nothing at all while it processes the part of the prompt its cache does not
+ * already hold, so the gap before a step's FIRST token is not idleness, it is work whose
+ * length is known in advance. Measured on this machine during the run that found this:
+ * 15,393 new tokens → 36.3 s (2.36 ms/token), 15,409 → 58.8 s (3.82), 11,963 → 25.0 s (2.09).
+ * 4 ms carries the slowest of those plus room for a GPU also driving a display.
+ *
+ * `Session` measured the same rate independently while warming a compacted session (393
+ * tok/s) and had this constant privately; it now imports it, so the two cannot drift.
+ */
+export const PREFILL_MS_PER_TOKEN = 4
+
+/** Ceiling on any single wait, below the client's ten-minute transport timeout so a server
+ * that goes silent is still caught by something. */
+export const MAX_COLD_START_MS = 9 * 60_000
+
+/** The same chars/4 rule `Transcript.approxTokens` uses; applied here to the bytes appended
+ * since the last request, which is what the server has not already processed. */
+function prefillAllowanceMs(newChars: number): number {
+  return Math.ceil((newChars / 4) * PREFILL_MS_PER_TOKEN)
+}
+
+/**
  * Default token budget for one generation.
  *
  * 8000, because the measurement that matters was taken under exactly the configuration
@@ -342,6 +366,9 @@ export class Agent {
   /** Not `readonly`: `beforeStep` may replace it mid-turn when the conversation is compacted
    * to make room. Reassigned in exactly one place, `runTurn`. */
   transcript: Transcript
+  /** Transcript size, in characters, as of the last request sent. The difference against the
+   * current size is what the server has NOT already prefilled — see `firstTokenBudget`. */
+  private charsAtLastRequest = 0
 
   constructor(opts: AgentOptions) {
     // The option is the single source of truth for the mode when given; otherwise the
@@ -432,6 +459,9 @@ export class Agent {
         if (preamble) {
           this.transcript = preamble.transcript
           coldTimeoutMs = preamble.timeoutMs
+          // A different object: nothing in it has been prefilled, whatever its length, and
+          // a shorter replacement would otherwise read as zero new characters.
+          this.charsAtLastRequest = 0
         }
       }
 
@@ -608,12 +638,15 @@ export class Agent {
     // Every other step appends to a prefix the server has just processed.
     const timeoutMs = coldTimeoutMs
       ?? (step === 1 ? this.opts.firstStepTimeoutMs ?? this.opts.stepTimeoutMs : this.opts.stepTimeoutMs)
-    const clock = this.stepClock(timeoutMs)
+    const clock = this.stepClock(this.opts.stepTimeoutMs)
     this.opts.events?.onStepStart?.({ step, timeoutMs })
 
     let continued = false
     let last: ChatResult | undefined
     try {
+      // `timeoutMs` is the floor for this step's FIRST request: the caller's cold-cache
+      // budget when it knows the prefix changed under it, otherwise the flat budget.
+      clock.beforeRequest(this.firstTokenBudget(timeoutMs))
       const first = await this.chat(schemas, this.opts.toolChoice, clock)
       if (first.kind !== 'ok') return first
       last = first.result
@@ -628,6 +661,9 @@ export class Agent {
       this.transcript.append({ role: 'user', content: CONTINUE_NUDGE })
       this.opts.events?.onContinuation?.(step)
 
+      // The continuation carries the abandoned reasoning back into the prompt, which can be
+      // thousands of tokens the server has not seen. Same allowance, no cold floor.
+      clock.beforeRequest(this.firstTokenBudget(this.opts.stepTimeoutMs))
       const again = await this.chat(schemas, 'required', clock)
       if (again.kind !== 'ok') return again
       last = again.result
@@ -679,25 +715,56 @@ export class Agent {
    * from `beforeStep` still matter: re-prefilling a 100k-token prompt IS silence, and a real
    * one takes minutes.
    */
-  private stepClock(timeoutMs: number): { signal: AbortSignal; touch(): void; stop(): void } {
+  private stepClock(steadyMs: number): {
+    signal: AbortSignal
+    /** Arm for the wait before a request's first token, which includes prefill. */
+    beforeRequest(budgetMs: number): void
+    /** A token arrived; from here on only the flat between-token budget applies. */
+    touch(): void
+    stop(): void
+  } {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
-    const arm = (): void => {
-      timer = setTimeout(() => { controller.abort(new Error('step went quiet')) }, timeoutMs)
+    const arm = (ms: number): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => { controller.abort(new Error('step went quiet')) }, ms)
       // Node keeps the process alive for a pending timer. A step's clock must never be the
       // reason a CLI run or a test worker refuses to exit.
       timer.unref?.()
     }
-    arm()
+    arm(steadyMs)
     return {
       signal: controller.signal,
-      touch: () => {
-        if (controller.signal.aborted) return
-        if (timer !== undefined) clearTimeout(timer)
-        arm()
-      },
+      beforeRequest: (budgetMs) => { if (!controller.signal.aborted) arm(budgetMs) },
+      touch: () => { if (!controller.signal.aborted) arm(steadyMs) },
       stop: () => { if (timer !== undefined) clearTimeout(timer) },
     }
+  }
+
+  /**
+   * How long to wait for the first token of the request about to be sent.
+   *
+   * The flat budget bounds the gap BETWEEN tokens. The gap before the first one is a
+   * different quantity: llama.cpp reuses its cache by longest common prefix, so everything
+   * appended since the last request has to be processed before a token can appear, and that
+   * is work with a knowable length rather than idleness.
+   *
+   * Found by measurement, not reasoning. A step that batched three ~15k-token file reads made
+   * the NEXT step prefill 46k new tokens — 116-185 s at the rates above — against a flat 90 s,
+   * and a live turn died with the model perfectly healthy. The same shape had been quietly
+   * eating the budget for a while: one 15k-token read already cost 58.8 s of the 90.
+   *
+   * `floorMs` is the caller's own larger budget when it knows the cache is cold for a reason
+   * this counter cannot see — a compaction swap, or a session resumed in a fresh process.
+   * Taking the max composes the two rather than letting either override the other.
+   */
+  private firstTokenBudget(floorMs: number): number {
+    const chars = this.transcript.messages()
+      .reduce((n, m) => n + (m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0), 0)
+    const fresh = Math.max(0, chars - this.charsAtLastRequest)
+    this.charsAtLastRequest = chars
+    const budget = Math.max(floorMs, this.opts.stepTimeoutMs + prefillAllowanceMs(fresh))
+    return Math.min(MAX_COLD_START_MS, budget)
   }
 
   /**

@@ -331,6 +331,57 @@ test('a step that keeps streaming is not killed for taking a long time', async (
   expect(elapsed).toBeGreaterThan(800)
 })
 
+test('the wait for a first token allows for prefilling what was just appended', async () => {
+  // The gap before a step's FIRST token is not idleness: llama.cpp reuses its cache by
+  // longest common prefix, so everything appended since the last request has to be processed
+  // before a token can appear. That is work with a knowable length.
+  //
+  // Found live, not reasoned about. A step batched three ~15k-token file reads; the NEXT step
+  // had to prefill 46k new tokens — 116-185 s at the measured 2.5-4 ms each — against a flat
+  // 90 s, and the turn died with the model perfectly healthy. Same shape had been eating the
+  // budget for a while: one 15k-token read already cost 58.8 s of the 90.
+  //
+  // Here: a tool returning 400 KB (~100k tokens by the chars/4 rule) buys ~400 s of extra
+  // room for the step that follows it, so a first token that takes 700 ms lands comfortably
+  // even though the flat budget is 250 ms.
+  const bulky: Tool<Record<string, never>> = {
+    name: 'bulky',
+    readOnly: true,
+    description: 'returns a great deal of text',
+    parameters: { type: 'object', properties: {} },
+    validate: () => ({ ok: true, args: {} }),
+    execute: async () => ({ ok: true, content: 'x'.repeat(400_000) }),
+  }
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    if (n === 1) {
+      // Answered instantly, so the FIRST step is never the one under test.
+      return new TrickleResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'b1', type: 'function', function: { name: 'bulky', arguments: '{}' } }] } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ finish_reason: 'tool_calls', delta: {} }] })}\n\n`,
+        'data: [DONE]\n\n',
+      ], 1)
+    }
+    // The step after the bulky result: 700 ms before the first frame, which is what
+    // prefilling 100k tokens looks like from here.
+    return new TrickleResponse([
+      `data: ${JSON.stringify({ choices: [{ finish_reason: 'stop', delta: { content: 'done' } }] })}\n\n`,
+      'data: [DONE]\n\n',
+    ], 700)
+  })
+  stop = fake.close
+  const agent = makeAgent(
+    fake.url,
+    { stepTimeoutMs: 250, events: { onThinkingDelta: () => {} } },
+    [bulky],
+  )
+
+  const result = await agent.runTurn('read the big thing')
+
+  expect(result.stoppedBecause).toBe('done')
+})
+
 test('a step that goes quiet mid-stream is still abandoned', async () => {
   // The other half, and the reason the budget exists at all. A server that streams a little
   // and then stops answering must not hold the turn open until the client's ten-minute

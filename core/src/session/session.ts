@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 import {
-  Agent, DEFAULT_STEP_TIMEOUT_MS,
+  Agent, DEFAULT_STEP_TIMEOUT_MS, MAX_COLD_START_MS, PREFILL_MS_PER_TOKEN,
   type AgentEvents, type AgentOptions, type StepInfo, type StepPreamble, type TurnResult,
 } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
@@ -246,21 +246,13 @@ const MID_TURN_CHECKPOINT_MS = 120_000
 const LOGGED_TOOLS = new Set(['run_command', 'background_task'])
 
 /**
- * Prefill cost per token, with margin.
+ * Prefill cost and the ceiling on a cold wait both live in `loop.ts` now.
  *
- * Measured live against this machine's own server while it was warming a compacted session:
- * `n_prompt_tokens_processed` moved 26,099 -> 30,195 in 10.4 s, i.e. **393 tok/s, 2.54
- * ms/token**, at 99-100% GPU. That is a third slower than the 1.9 ms/token this constant
- * first carried, which came from Transcript's benchmark over a much smaller history — and a
- * budget derived from the optimistic number is the one that runs out.
- *
- * 4 ms carries the measured rate plus room for a GPU that is also driving a display or
- * another process, which is the ordinary condition on a laptop.
+ * They were measured twice, independently, for two budgets that turned out to be the same
+ * quantity: this file's 393 tok/s while warming a compacted session, and the loop's own
+ * 2.1-3.8 ms/token while a step waited for its first token. Two copies of a number nobody
+ * would think to update together is how they drift.
  */
-const PREFILL_MS_PER_TOKEN = 4
-/** Below the client's ten-minute transport timeout, so a silent server is still caught by
- * something. */
-const MAX_COLD_START_MS = 9 * 60_000
 
 /**
  * What every request carries that `Transcript.approxTokens()` cannot see: the tool schemas.
