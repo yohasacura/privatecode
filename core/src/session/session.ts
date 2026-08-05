@@ -10,6 +10,7 @@ import type { Checkpoint } from '../checkpoints/store.js'
 import { CheckpointSet } from '../checkpoints/set.js'
 import { soleUnit, type SnapshotUnit } from '../checkpoints/units.js'
 import { commandsFrom, WorkLog } from './worklog.js'
+import { recordToolOutcome } from '../host/replay.js'
 import { DecisionQueue, queueingPort } from './decisions.js'
 import type { Mount } from '../mounts.js'
 import type { LoadedMemory } from '../memory/project-memory.js'
@@ -933,6 +934,22 @@ export class Session {
     // line carries the real exit code, and the alternative -- trusting the model's prose
     // about whether the tests passed -- is exactly what the log exists not to do.
     const captureToolResult = (name: string, result: { ok: boolean; content: string }, callId: string): void => {
+      // Whether each call WORKED, recorded here rather than in the host.
+      //
+      // `ToolResult.ok` never reaches the transcript — the model is given the result text and
+      // nothing else — so this file beside the session is the only record of it, and it is
+      // what puts a tick or a cross beside a restored tool card. It used to be written by
+      // `SessionHost`, which meant only the window's own sessions had one: a `--unattended`
+      // run persisted its transcript, appeared in the app's session list, and restored with a
+      // green tick on every failed command of the night, because with nothing on disk
+      // `assumedOk` guesses from the result text.
+      //
+      // Every front end reaches the model through a `Session`, and a `Session` knows its own
+      // id and root, so this is the one place that covers all of them. Gated on `store`,
+      // which is what makes a session something that exists on disk to be restored at all.
+      if (this.opts.store) {
+        recordToolOutcome(this.opts.workspaceRoot, this.id, callId, result.ok)
+      }
       // Only what the log will actually use. `commandsFrom` discards every entry that is not
       // a command, at the end of the turn — so retaining the rest kept the full result text
       // of every read, search and edit alive until then, plus each call's arguments, which

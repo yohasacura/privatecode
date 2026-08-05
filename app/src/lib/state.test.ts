@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { type ChatAction, type ChatState, initialChatState, reduceChat } from './state'
+import { initialChatState, pendingTool, reduceChat, type ChatAction, type ChatState } from './state'
 
 function run(actions: ChatAction[]): ChatState {
   return actions.reduce(reduceChat, initialChatState())
@@ -14,12 +14,29 @@ describe('the silence countdown', () => {
   // The composer counts down from `startedAtMs`. Left at the step's start it would reach zero
   // and sit there while the model streamed happily — a countdown that expires against a
   // deadline that has not.
-  it('restarts from the last thing that streamed, not from the step start', () => {
+  it('restarts from the last thing that streamed, and leaves the step start alone', () => {
+    // Two anchors, because the composer asks two questions of them: `aliveAtMs` for "how
+    // long has it been quiet" (the countdown) and `startedAtMs` for "how long has this step
+    // been running" (the elapsed readout).
+    //
+    // They shared one field for exactly one commit. `step.alive` fires once per animation
+    // frame while anything streams, so the elapsed readout showed the time since the last
+    // frame — `0.0s` for the whole of every streaming step, and a NEGATIVE duration whenever
+    // a frame landed after the composer's 250 ms tick. Four audit lenses found it separately.
     const state = run([
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 1_000 },
       { type: 'step.alive', atMs: 4_500 },
     ])
-    expect(state.currentStep).toMatchObject({ step: 1, timeoutMs: 90_000, startedAtMs: 4_500 })
+    expect(state.currentStep).toMatchObject({
+      step: 1, timeoutMs: 90_000, startedAtMs: 1_000, aliveAtMs: 4_500,
+    })
+  })
+
+  it('starts both anchors together, so a step with no deltas still counts up', () => {
+    // A step that is purely prefill streams nothing at all. Its elapsed readout must count
+    // from the start, and its countdown must count from the same place rather than from zero.
+    const state = run([{ type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 7_000 }])
+    expect(state.currentStep).toMatchObject({ startedAtMs: 7_000, aliveAtMs: 7_000 })
   })
 
   it('is not restarted between steps, when there is no step to keep alive', () => {
@@ -27,6 +44,62 @@ describe('the silence countdown', () => {
     // open — `currentStep` is null. A late frame flushing then must not invent a step.
     const state = run([{ type: 'step.alive', atMs: 4_500 }])
     expect(state.currentStep).toBeNull()
+  })
+})
+
+describe('which call of a multi-call step is the one running', () => {
+  // A step runs its calls in order, so by the time call 1 executes, calls 2 and 3 already
+  // have cards. Two consumers used `items[items.length - 1]` to mean "the call in progress"
+  // and got the one the model wrote LAST instead: the composer labelled a three-minute
+  // `npm test` as `running write_file`, and the transcript blanked an unrelated row while an
+  // approval was open, leaving the approved call's stub duplicated under the card.
+  //
+  // `pendingTool` is the rule the reducer already routes results with — oldest unanswered,
+  // skipping cards still being written, which can never be the subject of either question.
+  it('is the one the loop announced, not the last card on screen', () => {
+    // The real event order: both calls stream their names during generation, opening two
+    // cards; then the loop announces call 1 and runs it. Card 2 is still `writing` — the loop
+    // has not reached it — so it is the LAST item while `run_command` is what is executing.
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'tool.call.delta', index: 0, name: 'run_command' },
+      { type: 'tool.call.delta', index: 1, name: 'write_file' },
+      { type: 'tool.call', name: 'run_command', args: '{"command":"npm test"}' },
+    ])
+    const last = state.items[state.items.length - 1]
+    // What the composer and the transcript used to read, and what it gave them:
+    expect(last?.kind === 'tool' && last.name).toBe('write_file')
+    // What is actually running:
+    expect(pendingTool(state.items)?.name).toBe('run_command')
+  })
+
+  it('skips a card whose arguments are still streaming', () => {
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'tool.call.delta', index: 0, name: 'run_command' },
+      { type: 'tool.call', name: 'run_command', args: '{"command":"npm test"}' },
+      // The next call of the same step, still being written.
+      { type: 'tool.call.delta', index: 1, name: 'edit_file' },
+    ])
+    expect(pendingTool(state.items)?.name).toBe('run_command')
+  })
+})
+
+describe('a call abandoned mid-write', () => {
+  // A generation that truncates leaves its half-written card behind, and the forced
+  // continuation opens a SECOND card for the same call. The first is closed here — and while
+  // it was closed with plain prose, it went into the Changes tab as the newest write to that
+  // path, taking the real write's diff and its "Put back" button with it.
+  it('is closed with the `Not run:` prefix every reader tests for', () => {
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'tool.call.delta', index: 0, name: 'write_file' },
+      { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts","cont' },
+      { type: 'turn.done', stoppedBecause: 'truncated' },
+    ])
+    const card = state.items.find((i) => i.kind === 'tool')
+    expect(card && card.kind === 'tool' && card.result?.ok).toBe(false)
+    expect(card && card.kind === 'tool' && card.result?.content.startsWith('Not run:')).toBe(true)
   })
 })
 

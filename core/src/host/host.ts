@@ -93,7 +93,7 @@ import type {
   TurnSummary,
 } from './protocol.js'
 import { loadUiConfig, saveUiConfig } from './ui-config.js'
-import { recordToolOutcome, replayEntries, toolOutcomes } from './replay.js'
+import { replayEntries, toolOutcomes } from './replay.js'
 import { rankFiles, walkFiles } from './file-search.js'
 import { attachFiles } from './attachments.js'
 import { buildRepoMap } from '../outline/repo-map.js'
@@ -894,12 +894,9 @@ export class SessionHost {
       onTextDelta: (text) => this.emit('text.delta', { text }),
       onToolCallDelta: (info) => this.emit('tool.call.delta', info),
       onToolCall: (name, args) => this.emit('tool.call', { name, args }),
-      onToolResult: (name, result, callId) => {
-        // Recorded before the event goes out, so a window that is about to be closed still
-        // leaves the outcome on disk for the next time this session is opened.
-        if (this.workspaceRoot !== undefined && this.session) {
-          recordToolOutcome(this.workspaceRoot, this.session.id, callId, result.ok)
-        }
+      // Recording which calls worked is `Session`'s job now, not this host's — every front
+      // end reaches the model through a Session, and only this one ever recorded.
+      onToolResult: (name, result, _callId) => {
         this.emit('tool.result', {
           name,
           ok: result.ok,

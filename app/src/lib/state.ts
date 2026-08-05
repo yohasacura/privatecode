@@ -153,18 +153,24 @@ export interface StepTiming {
    * whole step. See `Agent.stepClock` in the core. */
   timeoutMs: number
   /**
-   * The moment the countdown counts from: set by the caller from `Date.now()` on
-   * `step.start`, and moved forward again by `step.alive` every time something streams.
+   * When the step began. Set once, on `step.start`, and never moved.
    *
-   * The reducer itself never reads the clock (see this module's header comment); it stores
-   * whatever the caller supplies, so the countdown UI — which DOES need a real clock, in
-   * `chat.tsx` — has a fixed point to count down from.
-   *
-   * It moves because the core's own deadline moves. Left fixed at the step's start, the
-   * composer would count a long generation down to "0 s" and sit there while the model was
-   * streaming perfectly happily, which is the opposite of what a countdown is for.
+   * This is the anchor for "how long has this step been running", which is the readout that
+   * turns a long silence into "it is working" rather than "it hung".
    */
   startedAtMs: number
+  /**
+   * The last moment anything streamed — the anchor for the SILENCE countdown, moved forward
+   * by `step.alive`.
+   *
+   * It is a separate field from `startedAtMs` because the two answer different questions, and
+   * for one commit they shared one field: `step.alive` moved `startedAtMs`, so the elapsed
+   * readout showed the time since the last animation frame instead of the time since the step
+   * began. `now` reticks every 250 ms while frames arrive at ~60/s, so it rendered `0.0s` —
+   * and, when a frame landed after the tick, a negative duration — for the whole of every
+   * streaming step. Four separate audit lenses found it independently.
+   */
+  aliveAtMs: number
 }
 
 export interface LastStepStats {
@@ -422,19 +428,28 @@ function closeWritingCalls(items: ChatItem[]): ChatItem[] {
   return items.map((item): ChatItem => {
     if (item.kind !== 'tool' || item.writing !== true) return item
     const { writing: _w, callIndex: _c, ...rest } = item
-    return {
-      ...rest,
-      result: {
-        ok: false,
-        preview: 'never ran',
-        content: 'The turn ended while this call was still being written, so it never ran.',
-        display: 'The turn ended while this call was still being written, so it never ran.',
-      },
-    }
+    return { ...rest, result: { ok: false, preview: 'never ran', content: ABANDONED, display: ABANDONED } }
   })
 }
 
-function lastPendingTool(items: ChatItem[]): (ChatItem & { kind: 'tool' }) | undefined {
+/**
+ * What an abandoned card is closed with — and it starts with `Not run:` deliberately.
+ *
+ * That prefix is the codebase-wide contract for a call stopped before it executed, and three
+ * separate readers test for it: `collectChanges` drops the row, `commandsFrom` refuses to
+ * write it into the work log's "Ran" line, and the Terminal tab keeps it out of the console.
+ * Written any other way, this text reads to all three as a call that ran and failed.
+ *
+ * The case that made it matter: a generation that truncates leaves its half-written card
+ * behind, and the forced continuation opens a SECOND card for the same call. The first is
+ * closed by this function — and, holding a path and a `write_file` name, it went into the
+ * Changes tab as the newest write to that path, taking the real write's diff and its
+ * "Put back" button with it.
+ */
+const ABANDONED =
+  'Not run: the turn ended while this call was still being written, so it never ran.'
+
+export function pendingTool(items: ChatItem[]): (ChatItem & { kind: 'tool' }) | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
     if (item?.kind === 'tool' && item.result === undefined && item.writing !== true) return item
@@ -496,14 +511,19 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         // first `thinking.delta` that actually arrives, so a step that goes straight to a
         // tool call or an answer leaves no empty "Thought" card behind. That a step is
         // running at all is `currentStep`/`turnRunning`, which the composer renders.
-        currentStep: { step: action.step, timeoutMs: action.timeoutMs, startedAtMs: action.startedAtMs },
+        currentStep: {
+          step: action.step,
+          timeoutMs: action.timeoutMs,
+          startedAtMs: action.startedAtMs,
+          aliveAtMs: action.startedAtMs,
+        },
       }
 
     case 'step.alive':
       // Only while a step is running. Between steps — a tool executing, an approval open —
       // `currentStep` is null and there is no countdown to restart.
       if (state.currentStep === null) return state
-      return { ...state, currentStep: { ...state.currentStep, startedAtMs: action.atMs } }
+      return { ...state, currentStep: { ...state.currentStep, aliveAtMs: action.atMs } }
 
     case 'thinking.delta': {
       const open = openThinking(state.items)
@@ -569,7 +589,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           next = {
             ...next,
             items: closeThinking(next.items, undefined),
-            currentStep: { step: entry.step, timeoutMs: 0, startedAtMs: 0 },
+            currentStep: { step: entry.step, timeoutMs: 0, startedAtMs: 0, aliveAtMs: 0 },
           }
         }
         next = reduceChat(next, restoreAction(entry))
@@ -671,7 +691,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     }
 
     case 'tool.result': {
-      const pending = lastPendingTool(state.items)
+      const pending = pendingTool(state.items)
       if (!pending) return state // a result with no matching pending call is a no-op, not a crash
       const updated: ChatItem = {
         ...pending,

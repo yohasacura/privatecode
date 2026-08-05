@@ -55,10 +55,17 @@ const TONE_CLASS: Record<Line['tone'], string> = {
 /** The agent's own `run_command` calls, in transcript order. Its `background_task`
  * processes arrive through the job registry instead, which knows whether they are still
  * alive; a transcript entry only knows what one poll returned. */
-function agentCommands(items: ChatItem[]): Line[] {
+export function agentCommands(items: ChatItem[]): Line[] {
   const lines: Line[] = []
   for (const item of items) {
     if (item.kind !== 'tool' || item.name !== 'run_command') continue
+    // A call the step stopped before executing is not a command that ran and failed. The
+    // `Not run:` prefix is the codebase's contract for exactly that — `commandsFrom` tests
+    // it before writing the work log's "Ran" line, for the same reason. Without this check a
+    // batch whose earlier call failed put `npm test` in this console as `failed`, with the
+    // refusal sentence as its output, and someone reading it after an overnight run would
+    // conclude the suite is broken when it never executed.
+    if (item.result?.content.startsWith('Not run:')) continue
     const p = presentTool(item.name, item.args)
     lines.push({
       key: `t${item.id}`,

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { AgentMode } from '@core/permissions/engine'
 import type { ProtocolClient } from '../lib/client'
-import type { ChatAction, ChatState } from '../lib/state'
+import { pendingTool, type ChatAction, type ChatState } from '../lib/state'
 import { formatDuration } from '../lib/format'
 import { applyMention, mentionAtCaret, type Mention } from '../lib/mentions'
 import { Icon } from '../components/icons'
@@ -330,11 +330,19 @@ export function Composer({
   }
 
   const step = state.currentStep
-  const remainingMs = step ? Math.max(0, step.timeoutMs - (now - step.startedAtMs)) : null
+  // The countdown counts SILENCE, so it counts from the last thing that streamed. The
+  // elapsed readout below counts from the step's start. Two anchors, because they are two
+  // questions — sharing one field made the elapsed readout show 0.0s for every streaming
+  // step, which is the readout that exists to prove the app has not hung.
+  const remainingMs = step ? Math.max(0, step.timeoutMs - (now - step.aliveAtMs)) : null
   const last = state.lastStepDone
   const waitingOnYou = state.pendingApproval !== null || state.pendingQuestion !== null
-  const lastItem = state.items[state.items.length - 1]
-  const runningTool = lastItem?.kind === 'tool' && lastItem.result === undefined ? lastItem.name : null
+  // The call actually EXECUTING, which is the oldest one still unanswered — not the last
+  // item. A step runs its calls in order, so while call 1 runs, calls 2 and 3 already have
+  // cards; the last of them is the one the model wrote most recently, not the one running.
+  // `npm test` executing for three minutes under the label `running write_file` is the
+  // shape of it. `pendingTool` is the same rule the reducer uses to route a result.
+  const runningTool = pendingTool(state.items)?.name ?? null
 
   /**
    * The one line of live state, shown INSIDE the control rather than on a strip above it.

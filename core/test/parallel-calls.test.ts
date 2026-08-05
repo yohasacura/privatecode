@@ -5,6 +5,10 @@ import { afterEach, beforeEach, expect, test } from 'vitest'
 import { SessionHost } from '../src/host/host.js'
 import { isHostEvent, type HostEvent, type HostOutbound, type HostReply } from '../src/host/protocol.js'
 import { PRIVATE_DIR } from '../src/private-dir.js'
+import { LlamaClient } from '../src/llama/client.js'
+import { Session } from '../src/session/session.js'
+import { SessionStore } from '../src/session/store.js'
+import { createToolset } from '../src/tools/default-set.js'
 import { RawResponse, startFakeServer } from './fake-server.js'
 
 /**
@@ -24,8 +28,9 @@ import { RawResponse, startFakeServer } from './fake-server.js'
  *   its OWN arguments. It reads them back out of `lastToolArgs`, a single slot per tool NAME.
  * - `Session.notePathWritten` -> `writtenMounts` -> which folders `verify` runs in. Same
  *   single slot, and the answer is a command that either ran in a folder or did not.
- * - `host.recordToolOutcome` -> one line per call id in the `.ui.jsonl` beside the session,
- *   which is where a restored conversation's tick marks come from.
+ * - `Session`'s own `recordToolOutcome` -> one line per call id in the `.ui.jsonl` beside the
+ *   session, which is where a restored conversation's tick marks come from. Driven both
+ *   through the host and, in one test, the way `cli.ts` drives it: a Session and no host.
  */
 
 let stop: (() => Promise<void>) | undefined
@@ -195,6 +200,57 @@ test('one step writing into two folders verifies both of them', async () => {
     await host.shutdown()
   }
 }, 40_000)
+
+test('a session driven without the host records its outcomes too', async () => {
+  // `cli.ts` builds a `Session` directly and hands it `renderer.events`, which print lines and
+  // nothing else. Recording lived in `SessionHost`, so an overnight `--unattended` run
+  // persisted its transcript, appeared in the app's session list, and restored with a green
+  // tick on every failed command of the night — with nothing on disk, `assumedOk` guesses from
+  // the result text, and "exit code 1" does not start with `Not run:`.
+  //
+  // Driven the way the CLI drives it: a Session, a store, no host anywhere.
+  const root = newWorkspace()
+  let call = 0
+  const fake = await startFakeServer((_b, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: 8000 } }
+    if (req.url === '/health') return { status: 'ok' }
+    call++
+    if (call === 1) {
+      return {
+        choices: [{
+          message: {
+            role: 'assistant', content: null,
+            tool_calls: [{
+              id: 'z1', type: 'function',
+              function: { name: 'read_file', arguments: JSON.stringify({ path: 'nope.txt' }) },
+            }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: 100, completion_tokens: 10 },
+      }
+    }
+    return {
+      choices: [{ message: { role: 'assistant', content: 'could not read it' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 100, completion_tokens: 5 },
+    }
+  })
+  stop = fake.close
+
+  const store = new SessionStore(root)
+  const session = new Session({
+    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+    toolset: createToolset({}),
+    workspaceRoot: root,
+    mode: 'autopilot',
+    store,
+  })
+  await session.send('read a file that is not there')
+
+  const raw = readFileSync(join(root, PRIVATE_DIR, 'sessions', `${session.id}.ui.jsonl`), 'utf8')
+  const lines = raw.split('\n').filter((l) => l.trim() !== '').map((l) => JSON.parse(l))
+  expect(lines).toContainEqual({ id: 'z1', ok: false })
+}, 30_000)
 
 test('every call of a step gets its own recorded outcome, under its own id', async () => {
   // The `.ui.jsonl` beside the session is the ONLY record of whether each call worked —

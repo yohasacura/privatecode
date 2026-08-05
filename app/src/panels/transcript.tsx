@@ -3,7 +3,7 @@ import { memo } from 'preact/compat'
 import type { ComponentChildren, VNode } from 'preact'
 import type { StoppedBecause } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
-import type { ChatAction, ChatItem, ChatState } from '../lib/state'
+import { pendingTool, type ChatAction, type ChatItem, type ChatState } from '../lib/state'
 import { Markdown } from '../lib/markdown'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
 import { presentTool, screenshotPathOf, type ToolKind } from '../lib/tools'
@@ -117,9 +117,14 @@ export function Transcript({
   // from 1 — so the two id spaces overlap, and a pending approval on live item 37 blanked
   // the 37th row of whatever stored session was being read: a hole in the middle of someone
   // else's conversation, with no bar, no note and nothing to explain it.
-  const suppressedId = state.viewing === null &&
-    state.pendingApproval !== null && lastItem?.kind === 'tool' && lastItem.result === undefined
-    ? lastItem.id
+  // The call the dialog is about is the one EXECUTING — the oldest still unanswered — not
+  // the last item. A step running three edits has cards for all three the moment their
+  // arguments finish streaming, so the last of them is the one written most recently. Using
+  // it blanked an unrelated row (a hole in the transcript) while leaving the approved call's
+  // stub duplicated under the card. `pendingTool` is the same rule the reducer routes a
+  // result with, and it skips cards still being written, which can never be the subject.
+  const suppressedId = state.viewing === null && state.pendingApproval !== null
+    ? pendingTool(state.items)?.id ?? null
     : null
 
   // Reading an earlier session shows ITS conversation; the live one keeps accumulating into
