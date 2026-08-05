@@ -1,6 +1,6 @@
 import type { InteractionPort } from '../interaction.js'
 import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
-import type { ChatMessage, ChatResult, Timings } from '../llama/types.js'
+import type { ChatMessage, ChatResult, Timings, ToolCall } from '../llama/types.js'
 import { BROWSER_TOOL, MCP_TOOL_PREFIX, type AgentMode, type PermissionEngine } from '../permissions/engine.js'
 import { suggestRules } from '../permissions/rules.js'
 import { Transcript } from '../transcript/transcript.js'
@@ -485,46 +485,60 @@ export class Agent {
 
       this.transcript.append(this.assistantMessage(message))
 
-      // One action per step: if the model proposes several, take the first. The rest are
-      // still answered — an assistant turn carrying an unanswered tool_call is invalid on
-      // a strict OpenAI endpoint, and would poison every later request of the session.
-      const call = calls[0]!
-      this.opts.events?.onToolCall?.(call.function.name, call.function.arguments)
-      const result = await this.runTool(call.function.name, call.function.arguments)
-      this.opts.events?.onToolResult?.(call.function.name, result, call.id)
-      this.transcript.append({
-        role: 'tool',
-        tool_call_id: call.id,
-        name: call.function.name,
-        content: result.content,
-      })
-      for (const skipped of calls.slice(1)) {
-        // `Not run:`, which is this codebase's existing contract for a call STOPPED BEFORE IT
-        // EXECUTED — the same prefix a permission denial, a deferral and a loop-detector
-        // refusal use. It said `Not executed:` instead, and the difference was not cosmetic:
-        // `commandsFrom` decides whether a command ran by testing exactly `/^Not run[:.]/`,
-        // so a skipped `run_command` was written into the work log under "**Ran:** `npm test`
-        // → failed". Someone reading the night's log would conclude the suite was run and is
-        // broken, when it never executed — which is the precise failure `CommandRecord.ran`
-        // was added to prevent, defeated by the event I added this morning to close a card.
-        const content = `Not run: one tool call per step, and ${call.function.name} ran ` +
-                        'first. Re-issue this one on a later step if it is still needed.'
-        this.transcript.append({
-          role: 'tool',
-          tool_call_id: skipped.id,
-          name: skipped.function.name,
-          content,
-        })
-        // Announced, not only recorded. A skipped call is already in the transcript, so a
-        // resumed session shows it — `replayEntries` reads the `Not run:` prefix as a
-        // failure — but nothing told a WATCHING window, and once arguments streamed there was
-        // a card open for it. Every extra call the model proposed left a row pulsing forever.
-        // Seen in a live run and not recognised: `-> find_files -> find_files -> find_files`
-        // against a single `(ok)`.
-        this.opts.events?.onToolCall?.(skipped.function.name, skipped.function.arguments)
-        this.opts.events?.onToolResult?.(
-          skipped.function.name, { ok: false, content }, skipped.id,
-        )
+      // Every call the model proposed, run in order, each through the same gate.
+      //
+      // This used to run `calls[0]` and refuse the rest with "one tool call per step". The
+      // model was never told that rule — nothing in prompt.ts said it — and it proposed
+      // several often enough to matter. Measured on a 13-step turn against the live model:
+      // 3 steps proposed more than one call, the discarded arguments cost 8% of the turn's
+      // generated tokens, and 3 of the 13 steps existed ONLY to redo a call that had been
+      // thrown away — about 23% of the wall clock. Telling the model to emit one call would
+      // have saved the 8% and none of the 23%, because it would still need a step per edit.
+      //
+      // Strictly sequential, never concurrent, and stopping at the first failure. The reason
+      // one action per step was ever right is that the model should see a result before the
+      // next action lands; three edits to three different files are generated from the same
+      // information and need no such ordering, but a call that FAILED changes what the calls
+      // after it should be. So the remainder are answered, not run — which also keeps the
+      // property this loop cannot give up: an assistant turn carrying an unanswered
+      // tool_call is invalid on a strict OpenAI endpoint and would poison every later
+      // request of the session.
+      //
+      // Sequential also keeps `Session.lastToolArgs` exact: it pairs a call's arguments with
+      // its result through a single slot per tool NAME, which holds for as long as no second
+      // call of the same name is announced before the first one's result.
+      let halted: string | undefined
+      for (const call of calls) {
+        // Re-read every iteration, not once: Esc lands wherever it lands, and a step running
+        // four calls is four times the window it can land in. The remaining calls are still
+        // answered — `runTurn` returns 'aborted' at the top of the next step, and it must not
+        // leave the transcript it returns invalid on the way out.
+        if (halted === undefined && this.opts.signal?.aborted) {
+          halted = 'the turn was cancelled partway through this step'
+        }
+        if (halted !== undefined) {
+          // `Not run:`, which is this codebase's existing contract for a call STOPPED BEFORE
+          // IT EXECUTED — the same prefix a permission denial, a deferral and a loop-detector
+          // refusal use. It said `Not executed:` once, and the difference was not cosmetic:
+          // `commandsFrom` decides whether a command ran by testing exactly `/^Not run[:.]/`,
+          // so a skipped `run_command` was written into the work log under "**Ran:** `npm
+          // test` → failed". Someone reading the night's log would conclude the suite was run
+          // and is broken, when it never executed.
+          const content = `Not run: ${halted}, so the calls after it were left alone. ` +
+                          'Re-issue this one on a later step if it is still needed.'
+          // Announced, not only recorded. A skipped call is already in the transcript, so a
+          // resumed session shows it — `replayEntries` reads the `Not run:` prefix as a
+          // failure — but nothing told a WATCHING window, and once arguments streamed there
+          // was a card open for it. Every unanswered call left a row pulsing forever: seen in
+          // a live run as `-> find_files -> find_files -> find_files` against one `(ok)`.
+          this.opts.events?.onToolCall?.(call.function.name, call.function.arguments)
+          this.answer(call, { ok: false, content })
+          continue
+        }
+        this.opts.events?.onToolCall?.(call.function.name, call.function.arguments)
+        const result = await this.runTool(call.function.name, call.function.arguments)
+        this.answer(call, result)
+        if (!result.ok) halted = `${call.function.name} failed earlier in this step`
       }
     }
 
@@ -539,6 +553,25 @@ export class Agent {
         `Stopped: the ${this.opts.maxSteps}-step limit was reached before the task finished.`,
       stoppedBecause: 'max_steps',
     }
+  }
+
+  /**
+   * Answers one proposed call: the transcript message first, then the event.
+   *
+   * The order matters in exactly one direction. `onToolResult` reaches a host — today an
+   * in-process callback, tomorrow IPC — and the transcript message is what keeps the
+   * assistant turn valid, so appending first means a throw out of a host handler cannot
+   * leave a `tool_call` unanswered. That is the one state that poisons every later request
+   * of the session, and it is not worth risking to save a line.
+   */
+  private answer(call: ToolCall, result: ToolResult): void {
+    this.transcript.append({
+      role: 'tool',
+      tool_call_id: call.id,
+      name: call.function.name,
+      content: result.content,
+    })
+    this.opts.events?.onToolResult?.(call.function.name, result, call.id)
   }
 
   /**

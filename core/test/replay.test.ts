@@ -82,6 +82,54 @@ describe('rebuilding a conversation', () => {
     expect(entries).toEqual([{ kind: 'assistant', text: 'hi' }])
   })
 
+  test('a step\'s calls are interleaved with their answers, not listed then answered', () => {
+    // The window pairs a result with a call by RECENCY: `lastPendingTool` scans backwards for
+    // the newest card still without one. That is exact for the live stream, where the loop
+    // announces a call, runs it, answers it, and only then moves on.
+    //
+    // A literal replay is the opposite shape — the assistant message carries all three calls,
+    // and the three replies follow. The newest card was then the LAST call, so the FIRST
+    // result landed on it: a restored session showed every multi-call step's results in
+    // reverse, the third file's content under the first file's name. Harmless while the loop
+    // ran one call per step and refused the rest; this is now the shape of every long turn.
+    const entries = replayEntries([
+      {
+        role: 'assistant', content: null,
+        tool_calls: [
+          { id: 'a', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } },
+          { id: 'b', type: 'function', function: { name: 'read_file', arguments: '{"path":"b.ts"}' } },
+          { id: 'c', type: 'function', function: { name: 'read_file', arguments: '{"path":"c.ts"}' } },
+        ],
+      },
+      toolResult('a', 'read_file', 'contents of a'),
+      toolResult('b', 'read_file', 'contents of b'),
+      toolResult('c', 'read_file', 'contents of c'),
+    ])
+
+    expect(entries).toEqual([
+      { kind: 'tool-call', name: 'read_file', args: '{"path":"a.ts"}' },
+      { kind: 'tool-result', name: 'read_file', ok: true, content: 'contents of a' },
+      { kind: 'tool-call', name: 'read_file', args: '{"path":"b.ts"}' },
+      { kind: 'tool-result', name: 'read_file', ok: true, content: 'contents of b' },
+      { kind: 'tool-call', name: 'read_file', args: '{"path":"c.ts"}' },
+      { kind: 'tool-result', name: 'read_file', ok: true, content: 'contents of c' },
+    ])
+  })
+
+  test('a call the file never got an answer for is still shown, where it was proposed', () => {
+    // The process died between the assistant message and the tool reply, which `store.load`
+    // treats as a real state on disk. The call happened; hiding it would make the restored
+    // conversation end one step earlier than it did.
+    const entries = replayEntries([
+      call('c1', 'run_command', '{"command":"npm test"}'),
+      user('what happened?'),
+    ])
+    expect(entries).toEqual([
+      { kind: 'tool-call', name: 'run_command', args: '{"command":"npm test"}' },
+      { kind: 'user', text: 'what happened?' },
+    ])
+  })
+
   test('a tool result with no name of its own is identified by its call', () => {
     const entries = replayEntries([
       call('c9', 'run_command', '{"command":"ls"}'),

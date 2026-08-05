@@ -697,29 +697,30 @@ describe('reduceChat: a tool call arriving as it is written', () => {
   })
 
   it('keeps two calls in one step apart, in the order the core actually emits them', () => {
-    // Two cards open while the model streams both calls, and the core then runs the FIRST
-    // and refuses the rest — announcing each with its own call/result pair, in order. The
-    // hazard is completing them the wrong way round, which hands one call's arguments, and
-    // then its result, to the other card: the wrong file shown against the wrong diff.
+    // Two cards open while the model streams both calls, and the core then runs them in
+    // order — announcing each with its own call/result pair. The hazard is completing them
+    // the wrong way round, which hands one call's arguments, and then its result, to the
+    // other card: the wrong file shown against the wrong diff.
     //
     // The order below is the core's, and getting that wrong is how the first version of this
     // test came to prove nothing. It dispatched two `tool.call` actions back to back with no
     // results between them — a sequence `Agent.runStep` could not emit at all, because at the
     // time only `calls[0]` was ever announced. It passed, and it was checking a shape that
-    // did not exist.
+    // did not exist. The core runs every proposed call now, and it still emits them strictly
+    // interleaved: announce, run, answer, next.
     const state = run([
       { type: 'tool.call.delta', index: 0, name: 'read_file' },
       { type: 'tool.call.delta', index: 1, name: 'read_file' },
       { type: 'tool.call.delta', index: 1, args: '{"path":"second' },
       { type: 'tool.call.delta', index: 0, args: '{"path":"first' },
-      // The call that ran, then its result.
       { type: 'tool.call', name: 'read_file', args: '{"path":"first.ts"}' },
       { type: 'tool.result', name: 'read_file', ok: true, content: 'first.ts (2 lines)' },
-      // Then the one the loop refused, with the message it writes into the transcript.
+      // The second call of the same step, with an outcome of its own — here a failure, which
+      // is also what stops the core running anything after it.
       { type: 'tool.call', name: 'read_file', args: '{"path":"second.ts"}' },
       {
         type: 'tool.result', name: 'read_file', ok: false,
-        content: 'Not run: one tool call per step, and read_file ran first.',
+        content: 'second.ts: no such file',
       },
     ])
 
@@ -730,10 +731,10 @@ describe('reduceChat: a tool call arriving as it is written', () => {
     expect(cards).toHaveLength(2)
     expect(cards[0]!.args).toBe('{"path":"first.ts"}')
     expect(cards[1]!.args).toBe('{"path":"second.ts"}')
-    // And each card carries ITS OWN outcome — the run and the refusal cannot be swapped.
+    // And each card carries ITS OWN outcome — the two cannot be swapped.
     expect(cards[0]!.result).toMatchObject({ ok: true })
     expect(cards[1]!.result).toMatchObject({ ok: false })
-    expect(cards[1]!.result?.content).toContain('Not run')
+    expect(cards[1]!.result?.content).toContain('no such file')
   })
 
   it('does not hand a result to a call that is still being written', () => {

@@ -106,14 +106,14 @@ describe('a call that never ran is not a change', () => {
     args: JSON.stringify({ path, content: 'real' }),
     result: { ok: true, preview: 'p', content: 'wrote 4 lines', display: 'wrote 4 lines' },
   })
+  // The exact text the loop writes for a call it stopped before executing. `Not run:` is the
+  // contract; the rest of the sentence names what stopped it.
+  const NOT_RUN = 'Not run: edit_file failed earlier in this step, so the calls after it ' +
+                  'were left alone. Re-issue this one on a later step if it is still needed.'
   const refused = (id: number, path: string) => ({
     kind: 'tool' as const, id, name: 'write_file', startedAtMs: id,
     args: JSON.stringify({ path, content: 'never happened' }),
-    result: {
-      ok: false, preview: 'p',
-      content: 'Not run: one tool call per step, and read_file ran first.',
-      display: 'Not run: one tool call per step, and read_file ran first.',
-    },
+    result: { ok: false, preview: 'p', content: NOT_RUN, display: NOT_RUN },
   })
 
   it('leaves a refused write out of the list entirely', () => {
@@ -123,8 +123,8 @@ describe('a call that never ran is not a change', () => {
   it('does not let a refused write take a successful one\'s place', () => {
     // The list keeps the LAST write per path. A refused call to the same path therefore
     // replaced the real one — taking its diff and its "Put back" button with it, and showing
-    // the refusal text where the change should be. The model proposing two calls in one step
-    // is all it takes.
+    // the refusal text where the change should be. One step whose earlier call failed, with
+    // two writes to the same path proposed in it, is all it takes.
     const entries = collectChanges([ok(1, 'a.ts'), refused(2, 'a.ts')])
     expect(entries).toHaveLength(1)
     expect(entries[0]).toMatchObject({ path: 'a.ts', ok: true })

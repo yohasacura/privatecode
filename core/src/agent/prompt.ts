@@ -76,8 +76,17 @@ export function buildSystemPrompt(opts: PromptOptions): string {
       ]
       : [`You are PrivateCode, a coding agent working in the local workspace ${opts.workspaceRoot}.`]),
     '',
-    'Work in small steps. Each step: use exactly one tool, look at the result, then decide',
-    'the next step. Never claim something works unless a command or test you ran says so.',
+    'Work in small steps. Look at the result before deciding the next step, and never claim',
+    'something works unless a command or test you ran says so.',
+    '',
+    // The other half of the loop's own change. It used to say "use exactly one tool", which
+    // was false in the direction that cost: the loop ran the first call and refused the rest,
+    // so a step proposing three edits became three steps. It now runs them, and the model has
+    // no way to know that unless told. Measured on a 13-step turn: 3 steps proposed more than
+    // one call and 3 of the 13 existed only to redo what had been discarded.
+    'You may call several tools in one step when they are independent and you already know',
+    'every argument — four files to read, three files to edit. They run in order and stop at',
+    'the first failure, so anything that depends on an earlier result belongs in a later step.',
     '',
     'Do not deliberate at length, and do not re-check a decision you have already made —',
     'if you notice yourself going over the same reasoning twice, stop and call the tool.',

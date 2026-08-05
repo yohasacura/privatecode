@@ -1654,9 +1654,17 @@ export class Session {
   private turnNumber = 0
   /** Filled by the event tap during a turn, read and cleared when it ends. */
   private turnCommands: { name: string; args: string; content: string; ok: boolean }[] = []
-  /** `onToolCall` carries the arguments and `onToolResult` does not, so the last call's
-   * arguments are held here to be paired with its result. One tool runs per step, so a
-   * single slot per name is exact. */
+  /**
+   * `onToolCall` carries the arguments and `onToolResult` does not, so the last call's
+   * arguments are held here to be paired with its result.
+   *
+   * A single slot per tool NAME is exact for as long as no second call of the same name is
+   * announced before the first one's result. That used to be guaranteed by one tool running
+   * per step; it is now guaranteed by the loop running a step's calls strictly in sequence —
+   * announce, run, answer, next — which is asserted in `loop.test.ts` rather than left as a
+   * property nobody checks. A concurrent version of that loop would silently hand one write's
+   * path to another write's result, and with it the folder `verify` runs in.
+   */
   private readonly lastToolArgs = new Map<string, string>()
   /** Cumulative across the session; see `turnFootprint`. */
   private writeCount = 0

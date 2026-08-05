@@ -519,7 +519,7 @@ test('plan mode narrows an explicit allowedTools list down to its readOnly membe
 
 // A strict OpenAI endpoint rejects an assistant turn whose tool_calls are not all
 // answered; llama.cpp tolerates it, which is why this went unnoticed.
-test('every tool call carried forward is answered', async () => {
+test('every tool call carried forward is answered, and every one of them ran', async () => {
   let n = 0
   const fake = await startFakeServer(() => {
     n++
@@ -534,10 +534,142 @@ test('every tool call carried forward is answered', async () => {
   const assistant = messages.find((m: any) => m.role === 'assistant')
   const answered = messages.filter((m: any) => m.role === 'tool').map((m: any) => m.tool_call_id)
   expect(answered).toEqual((assistant.tool_calls ?? []).map((c: any) => c.id))
-  // Only the first call actually ran.
+  // Both ran. This used to run the first and refuse the second, which cost a whole extra
+  // step per discarded call — measured at ~23% of a 13-step turn.
+  expect(pingCalls).toBe(2)
+  const replies = messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content)
+  expect(replies).toEqual(['pong:a', 'pong:b'])
+})
+
+test('the calls of one step run in the order the model wrote them', async () => {
+  // Not incidental: a model that proposes `write_file config.ts` then `run_command "npm
+  // test"` means those in that order, and the results are fed back as one block with no
+  // ordering information of their own beyond their position.
+  const order: string[] = []
+  const noting: Tool<{ tag: string }> = {
+    name: 'noting',
+    readOnly: true,
+    description: 'records the order it was called in',
+    parameters: { type: 'object', properties: { tag: { type: 'string' } }, required: ['tag'] },
+    validate: (raw) => ({ ok: true, args: { tag: String((raw as any)?.tag) } }),
+    execute: async (args) => { order.push(args.tag); return { ok: true, content: args.tag } },
+  }
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    if (n > 1) return textResponse('ok')
+    return {
+      choices: [{
+        finish_reason: 'tool_calls',
+        message: {
+          role: 'assistant', content: null,
+          tool_calls: ['first', 'second', 'third'].map((tag, i) => ({
+            id: `c${i}`, type: 'function',
+            function: { name: 'noting', arguments: JSON.stringify({ tag }) },
+          })),
+        },
+      }],
+      usage: { completion_tokens: 30 },
+    }
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url, {}, [noting])
+
+  await agent.runTurn('go')
+
+  expect(order).toEqual(['first', 'second', 'third'])
+  const replies = fake.requests[1].body.messages
+    .filter((m: any) => m.role === 'tool')
+    .map((m: any) => [m.tool_call_id, m.content])
+  expect(replies).toEqual([['c0', 'first'], ['c1', 'second'], ['c2', 'third']])
+})
+
+test('a step stops at its first failed call and answers the rest without running them', async () => {
+  // The reason one-call-per-step was ever right: the model should see a failure before more
+  // actions land. Three edits generated from the same information need no such ordering, but
+  // once one of them fails, what the next ones SHOULD be has changed — so they are answered
+  // rather than run, and the model re-issues whichever still apply.
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    if (n > 1) return textResponse('ok')
+    return {
+      choices: [{
+        finish_reason: 'tool_calls',
+        message: {
+          role: 'assistant', content: null,
+          tool_calls: [
+            { id: 'c1', type: 'function', function: { name: 'ping', arguments: '{"value":"a"}' } },
+            // Fails validation: `value` must be non-empty.
+            { id: 'c2', type: 'function', function: { name: 'ping', arguments: '{"value":"  "}' } },
+            { id: 'c3', type: 'function', function: { name: 'boom', arguments: '{}' } },
+          ],
+        },
+      }],
+      usage: { completion_tokens: 30 },
+    }
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url)
+
+  await agent.runTurn('go')
+
+  // The first ran, the second ran and failed, the third never executed at all.
   expect(pingCalls).toBe(1)
-  const second = messages.find((m: any) => m.role === 'tool' && m.tool_call_id === 'c2')
-  expect(second.content).toMatch(/one tool call per step/i)
+  expect(boomCalls).toBe(0)
+
+  const messages = fake.requests[1].body.messages
+  const byId = new Map(
+    messages.filter((m: any) => m.role === 'tool').map((m: any) => [m.tool_call_id, m.content]),
+  )
+  expect(byId.get('c1')).toBe('pong:a')
+  expect(byId.get('c2')).toMatch(/must be non-empty/)
+  // The prefix `commandsFrom` and `assumedOk` both read as "this never ran", and it names
+  // which call stopped the step so the model is not left guessing.
+  expect(byId.get('c3')).toMatch(/^Not run: ping failed earlier in this step/)
+  // And every call is still answered — an unanswered tool_call poisons the session.
+  expect([...byId.keys()]).toEqual(['c1', 'c2', 'c3'])
+})
+
+test('a cancel partway through a step leaves the transcript valid', async () => {
+  // Esc lands wherever it lands, and a step running four calls is four times the window it
+  // can land in. The remaining calls must not run; they must still be answered, because the
+  // turn returns with this transcript and the next `send` will post it.
+  const controller = new AbortController()
+  const cancelling: Tool<Record<string, never>> = {
+    name: 'cancelling',
+    readOnly: true,
+    description: 'aborts the turn from inside the tool',
+    parameters: { type: 'object', properties: {} },
+    validate: () => ({ ok: true, args: {} }),
+    execute: async () => { controller.abort(); return { ok: true, content: 'cancelled' } },
+  }
+  const fake = await startFakeServer(() => ({
+    choices: [{
+      finish_reason: 'tool_calls',
+      message: {
+        role: 'assistant', content: null,
+        tool_calls: [
+          { id: 'c1', type: 'function', function: { name: 'cancelling', arguments: '{}' } },
+          { id: 'c2', type: 'function', function: { name: 'boom', arguments: '{}' } },
+        ],
+      },
+    }],
+    usage: { completion_tokens: 30 },
+  }))
+  stop = fake.close
+  const agent = makeAgent(fake.url, { signal: controller.signal }, [cancelling])
+
+  const result = await agent.runTurn('go')
+
+  expect(result.stoppedBecause).toBe('aborted')
+  expect(boomCalls).toBe(0)
+  const messages = agent.transcript.messages()
+  const assistant = messages.find((m) => m.role === 'assistant' && m.tool_calls)!
+  const answered = messages.filter((m) => m.role === 'tool').map((m) => m.tool_call_id)
+  expect(answered).toEqual(assistant.tool_calls!.map((c) => c.id))
+  const skipped = messages.find((m) => m.tool_call_id === 'c2')!
+  expect(skipped.content).toMatch(/^Not run: the turn was cancelled/)
 })
 
 test('hitting maxSteps tells the model and keeps the last assistant prose', async () => {
@@ -795,16 +927,21 @@ test('a call whose answer keeps changing is never refused', async () => {
   expect(n).toBe(5)
 })
 
-test('a call the step skipped is announced, not only recorded', async () => {
-  // The loop runs `calls[0]` and refuses the rest. It always wrote the refusal into the
-  // transcript, so a RESUMED session showed it — and told a watching window nothing. Once
-  // arguments streamed, that meant a card opened for every proposed call and only the first
-  // ever closed: the rest pulsed for the life of the session, and the next call of the same
-  // name inherited one, taking its arguments and then its result.
+test('every call of a step is announced, and never two calls at once', async () => {
+  // Two properties in one recording, because they are the same property.
   //
-  // This is the test that was missing when the announcement was added: the only other
-  // two-call test in this file asserts on `messages` and builds its Agent without an events
-  // recorder, so deleting the announcement left the whole suite green.
+  // Announced: a card opens in the window on the streamed arguments and closes on
+  // `tool.call`. A call that produced no `onToolCall` leaves that row pulsing for the life of
+  // the session, and the next call of the same name inherits it — taking its arguments and
+  // then its result. Seen in a live run as `-> find_files -> find_files -> find_files`
+  // against one `(ok)`.
+  //
+  // Strictly sequential: `Session.lastToolArgs` pairs a call's arguments with its result
+  // through one slot per tool NAME, and `captureToolResult` reads it back to learn which
+  // FOLDER a write landed in — which is the folder `verify` then runs in. Announcing a second
+  // `ping` before the first one's result would overwrite that slot. Nothing in the type system
+  // stops a future edit from awaiting the calls together, so the interleaving is asserted here
+  // rather than left as a comment.
   let n = 0
   const fake = await startFakeServer(() => {
     n++
@@ -816,17 +953,17 @@ test('a call the step skipped is announced, not only recorded', async () => {
 
   await agent.runTurn('go')
 
-  // Both calls announced, both answered — the live view and the stored transcript agree.
-  const announced = events.filter((e) => e[0] === 'toolCall')
-  expect(announced).toHaveLength(2)
-
-  const results = events.filter((e) => e[0] === 'toolResult')
-  expect(results).toHaveLength(2)
-  // And the second is reported as what it is: refused, with the prefix `commandsFrom` and
-  // `assumedOk` both read as "this never ran".
-  const skipped = results[1]![2] as { ok: boolean; content: string }
-  expect(skipped.ok).toBe(false)
-  expect(skipped.content.startsWith('Not run:')).toBe(true)
-  // Only the first actually executed.
-  expect(pingCalls).toBe(1)
+  const toolEvents = events
+    .filter((e) => e[0] === 'toolCall' || e[0] === 'toolResult')
+    .map((e) => `${e[0]}:${e[1]}`)
+  expect(toolEvents).toEqual([
+    'toolCall:ping', 'toolResult:ping',
+    'toolCall:ping', 'toolResult:ping',
+  ])
+  // Each announcement carries its OWN arguments, in order.
+  expect(events.filter((e) => e[0] === 'toolCall').map((e) => e[2]))
+    .toEqual(['{"value":"a"}', '{"value":"b"}'])
+  expect(events.filter((e) => e[0] === 'toolResult').map((e) => (e[2] as any).content))
+    .toEqual(['pong:a', 'pong:b'])
+  expect(pingCalls).toBe(2)
 })

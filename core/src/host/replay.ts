@@ -122,6 +122,27 @@ export function replayEntries(
 ): TranscriptEntry[] {
   const entries: TranscriptEntry[] = []
   const nameById = new Map<string, string>()
+  /**
+   * Calls announced by the assistant message but not yet answered.
+   *
+   * They are held rather than emitted with their message because the window pairs a result
+   * with a call by RECENCY — `lastPendingTool` scans backwards for the newest card still
+   * without one. That is exact for the live stream, where the loop announces a call, runs it,
+   * answers it, and only then moves to the next. A literal replay is the opposite shape: all
+   * of a step's calls, then all of its results. With three calls in a step the newest card
+   * was the LAST call and the first result went to it, so a restored session showed every
+   * multi-call step's results in reverse — the third file's diff under the first file's name.
+   *
+   * So the entries are interleaved back into the order the events really happened in. It
+   * cost nothing while the loop ran one call per step and refused the rest; it runs them all
+   * now, and this is the shape every long turn produces.
+   */
+  const pending: { id: string; name: string; args: string }[] = []
+  const flushPending = (): void => {
+    for (const call of pending.splice(0)) {
+      entries.push({ kind: 'tool-call', name: call.name, args: call.args })
+    }
+  }
   let step = 0
   // Only the FIRST briefing takes the marker's count. A transcript containing two would mean
   // a file whose slice point moved, and the marker describes exactly one of them; guessing
@@ -130,6 +151,10 @@ export function replayEntries(
 
   for (const message of messages) {
     if (isCompactionAck(message)) continue
+    // Anything that is not a tool reply ends the step's answers. Whatever is still pending
+    // was never answered — a file truncated mid-turn, or a transcript from before every call
+    // was answered — and is emitted here so it appears in the place it was proposed.
+    if (message.role !== 'tool') flushPending()
     const briefing = briefingIn(message)
     if (briefing !== null) {
       entries.push({
@@ -162,13 +187,23 @@ export function replayEntries(
         }
         for (const call of message.tool_calls ?? []) {
           nameById.set(call.id, call.function.name)
-          entries.push({ kind: 'tool-call', name: call.function.name, args: call.function.arguments })
+          pending.push({ id: call.id, name: call.function.name, args: call.function.arguments })
         }
         break
       }
 
       case 'tool': {
         const id = message.tool_call_id ?? ''
+        // The call this answers, emitted immediately before it. Found by id rather than taken
+        // off the head: the replies are written in call order, but a hand-edited or
+        // partially-recovered file need not be, and pairing the wrong two is the whole defect
+        // this avoids. An id with nothing pending (a transcript older than `tool_call_id`)
+        // emits the result alone, exactly as it always did.
+        const at = pending.findIndex((c) => c.id === id)
+        if (at !== -1) {
+          const call = pending.splice(at, 1)[0]!
+          entries.push({ kind: 'tool-call', name: call.name, args: call.args })
+        }
         entries.push({
           kind: 'tool-result',
           // The message's own `name` is what the loop wrote; the id lookup is the fallback
@@ -184,6 +219,9 @@ export function replayEntries(
         break
     }
   }
+  // A transcript that ends on an unanswered call: the process died between the assistant
+  // message and the tool reply, which is a real state on disk (see `store.load`).
+  flushPending()
 
   return entries
 }
