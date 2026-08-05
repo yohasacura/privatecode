@@ -74,7 +74,18 @@ export class CheckpointSet {
    * rewind to it puts every folder back where it was.
    */
   async take(label: { sessionId?: string; turn?: number; step?: number } = {}): Promise<Checkpoint | null> {
-    if (this.single) return this.single.take(label)
+    if (this.single) {
+      const only = await this.single.take(label)
+      // The single-unit path skipped this, and it is the path almost every workspace takes.
+      // `CheckpointStore` reports its failures by pushing onto `problems` and returning null
+      // -- it does not throw -- so without collecting them here every one of them was
+      // stranded on an object nothing reads. The loudest case is not a mid-run disk failure
+      // but the first launch on a machine with no git on PATH: every checkpoint quietly does
+      // nothing, History says "No checkpoints yet" forever, and the reason is written down
+      // in a place no code path can reach.
+      this.collectProblems()
+      return only
+    }
 
     const taken = await Promise.all(this.stores.map((s) => s.take(label)))
     this.collectProblems()

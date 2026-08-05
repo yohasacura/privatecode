@@ -774,6 +774,12 @@ export class SessionHost {
       for (const text of this.engine?.problems.slice(problemsBefore) ?? []) {
         this.emit('settings.problem', { text })
       }
+      // Checkpoints, the work log and the decision queue report their failures by collecting
+      // them rather than throwing, and only the end of an unattended RUN ever drained that.
+      // A manual turn is now the thing that can run for hours, so it is the thing that has
+      // to say when the snapshotting it is being trusted for stopped working — waiting for
+      // a run that may never happen means the answer arrives after the hour worth undoing.
+      for (const text of session.longRunProblems()) this.emit('settings.problem', { text })
       this.sending = false
       this.currentAbort = undefined
       this.currentTurn = undefined

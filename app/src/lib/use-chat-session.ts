@@ -2,6 +2,17 @@ import { useEffect, useReducer } from 'preact/hooks'
 import type { ProtocolClient } from './client'
 import { type ChatAction, type ChatState, initialChatState, reduceChat } from './state'
 import { notify } from './notify'
+import { formatDuration } from './format'
+
+/**
+ * How long a turn has to run before its ending is worth a notification.
+ *
+ * `notify` already declines while the window is focused, so this is not about noise while
+ * you are watching — it is about the twenty seconds you spend in another window during a
+ * quick turn. A minute is comfortably longer than that and far shorter than the hours this
+ * is really for.
+ */
+const LONG_TURN_MS = 60_000
 
 /**
  * Subscribes ONE `ProtocolClient` to `lib/state.ts`'s reducer and returns `[state,
@@ -28,6 +39,8 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
     // Per-subscription, not per-render: the point is to tell a RISE from a fall, and a
     // value that resets on every render can do neither.
     let lastPending = 0
+    /** When the running turn's first step began, or 0 between turns. See `turn.done`. */
+    let turnStartedAtMs = 0
 
     /**
      * Streamed text is coalesced into one dispatch per animation frame.
@@ -98,8 +111,12 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
       dispatch(action)
     }
     const unsubs = [
-      client.on('step.start', (d) =>
-        dispatch({ type: 'step.start', step: d.step, timeoutMs: d.timeoutMs, startedAtMs: Date.now() })),
+      client.on('step.start', (d) => {
+        // Step 1 happens once per turn and nothing else marks a turn's beginning here, so it
+        // is what the "did this run long enough to be worth interrupting for" check reads.
+        if (d.step === 1) turnStartedAtMs = Date.now()
+        dispatch({ type: 'step.start', step: d.step, timeoutMs: d.timeoutMs, startedAtMs: Date.now() })
+      }),
       client.on('thinking.delta', (d) => buffer('thinking', d.text)),
       // `atMs` is the wall clock at which this event arrived; the reducer uses it only to
       // stamp the end of the reasoning block each of these closes (see state.ts).
@@ -129,7 +146,23 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         ...(d.promptTokens !== undefined ? { promptTokens: d.promptTokens } : {}),
         ...(d.draftAcceptance !== undefined ? { draftAcceptance: d.draftAcceptance } : {}),
       })),
-      client.on('turn.done', (d) => emit({ type: 'turn.done', stoppedBecause: d.stoppedBecause, atMs: Date.now() })),
+      client.on('turn.done', (d) => {
+        emit({ type: 'turn.done', stoppedBecause: d.stoppedBecause, atMs: Date.now() })
+        // A turn ending became a walk-away event, and nothing said so.
+        //
+        // Only an unattended RUN ever announced itself, because a turn was capped at forty
+        // steps — ten minutes, which you wait out. With no ceiling a single typed request
+        // can run for hours, and the person who typed it has no reason to sit there. `notify`
+        // already declines while the window is focused, so this cannot fire at someone who
+        // is watching.
+        const ranMs = turnStartedAtMs === 0 ? 0 : Date.now() - turnStartedAtMs
+        turnStartedAtMs = 0
+        if (ranMs < LONG_TURN_MS) return
+        void notify(
+          d.stoppedBecause === 'done' ? 'PrivateCode finished' : `PrivateCode stopped: ${d.stoppedBecause}`,
+          `The turn ran for ${formatDuration(ranMs)}.`,
+        )
+      }),
       client.on('approval.request', (d) => {
         dispatch({
           type: 'approval.request', requestId: d.requestId, tool: d.tool, summary: d.summary,

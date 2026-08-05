@@ -221,3 +221,33 @@ describe('putting one file back', () => {
     expect(readFileSync(join(app, 'a.txt'), 'utf8')).toBe('a CHANGED')
   })
 })
+
+describe('a failing checkpoint store can be heard', () => {
+  test('collects the store\'s problems on the single-unit path too', async () => {
+    // The path almost every workspace takes short-circuited straight to the one store and
+    // skipped `collectProblems`, so `CheckpointSet.problems` was permanently empty for a
+    // single-folder workspace — and `CheckpointStore` reports failures by pushing onto
+    // `problems` and returning null, never by throwing. The loudest case is not a mid-run
+    // disk failure: it is the first launch on a machine with no git on PATH, where every
+    // checkpoint quietly does nothing and History says "No checkpoints yet" forever.
+    const root = mkdtempSync(join(tmpdir(), 'pc-cpfail-'))
+    try {
+      const set = new CheckpointSet([{
+        id: 'primary',
+        label: 'primary',
+        root,
+        gitDir: join(root, '.privatecode', 'checkpoints.git'),
+        stateRoot: root,
+        excluded: [],
+      }], root)
+      // A file where the state directory has to go, so the store cannot create its shadow
+      // repository. Whatever the exact message, the contract under test is that the failure
+      // REACHES here instead of being stranded on the store.
+      writeFileSync(join(root, '.privatecode'), 'not a directory', 'utf8')
+      await set.take({ sessionId: 's1', turn: 1 })
+      expect(set.problems.length).toBeGreaterThan(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})

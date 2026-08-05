@@ -492,10 +492,16 @@ export class Session {
    * workspace cannot be written.
    */
   longRunProblems(): string[] {
+    // DRAINED, not read. Every caller reports what it gets; leaving the arrays full meant
+    // the same problem was re-reported on every later call, and the window only avoided
+    // showing it three times because it deduplicates. Taking them also makes this safe to
+    // call often, which is what a turn measured in hours needs — a checkpoint that stopped
+    // working at hour one should not have to wait for the run to end to say so.
+    const drain = (xs: string[] | undefined): string[] => (xs ? xs.splice(0) : [])
     return [
-      ...(this.checkpoints?.problems ?? []),
-      ...(this.workLog?.problems ?? []),
-      ...(this.decisions?.problems ?? []),
+      ...drain(this.checkpoints?.problems as string[] | undefined),
+      ...drain(this.workLog?.problems as string[] | undefined),
+      ...drain(this.decisions?.problems as string[] | undefined),
     ]
   }
 
