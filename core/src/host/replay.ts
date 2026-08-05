@@ -1,5 +1,5 @@
-import { appendFileSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import type { ChatMessage } from '../llama/types.js'
 import { PRIVATE_DIR } from '../private-dir.js'
 import { COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX } from '../session/compaction.js'
@@ -31,15 +31,29 @@ function outcomesPath(workspaceRoot: string, sessionId: string): string {
 /**
  * Records how one tool call ended, appended as it happens.
  *
- * Failures here are swallowed on purpose: a session whose ok-flags cannot be written is a
- * session whose restored tool cards look neutral, which is a cosmetic loss. Refusing to run
- * the turn over it would not be.
+ * The directory is created first, and that line is the whole reason this function ever
+ * recorded anything. Outcomes are written DURING a turn, from inside the agent loop; the
+ * transcript is written when the turn's messages are flushed, which is what creates
+ * `sessions/`. So on the first turn of a new session the directory did not exist yet, every
+ * `appendFileSync` threw ENOENT, and the `catch` below turned each one into silence. Turn two
+ * onwards worked, because by then the transcript had made the directory — which is why this
+ * looked fine in every test that ran more than one turn, and in casual use.
+ *
+ * What it cost: a session's opening turn is the one most likely to be read back later, and
+ * with no outcomes on disk `assumedOk` guesses from the result text. Every failed call in it
+ * restored with a tick.
+ *
+ * Failures are still swallowed, for the original reason: a session whose ok-flags cannot be
+ * written is a session whose restored tool cards look neutral, which is a cosmetic loss.
+ * Refusing to run the turn over it would not be.
  */
 export function recordToolOutcome(
   workspaceRoot: string, sessionId: string, callId: string, ok: boolean,
 ): void {
+  const path = outcomesPath(workspaceRoot, sessionId)
   try {
-    appendFileSync(outcomesPath(workspaceRoot, sessionId), `${JSON.stringify({ id: callId, ok })}\n`, 'utf8')
+    mkdirSync(dirname(path), { recursive: true })
+    appendFileSync(path, `${JSON.stringify({ id: callId, ok })}\n`, 'utf8')
   } catch { /* see above */ }
 }
 

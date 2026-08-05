@@ -196,6 +196,27 @@ describe('whether each call worked', () => {
     expect(outcomes.get('c2')).toBe(false)
   })
 
+  test('a session whose folder does not exist yet still records its first turn', () => {
+    // The defect this pins, found by driving a first turn through the host and looking for
+    // the file: outcomes are written DURING a turn, from inside the agent loop, and the
+    // `sessions/` directory is created by the TRANSCRIPT, which is flushed when the turn ends.
+    // So on the opening turn of a new session every append threw ENOENT and the catch turned
+    // each one into silence. Turn two onwards worked, which is exactly why it survived — every
+    // test here made the directory in `beforeEach`, and the host tests that would have caught
+    // it never read the file back.
+    //
+    // The cost was not cosmetic in the way the swallow assumes: with nothing on disk,
+    // `assumedOk` guesses from the result text, so every genuinely failed call in a session's
+    // first turn restored with a tick beside it.
+    const fresh = mkdtempSync(join(tmpdir(), 'pc-replay-fresh-'))
+    try {
+      recordToolOutcome(fresh, 's1', 'c1', false)
+      expect(toolOutcomes(fresh, 's1').get('c1')).toBe(false)
+    } finally {
+      rmSync(fresh, { recursive: true, force: true })
+    }
+  })
+
   test('an unwritable workspace is a cosmetic loss, never a thrown turn', () => {
     // Recording runs inside the agent loop. A session whose ok-flags cannot be written is a
     // session whose restored tool cards look neutral; refusing to run the turn over that
