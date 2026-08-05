@@ -125,9 +125,40 @@ Next worth doing, in rough order:
    round — a fix that adds an EVENT is the dangerous shape, because every existing consumer
    of that event silently gains a case. Both high-severity findings here were that shape.
 
-5. **Throughput, the rest.** `tool_choice` is measured and spent (see below). The prompt-prefix
-   half is locked by `core/test/prompt-cache.test.ts`. After item 3, the open question is
-   whether anything else reduces generated tokens.
+5. ~~**The regression item 3 created.**~~ DONE (aa8a47c). Batching moved several file-sized
+   arguments into ONE generation, and the per-step deadline was a flat timeout over the whole
+   step. Live, "create four thorough ~100-line collection classes", n=3 per arm:
+
+   | | wall clock | outcome |
+   |---|---|---|
+   | after item 3, flat deadline | 90.0 s | **TIMEOUT, 0/4 files, 3/3 runs** |
+   | one call per step (the old code) | 165.7 s | done, 4/4 files |
+   | after the fix | 135.9 s | done, 4/4 files |
+
+   The turn was killed for producing too much, too fast, in one piece. Attributed by running
+   the same task against the reverted loop AND prompt — not by reasoning about it — which is
+   the only way to tell a regression from a pre-existing limit.
+
+   The deadline measures SILENCE now, which is what `DEFAULT_STEP_TIMEOUT_MS` and
+   `StepStartInfo` had always SAID it measured ("silence is the failure, not the duration").
+   The gap between what a comment claims and what the code does had been harmless for as long
+   as a step held one call.
+
+   Two things this exposed that were not about the deadline at all:
+   - `render.ts` wired delta callbacks only on a TTY, and streaming is opt-in on a callback
+     EXISTING. So `--unattended` — a pipe, with the longest steps in the system — was on the
+     non-streaming transport, where there is no signal to re-arm from. Now unconditional.
+   - The app's countdown counted from the step's start and would have run to zero while the
+     model streamed. `step.alive` mirrors the core's clock.
+
+   And a lesson about probes: the first re-measurement after the fix STILL timed out, because
+   the probe wired no delta callback and was therefore measuring the non-streaming path. A
+   probe that does not reproduce the app's own wiring measures a configuration nobody runs.
+
+6. **Throughput, the rest.** `tool_choice` is measured and spent (see below). The prompt-prefix
+   half is locked by `core/test/prompt-cache.test.ts`. Item 3 took the large one. Nothing
+   further is identified — the next thing worth doing is probably another audit over the
+   day's changes, on the evidence that every previous one found defects in the round before.
 
 Everything below this line is history — measurements and closed items, kept because the
 reasoning is worth more than the conclusion. The list above is the only live queue.
