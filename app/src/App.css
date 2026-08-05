@@ -1071,6 +1071,7 @@ kbd {
 }
 
 .composer-bar {
+  position: relative; /* anchors the run-config popover */
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2298,3 +2299,87 @@ kbd {
 .rule-allow { color: var(--green); background: var(--green-soft); border-color: var(--green-soft); }
 .rule-ask { color: var(--yellow); background: rgba(217, 178, 94, 0.13); border-color: rgba(217, 178, 94, 0.2); }
 .rule-deny { color: var(--red); background: var(--red-soft); border-color: var(--red-soft); }
+
+/* ---------------------------------------------------------------------------------------
+   The unattended run, visible.
+
+   Two cards sharing one frame, never both at once: the live banner while a run takes its
+   turns, and the ended card that holds WHY it stopped until dismissed. A run used to exist
+   on screen as a relabelled button and one status line; for the feature the step ceiling
+   was removed for, that was a strange amount of invisibility.
+   --------------------------------------------------------------------------------------- */
+.run-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+.run-banner-ended { border-color: var(--border); background: var(--bg-raised); }
+/* Anything but a clean "done" keeps the accent frame: "stopped: error" must not present
+   itself with the same calm as a finished job. */
+.run-banner-attention { border-color: var(--accent-line); background: var(--accent-soft); }
+
+.run-banner-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+  margin-top: 5px;
+  animation: pulse 1.25s ease-in-out infinite;
+}
+.run-banner-endmark { flex: none; display: flex; color: var(--text-dim); margin-top: 1px; }
+.run-banner-attention .run-banner-endmark { color: var(--accent); }
+
+.run-banner-body { flex: 1; min-width: 0; }
+.run-banner-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.run-banner-state { font-size: 12px; font-weight: 600; color: var(--text); }
+.run-banner-parked { font-size: 11px; color: var(--accent); }
+/* The task verbatim, clamped: it distinguishes "it is working" from "it is working on the
+   wrong thing", and three lines is enough to tell. */
+.run-banner-task {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  margin-top: 3px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The start card: budgets for a run about to begin. Anchored to the composer's control row
+   rather than a modal — starting a run is a continuation of typing the task, not a context
+   switch. */
+.run-config {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 300px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  z-index: 30;
+}
+.run-config-task {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.run-config-fields { display: flex; gap: 8px; }
+.run-config-field { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.run-config-field span { font-size: 10.5px; font-weight: 600; color: var(--text-dim); }
+.input-small { height: 26px; padding: 2px 8px; font-size: 12px; }
+.run-config-hint { font-size: 10.5px; line-height: 1.5; color: var(--text-faint); margin-top: 8px; }
+.run-config-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }

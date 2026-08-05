@@ -183,13 +183,24 @@ export function Composer({
   useEffect(() => { setQueued(null) }, [sessionId])
 
   /**
-   * Starts an unattended run with whatever is in the composer as the task.
+   * The run-start card: the task comes from the composer (the thing you would type into a
+   * dialog is the thing you already typed), the budgets come from here.
    *
-   * Taking the composer text rather than opening a dialog: the thing you would type into a
-   * dialog is the thing you already typed, and an empty composer is a clear enough signal
-   * to refuse.
+   * The budgets existed in the protocol from the day runs did — `run.start` takes `maxTurns`
+   * and `maxHours`, the runner honours them, and cutting a running turn at the hour budget
+   * was measured and fixed — and the window never offered either. So the only way to bound
+   * a run from the app was to watch it, which is the one thing an unattended run exists to
+   * not need.
+   *
+   * Both empty by default, meaning unbounded, because that is what the button has always
+   * meant and a default that silently stops the night's work at some number I invented
+   * would be the worse surprise.
    */
-  function startRun(): void {
+  const [runConfigOpen, setRunConfigOpen] = useState(false)
+  const [maxTurnsText, setMaxTurnsText] = useState('')
+  const [maxHoursText, setMaxHoursText] = useState('')
+
+  function requestRun(): void {
     const task = input.trim()
     if (task === '') {
       dispatch({
@@ -198,10 +209,41 @@ export function Composer({
       })
       return
     }
+    setRunConfigOpen(true)
+  }
+
+  /** A budget field is either empty (no budget) or a positive number; anything else keeps
+   * the card open rather than starting a run with a silently-dropped bound. */
+  function parseBudget(text: string): number | undefined | null {
+    const trimmed = text.trim()
+    if (trimmed === '') return undefined
+    const n = Number(trimmed)
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+
+  function startRun(): void {
+    const task = input.trim()
+    const maxTurns = parseBudget(maxTurnsText)
+    const maxHours = parseBudget(maxHoursText)
+    if (maxTurns === null || maxHours === null) {
+      dispatch({ type: 'send-failed', message: 'A budget is a positive number, or empty for none.' })
+      return
+    }
+    setRunConfigOpen(false)
     setInput('')
     dispatch({ type: 'user-message', text: task })
-    client.call('run.start', { task }).catch((e: Error) => {
+    dispatch({
+      type: 'run-started', task, atMs: Date.now(),
+      ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(maxHours !== undefined ? { maxHours } : {}),
+    })
+    client.call('run.start', {
+      task,
+      ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(maxHours !== undefined ? { maxHours } : {}),
+    }).catch((e: Error) => {
       dispatch({ type: 'send-failed', message: e.message })
+      dispatch({ type: 'run.ended', turns: 0, stoppedBecause: 'error', detail: e.message })
     })
   }
 
@@ -380,16 +422,9 @@ export function Composer({
   function statusLine(): VNode | null {
     if (waitingOnYou) return <span class="status-live">waiting on you · nothing generating</span>
     // Why a run ENDED outranks how the last turn went: after an unattended run the first
-    // question is always "why did it stop", and a tok/s figure answers a question nobody
-    // asked. It stays until the next turn replaces it.
-    if (!state.turnRunning && state.lastRun) {
-      return (
-        <span class="status-idle">
-          run ended: {state.lastRun.stoppedBecause} after {state.lastRun.turns} turn
-          {state.lastRun.turns === 1 ? '' : 's'} · <span class="run-detail">{state.lastRun.detail}</span>
-        </span>
-      )
-    }
+    // question is always "why did it stop" — which is now the RunBanner card in the
+    // transcript, where it can carry the full detail and be dismissed. Repeating it here
+    // squeezed the same sentence into one status line and kept it there forever.
     if (state.turnRunning) {
       // Nothing about compaction here any more. It has its own live row in the transcript,
       // which starts when it starts and ends stating what it did — and a status line driven
@@ -596,10 +631,46 @@ export function Composer({
               : 'Keep taking turns until the work is done or a budget stops it. ' +
                 'Questions are queued instead of blocking.'}
             disabled={!state.session || (state.turnRunning && state.run === null)}
-            onClick={state.run ? stopRun : startRun}
+            onClick={state.run ? stopRun : requestRun}
           >
             {state.run ? `Stop · turn ${state.run.turn}` : 'Run unattended'}
           </button>
+
+          {runConfigOpen && (
+            <div class="run-config" role="dialog" aria-label="Start an unattended run">
+              <div class="run-config-task" title={input.trim()}>{input.trim()}</div>
+              <div class="run-config-fields">
+                <label class="run-config-field">
+                  <span>Turn budget</span>
+                  <input
+                    class="input input-small"
+                    inputMode="numeric"
+                    placeholder="none"
+                    value={maxTurnsText}
+                    onInput={(e) => setMaxTurnsText(e.currentTarget.value)}
+                  />
+                </label>
+                <label class="run-config-field">
+                  <span>Hour budget</span>
+                  <input
+                    class="input input-small"
+                    inputMode="numeric"
+                    placeholder="none"
+                    value={maxHoursText}
+                    onInput={(e) => setMaxHoursText(e.currentTarget.value)}
+                  />
+                </label>
+              </div>
+              <div class="run-config-hint">
+                Empty means no limit. The hour budget cuts a running turn; questions park in
+                the decision queue instead of blocking.
+              </div>
+              <div class="run-config-actions">
+                <button class="btn" onClick={() => setRunConfigOpen(false)}>Cancel</button>
+                <button class="btn btn-primary" onClick={startRun}>Start run</button>
+              </div>
+            </div>
+          )}
 
           <div class="composer-meta">{statusLine()}</div>
 

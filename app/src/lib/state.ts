@@ -248,7 +248,19 @@ export interface ChatState {
    * `lastRun` outlives it deliberately: the reason a run stopped is the first thing wanted
    * afterwards, and it must not vanish the instant the run does.
    */
-  run: { turn: number } | null
+  run: {
+    turn: number
+    /** What the run was asked to do — the one line that distinguishes "it is working" from
+     * "it is working on the wrong thing". Known only client-side at start time, so it is
+     * carried here rather than in any event. */
+    task: string
+    /** Wall clock at `run-started`, for the banner's elapsed readout. */
+    startedAtMs: number
+    /** The budgets it was started with, absent for an unbounded run. Shown beside the turn
+     * count because "turn 7" and "turn 7 of 20" are different amounts of information. */
+    maxTurns?: number
+    maxHours?: number
+  } | null
   lastRun: { turns: number; stoppedBecause: string; detail: string } | null
   session: SessionInfo | null
   /**
@@ -282,8 +294,13 @@ export function initialChatState(): ChatState {
 export type ChatAction =
   | { type: 'user-message'; text: string }
   | { type: 'decisions.changed'; pending: number }
+  /** Dispatched by the composer the moment `run.start` is called: the task and budgets are
+   * known only there, and the first `run.turn` event may be a whole turn away. */
+  | { type: 'run-started'; task: string; atMs: number; maxTurns?: number; maxHours?: number }
   | { type: 'run.turn'; turn: number }
   | { type: 'run.ended'; turns: number; stoppedBecause: string; detail: string }
+  /** The ended-run card was read and dismissed. */
+  | { type: 'run-dismissed' }
   | { type: 'turn-started' }
   | { type: 'step.start'; step: number; timeoutMs: number; startedAtMs: number }
   /** Something streamed, so the step is alive: restarts the silence countdown. Dispatched
@@ -805,10 +822,33 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'decisions.changed':
       return { ...state, pendingDecisions: action.pending }
 
+    case 'run-started':
+      // `lastRun` is cleared here AND on `run.turn`: here so the ended card of the previous
+      // run does not sit beside the new one's banner, and there because a host-driven run
+      // (one this window did not start) never dispatches this action at all.
+      return {
+        ...state,
+        run: {
+          turn: 0,
+          task: action.task,
+          startedAtMs: action.atMs,
+          ...(action.maxTurns !== undefined ? { maxTurns: action.maxTurns } : {}),
+          ...(action.maxHours !== undefined ? { maxHours: action.maxHours } : {}),
+        },
+        lastRun: null,
+      }
+
     case 'run.turn':
-      // `lastRun` is cleared here rather than on start: a run that begins and immediately
-      // fails would otherwise show the PREVIOUS run's reason beside its own.
-      return { ...state, run: { turn: action.turn }, lastRun: null }
+      // The event carries only the turn number. Everything else — task, budgets, start
+      // time — survives from `run-started` when this window started the run, and is honest
+      // absence when it did not.
+      return {
+        ...state,
+        run: state.run
+          ? { ...state.run, turn: action.turn }
+          : { turn: action.turn, task: '', startedAtMs: 0 },
+        lastRun: null,
+      }
 
     case 'run.ended':
       return {
@@ -816,6 +856,9 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         run: null,
         lastRun: { turns: action.turns, stoppedBecause: action.stoppedBecause, detail: action.detail },
       }
+
+    case 'run-dismissed':
+      return { ...state, lastRun: null }
 
     case 'todos':
       return { ...state, todos: action.items }

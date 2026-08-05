@@ -12,6 +12,7 @@ import { useStickToBottom } from '../lib/sticky-scroll'
 import { Icon } from '../components/icons'
 import { ApprovalCard, QuestionCard, TodosCard } from './approvals'
 import { DecisionsCard } from './decisions'
+import { RunBanner } from './run-banner'
 
 /**
  * How many of the newest rows are mounted before the rest are put behind a click.
@@ -202,6 +203,15 @@ export function Transcript({
         {/* Wrapped in a Row like everything else: a card that ignored the gutter sat 28px
             left of the whole conversation, which is exactly the sort of thing that makes a
             UI look assembled rather than designed. */}
+        {/* The run, above everything else that can appear here: while it is active it is
+            the reason the other cards exist, and after it ends its reason-for-stopping is
+            the first thing wanted. */}
+        {(state.run !== null || state.lastRun !== null) && (
+          <Row kind="card-row" marker={Icon.play()}>
+            <RunBanner client={client} state={state} dispatch={dispatch} />
+          </Row>
+        )}
+
         {/* Above the live approval, because a parked question is older: it has been
             waiting since the night and the thing in front of you can be answered in a
             second. */}

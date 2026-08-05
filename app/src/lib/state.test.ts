@@ -103,6 +103,54 @@ describe('a call abandoned mid-write', () => {
   })
 })
 
+describe('an unattended run, as state', () => {
+  // A run used to exist in the reducer as `{ turn }` and nothing else, because the events
+  // carry nothing else. The task and budgets are known only client-side at start time, so
+  // `run-started` carries them and `run.turn` must PRESERVE them — the failure mode being a
+  // banner that forgets what the run is doing the moment its first turn begins.
+  it('keeps the task and budgets across turn events', () => {
+    const state = run([
+      { type: 'run-started', task: 'refactor the parser', atMs: 1_000, maxTurns: 20 },
+      { type: 'run.turn', turn: 1 },
+      { type: 'run.turn', turn: 2 },
+    ])
+    expect(state.run).toEqual({
+      turn: 2, task: 'refactor the parser', startedAtMs: 1_000, maxTurns: 20,
+    })
+  })
+
+  it('a run this window did not start still shows, with honest absence', () => {
+    // The host can be driving a run begun elsewhere (a reloaded window). The events alone
+    // must still produce a banner — turn count and nothing invented: no task, no clock.
+    const state = run([{ type: 'run.turn', turn: 7 }])
+    expect(state.run).toEqual({ turn: 7, task: '', startedAtMs: 0 })
+  })
+
+  it('the ended card survives the run and dies on dismissal', () => {
+    const ended = run([
+      { type: 'run-started', task: 'x', atMs: 0 },
+      { type: 'run.turn', turn: 1 },
+      { type: 'run.ended', turns: 4, stoppedBecause: 'max-turns', detail: 'budget reached' },
+    ])
+    expect(ended.run).toBeNull()
+    expect(ended.lastRun).toEqual({ turns: 4, stoppedBecause: 'max-turns', detail: 'budget reached' })
+
+    const dismissed = reduceChat(ended, { type: 'run-dismissed' })
+    expect(dismissed.lastRun).toBeNull()
+  })
+
+  it('starting a new run clears the previous run\'s ended card', () => {
+    // Both cards render in one slot; the old reason sitting beside the new banner would
+    // read as the new run having already failed.
+    const state = run([
+      { type: 'run.ended', turns: 2, stoppedBecause: 'stopped', detail: 'by you' },
+      { type: 'run-started', task: 'next task', atMs: 5_000 },
+    ])
+    expect(state.lastRun).toBeNull()
+    expect(state.run).toMatchObject({ task: 'next task' })
+  })
+})
+
 describe('reduceChat: delta accumulation', () => {
   it('accumulates the reasoning TEXT on successive thinking.delta events', () => {
     const state = run([
