@@ -65,6 +65,21 @@ export interface JobSnapshot {
 
 /** Ring ceiling per task. Output beyond it drops from the FRONT (old lines go first). */
 const MAX_BUFFER = 64_000
+
+/**
+ * How many FINISHED jobs are kept. Running ones are never counted and never dropped.
+ *
+ * The registry was append-only: nothing anywhere removed an entry, and `stop`/`stopAll` only
+ * record an exit code. That was bounded in practice while a turn was capped at forty steps —
+ * a turn could start a handful of jobs. With no ceiling, one run starts an arbitrary number,
+ * and every one of them keeps its ring buffer (up to 64 KB) and is re-walked and re-copied
+ * by `snapshot()` on every `jobs.list` poll — once a second while the Terminal tab is open,
+ * on the same pipe that carries the turn's streaming tokens.
+ *
+ * Thirty is more finished jobs than the console shows without scrolling, and it holds the
+ * poll payload and the retained memory flat for a run of any length.
+ */
+export const MAX_FINISHED = 30
 const MAX_WAIT_S = 30
 const POLL_INTERVAL_MS = 250
 
@@ -117,7 +132,32 @@ export class BackgroundTasks {
       () => { entry.exit ??= { code: null, stopped: false } },
     )
     this.entries.set(id, entry)
+    this.evictFinished()
     return entry
+  }
+
+  /**
+   * Drops the oldest FINISHED jobs once there are more than `MAX_FINISHED`.
+   *
+   * Done on insertion rather than on a timer: it is the only moment the count can grow, so
+   * it is the only moment a check is needed, and it costs a walk of a bounded map.
+   *
+   * A running job is never dropped, whatever its age — it owns a live child process, and
+   * `stopAll` has to be able to find it on shutdown or it becomes an orphan. `Map` preserves
+   * insertion order and ids are issued in order, so iterating it is oldest-first already.
+   */
+  private evictFinished(): void {
+    let finished = 0
+    for (const entry of this.entries.values()) if (entry.exit !== null) finished++
+    if (finished <= MAX_FINISHED) return
+
+    let toDrop = finished - MAX_FINISHED
+    for (const [id, entry] of this.entries) {
+      if (toDrop === 0) break
+      if (entry.exit === null) continue
+      this.entries.delete(id)
+      toDrop--
+    }
   }
 
   get(id: string): Entry | undefined {

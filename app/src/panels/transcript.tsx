@@ -14,6 +14,39 @@ import { ApprovalCard, QuestionCard, TodosCard } from './approvals'
 import { DecisionsCard } from './decisions'
 
 /**
+ * How many of the newest rows are mounted before the rest are put behind a click.
+ *
+ * Chosen against the measurement rather than by feel: rendering cost is invisible below
+ * about 5,000 items and clearly visible by 10,000. Four hundred sits far under that with
+ * room to spare, and is more conversation than anyone scrolls back through while a turn is
+ * running — a few hundred rows is what this window handled comfortably for its whole life,
+ * before one turn could produce tens of thousands.
+ */
+export const VISIBLE_TAIL = 400
+
+/**
+ * Which rows to mount, and how many are being held back.
+ *
+ * Exported and pure so the rule can be tested without a DOM: this window has no render
+ * harness, and the decision worth holding is arithmetic, not markup. `hidden` is what the
+ * bar above the transcript reports, and it is the count of items NOT rendered — never a
+ * guess, never "about".
+ */
+export function visibleWindow<T>(items: readonly T[], showAll: boolean): { shown: readonly T[]; hidden: number } {
+  const hidden = showAll ? 0 : Math.max(0, items.length - VISIBLE_TAIL)
+  return { shown: hidden === 0 ? items : items.slice(hidden), hidden }
+}
+
+/** The id of the newest item of a kind, without copying the array to find it. */
+function lastIdOfKind(items: readonly ChatItem[], kind: ChatItem['kind']): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    if (item?.kind === kind) return item.id
+  }
+  return 0
+}
+
+/**
  * The transcript: everything that has happened this session, in order, rendered as the
  * thing it actually is rather than as a line of text about it.
  *
@@ -62,7 +95,11 @@ export function Transcript({
 
   // Sending always returns you to the bottom. If you were reading back through the
   // transcript and then typed, you want to watch the answer, not stay where you were.
-  const lastUserId = [...state.items].reverse().find((i) => i.kind === 'user')?.id ?? 0
+  //
+  // A backwards loop rather than `[...items].reverse().find(...)`: this runs on every render,
+  // and while a step streams that is once per animation frame. Copying the whole array sixty
+  // times a second to look at its end is a cost with nothing to show for it.
+  const lastUserId = lastIdOfKind(state.items, 'user')
   useEffect(() => {
     if (lastUserId !== 0) scrollToBottom()
   }, [lastUserId, scrollToBottom])
@@ -81,7 +118,24 @@ export function Transcript({
   // Reading an earlier session shows ITS conversation; the live one keeps accumulating into
   // `state.items` behind this view, so going back shows everything that happened meanwhile.
   const viewing = state.viewing
-  const shown = viewing === null ? state.items : viewing.items
+  const all = viewing === null ? state.items : viewing.items
+
+  // Only the tail is mounted, unless you ask for the rest.
+  //
+  // A turn used to be capped at forty steps, so a conversation reached a few hundred rows
+  // and stopped. With no ceiling, one turn can produce tens of thousands, and every one of
+  // them stayed in the DOM forever — with diffs and command output expanded by default, up
+  // to a hundred and sixty lines each. Measured on this app's own preact: 9.4 ms of VNode
+  // diffing per frame at 25,000 items, which is over half a frame budget on its own, and
+  // that is the SMALL half. The DOM those rows build, and the layout the sticky-scroll hook
+  // forces on every frame, is what actually makes the window stop responding.
+  //
+  // A cap fixes all three at once — nodes, VNodes and diff work — and it restores the cost
+  // profile a several-hundred-row conversation always had, whatever the turn length. The
+  // rest is one click away and nothing is discarded: `state.items` is untouched, and the
+  // session file is the real record either way.
+  const [showAll, setShowAll] = useState(false)
+  const { shown, hidden } = visibleWindow(all, showAll)
 
   return (
     <div class="transcript-wrap">
@@ -100,6 +154,16 @@ export function Transcript({
       {viewing === null && <TodosCard todos={state.todos} />}
 
       <div class="transcript" ref={scrollRef}>
+        {hidden > 0 && (
+          <div class="earlier-bar">
+            <span class="earlier-text">
+              {hidden} earlier {hidden === 1 ? 'message is' : 'messages are'} not shown, to keep
+              a long conversation responsive. Nothing was lost.
+            </span>
+            <button class="btn btn-small" onClick={() => setShowAll(true)}>Show everything</button>
+          </div>
+        )}
+
         {shown.length === 0 && !state.turnRunning
           ? <EmptyState />
           : shown.map((item) => (

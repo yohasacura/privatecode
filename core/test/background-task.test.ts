@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { BackgroundTasks, backgroundTaskTool } from '../src/tools/background-task.js'
+import { BackgroundTasks, MAX_FINISHED, backgroundTaskTool } from '../src/tools/background-task.js'
 import { Workspace } from '../src/workspace.js'
 
 const root = mkdtempSync(join(tmpdir(), 'pc-bg-'))
@@ -109,4 +109,72 @@ describe('stopping a job stops what the job started', () => {
     await new Promise((r) => setTimeout(r, 1200))
     expect(statSync(marker).size).toBe(afterStop)
   }, 30_000)
+})
+
+describe('the registry does not grow forever', () => {
+  // Its own directory, and torn down best-effort. Every spawned child holds its cwd open on
+  // Windows, so these tests sharing the file's `root` made the shared teardown fail with
+  // EPERM — a test suite failing on its own litter, which says nothing about the code.
+  const ownRoot = mkdtempSync(join(tmpdir(), 'pc-bg-evict-'))
+  afterAll(() => {
+    try { rmSync(ownRoot, { recursive: true, force: true }) } catch { /* a child may still hold it */ }
+  })
+
+  /** A job that is already over, without spawning anything: `start` is the only insertion
+   * point, so eviction is exercised through it, but a real child per entry would make this
+   * a process-spawning stress test rather than a check of the bookkeeping. */
+  function finishAll(t: BackgroundTasks): void {
+    for (const job of t.snapshot()) {
+      const entry = t.get(job.id)
+      if (entry) entry.exit ??= { code: 0, stopped: false }
+    }
+  }
+
+  it('keeps only the newest finished jobs, however many a long run starts', async () => {
+    // Nothing anywhere removed an entry: `stop`/`stopAll` only record an exit code, and the
+    // registry outlives every session switch. Bounded in practice while a turn was capped at
+    // forty steps; with no ceiling one run starts an arbitrary number, and `snapshot()`
+    // re-walks and re-copies all of them on every poll — once a second, on the same pipe the
+    // streaming tokens use.
+    const t = new BackgroundTasks()
+    for (let i = 0; i < 80; i++) {
+      t.start('cmd /c exit 0', null, ownRoot, 'agent')
+      finishAll(t)
+    }
+    await t.stopAll()
+    // MAX_FINISHED, plus at most the one that finished after the last insertion: the check
+    // runs when a job STARTS, and the job starting is by definition still running then. The
+    // guarantee is a constant bound, not an exact count — 80 started, ~30 kept.
+    expect(t.snapshot().length).toBeLessThanOrEqual(MAX_FINISHED + 1)
+  })
+
+  it('never drops a job that is still running, whatever its age', async () => {
+    // A live entry owns a child process, and `stopAll` has to be able to find it on
+    // shutdown. Evicting one would leave an orphan behind.
+    const t = new BackgroundTasks()
+    const live = t.start('powershell -Command "Start-Sleep -Seconds 3"', null, ownRoot, 'agent')
+    for (let i = 0; i < 60; i++) {
+      t.start('cmd /c exit 0', null, ownRoot, 'agent')
+      for (const job of t.snapshot()) {
+        if (job.id === live.id) continue
+        const entry = t.get(job.id)
+        if (entry) entry.exit ??= { code: 0, stopped: false }
+      }
+    }
+    expect(t.get(live.id)).toBeDefined()
+    await t.stopAll()
+  })
+
+  it('keeps the NEWEST finished jobs, not the oldest', async () => {
+    const t = new BackgroundTasks()
+    const ids: string[] = []
+    for (let i = 0; i < 50; i++) {
+      ids.push(t.start('cmd /c exit 0', null, ownRoot, 'agent').id)
+      finishAll(t)
+    }
+    await t.stopAll()
+    const kept = new Set(t.snapshot().map((j) => j.id))
+    expect(kept.has(ids[ids.length - 1]!)).toBe(true)
+    expect(kept.has(ids[0]!)).toBe(false)
+  })
 })

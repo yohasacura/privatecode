@@ -671,6 +671,19 @@ kbd {
 
 /* A call the model is still writing. Not a button: there is nothing to expand yet, and a
    header that looks pressable but is not is worse than one that plainly is not. */
+/* Says why the top of a very long conversation is not mounted, and offers it. */
+.earlier-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+.earlier-text { flex: 1; min-width: 0; font-size: 12px; color: var(--text-dim); }
+
 .tool-head-writing { cursor: default; }
 .tool-head-writing:hover { background: transparent; }
 .tool-writing-note {
