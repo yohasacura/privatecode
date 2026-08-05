@@ -49,24 +49,26 @@ Ordered by value to "very stable, very efficient, large development processes".
 
 ## Audit findings still open (from wf_a59ed946-0db, 15 confirmed of 32 raised)
 
-Five are fixed in a759855. These are the rest, roughly in value order:
+Five fixed in a759855, four more in 687c671 and 3a6fea1. Remaining:
 
-- **Transcript re-creates and re-diffs every row per animation frame** (app/src/panels/transcript.tsx:105).
-  At ~25k items a streaming frame is ~1.5M element ops. Needs windowing or memoised rows.
-- **BackgroundTasks never evicts** (core/src/tools/background-task.ts:119), and the app
-  re-serialises every job, dead ones included, every 2 s for the process lifetime.
 - **A six-hour turn is one work-log entry** (core/src/session/worklog.ts:94) — one heading,
   one collapsed diff, at most eight commands. Consider a mid-turn entry alongside the
   mid-turn checkpoint that already exists.
-- **A long manual turn finishing sends no notification** (app/src/lib/use-chat-session.ts:132);
-  only unattended runs do. A turn is now a walk-away event.
-- **Checkpoint failures during a long turn cannot reach the user** (core/src/checkpoints/set.ts:77):
-  collected on a path single-folder workspaces never take, drained only when a run ends.
 - **Session.turnCommands retains full tool-result text for the whole turn** (session.ts:887)
   and throws almost all of it away. 2-18 MB over 6 h, ~130 MB over a day of large reads.
 - **Mid-turn checkpoints run `git add -A` over the whole tree every 2 min** (session.ts:1072);
-  a 12-hour turn is up to 360 whole-tree commits, each blocking the step it sits on. Measure
-  the real cost on this workspace before changing the interval.
+  a 12-hour turn is up to 360 whole-tree commits, each blocking the step it sits on. MEASURE
+  the real cost on this workspace before touching the interval — the audit's own numbers here
+  were an upper bound, and the verifier trimmed two of its three claims.
+
+Done from this list:
+- Transcript windowing (687c671) — the tail is mounted, the rest is a click away. The
+  verifier's measurement is what shaped it: 9.4 ms/frame of VNode diffing at 25k items is
+  the CHEAP half; DOM size and forced layout are what actually stop the window.
+- BackgroundTasks eviction (687c671) — 30 newest finished kept, running ones never dropped.
+- Long-turn completion notification (3a6fea1).
+- Checkpoint problems reach the user (3a6fea1) — the single-unit path skipped collection, so
+  "no git on PATH" was unreportable on every ordinary workspace.
 
 ## Measured, and settled: tool_choice is NOT a lever any more
 
