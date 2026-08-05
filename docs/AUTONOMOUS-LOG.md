@@ -168,6 +168,19 @@ Next worth doing, in rough order:
    what has been appended since the last request. **Live: the long-turn test went from timeout
    to done in 209.9 s, faster than the 253 s it took when it was written.**
 
+   **What `long-turn.test.ts` actually tells you, measured over five runs after the fix: 3
+   pass, 2 fail, 209-229 s.** Read the failure before concluding anything — the two are not
+   the same kind:
+   - `stoppedBecause: 'timeout'` is INFRASTRUCTURE, and it is what the prefill defect looked
+     like. No run has produced it since the fix.
+   - `expected '…' to contain '// reviewed'` is the MODEL not finishing the task — one of the
+     three files never got its line. That is Qwen3.6 on a demanding multi-step task across two
+     compactions, not a defect in anything here.
+
+   So a red on this test is a question, not an answer. Re-run it and read the assertion. The
+   test is worth keeping at that reliability because the failure it was built to catch is the
+   first kind, and that kind is now deterministic.
+
    Worth keeping: this was already eating the budget before today — one 15k read cost 58.8 s
    of the 90. Batching pushed it over rather than creating it, which is why it had never been
    seen. `PREFILL_MS_PER_TOKEN` had been measured twice, independently, in two files, for two
