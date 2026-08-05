@@ -179,3 +179,47 @@ contents, and there may be a cheaper way to hand the model back what it just los
   -> the tool.call.delta protocol event -> a live card in the transcript that opens on the
   tool name, shows the target path as soon as it is written, and grows with the argument.
   The composer stops guessing at the state and reads it. Verified end to end through the host.
+
+## The biggest remaining throughput lever, measured
+
+The loop runs `calls[0]` and refuses the rest — "one action per step", deliberate. The model
+does not know that, and proposes several often enough to matter.
+
+Measured on a real 13-step turn against the live model (a 4-file edit task):
+
+```
+[7] edit_file edit_file edit_file    3 proposed, 1 run
+[8] edit_file                        redoing the second
+[9] edit_file                        redoing the third
+[11] read_file read_file             2 proposed, 1 run
+[12] read_file                       redoing the second
+```
+
+- steps proposing more than one call: **3 of 13**
+- argument characters discarded: 354 of 1065 — ~89 tokens, **8.0%** of the turn's generation,
+  about 1.6 s of a 36 s turn
+- but the real cost is the REDO STEPS: 3 of 13 steps exist only because the extra calls were
+  thrown away. At ~2.8 s per step that is ~8 s of 36 — roughly **23% of the turn**.
+
+So the prize is ~20%, not 8%, and it is not "stop the model wasting tokens" — telling it to
+emit one call would save the 8% and none of the 23%, because it would still need one step per
+edit. The prize is **executing the calls it proposes**.
+
+The design question, stated honestly, because this changes the agent's core execution
+contract and should not be done casually:
+
+- The stated reason for one-per-step is transcript validity — an assistant message with an
+  unanswered `tool_call` is invalid. Executing all of them satisfies that too; each gets a
+  real answer.
+- The unstated reason is that the model should see a result before deciding the next action.
+  That is right in general and irrelevant for three edits to three different files, which are
+  already generated from the same information.
+- The safe shape: run every proposed call in order through the SAME permission gate, and if
+  one is refused or fails, answer the remainder with "not executed: an earlier call in this
+  step failed" rather than running them. That keeps the property that the model sees a
+  failure before more actions land.
+- Check before building: `lastToolArgs`, the loop detector, `writeCount` and `writtenMounts`
+  are all per-call already, so they should need nothing.
+
+NOT done yet, and deliberately: the third audit was reading `loop.ts` at the time this was
+measured, and editing under it would have made its findings unreliable.
