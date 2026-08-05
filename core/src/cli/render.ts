@@ -216,6 +216,24 @@ export function createEventRenderer(opts?: { stream?: boolean }): EventRenderer 
         `${i.tokensPerSecond ? `, ${i.tokensPerSecond.toFixed(1)} tok/s` : ''}` +
         `${i.continued ? ', continued after truncation' : ''}\x1b[0m`)
     },
+    /**
+     * Wired unconditionally, and it prints nothing.
+     *
+     * Its presence is what keeps `Agent` on `chatStream()` — streaming is opt-in purely on a
+     * delta callback existing (loop.ts's `chat()`) — and that is now load-bearing for a
+     * reason that has nothing to do with rendering: the step deadline measures SILENCE, and
+     * silence can only be observed on a stream. Without this, a piped or non-TTY run got a
+     * flat 90 s ceiling on the whole step, and `--unattended` is exactly that: no TTY, and
+     * the longest steps there are.
+     *
+     * Measured, live, before this: a step batching four ~100-line file writes into one
+     * generation died on the ceiling 3/3, having written nothing. With it, 3/3 complete.
+     *
+     * The VISIBLE streaming below stays TTY-gated — a pipe still gets the whole-blob path,
+     * and no `\r` trick ever reaches a non-TTY stream. This only changes the transport, and
+     * both transports assemble into the same `ChatResult`.
+     */
+    onToolCallDelta: () => {},
     ...(streaming ? {
       onThinkingDelta: (t: string) => {
         clearStatusLine()

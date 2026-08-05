@@ -149,11 +149,21 @@ export interface PendingQuestion {
 
 export interface StepTiming {
   step: number
+  /** How long the step may go SILENT before the core abandons it — not a budget for the
+   * whole step. See `Agent.stepClock` in the core. */
   timeoutMs: number
-  /** Set by the caller from `Date.now()` when dispatching `step.start` -- the reducer
-   * itself never reads the clock (see this module's header comment), it only stores
-   * whatever the caller supplies, so the countdown UI (which DOES need a real clock, in
-   * `chat.tsx`) has a fixed point to count down from. */
+  /**
+   * The moment the countdown counts from: set by the caller from `Date.now()` on
+   * `step.start`, and moved forward again by `step.alive` every time something streams.
+   *
+   * The reducer itself never reads the clock (see this module's header comment); it stores
+   * whatever the caller supplies, so the countdown UI — which DOES need a real clock, in
+   * `chat.tsx` — has a fixed point to count down from.
+   *
+   * It moves because the core's own deadline moves. Left fixed at the step's start, the
+   * composer would count a long generation down to "0 s" and sit there while the model was
+   * streaming perfectly happily, which is the opposite of what a countdown is for.
+   */
   startedAtMs: number
 }
 
@@ -270,6 +280,10 @@ export type ChatAction =
   | { type: 'run.ended'; turns: number; stoppedBecause: string; detail: string }
   | { type: 'turn-started' }
   | { type: 'step.start'; step: number; timeoutMs: number; startedAtMs: number }
+  /** Something streamed, so the step is alive: restarts the silence countdown. Dispatched
+   * once per animation frame by whichever buffer had content, mirroring the core's
+   * `clock.touch()` on every delta. */
+  | { type: 'step.alive'; atMs: number }
   | { type: 'thinking.delta'; text: string }
   /** `atMs` on this and the four actions below is the wall clock at which the caller saw
    * the event, used only to stamp `endedAtMs` on the reasoning item this action closes.
@@ -484,6 +498,12 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         // running at all is `currentStep`/`turnRunning`, which the composer renders.
         currentStep: { step: action.step, timeoutMs: action.timeoutMs, startedAtMs: action.startedAtMs },
       }
+
+    case 'step.alive':
+      // Only while a step is running. Between steps — a tool executing, an approval open —
+      // `currentStep` is null and there is no countdown to restart.
+      if (state.currentStep === null) return state
+      return { ...state, currentStep: { ...state.currentStep, startedAtMs: action.atMs } }
 
     case 'thinking.delta': {
       const open = openThinking(state.items)

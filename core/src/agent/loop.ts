@@ -11,12 +11,15 @@ import type { LoopDetector } from './loop-detector.js'
 import type { HookRunner } from '../hooks/hooks.js'
 
 /**
- * Default per-step wall-clock ceiling.
+ * How long a step may go SILENT before it is abandoned.
  *
- * A hard single-file edit measures 35-40 s (docs/DESIGN.md §7), and a truncated step
- * generates twice, so the budget has to cover two of those without letting a server that
- * accepts the connection and then goes quiet stall the UI until the client's ten-minute
- * transport timeout. 90 s is roughly two generations plus headroom.
+ * Not a ceiling on the step: a step that is still streaming is still working, and it was
+ * measured killing real work when the two were conflated. See `Agent.stepClock`.
+ *
+ * 90 s, unchanged, because the number was always sized for the thing it now measures: long
+ * enough that an ordinary gap between tokens never trips it, short enough that a server which
+ * accepts the connection and then goes quiet does not stall the UI until the client's
+ * ten-minute transport timeout.
  */
 export const DEFAULT_STEP_TIMEOUT_MS = 90_000
 
@@ -56,9 +59,10 @@ export interface StepStartInfo {
   /** 1-based index of this step within the turn. */
   step: number
   /**
-   * Wall-clock budget for the whole step, continuation included. Emitted at step *start*
-   * so a UI can run a countdown: the measured worst case is a 119 s silent step, and
-   * silence is the failure, not the duration.
+   * How long this step may go silent before it is abandoned — NOT a budget for the whole
+   * step, which is unbounded as long as tokens keep arriving (see `Agent.stepClock`). Emitted
+   * at step *start* so a UI can run a countdown; the countdown restarts from every streamed
+   * delta, because that is exactly what the core's own clock does.
    */
   timeoutMs: number
 }
@@ -604,13 +608,13 @@ export class Agent {
     // Every other step appends to a prefix the server has just processed.
     const timeoutMs = coldTimeoutMs
       ?? (step === 1 ? this.opts.firstStepTimeoutMs ?? this.opts.stepTimeoutMs : this.opts.stepTimeoutMs)
-    const deadline = AbortSignal.timeout(timeoutMs)
+    const clock = this.stepClock(timeoutMs)
     this.opts.events?.onStepStart?.({ step, timeoutMs })
 
     let continued = false
     let last: ChatResult | undefined
     try {
-      const first = await this.chat(schemas, this.opts.toolChoice, deadline)
+      const first = await this.chat(schemas, this.opts.toolChoice, clock)
       if (first.kind !== 'ok') return first
       last = first.result
       this.report(first.result.message)
@@ -624,13 +628,14 @@ export class Agent {
       this.transcript.append({ role: 'user', content: CONTINUE_NUDGE })
       this.opts.events?.onContinuation?.(step)
 
-      const again = await this.chat(schemas, 'required', deadline)
+      const again = await this.chat(schemas, 'required', clock)
       if (again.kind !== 'ok') return again
       last = again.result
       this.report(again.result.message)
       if (again.result.finishReason === 'length') return { kind: 'truncated' }
       return { kind: 'message', message: again.result.message }
     } finally {
+      clock.stop()
       const draftAcceptance = computeDraftAcceptance(last?.timings)
       this.opts.events?.onStepDone?.({
         step,
@@ -648,6 +653,54 @@ export class Agent {
   }
 
   /**
+   * The step's deadline, which measures SILENCE rather than elapsed time.
+   *
+   * This is what `DEFAULT_STEP_TIMEOUT_MS` and `StepStartInfo.timeoutMs` have always said the
+   * budget was for — "a server that accepts the connection and then goes quiet", "silence is
+   * the failure, not the duration" — and it used to be a flat `AbortSignal.timeout` over the
+   * whole step, which is not the same thing at all. While a step held one tool call the two
+   * were close enough that the difference never showed.
+   *
+   * Then a step started carrying several. Measured live, three runs of "create four thorough
+   * ~100-line files": the model batched all four into one generation, ~5000 tokens of
+   * arguments at the 57 tok/s this machine generates at, and every run died on the 90 s
+   * ceiling having written NOTHING. The same task under one-call-per-step finished 3/3 in
+   * 166 s, because the same work was spread over six steps that each fit. The turn was killed
+   * for producing too much, too fast, in one piece.
+   *
+   * Re-arming on every delta fixes that without loosening the guard it exists to be: a server
+   * that stops answering still trips at `timeoutMs` of quiet, wherever in the step it goes
+   * quiet, and a step is still bounded overall by `maxTokensPerStep` — 8000 tokens is ~140 s
+   * of generation, not an unbounded wait.
+   *
+   * The non-streaming path (`chat()`, used by compaction and by every caller that wires no
+   * delta callback) produces no deltas and therefore keeps exactly the old flat deadline.
+   * Prefill produces no deltas either, which is why `firstStepTimeoutMs` and the cold budget
+   * from `beforeStep` still matter: re-prefilling a 100k-token prompt IS silence, and a real
+   * one takes minutes.
+   */
+  private stepClock(timeoutMs: number): { signal: AbortSignal; touch(): void; stop(): void } {
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const arm = (): void => {
+      timer = setTimeout(() => { controller.abort(new Error('step went quiet')) }, timeoutMs)
+      // Node keeps the process alive for a pending timer. A step's clock must never be the
+      // reason a CLI run or a test worker refuses to exit.
+      timer.unref?.()
+    }
+    arm()
+    return {
+      signal: controller.signal,
+      touch: () => {
+        if (controller.signal.aborted) return
+        if (timer !== undefined) clearTimeout(timer)
+        arm()
+      },
+      stop: () => { if (timer !== undefined) clearTimeout(timer) },
+    }
+  }
+
+  /**
    * One HTTP call, with cancellation and the step deadline turned into outcomes.
    *
    * A cancel button always lands *inside* a call — a step lasts 35-40 s — so an abort
@@ -657,8 +710,9 @@ export class Agent {
   private async chat(
     schemas: ReturnType<ToolRegistry['schemas']>,
     toolChoice: 'auto' | 'required',
-    deadline: AbortSignal,
+    clock: { signal: AbortSignal; touch(): void },
   ): Promise<ChatOutcome> {
+    const deadline = clock.signal
     const signal = this.opts.signal
       ? AbortSignal.any([this.opts.signal, deadline])
       : deadline
@@ -680,6 +734,11 @@ export class Agent {
       const result = events?.onThinkingDelta || events?.onTextDelta || events?.onToolCallDelta
         ? await this.opts.client.chatStream(request, {
           onDelta: (d) => {
+            clock.touch()
+            // Every delta is proof the server is alive, whatever it carries — reasoning,
+            // visible text, or a fragment of a tool argument. Re-arming here rather than only
+            // for the kinds a host happens to render is the point: a step spends most of a
+            // large edit emitting `toolCallArguments` and nothing else.
             if (d.reasoning) events?.onThinkingDelta?.(d.reasoning)
             if (d.content) events?.onTextDelta?.(d.content)
             if (d.toolCallIndex !== undefined && (d.toolCallName !== undefined || d.toolCallArguments !== undefined)) {

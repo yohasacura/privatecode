@@ -65,6 +65,13 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
 
     function flush(): void {
       frame = null
+      // Anything at all having streamed is proof the step is alive, which is exactly what
+      // the core's deadline measures — it re-arms on every delta (`Agent.stepClock`). Sent
+      // once per frame rather than per delta: the countdown only needs to know the step is
+      // not silent, and the three buffers below are the same frame's worth of evidence.
+      if (thinkingBuffer !== '' || textBuffer !== '' || argsBuffer.size > 0) {
+        dispatch({ type: 'step.alive', atMs: Date.now() })
+      }
       if (thinkingBuffer !== '') {
         const text = thinkingBuffer
         thinkingBuffer = ''

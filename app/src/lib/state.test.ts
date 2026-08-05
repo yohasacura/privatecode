@@ -5,6 +5,31 @@ function run(actions: ChatAction[]): ChatState {
   return actions.reduce(reduceChat, initialChatState())
 }
 
+describe('the silence countdown', () => {
+  // `timeoutMs` stopped meaning "how long this step may take" and started meaning "how long
+  // it may go QUIET" — the core re-arms its deadline on every streamed delta, because a step
+  // that is still producing tokens is still working. Measured live before the change: a step
+  // batching four file writes into one generation was killed at 90 s having written nothing.
+  //
+  // The composer counts down from `startedAtMs`. Left at the step's start it would reach zero
+  // and sit there while the model streamed happily — a countdown that expires against a
+  // deadline that has not.
+  it('restarts from the last thing that streamed, not from the step start', () => {
+    const state = run([
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 1_000 },
+      { type: 'step.alive', atMs: 4_500 },
+    ])
+    expect(state.currentStep).toMatchObject({ step: 1, timeoutMs: 90_000, startedAtMs: 4_500 })
+  })
+
+  it('is not restarted between steps, when there is no step to keep alive', () => {
+    // Between a step's model call ending and the next starting — a tool running, an approval
+    // open — `currentStep` is null. A late frame flushing then must not invent a step.
+    const state = run([{ type: 'step.alive', atMs: 4_500 }])
+    expect(state.currentStep).toBeNull()
+  })
+})
+
 describe('reduceChat: delta accumulation', () => {
   it('accumulates the reasoning TEXT on successive thinking.delta events', () => {
     const state = run([

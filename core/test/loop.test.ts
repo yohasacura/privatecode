@@ -7,7 +7,7 @@ import { LoopDetector } from '../src/agent/loop-detector.js'
 import { LlamaClient } from '../src/llama/client.js'
 import { ToolRegistry } from '../src/tools/registry.js'
 import { Workspace } from '../src/workspace.js'
-import { startFakeServer } from './fake-server.js'
+import { startFakeServer, TrickleResponse } from './fake-server.js'
 import type { Tool } from '../src/tools/types.js'
 
 let stop: (() => Promise<void>) | undefined
@@ -289,6 +289,73 @@ test('a step that outlives its wall-clock ceiling ends the turn as a timeout', a
   expect(rec.of('stepStart')[0]).toMatchObject({ step: 1, timeoutMs: 300 })
   const last = agent.transcript.messages().at(-1)!
   expect(last.content).toMatch(/time limit/i)
+})
+
+/**
+ * The step budget measures SILENCE, not elapsed time.
+ *
+ * Both of these are the same defect from the two sides. It reached the live model first: with
+ * one call per step the two readings were close enough that nothing showed, and then a step
+ * started carrying several calls. Measured, three runs of "create four thorough ~100-line
+ * files": the model batched all four into one generation and every run died on the 90 s
+ * ceiling having written NOTHING, while the same task under one-call-per-step finished 3/3 in
+ * 166 s. The turn was killed for producing too much, too fast, in one piece.
+ */
+function sseFrames(chunks: number): string[] {
+  const frames = Array.from({ length: chunks }, () =>
+    `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'still going. ' } }] })}\n\n`)
+  frames.push(`data: ${JSON.stringify({ choices: [{ finish_reason: 'stop', delta: { content: 'done' } }] })}\n\n`)
+  frames.push('data: [DONE]\n\n')
+  return frames
+}
+
+test('a step that keeps streaming is not killed for taking a long time', async () => {
+  // Ten frames 120 ms apart is 1.2 s of work against a 400 ms budget — three times over, if
+  // the budget were elapsed time. Every individual gap is well inside it, so nothing here is
+  // ever silent for 400 ms, and the step must finish.
+  const fake = await startFakeServer(() => new TrickleResponse(sseFrames(10), 120))
+  stop = fake.close
+  const agent = makeAgent(fake.url, {
+    stepTimeoutMs: 400,
+    // Streaming is opt-in on a delta callback being present at all — without one the loop
+    // calls the non-streaming `chat()`, which has no deltas to re-arm from and would make
+    // this test pass for the wrong reason.
+    events: { onThinkingDelta: () => {} },
+  })
+
+  const started = Date.now()
+  const result = await agent.runTurn('write four large files')
+  const elapsed = Date.now() - started
+
+  expect(result.stoppedBecause).toBe('done')
+  expect(elapsed).toBeGreaterThan(800)
+})
+
+test('a step that goes quiet mid-stream is still abandoned', async () => {
+  // The other half, and the reason the budget exists at all. A server that streams a little
+  // and then stops answering must not hold the turn open until the client's ten-minute
+  // transport timeout — and re-arming on deltas would do exactly that if the clock were only
+  // ever pushed forward and never allowed to fire.
+  const frames = [
+    `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'starting' } }] })}\n\n`,
+  ]
+  const fake = await startFakeServer(async () => {
+    // Two frames' worth of gap, then nothing: the promise never settles, so the connection
+    // stays open and quiet.
+    return new TrickleResponse(frames, 100_000)
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url, {
+    stepTimeoutMs: 300,
+    events: { onThinkingDelta: () => {} },
+  })
+
+  const started = Date.now()
+  const result = await agent.runTurn('go quiet after one token')
+  const elapsed = Date.now() - started
+
+  expect(result.stoppedBecause).toBe('timeout')
+  expect(elapsed).toBeLessThan(5_000)
 })
 
 // ---------------------------------------------------------------------------
