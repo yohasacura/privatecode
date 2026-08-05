@@ -51,10 +51,28 @@ Next worth doing, in rough order:
    nothing. `compactIfOverWindow` does nothing below 26,400 by design, so the mid-turn path
    never ran — the BACKGROUND trigger fired instead and the output looked plausible. A run
    that exercises none of the code under test is exactly what this kind of test is for.
-3. **Execute the tool calls the model proposes** — the measured ~20% lever. Full evidence and
-   the design question are in "The biggest remaining throughput lever, measured" below. This
-   is the top live item. It changes the agent's core execution contract, so it wants a
-   careful pass, not a quick one.
+3. ~~**Execute the tool calls the model proposes.**~~ DONE (6f116d0). The estimate was ~20%;
+   measured against the live model it is **53% of the wall clock and 74% of the steps** —
+   37.7 s / 10.3 steps before, 17.8 s / 2.7 steps after, n=3 per arm, four independent
+   single-line edits to four files, every arm completing all four.
+
+   The estimate was low because it counted only what the OLD behaviour wasted (8% discarded
+   arguments + 23% redo steps). It could not count the model batching MORE once the prompt
+   stopped saying "use exactly one tool" — which is where the rest of the win is. Both halves
+   were needed: the loop change alone, with the old prompt still in place, is arm C.
+
+   Three arms were measured rather than two, and the third is the reason the number is
+   trustworthy: arm B (new loop, new prompt, execution restricted to `calls[0]`) came out at
+   37.0 s, which is indistinguishable from arm C's 37.7 s. Had I stopped at A vs B I would
+   have reported the same figure while comparing against a prompt that does not exist.
+
+   The defect this turned up is the one worth remembering, and it was in a CONSUMER, not in
+   the loop: `replayEntries` emitted all of a step's calls and then all of its results, while
+   the window pairs them by recency. Three calls in a step meant the first result landed on
+   the last card — a restored session showing every multi-call step's results in reverse.
+   Harmless while only skipped calls were ever multiple; the shape of every long turn now.
+   Found by walking every consumer of `onToolCall`/`onToolResult` before committing, which is
+   exactly what the third audit said to do for a change of this shape.
 
 4. ~~**A third audit**~~ DONE (wf_bf0ac8a1-44a): 14 raised, 10 confirmed, 4 refuted. Seven
    distinct defects fixed in 2775de5 — **all of them in the previous rounds of fixing.**
@@ -174,7 +192,12 @@ contents, and there may be a cheaper way to hand the model back what it just los
   tool name, shows the target path as soon as it is written, and grows with the argument.
   The composer stops guessing at the state and reads it. Verified end to end through the host.
 
-## The biggest remaining throughput lever, measured
+## Closed: the parallel-call lever (6f116d0)
+
+Everything below was the case FOR the change; it is kept because the estimate being wrong by
+2.5x is the useful part. The measured outcome is in queue item 3 above.
+
+
 
 The loop runs `calls[0]` and refuses the rest — "one action per step", deliberate. The model
 does not know that, and proposes several often enough to matter.
@@ -215,5 +238,8 @@ contract and should not be done casually:
 - Check before building: `lastToolArgs`, the loop detector, `writeCount` and `writtenMounts`
   are all per-call already, so they should need nothing.
 
-NOT done yet, and deliberately: the third audit was reading `loop.ts` at the time this was
-measured, and editing under it would have made its findings unreliable.
+That last bullet was right about the four things it named and wrong about the shape of the
+risk. `lastToolArgs` needed nothing — but only because the calls run in SEQUENCE, which is a
+property nothing was asserting; and the consumer that did break (`replayEntries`) was not on
+the list at all, because it does not read those events, it reconstructs them. The lesson for
+the next change of this shape: enumerate the consumers of the ORDER, not only of the data.
