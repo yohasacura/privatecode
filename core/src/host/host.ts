@@ -6,7 +6,9 @@ import { HEALTH_CHECK_TIMEOUT_MS } from '../cli/render.js'
 import type { ApprovalDecision, InteractionPort } from '../interaction.js'
 import { LlamaClient, LlamaRequestError } from '../llama/client.js'
 import { PermissionEngine } from '../permissions/engine.js'
-import { loadLayers } from '../permissions/settings.js'
+import {
+  loadLayers, localSettingsPath, projectSettingsPath, removeRuleFromSettings, userSettingsPath,
+} from '../permissions/settings.js'
 import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
@@ -48,6 +50,9 @@ import type {
   RunStartResult,
   RunStopResult,
   WorklogReadResult,
+  PermissionsListResult,
+  PermissionsRemoveParams,
+  PermissionsRemoveResult,
   FsReadParams,
   FsReadResult,
   FsTreeEntry,
@@ -379,6 +384,8 @@ export class SessionHost {
       case 'decisions.list': return this.decisionsList()
       case 'decisions.resolve': return this.decisionsResolve(params as DecisionsResolveParams)
       case 'worklog.read': return this.worklogRead()
+      case 'permissions.list': return this.permissionsList()
+      case 'permissions.remove': return this.permissionsRemove(params as PermissionsRemoveParams)
       case 'run.start': return this.runStart(params as RunStartParams)
       case 'run.stop': return this.runStop()
       default: throw new Error(`unknown method: "${method}"`)
@@ -1211,6 +1218,53 @@ export class SessionHost {
       // an error to put in front of someone.
       return { text: '', path }
     }
+  }
+
+  /**
+   * Every standing permission, and the file each one is written in.
+   *
+   * Read fresh from disk on every call rather than served from the engine's in-memory copy.
+   * Two reasons, and the second is the one that matters: the files are hand-editable and
+   * another window may be open on the same workspace, so the engine's copy is a snapshot of
+   * what was true when the session was built — and a screen whose whole job is to tell you
+   * what the agent may do must not show you a stale answer to that question.
+   *
+   * `problems` is carried through for the same reason: a layer that failed to parse
+   * contributes no rules, and a list that silently omitted it would read as "nothing is
+   * granted here" when the truth is "this file could not be read".
+   */
+  private permissionsList(): PermissionsListResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const { layers, problems } = loadLayers(workspaceRoot)
+    return {
+      layers: layers.map((layer) => ({
+        scope: layer.scope,
+        path: layer.path,
+        rules: (['deny', 'ask', 'allow'] as const).flatMap((list) =>
+          layer.permissions[list].map((rule) => ({ rule, list }))),
+      })),
+      mode: this.session?.mode ?? 'normal',
+      problems,
+    }
+  }
+
+  /**
+   * Withdraws one rule from the layer that holds it.
+   *
+   * The engine is rebuilt from disk on the next session build, so this does not try to patch
+   * the live one: a revocation that took effect in the file but not in memory would be worse
+   * than one that is honest about when it applies. What it does do is say plainly whether the
+   * rule was there, so a revocation that hit an already-edited file is visible rather than
+   * silently successful.
+   */
+  private permissionsRemove(params: PermissionsRemoveParams): PermissionsRemoveResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const path = params.scope === 'user'
+      ? userSettingsPath()
+      : params.scope === 'project'
+      ? projectSettingsPath(workspaceRoot)
+      : localSettingsPath(workspaceRoot)
+    return { removed: removeRuleFromSettings(path, params.list, params.rule) }
   }
 
   /**

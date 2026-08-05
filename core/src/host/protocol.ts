@@ -442,6 +442,8 @@ export interface HostMethodMap {
   'decisions.list': { params: DecisionsListParams; result: DecisionsListResult }
   'decisions.resolve': { params: DecisionsResolveParams; result: DecisionsResolveResult }
   'worklog.read': { params: WorklogReadParams; result: WorklogReadResult }
+  'permissions.list': { params: PermissionsListParams; result: PermissionsListResult }
+  'permissions.remove': { params: PermissionsRemoveParams; result: PermissionsRemoveResult }
   'run.start': { params: RunStartParams; result: RunStartResult }
   'run.stop': { params: RunStopParams; result: RunStopResult }
 }
@@ -670,6 +672,49 @@ export interface DecisionsResolveParams {
   answer?: string
 }
 export type DecisionsResolveResult = Empty
+
+/**
+ * What the agent is standing permission to do, and where each grant is written down.
+ *
+ * The window could already GRANT a standing permission — from an approval card's "Allow
+ * always" and from the decision queue — and had nowhere to show what had been granted. So
+ * the one subject the user most needs to audit, on a tool whose whole premise is that it
+ * runs on their own machine, was the one thing the interface never displayed.
+ *
+ * Three layers, always all three, in precedence order and even when empty: an empty `local`
+ * layer is a fact about this workspace ("nothing has been granted just here"), and hiding it
+ * would make the same screen mean different things on different days.
+ */
+export type PermissionsListParams = Empty
+export interface PermissionRuleView {
+  /** The rule as written, e.g. `run_command(npm test:*)` or `edit_file(src/**)`. */
+  rule: string
+  list: 'allow' | 'ask' | 'deny'
+}
+export interface PermissionLayerView {
+  scope: 'user' | 'project' | 'local'
+  /** The file it lives in, shown so a rule is never a thing that came from nowhere. */
+  path: string
+  rules: PermissionRuleView[]
+}
+export interface PermissionsListResult {
+  layers: PermissionLayerView[]
+  /** The mode's own defaults, described in one line each, because a mode grants far more in
+   * practice than any rule does and reading only the rules would understate it badly. */
+  mode: AgentMode
+  /** Malformed layer files, same text `loadLayers` reports at startup. A screen listing
+   * permissions must say when a file it is summarising could not be read. */
+  problems: string[]
+}
+
+/** Withdraw one rule. `removed: false` means it was not there — a revocation that raced
+ * another window, or a hand-edited file — which the caller shows rather than swallowing. */
+export interface PermissionsRemoveParams {
+  scope: 'user' | 'project' | 'local'
+  list: 'allow' | 'ask' | 'deny'
+  rule: string
+}
+export interface PermissionsRemoveResult { removed: boolean }
 
 export type WorklogReadParams = Empty
 /** `text` is empty when nothing has been logged yet, which is the normal state of a

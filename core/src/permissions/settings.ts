@@ -178,6 +178,49 @@ export function loadLayers(root: string): { layers: SettingsLayer[]; problems: s
  * than routing through `Workspace`.
  */
 export function addRuleToSettings(filePath: string, list: 'allow' | 'ask' | 'deny', rule: string): void {
+  editRules(filePath, (lists) => {
+    const trimmedRule = rule.trim()
+    if (!lists[list].some((existing) => existing.trim() === trimmedRule)) lists[list].push(rule)
+  })
+}
+
+/**
+ * Takes a rule back out, and returns whether it was there.
+ *
+ * The other half of `addRuleToSettings`, and it was missing for longer than it should have
+ * been: the window could GRANT a standing permission from an approval card and from the
+ * decision queue, and had no way to show what had been granted, let alone withdraw it. A
+ * permission you cannot revoke from the same place you gave it is not a permission, it is a
+ * one-way door — which is a strange shape for the one screen whose entire subject is what
+ * the agent is allowed to do to your machine.
+ *
+ * A file that does not exist holds no rules, so removing from it is `false` and writes
+ * nothing — notably it does NOT create an empty settings file as a side effect of a
+ * revocation that had nothing to revoke.
+ */
+export function removeRuleFromSettings(
+  filePath: string, list: 'allow' | 'ask' | 'deny', rule: string,
+): boolean {
+  if (!existsSync(filePath)) return false
+  let removed = false
+  editRules(filePath, (lists) => {
+    const trimmedRule = rule.trim()
+    const kept = lists[list].filter((existing) => existing.trim() !== trimmedRule)
+    removed = kept.length !== lists[list].length
+    lists[list] = kept
+  })
+  return removed
+}
+
+/**
+ * The read-modify-write both of the above are: every validation, and the rule that unknown
+ * keys survive, lives here once. The alternative — a second copy in the remover — is how the
+ * two drift until one of them silently discards a field the other preserves.
+ */
+function editRules(
+  filePath: string,
+  edit: (lists: { allow: string[]; ask: string[]; deny: string[] }) => void,
+): void {
   let doc: Record<string, unknown> = {}
 
   if (existsSync(filePath)) {
@@ -219,8 +262,7 @@ export function addRuleToSettings(filePath: string, list: 'allow' | 'ask' | 'den
   const ask = toStringArray('ask')
   const deny = toStringArray('deny')
   const lists = { allow, ask, deny }
-  const trimmedRule = rule.trim()
-  if (!lists[list].some((existing) => existing.trim() === trimmedRule)) lists[list].push(rule)
+  edit(lists)
 
   const nextDoc = {
     ...doc,
