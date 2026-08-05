@@ -411,3 +411,52 @@ these again. Each was checked by running something, not by reading.
 
 - tests: The trailing `flushPending()` in replayEntries is deletable with the entire core suite green — The claimed failure does not exist in the code. Line 238's flushPending() is present and works: running replayEntries on the exact scenario (a transcript whose last message is an assistant message with an unanswered tool_call) emits the tool-call entry, and on a torn batch (calls a/b/c, only a and
 
+
+10. ~~**A fifth audit (the UI batch)**~~ DONE (wf_9fcc023d-e3e): 22 raised, **12 confirmed**,
+    10 refuted, all fixed in c05a053. **Five for five: every audited round has contained
+    defects introduced by that round.**
+
+    The theme: the composer treated `turnRunning` and `state.run` as unrelated, and every
+    guard predated runs. Two of the four HIGHs were one-keystroke permanent wedges; the
+    third let a keystroke into a VIEWED session abort an hours-long run; the fourth was the
+    revoke hole — a grant patches the live engine immediately, revocation edited only the
+    file, so the screen showed a rule as gone while `decide()` kept auto-allowing on it,
+    citing a file that no longer contained it. `engine.forget` is the missing half.
+
+    Also true and now recorded: MODE_SUMMARY taught a WRONG security model — autopilot's
+    "rules below add nothing" contradicted the engine, where deny and ask rules fire in
+    every mode. The one screen built to state what is permitted was understating the
+    protections that actually work.
+
+11. ~~**The window burial, from the first honest 131k run**~~ DONE (c05a053). The re-read
+    measurement's first attempt died on step 3: the model batched TWELVE reads, ~198k tokens
+    of results landed at once, and the next request was 201,584 vs 131,072. All three guards
+    failed for distinct reasons, each worth keeping:
+    - the fill check read the server's count from the LAST call — ground truth, stale by
+      exactly the current step's appends;
+    - compaction cannot split a batched step (one assistant message + its N replies is
+      atomic to the tail selector), so a step bigger than the window is unfixable after the
+      fact — "nothing-to-gain" was compaction being HONEST;
+    - the overflow retry's second 400 escaped uncaught; in the runner that ends the night as
+      a false "server-unreachable".
+
+    The fix set: `stepResultBudgetChars` = the tail allowance (a step that fits the tail is
+    a step compaction can work around — the two constants are the same number on purpose);
+    the fill check now adds what was appended since its ground truth was measured; a second
+    overflow throws a named error. The deeper lesson for the ledger: **batching moved the
+    system's real unit of atomicity from the message to the step, and every consumer of
+    "one message at a time" — the deadline, the fill estimate, the tail selector, now found
+    across three audits and one live run — has had to learn it.**
+
+## Closed: the fifth audit's refuted findings (wf_9fcc023d-e3e)
+
+- permission-hole: Session-layer grants — the approval card's DEFAULT — are invisible to the audit screen, whose empty state claims 'Allow always ... adds a rule here' — The factual chain (session default in approvals.tsx:57, sessionAllow in-memory only, permissions.list reading disk) is accurate, but the claimed defect — an invisible, irrevocable grant and a silently-degrading f
+- permission-hole: permissions.remove silently maps any unknown scope — including 'session', a value the app's own grant vocabulary uses — to the local settings file — The failure sequence requires a caller that does not exist and cannot be written under the repo's own type checking. PermissionsRemoveParams.scope is the closed union 'user' | 'project' | 'local' (protocol.ts:713),
+- run-lifecycle: Session switch or reload mid-run kills the unattended run and wipes its ended card before it can be seen — The mechanics are accurately traced but no reachable path makes this a defect. (1) The headline trigger — "opening the app / reload kills the run the user left going" — is impossible in the shipping build: app/src-tauri/main.rs kills the sidecar's whole proc
+- run-lifecycle: Stop failures are swallowed: a failed run.stop leaves the banner running with zero feedback — The run.stop promise can only reject via rejectAllPending, whose two call sites (client.ts:217-220 transport.onClose, client.ts:301-305 close()) both set connection state 'closed' first. App.tsx:256-264 reacts to connState 'closed' by setting phase 'unreachable', and App
+- export-truth: Export attributes harness-authored run nudges and notes to '## You' when copying a viewed session — The mechanics are accurate but the behavior is deliberate and documented upstream, not a defect of this batch. core/src/host/replay.ts:84-87 (commit b225a87, pre-batch) states: "Nudges the unattended runner sent as user messages are NOT dropped, because they genuine
+- export-truth: Palette 'Copy conversation as Markdown' gives zero feedback: success and clipboard failure are indistinguishable — The finding describes the code accurately but cannot produce its claimed failure, and the silence it objects to is the batch's documented convention, not a defect. (1) The claimed triggers are unreachable: writeText is invoked synchronously inside the
+- tests-that-cannot-fail: permissions.list / permissions.remove are never exercised through the host — routing, requireInitialized, and the scope-to-path mapping are all unguarded — The finding describes no defect in the shipped code — its failure sequence starts with a mutation the auditor injected (typo the case label / swap the ternary). As committed, the surface works: I drov
+- tests-that-cannot-fail: export.test cannot fail against deletion of four conversationAsMarkdown branches — the exported markdown would present a truncated or interrupted session as a clean, complete exchange — The finding's coverage facts are accurate but it is not a defect — it is a mutation-survival observation about the test suite. The brief requires a concrete sequence that
+- tests-that-cannot-fail: The composer's run-config path has zero tests — deleting the run-started dispatch reproduces exactly the defect the new state tests say they exist to prevent, with every suite green — The finding describes a test-coverage gap, not a defect. Every claimed failure requires first mutating shipped source ("delete the dispatch", "break parseBudget", "drop the
+- tests-that-cannot-fail: `lastRun: null` in the run.turn reducer case is a vacuous guard — removing it keeps all 64 state tests green, and the test named for the clearing pins only the run-started path — Every factual claim verifies (I reproduced the mutation: 64/64 green with the line removed; the clearing test at state.test.ts:142 drives run-started, not run.turn), but the fin
