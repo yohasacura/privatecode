@@ -218,6 +218,37 @@ Next worth doing, in rough order:
    half is locked by `core/test/prompt-cache.test.ts`. Item 3 took the large one. Nothing
    further is identified.
 
+9. ~~**The UI pass**~~ DONE (8f27f3a, then the run surface, polish and token commits). User
+   directive: professionalise the UI, find what the flows are missing. All four chosen pieces
+   landed:
+
+   - **Permissions** (8f27f3a + panel): `removeRuleFromSettings` in core, `permissions.list`
+     / `permissions.remove` on the wire, and a Settings section showing what the MODE permits
+     plus every rule grouped by the file it lives in, revocable. The list is read from disk
+     per call, never from the engine's snapshot. One test needed THREE mutation rounds to
+     grow teeth — two lists holding the same rule made filtering the wrong one invisible.
+   - **The run surface**: start card with turn/hour budgets (in the protocol since day one,
+     never offered by the UI), a live banner (task verbatim, turn N of budget, elapsed,
+     parked count, Stop), an ended card holding stoppedBecause until dismissed. A reloaded
+     window mid-run shows honest absence (no invented clock), pinned by reducer tests.
+   - **Copy/discoverability**: hover copy on assistant rows (source text, not rendered
+     selection), "Copy conversation as Markdown" in the palette (asks + answers + one line
+     per tool call; no reasoning, no 60k tool dumps — mutation-tested), Ctrl+K finally named
+     in the UI.
+   - **Visual tokens**: two elevations replacing four ad-hoc shadows (with the inset hairline
+     that makes near-black read as layered), tabular numerals wherever numbers tick, one
+     120ms interaction speed.
+
+   Corrections to my own audit, recorded because the next session will read the audit:
+   Settings was never "two fields" (it had folders, recents, MCP status), and the empty-state
+   gap was a case-sensitive grep artefact — Terminal/Changes/History already had PanelEmpty.
+   The REAL gaps were permissions, the run surface, copy, and Ctrl+K discoverability.
+
+   Left deliberately unfinished, needs eyes on the window: any layout/spacing/type-scale
+   change (the 420px context width is sized to the tab bar fitting — blind changes there
+   break real constraints), and editors for verify/hooks/custom commands, which remain
+   hand-edited JSON that the app validates and reports but cannot fix.
+
 Everything below this line is history — measurements and closed items, kept because the
 reasoning is worth more than the conclusion. The list above is the only live queue.
 
