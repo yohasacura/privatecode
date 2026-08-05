@@ -56,10 +56,28 @@ Next worth doing, in rough order:
    is the top live item. It changes the agent's core execution contract, so it wants a
    careful pass, not a quick one.
 
-4. **A third audit** — RUNNING as wf_bf0ac8a1-44a, over the two rounds of fixing themselves.
-   The second audit found two defects inside `a759855`, the commit whose entire subject was
-   fixing things, so the rate at which fixing introduces defects is not zero. One of its three
-   lenses is aimed at the TESTS written today: which of them cannot fail.
+4. ~~**A third audit**~~ DONE (wf_bf0ac8a1-44a): 14 raised, 10 confirmed, 4 refuted. Seven
+   distinct defects fixed in 2775de5 — **all of them in the previous rounds of fixing.**
+
+   The number worth keeping: three audits, and each one found defects introduced by the one
+   before. Audit 1 found 15 in the feature work; audit 2 found 19, two of them inside
+   `a759855`; audit 3 found 10, every one of them mine from the same day. The rate at which
+   fixing introduces defects here is not small, and the only thing that caught them was
+   auditing the fixes as a separate act.
+
+   Two of the ten were TESTS THAT COULD NOT FAIL, both mine, and both had already been
+   "verified" by me in a way that missed it:
+   - the flush's crash-ordering test ran no compaction at all, so deleting the entire flush
+     block left it green;
+   - deleting the skipped-call announcement left every test in BOTH suites green — the app
+     test was a correct reducer unit test and the core suite simply had no test driving a
+     two-call step with an events recorder.
+
+   Both are now verified by deletion, which is the only check that would have caught either.
+
+   **Still open from it, deliberately not fixed:** nothing. But note the pattern for the next
+   round — a fix that adds an EVENT is the dangerous shape, because every existing consumer
+   of that event silently gains a case. Both high-severity findings here were that shape.
 
 5. **Throughput, the rest.** `tool_choice` is measured and spent (see below). The prompt-prefix
    half is locked by `core/test/prompt-cache.test.ts`. After item 3, the open question is
