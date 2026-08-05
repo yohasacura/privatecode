@@ -155,10 +155,55 @@ Next worth doing, in rough order:
    the probe wired no delta callback and was therefore measuring the non-streaming path. A
    probe that does not reproduce the app's own wiring measures a configuration nobody runs.
 
-6. **Throughput, the rest.** `tool_choice` is measured and spent (see below). The prompt-prefix
+6. ~~**The prefill budget.**~~ DONE (a24e56d). The live long-turn test started ending in
+   `timeout` and instrumenting it said why: step 6 batched three ~15k-token reads, so step 7
+   had to prefill ~46k tokens the server had never seen, which produces NO tokens while it
+   happens. The new silence deadline read that as a dead server.
+
+   The gap before a step's first token is not idleness; it is work with a knowable length.
+   Measured against the server's own prompt counts in that run: 15,393 new tokens → 36.3 s,
+   15,409 → 58.8 s, 11,963 → 25.0 s. So 46,200 is 116-185 s against a flat 90.
+
+   The budget for a first token is now `stepTimeoutMs + newChars/4 × 4 ms`, where newChars is
+   what has been appended since the last request. **Live: the long-turn test went from timeout
+   to done in 209.9 s, faster than the 253 s it took when it was written.**
+
+   Worth keeping: this was already eating the budget before today — one 15k read cost 58.8 s
+   of the 90. Batching pushed it over rather than creating it, which is why it had never been
+   seen. `PREFILL_MS_PER_TOKEN` had been measured twice, independently, in two files, for two
+   budgets that turned out to be the same quantity; it lives in `loop.ts` now and session.ts
+   imports it.
+
+7. ~~**A fourth audit.**~~ DONE (wf_7833d83c-802): 16 raised, **9 confirmed**, 7 refuted, all
+   fixed in 7f8caec. The nine collapse into six distinct defects.
+
+   **The number that matters: four separate lenses independently found the same defect, and it
+   was mine, from the fix three hours earlier.** `step.alive` moved `currentStep.startedAtMs`,
+   which the composer also reads for "how long has this step been running" — so the elapsed
+   readout showed `0.0s` for the whole of every streaming step, and a NEGATIVE duration
+   whenever an animation frame landed after the 250 ms clock tick. The readout exists so a
+   long generation reads as "it is working"; the change aimed at making long generations
+   possible is what broke it. One field, two questions.
+
+   Two more were the same shape as each other: the composer and the transcript both used
+   `items[items.length - 1]` to mean "the call in progress". A step runs its calls in order,
+   so by the time call 1 executes, calls 2 and 3 already have cards — `npm test` ran for
+   minutes labelled `running write_file`. Pre-existing; item 3 made it routine.
+
+   And one that had nothing to do with today: **the CLI and `--unattended` never recorded tool
+   outcomes at all.** Recording lived in `SessionHost`, so a night's run persisted its
+   transcript, appeared in the app's session list, and restored with a green tick on every
+   failed command. It lives in `Session` now — the one thing every front end goes through.
+
+   The pattern, four audits in: **every audit has found defects introduced by the round of
+   fixing before it, without exception.** Audit 1: 15 in the feature work. Audit 2: 19, two
+   inside a fix commit. Audit 3: 10, every one from the same day. Audit 4: 9, of which the
+   highest-severity was three hours old. Auditing the fixes is not optional here, and the
+   evidence is now four for four.
+
+8. **Throughput, the rest.** `tool_choice` is measured and spent (see below). The prompt-prefix
    half is locked by `core/test/prompt-cache.test.ts`. Item 3 took the large one. Nothing
-   further is identified — the next thing worth doing is probably another audit over the
-   day's changes, on the evidence that every previous one found defects in the round before.
+   further is identified.
 
 Everything below this line is history — measurements and closed items, kept because the
 reasoning is worth more than the conclusion. The list above is the only live queue.
@@ -302,3 +347,23 @@ risk. `lastToolArgs` needed nothing — but only because the calls run in SEQUEN
 property nothing was asserting; and the consumer that did break (`replayEntries`) was not on
 the list at all, because it does not read those events, it reconstructs them. The lesson for
 the next change of this shape: enumerate the consumers of the ORDER, not only of the data.
+
+## Closed: the fourth audit's refuted findings (wf_7833d83c-802)
+
+Kept because a refutation is a fact about the code, and the next auditor will raise several of
+these again. Each was checked by running something, not by reading.
+
+- halting: A batch containing repeats trips the loop detector inside one step, halts it, and blacklists the call for the rest of the session — Every harm claimed is identical to the pre-change behaviour, and the cited evidence for the triggering shape is a misreading. 1. I reproduced the exact scenario and compared it with what the OLD loop actually executed for the same model proposal. Probe A (new
+
+- halting: A denied or user-declined write replaces the successful write to the same path in the Changes tab, taking its diff and "Put back" with it — The finding's causal story is wrong, and everything it points at is byte-identical to before the audited range. 1. The halt path does not "route through" those two strings. In the new loop (D:/LocalAgentAI/PrivateCode/core/src/agent/loop.ts:514-546) t
+
+- clock: A step that times out on the cold-cache budget reports the 90 s warm budget instead, to both the user and the model — The mismatch is real but the claimed harm is not. I reproduced the mechanism (Agent with stepTimeoutMs 90 / firstStepTimeoutMs 540 against a quiet client: the step really waited 543 ms, and both strings said "90 ms"), then traced every consumer of the value. TurnResult.final
+
+- transport: Switching the CLI to chatStream() loses the server's own error text on a 200-that-is-not-a-completion, and replaces it with a false "connection dropped" claim — The failure the finding names does not occur on this server, and where it hypothetically could, the user-facing outcome is not what the finding claims. (1) The concrete trigger is refuted empirically. Against the live llama.cpp 
+
+- outcomes: recordToolOutcome creates .privatecode/ with a bare mkdirSync, bypassing ensurePrivateDir's self-ignore — REFUTED — a guard fires before the first tool can ever produce an outcome, and I measured it. 1. `recordToolOutcome` has exactly one caller in src: `SessionHost.buildAgentEvents().onToolResult` (D:/LocalAgentAI/PrivateCode/core/src/host/host.ts:901). The CLI never calls it. 2. The ho
+
+- tests: The skipped-call announcement is now unprotected — delete it and the whole core suite stays green — The finding concedes the code is correct: every one of its three failure scenarios begins with "delete line 538". Deleting a correct, shipped line is an edit to the source, not an input to the program, so no sequence of user/model actions produces a wrong result. I drove the exact sequence th
+
+- tests: The trailing `flushPending()` in replayEntries is deletable with the entire core suite green — The claimed failure does not exist in the code. Line 238's flushPending() is present and works: running replayEntries on the exact scenario (a transcript whose last message is an assistant message with an unanswered tool_call) emits the tool-call entry, and on a torn batch (calls a/b/c, only a and
+
