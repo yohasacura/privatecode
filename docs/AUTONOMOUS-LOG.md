@@ -74,6 +74,34 @@ Next worth doing, in rough order:
    Found by walking every consumer of `onToolCall`/`onToolResult` before committing, which is
    exactly what the third audit said to do for a change of this shape.
 
+   **The consumer walk, stated** (5f71a7a). Every consumer of `onToolCall`/`onToolResult`,
+   and what each one sees now that a step can run several calls:
+
+   | consumer | what it sees | verdict |
+   |---|---|---|
+   | `host.recordToolOutcome` | one line per call id, incl. the halted one | **was broken** — see below |
+   | `Session.captureToolResult` -> work log | one "Ran" line per command, own args | correct, now tested |
+   | `Session.notePathWritten` -> `writtenMounts` | every folder written in the step | correct, now tested |
+   | `Session.turnFootprint` | `writeCount` +1 per successful write | correct by construction |
+   | `LoopDetector` | one `record` per call, keyed on name+args | correct by construction |
+   | app reducer `tool.call`/`tool.result` | oldest writing card by name; result by recency | correct, already tested |
+   | `collectChanges` (Changes) | one entry per path, `Not run:` skipped | correct, already tested |
+   | Terminal tab | one row per command item | correct by construction |
+   | `transcript.tsx` `suppressedId` | the last item, which is the awaiting call | correct by construction |
+   | `replayEntries` | **all calls then all results** | **was broken** — fixed in 6f116d0 |
+
+   Two of the ten were wrong, and only one of them was caused by the change. The other,
+   `recordToolOutcome`, had never worked for a session's FIRST turn: outcomes are written
+   during a turn and `sessions/` is created by the transcript flush at the END of it, so every
+   append threw ENOENT into a catch documented as covering a cosmetic loss. Turn two onwards
+   worked, which is why nothing caught it — every replay test made the directory in
+   `beforeEach`, and no host test read the file back. With nothing on disk `assumedOk` guesses
+   from the result text, so every failed call in a session's opening turn restored with a tick.
+
+   The lesson: the walk found one defect in the change and one that had been there all along,
+   and the second only surfaced because writing the test meant *looking for the file*. Asserting
+   the event fired would have passed.
+
 4. ~~**A third audit**~~ DONE (wf_bf0ac8a1-44a): 14 raised, 10 confirmed, 4 refuted. Seven
    distinct defects fixed in 2775de5 — **all of them in the previous rounds of fixing.**
 
