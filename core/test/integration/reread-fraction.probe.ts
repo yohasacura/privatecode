@@ -60,6 +60,7 @@ const reads: ReadRecord[] = []
 let step = 0
 let swaps = 0
 let stepsAtSwap: number[] = []
+let pendingRead = ''
 
 const session = new Session({
   client: new LlamaClient({ baseUrl: BASE, model: 'qwen' }),
@@ -83,8 +84,20 @@ const session = new Session({
     onToolCall: (name, args) => {
       let target = ''
       try { target = String((JSON.parse(args) as { path?: unknown }).path ?? '') } catch { /* not json */ }
-      if (name === 'read_file') reads.push({ step, path: target, afterSwap: swaps })
+      // Recorded at the RESULT, not here: the first run of this probe counted every
+      // announced call as a read, and the step-result budget answers some announced calls
+      // with `Not run:` — those never touched the file, so counting them inflated both the
+      // total and the "re-read" figure (a refused call re-issued next step looked like a
+      // re-read of a file that was never read).
       console.log(`${at()}  [${step}] ${name} ${target}`)
+      if (name === 'read_file') pendingRead = target
+    },
+    onToolResult: (name, result) => {
+      if (name !== 'read_file' || pendingRead === '') return
+      if (!result.content.startsWith('Not run:')) {
+        reads.push({ step, path: pendingRead, afterSwap: swaps })
+      }
+      pendingRead = ''
     },
     onStepDone: (i) => {
       console.log(`${at()}  step ${i.step} done: ${i.seconds.toFixed(0)}s, prompt ${i.promptTokens ?? '?'}, gen ${i.completionTokens ?? '?'}`)

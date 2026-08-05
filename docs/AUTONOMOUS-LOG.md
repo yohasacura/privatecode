@@ -460,3 +460,32 @@ these again. Each was checked by running something, not by reading.
 - tests-that-cannot-fail: export.test cannot fail against deletion of four conversationAsMarkdown branches — the exported markdown would present a truncated or interrupted session as a clean, complete exchange — The finding's coverage facts are accurate but it is not a defect — it is a mutation-survival observation about the test suite. The brief requires a concrete sequence that
 - tests-that-cannot-fail: The composer's run-config path has zero tests — deleting the run-started dispatch reproduces exactly the defect the new state tests say they exist to prevent, with every suite green — The finding describes a test-coverage gap, not a defect. Every claimed failure requires first mutating shipped source ("delete the dispatch", "break parseBudget", "drop the
 - tests-that-cannot-fail: `lastRun: null` in the run.turn reducer case is a vacuous guard — removing it keeps all 64 state tests green, and the test named for the clearing pins only the run-started path — Every factual claim verifies (I reproduced the mutation: 64/64 green with the line removed; the clearing test at state.test.ts:142 drives run-started, not run.turn), but the fin
+
+## The re-read measurement at 131,072: what it did and did not answer
+
+Run to completion on 2026-08-06 (the surviving first probe, WITH the step budget): 10 steps,
+593 s, ONE mid-turn swap at the real window, turn ended `done`, INVENTORY.md written, no
+HTTP 400. **The infrastructure result is clean: the exact task shape that buried the window
+the day before now survives it** — the budget carved the twelve-read batch into steps, the
+corrected fill check fired, the swap applied mid-turn, the turn finished.
+
+**The measurement itself came back n=0.** "swap 1: 0 reads after it" — not because re-reads
+are free, but because the model STOPPED READING after the swap: it had read 10 of 24 files,
+and post-briefing it wrote the inventory from what it had and declared the task done. So the
+question "what fraction of post-swap work is re-acquisition" got no data, and a NEW
+observation took its place:
+
+**Observed once, NOT yet a finding: after a mid-turn compaction, the model may quietly
+shrink the task.** The briefing says what was read; the model treats "what was read" as
+"what there is". One occurrence, one task shape, one prompt — do not build anything on it
+yet. If it repeats, the lever is probably the briefing (COMPACTION_INSTRUCTION could carry
+"the task is NOT finished; the remaining items are ...") rather than anything in the loop.
+
+Instrumentation note for the next run: the first probe counted ANNOUNCED read calls, and the
+step budget answers some of those with `Not run:` — inflating totals with reads that never
+happened. The probe now records at the result, executed reads only.
+
+Also recorded: TaskStop on a backgrounded Bash kills the wrapper and orphans the node child
+(see memory). The orphan kept the llama slot and starved a second probe into a 90 s silence
+timeout that looked exactly like a fresh regression. Check for zombie tsx processes before
+blaming the code.
