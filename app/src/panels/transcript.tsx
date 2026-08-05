@@ -10,6 +10,7 @@ import { presentTool, screenshotPathOf, type ToolKind } from '../lib/tools'
 import { formatDuration } from '../lib/format'
 import { useStickToBottom } from '../lib/sticky-scroll'
 import { Icon } from '../components/icons'
+import { CopyButton } from '../components/copy'
 import { ApprovalCard, QuestionCard, TodosCard } from './approvals'
 import { DecisionsCard } from './decisions'
 import { RunBanner } from './run-banner'
@@ -358,6 +359,10 @@ function EmptyState(): VNode {
         <span><kbd>Enter</kbd> send</span>
         <span><kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
         <span><kbd>Esc</kbd> stop</span>
+        {/* The palette is the main way around the app and was mentioned nowhere at all:
+            implemented, bound, and undiscoverable except by habit from other tools. */}
+        <span><kbd>Ctrl</kbd>+<kbd>K</kbd> everything else</span>
+        <span><kbd>@</kbd> attach a file</span>
       </div>
     </div>
   )
@@ -413,7 +418,10 @@ const TranscriptRow = memo(function TranscriptRow({
       // markup execution.
       return (
         <Row kind="assistant">
-          <Markdown text={item.text} />
+          <div class="copy-holder">
+            <Markdown text={item.text} />
+            <CopyButton text={item.text} />
+          </div>
           {item.interrupted && <div class="interrupted">stopped by you</div>}
         </Row>
       )

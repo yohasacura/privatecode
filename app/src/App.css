@@ -2383,3 +2383,35 @@ kbd {
 .input-small { height: 26px; padding: 2px 8px; font-size: 12px; }
 .run-config-hint { font-size: 10.5px; line-height: 1.5; color: var(--text-faint); margin-top: 8px; }
 .run-config-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
+/* ---------------------------------------------------------------------------------------
+   Copying an answer out.
+
+   The model's answer is usually destined for somewhere else — a commit message, an issue,
+   a review comment — and there was no way to take it there except selecting across rendered
+   markdown, which loses the structure. The button copies the SOURCE text and appears only
+   on hover: reading is the common case, and forty visible copy buttons is noise.
+   --------------------------------------------------------------------------------------- */
+.copy-holder { position: relative; }
+.copy-button {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.copy-holder:hover .copy-button,
+.copy-button:focus-visible { opacity: 1; }
+.copy-button:hover { color: var(--text); background: var(--bg-hover); }
+/* The tick holds long enough to be seen and needs no hover to stay: feedback must not
+   depend on keeping the pointer still. */
+.copy-button-done { opacity: 1; color: var(--green); border-color: var(--green-soft); }

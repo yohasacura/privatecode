@@ -6,6 +6,7 @@ import {
 } from './lib/client'
 import { useChatSession } from './lib/use-chat-session'
 import { baseName } from './lib/format'
+import { conversationAsMarkdown } from './lib/export'
 import { MIN_CONTEXT, MIN_RAIL, fitColumns } from './lib/layout'
 import { Icon } from './components/icons'
 import { Splitter } from './components/split'
@@ -354,6 +355,14 @@ export default function App() {
         return
       case 'command':
         if (action.id === 'settings') { setSettingsOpen(true); return }
+        if (action.id === 'copy-conversation') {
+          // The conversation on SCREEN, which is the viewed session when one is open: what
+          // you are reading is what "copy" means.
+          const source = chatState.viewing ?? { items: chatState.items, title: chatState.session?.title ?? '' }
+          const text = conversationAsMarkdown(source.items, source.title)
+          navigator.clipboard.writeText(text).catch(() => { /* platform surface */ })
+          return
+        }
         c.call('sessions.new', {})
           .then((r) => onSessionSwitched({
             sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength,

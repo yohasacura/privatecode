@@ -21,7 +21,7 @@ export type PaletteAction =
   | { kind: 'session'; id: string; title: string; detail: string }
   | { kind: 'file'; path: string }
   | { kind: 'mode'; mode: AgentMode }
-  | { kind: 'command'; id: 'new-session' | 'settings'; label: string }
+  | { kind: 'command'; id: 'new-session' | 'settings' | 'copy-conversation'; label: string }
 
 interface Entry {
   action: PaletteAction
@@ -41,6 +41,10 @@ const COMMANDS: Entry[] = [
   {
     action: { kind: 'command', id: 'settings', label: 'Settings' },
     label: 'Settings', icon: Icon.gear(), group: 'Do',
+  },
+  {
+    action: { kind: 'command', id: 'copy-conversation', label: 'Copy conversation as Markdown' },
+    label: 'Copy conversation as Markdown', icon: Icon.files(), group: 'Do',
   },
 ]
 
