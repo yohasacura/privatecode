@@ -34,11 +34,8 @@ Next worth doing, in rough order:
    not emit; rewritten to call/result/call/result, and it now checks each card keeps its OWN
    outcome).
 
-   **Still open:** the Terminal tab is uncapped and re-walks + re-sorts every transcript item
-   per render, and `collectChanges` re-parses every previous write on every tool result —
-   quadratic, and it runs whichever tab is open (terminal-tab.tsx:144, context-panel.tsx:53).
-   Both are pre-existing and neither is data loss; they matter for the same reason the
-   transcript window did.
+   The last two (Terminal tab + collectChanges) are closed in ae522bc. **Every confirmed
+   finding from both audits is now fixed.**
 
    Also fixed on the way: `background-task`'s grandchild test slept a fixed 1500 ms for a
    process to start and failed in full runs while passing alone. Verified against a stash
@@ -56,6 +53,13 @@ Next worth doing, in rough order:
    that exercises none of the code under test is exactly what this kind of test is for.
 3. **Throughput** — see the measured section below. The tool_choice lever is spent; the
    remaining question is whether anything else reduces generated tokens.
+
+4. **A third audit**, over what the last two rounds of fixing changed. The second audit found
+   two defects inside `a759855` — the commit whose entire subject was fixing things — so the
+   rate at which fixing introduces new defects is not zero and is worth measuring rather than
+   assuming. Cover: the flush cursor, the consumed cold-cache flag, the announced skipped
+   calls, `closeWritingCalls`, the WeakMap parse cache, the Terminal cap, and
+   `sessionBaseline` now being set from a rewind's undo point.
 
 Ordered by value to "very stable, very efficient, large development processes".
 
