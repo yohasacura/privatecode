@@ -27,21 +27,22 @@ Next worth doing, in rough order:
    Auditing your own morning's work before building on it is not optional; it found data
    corruption and a fix that covered every path except the one it was written for.
 
-   **Still open from that audit**, in rough order:
-   - `promptCacheCold` is cleared by a step that timed out or was aborted, permanently
-     downgrading a large session to the 90 s budget (session.ts:905).
-   - A rewind taken before the session's first turn permanently disables "Put back" for that
-     session — `sessionBaseline` is never set because the baseline branch is skipped
-     (session.ts ~1001).
-   - `suppressedId` is computed from the LIVE transcript and applied to the VIEWED one, so
-     reading a stored session can blank an unrelated row (transcript.tsx:114).
-   - The Terminal tab is uncapped and re-walks + re-sorts every transcript item per render;
-     `collectChanges` re-parses every previous write on every tool result (quadratic), and
-     runs whichever tab is open (terminal-tab.tsx:144, context-panel.tsx:53).
-   - Background-task eviction can drop an id the model still holds, and erases the user's own
-     terminal scrollback (background-task.ts:149).
-   - The streaming test drives a sequence the core cannot produce — two `tool.call` events for
-     one step. It passes and proves nothing. Rewrite it against the real event order.
+   All of it is now closed except one, in 5cf1ef8: the cold-cache flag cleared by a cancelled
+   step, the rewind that disabled "Put back", `suppressedId` blanking a row of a VIEWED
+   session, eviction deleting the user's terminal scrollback, and the streaming test that
+   proved nothing (it drove two `tool.call` events for one step — a sequence the core could
+   not emit; rewritten to call/result/call/result, and it now checks each card keeps its OWN
+   outcome).
+
+   **Still open:** the Terminal tab is uncapped and re-walks + re-sorts every transcript item
+   per render, and `collectChanges` re-parses every previous write on every tool result —
+   quadratic, and it runs whichever tab is open (terminal-tab.tsx:144, context-panel.tsx:53).
+   Both are pre-existing and neither is data loss; they matter for the same reason the
+   transcript window did.
+
+   Also fixed on the way: `background-task`'s grandchild test slept a fixed 1500 ms for a
+   process to start and failed in full runs while passing alone. Verified against a stash
+   that it fails without any of today's changes. It waits for the effect now.
 2. ~~**A long live run.**~~ DONE — `core/test/integration/long-turn.test.ts` (d0d324b).
    Two compaction swaps inside one real turn, 253 s, against Qwen3.6. Task completed on the
    far side of having its history replaced twice; flush held; zero orphaned tool replies in
