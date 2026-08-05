@@ -499,13 +499,24 @@ export class Agent {
         content: result.content,
       })
       for (const skipped of calls.slice(1)) {
+        const content = `Not executed: one tool call per step, and ${call.function.name} ran ` +
+                        'first. Re-issue this one on a later step if it is still needed.'
         this.transcript.append({
           role: 'tool',
           tool_call_id: skipped.id,
           name: skipped.function.name,
-          content: `Not executed: one tool call per step, and ${call.function.name} ran ` +
-                   'first. Re-issue this one on a later step if it is still needed.',
+          content,
         })
+        // Announced, not only recorded. A skipped call is already in the transcript, so a
+        // resumed session shows it — `replayEntries` reads the `Not executed:` prefix as a
+        // failure — but nothing told a WATCHING window, and once arguments streamed there was
+        // a card open for it. Every extra call the model proposed left a row pulsing forever.
+        // Seen in a live run and not recognised: `-> find_files -> find_files -> find_files`
+        // against a single `(ok)`.
+        this.opts.events?.onToolCall?.(skipped.function.name, skipped.function.arguments)
+        this.opts.events?.onToolResult?.(
+          skipped.function.name, { ok: false, content }, skipped.id,
+        )
       }
     }
 

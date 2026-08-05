@@ -729,3 +729,38 @@ describe('reduceChat: a tool call arriving as it is written', () => {
     expect(run([{ type: 'tool.call.delta', index: 3, args: '{"path":"a' }]).items).toEqual([])
   })
 })
+
+describe('reduceChat: a tool call that never runs', () => {
+  it('closes a card the turn ended in the middle of writing', () => {
+    // A card opens when the model names a tool and closes when the matching tool.call
+    // arrives. A turn can end between those two — aborted, timed out, truncated twice — and
+    // then no tool.call is ever coming. The card pulsed for the rest of the session, and the
+    // next call of the same name completed it: one call's arguments, and later one call's
+    // result, shown against another call's card.
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts"' },
+      { type: 'turn.done', stoppedBecause: 'aborted', atMs: 10 },
+    ])
+    const card = state.items.find((i) => i.kind === 'tool')
+    expect(card).toMatchObject({ name: 'edit_file', result: { ok: false } })
+    expect(card).not.toHaveProperty('writing')
+  })
+
+  it('does not let a later call of the same name inherit an abandoned card', () => {
+    // The failure the closing exists to prevent, stated directly.
+    const first = run([
+      { type: 'turn-started' },
+      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'turn.done', stoppedBecause: 'aborted', atMs: 10 },
+    ])
+    const after = [
+      { type: 'turn-started' as const },
+      { type: 'tool.call' as const, name: 'edit_file', args: '{"path":"b.ts"}' },
+    ].reduce(reduceChat, first)
+    const cards = after.items.filter((i) => i.kind === 'tool')
+    expect(cards).toHaveLength(2)
+    expect(cards[1]).toMatchObject({ args: '{"path":"b.ts"}' })
+  })
+})

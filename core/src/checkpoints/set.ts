@@ -23,6 +23,11 @@ interface CheckpointSetRecord {
   at: string
   sessionId?: string
   turn?: number
+  /** Which step of that turn, for a snapshot taken while the turn was still running. The
+   * single-store path carries this in the commit subject; a set has no commit of its own, so
+   * it has to be written down here or a long turn contributes rows that all read "after turn
+   * N" and cannot be told apart. */
+  step?: number
   summary: string
   /** unit id -> commit sha. A unit with no history yet is simply absent. */
   units: Record<string, string>
@@ -107,6 +112,7 @@ export class CheckpointSet {
       at: new Date().toISOString(),
       ...(label.sessionId !== undefined ? { sessionId: label.sessionId } : {}),
       ...(label.turn !== undefined ? { turn: label.turn } : {}),
+      ...(label.step !== undefined ? { step: label.step } : {}),
       summary: parts.join(' · ') || 'baseline',
       units,
     }
@@ -216,6 +222,7 @@ export class CheckpointSet {
       at: record.at,
       ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
       ...(record.turn !== undefined ? { turn: record.turn } : {}),
+      ...(record.step !== undefined ? { step: record.step } : {}),
       summary: record.summary,
     }
   }

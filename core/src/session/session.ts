@@ -1477,7 +1477,23 @@ export class Session {
       // the FULL pre-swap transcript. Nothing is lost either way; the swap is simply not
       // applied yet.
       const pending = this.transcript.messages().slice(this.persistedCount)
-      if (pending.length > 0) store.appendMessages(this.id, pending)
+      if (pending.length > 0) {
+        store.appendMessages(this.id, pending)
+        // The cursor moves with the WRITE, not with the swap. Leaving it until after
+        // `appendCompactionSwap` meant that any failure of the second write — a full disk, a
+        // virus scanner holding the file for a moment on Windows — left the cursor pointing
+        // at messages already on disk. `compactNow` swallows that failure and the turn
+        // carries on, so `send()`'s own tail write then appended every one of them a second
+        // time: the request duplicated, tool_call ids answered twice, and a `system` message
+        // landing in the middle of the conversation. Measured by an auditor injecting one
+        // throw: 15 lines holding the turn twice.
+        //
+        // Worse, it was not confined to the failure. The NEXT swap's flush read the same
+        // stale cursor, so even the self-healing path re-wrote the whole pre-swap history.
+        // A file documented as an append-only audit trail is worth exactly what its worst
+        // path leaves in it.
+        this.persistedCount = this.transcript.messages().length
+      }
       store.appendCompactionSwap(this.id, { summary, droppedMessages }, next.messages())
     }
 
@@ -1550,6 +1566,11 @@ export class Session {
    * doesn't also immediately restart a new attempt (see `maybeStartBackgroundCompaction`).
    */
   private async runBackgroundCompaction(messages: readonly ChatMessage[], signal: AbortSignal): Promise<void> {
+    // The automatic trigger is the most common compaction of all and it never set this,
+    // which left the widest version of the same gap: its request displaces the server's
+    // cache exactly like any other, and if the generation is aborted or fails, the next
+    // step gets a warm-cache budget for a prompt that has to be prefilled from nothing.
+    this.compactionDisplacedCache = true
     try {
       const result = await generateCompaction(
         this.opts.client,
@@ -1712,10 +1733,17 @@ export class Session {
     agentOpts.beforeStep = async (step): Promise<StepPreamble | undefined> => {
       await this.checkpointLongTurn(step)
       const before = this.transcript
-      this.compactionDisplacedCache = false
       await this.compactIfOverWindow(signal)
       const swapped = this.transcript !== before
-      if (!swapped && !this.compactionDisplacedCache) return undefined
+      // CONSUMED here, not cleared on the way in. The first version zeroed the flag three
+      // lines above this read, so the only writes it could ever observe were the ones made
+      // by the `compactIfOverWindow` on the line between — which is to say, only compactions
+      // that happen inside this hook. A `/compact`, a pre-turn compaction, and the automatic
+      // 80% trigger all set it and all had it wiped before anything looked, so the case the
+      // flag exists for was still reachable through every path except the one it covered.
+      const displaced = this.compactionDisplacedCache
+      this.compactionDisplacedCache = false
+      if (!swapped && !displaced) return undefined
       return { transcript: this.transcript, timeoutMs: this.coldStartTimeout() }
     }
     // The first step of a turn whose prompt prefix the server has not seen must be allowed

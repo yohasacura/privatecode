@@ -183,3 +183,74 @@ test('the work log counts the turn\'s steps, not the verify-fixer\'s', async () 
   // step.
   expect(result.steps).toBeGreaterThanOrEqual(4)
 })
+
+test('a failed marker write does not duplicate the turn in the session file', async () => {
+  // `persistedCount` used to move only after BOTH writes. If the second one failed — a full
+  // disk, a scanner holding the file for a moment on Windows — the cursor still pointed at
+  // messages already on disk, and send()'s own tail write appended every one of them again:
+  // the request twice, tool ids answered twice, a `system` message in the middle of a
+  // conversation. It was not confined to the failure either; the NEXT swap read the same
+  // stale cursor, so the self-healing path re-wrote the whole history too.
+  const CONTEXT = 40_000
+  let streamed = 0
+  const fake = await startFakeServer((body, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: CONTEXT } }
+    if (req.url === '/health') return { status: 'ok' }
+    const last = body.messages?.[body.messages.length - 1]
+    if (typeof last?.content === 'string' && last.content.includes('compacted to free up context')) {
+      return text('BRIEFING: what happened so far.')
+    }
+    streamed++
+    if (streamed <= 3) {
+      return {
+        choices: [{
+          message: {
+            role: 'assistant', content: null,
+            reasoning_content: 'x'.repeat(60_000),
+            tool_calls: [{
+              id: `c${streamed}`, type: 'function',
+              function: { name: 'write_file', arguments: JSON.stringify({ path: `d${streamed}.txt`, content: 'x' }) },
+            }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: streamed <= 2 ? 38_000 : 9_000, completion_tokens: 20 },
+      }
+    }
+    return text('finished')
+  })
+  stop = fake.close
+  const root = mkdtempSync(join(tmpdir(), 'pc-dup-'))
+  roots.push(root)
+
+  const store = new SessionStore(root)
+  // One injected failure of the marker write, exactly as a transient file lock would look.
+  let failed = false
+  const realSwap = store.appendCompactionSwap.bind(store)
+  store.appendCompactionSwap = (id, marker, messages) => {
+    if (!failed) { failed = true; throw new Error('EBUSY: the file was locked') }
+    realSwap(id, marker, messages)
+  }
+
+  const session = new Session({
+    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+    toolset: createToolset({}),
+    workspaceRoot: root,
+    mode: 'autopilot',
+    store,
+    compaction: { contextLength: CONTEXT },
+  })
+  await session.send('do the work')
+
+  const lines = readFileSync(join(root, '.privatecode', 'sessions', `${session.id}.jsonl`), 'utf8')
+    .split('\n').filter((l) => l.trim() !== '')
+  const requests = lines.filter((l) => l.includes('do the work')).length
+  expect(requests).toBe(1)
+
+  // And no message id is answered twice.
+  const toolIds = lines
+    .map((l) => { try { return JSON.parse(l) as { role?: string; tool_call_id?: string } } catch { return {} } })
+    .filter((m) => m.role === 'tool')
+    .map((m) => m.tool_call_id)
+  expect(new Set(toolIds).size).toBe(toolIds.length)
+})

@@ -134,7 +134,13 @@ export function Transcript({
   // profile a several-hundred-row conversation always had, whatever the turn length. The
   // rest is one click away and nothing is discarded: `state.items` is untouched, and the
   // session file is the real record either way.
+  // Reset whenever the conversation being shown CHANGES. One click used to disable the cap
+  // for the rest of the app run — across a session switch, and across looking at a stored
+  // session and coming back — so a decision made about a forty-row conversation silently
+  // governed a twenty-thousand-row one.
   const [showAll, setShowAll] = useState(false)
+  const shownSessionId = viewing === null ? (state.session?.sessionId ?? '') : viewing.sessionId
+  useEffect(() => { setShowAll(false) }, [shownSessionId])
   const { shown, hidden } = visibleWindow(all, showAll)
 
   return (

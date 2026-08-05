@@ -390,6 +390,36 @@ function lastAssistantItem(items: ChatItem[]): (ChatItem & { kind: 'assistant' }
  * finished arguments — the model is still generating it — so it can never be the call a
  * result belongs to, and matching it would hand one call's result to another.
  */
+/**
+ * Closes any card still being WRITTEN, with the honest reason: nothing ever ran.
+ *
+ * A card opens when the model starts naming a tool and closes when the matching `tool.call`
+ * arrives. Between those two, a turn can end — aborted, timed out, or truncated twice — and
+ * then no `tool.call` is ever coming. The card would pulse for the rest of the session, and
+ * the next call of the same name would complete it, taking its arguments and later its
+ * result: one call's diff shown against another call's file.
+ *
+ * The core answers every abandoned call in the transcript with a `Not executed:` line and now
+ * announces them too, so this is the remaining case: the ones cut off before the step even
+ * finished, which no event can describe because the step produced none.
+ */
+function closeWritingCalls(items: ChatItem[]): ChatItem[] {
+  if (!items.some((i) => i.kind === 'tool' && i.writing === true)) return items
+  return items.map((item): ChatItem => {
+    if (item.kind !== 'tool' || item.writing !== true) return item
+    const { writing: _w, callIndex: _c, ...rest } = item
+    return {
+      ...rest,
+      result: {
+        ok: false,
+        preview: 'never ran',
+        content: 'The turn ended while this call was still being written, so it never ran.',
+        display: 'The turn ended while this call was still being written, so it never ran.',
+      },
+    }
+  })
+}
+
 function lastPendingTool(items: ChatItem[]): (ChatItem & { kind: 'tool' }) | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
@@ -660,7 +690,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       // An aborted turn's partial assistant text (if any) is marked `interrupted` so the
       // UI can show the "[interrupted]" marker next to it. Reasoning is closed first:
       // interrupting mid-thought is exactly the case that used to leave a pulsing row.
-      const closed = closeThinking(state.items, action.atMs)
+      const closed = closeWritingCalls(closeThinking(state.items, action.atMs))
       const assistant = lastAssistantItem(closed)
       const marked = assistant && action.stoppedBecause === 'aborted'
         ? [...closed.slice(0, -1), { ...assistant, interrupted: true }]

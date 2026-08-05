@@ -112,9 +112,13 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
     }
     const unsubs = [
       client.on('step.start', (d) => {
-        // Step 1 happens once per turn and nothing else marks a turn's beginning here, so it
-        // is what the "did this run long enough to be worth interrupting for" check reads.
-        if (d.step === 1) turnStartedAtMs = Date.now()
+        // The FIRST step 1 of the turn, not every one. A turn can contain several step-1s:
+        // the verify fixer runs its own `runTurn`, and so does the overflow retry, each
+        // starting its step count over. Keying on `d.step === 1` alone therefore restarted
+        // the clock hours into a long turn, and the notification it feeds would have
+        // reported the length of the last fix rather than of the work — or, if the fixer
+        // finished quickly, said nothing at all.
+        if (d.step === 1 && turnStartedAtMs === 0) turnStartedAtMs = Date.now()
         dispatch({ type: 'step.start', step: d.step, timeoutMs: d.timeoutMs, startedAtMs: Date.now() })
       }),
       client.on('thinking.delta', (d) => buffer('thinking', d.text)),
