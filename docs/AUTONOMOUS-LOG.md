@@ -489,3 +489,28 @@ Also recorded: TaskStop on a backgrounded Bash kills the wrapper and orphans the
 (see memory). The orphan kept the llama slot and starved a second probe into a 90 s silence
 timeout that looked exactly like a fresh regression. Check for zombie tsx processes before
 blaming the code.
+
+## CORRECTION: the "task-shrinking" observation above was wrong
+
+Withdrawn same day, after a reproduction run. The model did not shrink the task in either
+run — it finished it, with a better strategy than the probe measured. Run 2 (272 s, ZERO
+swaps): two executed reads, then **twenty-three `search_code` calls** — counting exported
+functions by grep instead of reading 60 KB files, which is exactly what the task actually
+needs. Re-checking run 1's log: same move (`search_code src` across the whole directory at
+step 5) BEFORE the swap, inventory written at step 7. "0 reads after the swap" was a model
+being efficient, not a model giving up.
+
+The error was mine and it is the ledger's own rule broken: I measured `read_file` counts as
+a proxy for task completion, never opened INVENTORY.md (the probe deleted the workspace
+before anyone could), and wrote the interpretation down as an observation. The probe now
+counts how many of the 24 files the inventory actually mentions, before deletion.
+
+What stands after the correction:
+- The infrastructure result stands: mid-turn swap at the real window, step budget carving a
+  12-read batch, no HTTP 400, clean completion — twice.
+- The re-read question remains OPEN for tasks that genuinely need full contents in context.
+  For count/summary shapes, Qwen3.6 sidesteps re-acquisition entirely via search_code —
+  which is good news for post-compaction behaviour, and no briefing change is warranted on
+  present evidence.
+- Meta-lesson, the same one the audits keep teaching: a proxy measure plus a deleted
+  artifact equals a confident wrong conclusion. Verify the artifact.

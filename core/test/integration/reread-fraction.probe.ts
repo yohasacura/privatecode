@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LlamaClient } from '../../src/llama/client.js'
@@ -129,5 +129,18 @@ for (let sw = 1; sw <= swaps; sw++) {
 }
 const uniquePaths = new Set(reads.map((r) => r.path)).size
 console.log(`total: ${reads.length} reads over ${uniquePaths} unique files, ${FILES} files exist`)
-console.log(`inventory written: ${existsSync(join(root, 'INVENTORY.md'))}`)
+// The ARTIFACT, checked before the workspace is deleted. The first two runs of this probe
+// measured read_file counts as a proxy for task completion and threw the inventory away
+// unread — which produced a wrong conclusion in the ledger: 'the model shrank the task'.
+// It had not. It counted exports with search_code instead of reading 60 KB files, and the
+// proxy could not see that. The artifact is the only honest completion measure.
+if (existsSync(join(root, 'INVENTORY.md'))) {
+  const inv = readFileSync(join(root, 'INVENTORY.md'), 'utf8')
+  const mentioned = Array.from({ length: FILES }, (_, f) => `module${String(f).padStart(2, '0')}`)
+    .filter((name) => inv.includes(name)).length
+  const lineCount = inv.split('\n').length
+  console.log(`inventory: ${mentioned}/${FILES} files mentioned, ${lineCount} lines`)
+} else {
+  console.log('inventory written: false')
+}
 rmSync(root, { recursive: true, force: true })
