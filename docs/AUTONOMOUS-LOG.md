@@ -514,3 +514,34 @@ What stands after the correction:
   present evidence.
 - Meta-lesson, the same one the audits keep teaching: a proxy measure plus a deleted
   artifact equals a confident wrong conclusion. Verify the artifact.
+
+## The window nobody was looking at: three days of UI changes never reached the user
+
+Root cause, established by asking the RUNNING page over a WebView2 debug port, after two
+wrong diagnoses from reading code: **a Tauri debug build does not carry the frontend at
+all** — it always loads vite's devUrl (localhost:1420). The vite process had been running
+since Aug 3, died unnoticed, and from then on:
+- the open window kept showing its last-loaded page from memory (why the user "couldn't
+  find" the permissions section — his window predated it entirely; my "buried in scroll"
+  diagnosis was wrong);
+- every "rebuilt and relaunched" of mine refreshed the sidecar (read from disk in debug)
+  but not the UI, so core fixes applied while the interface stayed frozen at ~Aug 3-5;
+- a relaunch met a dead 1420: "localhost refused to connect";
+- the stray console window the user reported is the debug build's console subsystem.
+
+Also wrong on the way: "the exe embeds stale assets" (debug embeds nothing — the cargo
+rebuild changed nothing), and cargo's cached build script had made that theory look
+plausible. The verification that settled it was functional: launch with
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port, CDP into the page, ask
+`location.href` and the stylesheets.
+
+The fix that removes the whole failure class: **the release build is now the daily
+driver** — `npx tauri build`, frontend and sidecar embedded/staged, no console, no vite.
+`target/release/app.exe` runs standalone (sidecar/ staged beside it); MSI and NSIS
+installers in `target/release/bundle/`. The debug exe remains the dev loop's tool and
+REQUIRES `npm run dev` to be alive.
+
+Meta-lesson, third of its kind this week: "rebuilt and relaunched" was a claim about MY
+actions, not about what the user's window served. The artifact — here, the served page —
+is the only honest completion measure. Two diagnoses were written before anyone asked the
+page what it was showing.
