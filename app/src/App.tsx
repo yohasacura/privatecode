@@ -490,6 +490,7 @@ export default function App() {
                     onOpenFile={setPreviewPath}
                     hasSession={chatState.session !== null}
                     workspaceRoot={workspaceRoot}
+                    sessionKey={chatState.session?.sessionId ?? ''}
                   />
                 </aside>
               </>

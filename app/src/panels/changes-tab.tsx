@@ -89,6 +89,27 @@ export function collectChanges(items: ChatItem[]): ChangeEntry[] {
   return [...byPath.values()].sort((a, b) => b.id - a.id)
 }
 
+/**
+ * Which entries a reviewed-set still hides.
+ *
+ * The watermark is the entry's LAST-write item id, not a boolean: "reviewed" means "I have
+ * seen this file as of that write". A newer write to the same path has a higher id, beats
+ * the watermark, and the row honestly comes back — reviewing a file must never suppress
+ * what the agent does to it afterwards. Pure and exported for its test.
+ */
+export function splitReviewed(
+  entries: ChangeEntry[], reviewed: ReadonlyMap<string, number>,
+): { visible: ChangeEntry[]; hidden: ChangeEntry[] } {
+  const visible: ChangeEntry[] = []
+  const hidden: ChangeEntry[] = []
+  for (const entry of entries) {
+    const mark = reviewed.get(entry.path)
+    if (mark !== undefined && entry.id <= mark) hidden.push(entry)
+    else visible.push(entry)
+  }
+  return { visible, hidden }
+}
+
 /** Takes an already-collected list rather than the raw transcript: `context-panel.tsx`
  * memoises `collectChanges` so it does not re-run (and re-parse every write call's args)
  * on every streamed token. */
@@ -104,6 +125,30 @@ export function ChangesTab({
   // Bumped by a per-file revert so the working tree below re-reads itself: the revert
   // changed the disk, and a git status from before it is a lie.
   const [reverts, setReverts] = useState(0)
+  /**
+   * Files marked reviewed, path -> the last-write id the review covered.
+   *
+   * This list accumulates every write of the session, and the only way to shrink it was to
+   * REVERT — so reviewing forty changes meant either scrolling past them forever or undoing
+   * work you had just accepted. Reviewed rows fold away instead; a NEWER write to the same
+   * path outruns its watermark and the row comes back. View state only: it touches no file,
+   * and the component is keyed by session id so another session starts unreviewed.
+   */
+  const [reviewed, setReviewed] = useState<ReadonlyMap<string, number>>(new Map())
+  const [showReviewed, setShowReviewed] = useState(false)
+  const { visible, hidden } = splitReviewed(entries, reviewed)
+
+  function markReviewed(entry: ChangeEntry): void {
+    setReviewed((m) => new Map(m).set(entry.path, entry.id))
+  }
+  function markAllReviewed(): void {
+    setReviewed((m) => {
+      const next = new Map(m)
+      for (const entry of visible) next.set(entry.path, entry.id)
+      return next
+    })
+  }
+
   if (entries.length === 0) {
     return (
       <div class="changes-tab">
@@ -134,9 +179,33 @@ export function ChangesTab({
       <div class="changes-total">
         <span>{entries.length} file{entries.length === 1 ? '' : 's'}</span>
         <DiffStatBadge stat={{ added, removed }} />
+        <span class="changes-total-spacer" />
+        {visible.length > 0 && (
+          <button class="btn btn-small" onClick={markAllReviewed} title="Fold every current change away; a newer write to any of these files brings its row back">
+            All reviewed
+          </button>
+        )}
       </div>
       <PanelSection title="This session">
-        {entries.map((entry) => (
+        {visible.map((entry) => (
+          <ChangeRow
+            key={entry.id}
+            entry={entry}
+            onOpenFile={onOpenFile}
+            client={client}
+            onReverted={() => setReverts((n) => n + 1)}
+            onReviewed={() => markReviewed(entry)}
+          />
+        ))}
+        {visible.length === 0 && hidden.length > 0 && (
+          <div class="changes-all-reviewed">Everything here is reviewed.</div>
+        )}
+        {hidden.length > 0 && (
+          <button class="changes-reviewed-toggle" onClick={() => setShowReviewed((v) => !v)}>
+            {showReviewed ? 'Hide' : 'Show'} {hidden.length} reviewed file{hidden.length === 1 ? '' : 's'}
+          </button>
+        )}
+        {showReviewed && hidden.map((entry) => (
           <ChangeRow
             key={entry.id}
             entry={entry}
@@ -161,12 +230,14 @@ export function ChangesTab({
  * again.
  */
 function ChangeRow({
-  entry, onOpenFile, client, onReverted,
+  entry, onOpenFile, client, onReverted, onReviewed,
 }: {
   entry: ChangeEntry
   onOpenFile: (path: string) => void
   client: ProtocolClient
   onReverted: () => void
+  /** Absent for a row already in the reviewed fold — reviewing it twice means nothing. */
+  onReviewed?: () => void
 }): VNode {
   const [open, setOpen] = useState(false)
   const [asking, setAsking] = useState(false)
@@ -203,13 +274,22 @@ function ChangeRow({
         </>
       }
       actions={
-        entry.ok
-          ? (
+        <>
+          {entry.ok && (
             <button class="btn btn-small" onClick={() => setAsking(true)} disabled={asking}>
               Put back
             </button>
-            )
-          : undefined
+          )}
+          {onReviewed !== undefined && (
+            <button
+              class="btn btn-small"
+              onClick={onReviewed}
+              title="Fold this change away — you have seen it and it is fine. A newer write to this file brings the row back."
+            >
+              {Icon.check()}
+            </button>
+          )}
+        </>
       }
     >
       {asking && (

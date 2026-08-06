@@ -9,6 +9,7 @@ import { Icon } from '../components/icons'
 import type { SessionSwitch } from './sessions-rail'
 import { Folders } from './folders'
 import { Permissions } from './permissions'
+import { McpEditor } from './mcp-editor'
 
 /**
  * The status bar and the settings modal.
@@ -142,7 +143,7 @@ function McpServers({ client }: { client: ProtocolClient }): VNode | null {
     return () => { cancelled = true }
   }, [client])
 
-  if (servers === null || servers.length === 0) return null
+  if (servers === null || servers.length === 0) return null // the editor below covers the empty case
   return (
     <>
       <div class="field-label">MCP servers</div>
@@ -188,6 +189,7 @@ export function SettingsModal({
   const [recent, setRecent] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
+  const [tab, setTab] = useState<'workspace' | 'permissions' | 'mcp'>('workspace')
 
   useEffect(() => {
     client.call('config.get', {})
@@ -239,70 +241,98 @@ export function SettingsModal({
           <button class="icon-button" onClick={onClose} title="Close">{Icon.x()}</button>
         </div>
 
-        <label class="field-label" for="set-url">Model server</label>
-        <input
-          id="set-url"
-          class="input"
-          value={serverUrl}
-          onInput={(e) => setServerUrl(e.currentTarget.value)}
-          placeholder="http://127.0.0.1:8080"
-        />
-        <div class="field-hint">Your llama.cpp server. Nothing is ever sent anywhere else.</div>
-
-        <label class="field-label" for="set-ws">Workspace</label>
-        <div class="field-row">
-          <input
-            id="set-ws"
-            class="input"
-            value={workspace}
-            readOnly={!isDevBridge}
-            onInput={(e) => setWorkspace(e.currentTarget.value)}
-            placeholder={isDevBridge ? 'C:/path/to/project' : '(none picked)'}
-          />
-          {!isDevBridge && <button class="btn" onClick={() => void pickWorkspaceDialog()}>Browse…</button>}
+        {/* Tabs, because burial was measured: the permissions section existed, at the
+            bottom of one long scroll, and the person it was built for reported not seeing
+            it. A section you have to already know about to find is not a section. */}
+        <div class="modal-tabs" role="tablist">
+          {([
+            ['workspace', 'Workspace'],
+            ['permissions', 'Permissions'],
+            ['mcp', 'MCP servers'],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={tab === id}
+              class={`modal-tab ${tab === id ? 'modal-tab-active' : ''}`}
+              onClick={() => setTab(id)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
-        <div class="field-hint">Everything the agent may read or change is bounded by this folder.</div>
 
-        {recent.length > 0 && (
+        {tab === 'workspace' && (
           <>
-            <div class="field-label">Recent</div>
-            <div class="recent-list">
-              {recent.map((w) => (
-                <button key={w} class={`recent-item ${w === workspace ? 'recent-item-active' : ''}`} onClick={() => setWorkspace(w)}>
-                  {w}
-                </button>
-              ))}
+            <label class="field-label" for="set-url">Model server</label>
+            <input
+              id="set-url"
+              class="input"
+              value={serverUrl}
+              onInput={(e) => setServerUrl(e.currentTarget.value)}
+              placeholder="http://127.0.0.1:8080"
+            />
+            <div class="field-hint">Your llama.cpp server. Nothing is ever sent anywhere else.</div>
+
+            <label class="field-label" for="set-ws">Workspace</label>
+            <div class="field-row">
+              <input
+                id="set-ws"
+                class="input"
+                value={workspace}
+                readOnly={!isDevBridge}
+                onInput={(e) => setWorkspace(e.currentTarget.value)}
+                placeholder={isDevBridge ? 'C:/path/to/project' : '(none picked)'}
+              />
+              {!isDevBridge && <button class="btn" onClick={() => void pickWorkspaceDialog()}>Browse…</button>}
+            </div>
+            <div class="field-hint">Everything the agent may read or change is bounded by this folder.</div>
+
+            {recent.length > 0 && (
+              <>
+                <div class="field-label">Recent</div>
+                <div class="recent-list">
+                  {recent.map((w) => (
+                    <button key={w} class={`recent-item ${w === workspace ? 'recent-item-active' : ''}`} onClick={() => setWorkspace(w)}>
+                      {w}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <div class="field-label">Folders</div>
+            <Folders
+              client={client}
+              isDevBridge={isDevBridge}
+              onChanged={() => connect()}
+            />
+
+            {error && <div class="panel-error">{error}</div>}
+
+            <button
+              class="btn btn-primary modal-primary"
+              disabled={connecting || workspace.trim() === '' || serverUrl.trim() === ''}
+              onClick={connect}
+            >
+              {connecting ? 'Opening…' : 'Open workspace'}
+            </button>
+            <div class="field-hint">
+              Opening a workspace picks up its most recent session. New session starts a clean one.
             </div>
           </>
         )}
 
-        <div class="field-label">Folders</div>
-        <Folders
-          client={client}
-          isDevBridge={isDevBridge}
-          onChanged={() => connect()}
-        />
+        {tab === 'permissions' && (
+          <Permissions client={client} {...(liveMode !== undefined ? { liveMode } : {})} />
+        )}
 
-        <McpServers client={client} />
-
-        {/* Last, and deliberately: the two fields above are what you came here to change,
-            and this is what you came here to CHECK. It is also the only section that can
-            take something away, which is not a thing to put beside a Browse button. */}
-        <div class="field-label">What the agent may do</div>
-        <Permissions client={client} {...(liveMode !== undefined ? { liveMode } : {})} />
-
-        {error && <div class="panel-error">{error}</div>}
-
-        <button
-          class="btn btn-primary modal-primary"
-          disabled={connecting || workspace.trim() === '' || serverUrl.trim() === ''}
-          onClick={connect}
-        >
-          {connecting ? 'Opening…' : 'Open workspace'}
-        </button>
-        <div class="field-hint">
-          Opening a workspace picks up its most recent session. New session starts a clean one.
-        </div>
+        {tab === 'mcp' && (
+          <>
+            <McpServers client={client} />
+            <McpEditor client={client} onApply={() => connect()} />
+          </>
+        )}
       </div>
     </div>
   )

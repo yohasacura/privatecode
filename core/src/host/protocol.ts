@@ -444,6 +444,9 @@ export interface HostMethodMap {
   'worklog.read': { params: WorklogReadParams; result: WorklogReadResult }
   'permissions.list': { params: PermissionsListParams; result: PermissionsListResult }
   'permissions.remove': { params: PermissionsRemoveParams; result: PermissionsRemoveResult }
+  'permissions.add': { params: PermissionsAddParams; result: PermissionsAddResult }
+  'mcp.read': { params: McpReadParams; result: McpReadResult }
+  'mcp.save': { params: McpSaveParams; result: McpSaveResult }
   'run.start': { params: RunStartParams; result: RunStartResult }
   'run.stop': { params: RunStopParams; result: RunStopResult }
 }
@@ -715,6 +718,51 @@ export interface PermissionsRemoveParams {
   rule: string
 }
 export interface PermissionsRemoveResult { removed: boolean }
+
+/**
+ * Write one rule, from the permissions screen. The mirror of remove, and it closes the
+ * asymmetry the screen shipped with: rules could be granted from an approval card, revoked
+ * from the list, and never simply WRITTEN — the one thing "настраиваются" actually means.
+ * A rule that fails validation comes back as `problem` and changes nothing anywhere.
+ */
+export interface PermissionsAddParams {
+  scope: 'user' | 'project' | 'local'
+  list: 'allow' | 'ask' | 'deny'
+  rule: string
+}
+export interface PermissionsAddResult { problem: string | null }
+
+/**
+ * The configured MCP servers, for editing — the raw config, not the connection state.
+ * `source` says which settings file each entry came from; only project-file entries are
+ * editable through `mcp.save`, and the screen says so for the rest rather than hiding them.
+ */
+export type McpReadParams = Empty
+export interface McpServerView {
+  name: string
+  kind: 'stdio' | 'http'
+  command?: string
+  args?: string[]
+  url?: string
+  /** e.g. "project settings" — where the merged entry was defined last. */
+  source: string
+}
+export interface McpReadResult { servers: McpServerView[]; problems: string[] }
+
+/**
+ * Edit the PROJECT settings file's `mcpServers` key. A merge, not a replacement: an entry
+ * being upserted keeps every field this screen does not model (`env`, `headers`, `cwd`,
+ * `trustReadOnlyHints`), the same discipline `editRules` applies to the permissions key —
+ * a hand-tuned entry must survive being renamed in a form that never saw its env block.
+ * Applying the change is the caller's second step: re-open the workspace (the same
+ * `connect()` the Folders manager already triggers), which reconnects servers and rebuilds
+ * the prompt that names them.
+ */
+export interface McpSaveParams {
+  upsert?: { name: string; command?: string; args?: string[]; url?: string }[]
+  remove?: string[]
+}
+export type McpSaveResult = Empty
 
 export type WorklogReadParams = Empty
 /** `text` is empty when nothing has been logged yet, which is the normal state of a

@@ -516,4 +516,41 @@ export class PermissionEngine {
     const trimmed = rule.trim()
     layer[list] = layer[list].filter((parsed) => parsed.raw.trim() !== trimmed)
   }
+
+  /**
+   * Make a rule the user just WROTE start mattering now — `remember`'s generalisation.
+   *
+   * `remember` covers exactly one shape: an `allow` born from an approval card. The
+   * permissions screen now lets the user write a rule into any of the three lists, and a
+   * deny typed there that did not bite until the next session build would be the revoke
+   * hole again, pointed in the more dangerous direction — a user believes a protection is
+   * in place and it is not.
+   *
+   * Returns the problem instead of pushing it into `this.problems`: the caller is an
+   * interactive form, and "your rule is malformed" belongs in front of the person typing
+   * it, not in the session's problem strip after the fact. Validation is `remember`'s own,
+   * via the same helpers, so the two cannot drift.
+   */
+  adopt(scope: SettingsLayer['scope'], list: 'allow' | 'ask' | 'deny', rule: string): string | null {
+    const parsed = parseRule(rule)
+    if (parsed === null) {
+      return `"${rule}" is not a valid rule — the shape is tool_name or tool_name(spec)`
+    }
+    const problem = specProblem(parsed, 'the permissions screen')
+    if (problem !== null) return problem
+
+    const layer = this.layers.find((l) => l.scope === scope)
+    const trimmed = rule.trim()
+    if (layer) {
+      if (!layer[list].some((existing) => existing.raw.trim() === trimmed)) layer[list].push(parsed)
+    } else {
+      this.layers.push({
+        scope,
+        allow: list === 'allow' ? [parsed] : [],
+        ask: list === 'ask' ? [parsed] : [],
+        deny: list === 'deny' ? [parsed] : [],
+      })
+    }
+    return null
+  }
 }

@@ -95,6 +95,30 @@ export function Permissions({ client, liveMode }: {
       .finally(() => setBusy(null))
   }
 
+  /** The add-rule form. Rules could be granted from an approval card and revoked from this
+   * list, and never simply WRITTEN — which is the thing "configuring permissions" means.
+   * The written rule reaches the live engine in the same call (`engine.adopt`), so a deny
+   * typed here protects the session it was typed into, not the next one. */
+  const [newRule, setNewRule] = useState('')
+  const [newList, setNewList] = useState<'allow' | 'ask' | 'deny'>('deny')
+  const [newScope, setNewScope] = useState<'user' | 'project' | 'local'>('project')
+  const [adding, setAdding] = useState(false)
+
+  function addRule(): void {
+    const rule = newRule.trim()
+    if (rule === '') return
+    setAdding(true)
+    setError(null)
+    client.call('permissions.add', { scope: newScope, list: newList, rule })
+      .then((r) => {
+        if (r.problem !== null) { setError(r.problem); return }
+        setNewRule('')
+        load()
+      })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setAdding(false))
+  }
+
   const summary = MODE_SUMMARY[liveMode ?? mode]
   const total = (layers ?? []).reduce((n, l) => n + l.rules.length, 0)
 
@@ -156,6 +180,49 @@ export function Permissions({ client, liveMode }: {
             })}
           </section>
         ))}
+
+      <div class="field-label">Add a rule</div>
+      <div class="perms-add">
+        <select
+          class="input input-small perms-add-list"
+          value={newList}
+          onChange={(e) => setNewList(e.currentTarget.value as 'allow' | 'ask' | 'deny')}
+          title="never = the agent may not do this, in any mode. always ask = stops for you every time. allowed = goes through without asking."
+        >
+          <option value="deny">never</option>
+          <option value="ask">always ask</option>
+          <option value="allow">allowed</option>
+        </select>
+        <input
+          class="input input-small perms-add-rule"
+          placeholder="run_command(npm publish:*) · edit_file(src/**)"
+          value={newRule}
+          onInput={(e) => setNewRule(e.currentTarget.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') addRule() }}
+        />
+        <select
+          class="input input-small perms-add-scope"
+          value={newScope}
+          onChange={(e) => setNewScope(e.currentTarget.value as 'user' | 'project' | 'local')}
+          title="Which settings file it is written to"
+        >
+          <option value="project">this project</option>
+          <option value="local">project, just me</option>
+          <option value="user">everywhere</option>
+        </select>
+        <button
+          class="btn btn-small"
+          disabled={adding || newRule.trim() === ''}
+          onClick={addRule}
+        >
+          {adding ? 'Adding…' : 'Add'}
+        </button>
+      </div>
+      <div class="field-hint">
+        A rule is a tool name with an optional pattern: commands match by prefix
+        (<code>run_command(git push:*)</code>), paths by glob (<code>edit_file(src/**)</code>).
+        It applies immediately, this session included.
+      </div>
     </div>
   )
 }

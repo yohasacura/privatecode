@@ -31,7 +31,7 @@ import { useJobs } from '../lib/use-jobs'
 export type ContextTab = 'changes' | 'history' | 'files' | 'terminal'
 
 export function ContextPanel({
-  client, items, openPath, onOpenFile, hasSession, workspaceRoot,
+  client, items, openPath, onOpenFile, hasSession, workspaceRoot, sessionKey,
 }: {
   client: ProtocolClient
   items: ChatItem[]
@@ -40,6 +40,9 @@ export function ContextPanel({
   hasSession: boolean
   /** Which workspace these paths belong to; see `TreePanel`. */
   workspaceRoot: string
+  /** The live session's id. Keys the Changes tab, so its reviewed-state — a per-session
+   * judgement — resets when the session does instead of leaking across. */
+  sessionKey: string
 }): VNode {
   const [tab, setTab] = useState<ContextTab>('changes')
   // Polled at the panel level so the Terminal badge is live on every tab, not only its own.
@@ -86,6 +89,7 @@ export function ContextPanel({
       <div class="tab-body">
         {tab === 'changes' && (
           <ChangesTab
+          key={sessionKey}
             changes={changes}
             onOpenFile={(p) => { onOpenFile(p); setTab('files') }}
             client={client}

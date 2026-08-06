@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatItem } from '../lib/state'
-import { collectChanges } from './changes-tab'
+import { collectChanges, splitReviewed } from './changes-tab'
 
 function tool(id: number, name: string, args: string, content = 'diff body', ok = true): ChatItem {
   return { kind: 'tool', id, name, args, startedAtMs: id, result: { ok, preview: 'p', content, display: content } }
@@ -139,5 +139,31 @@ describe('a call that never ran is not a change', () => {
       result: { ok: false, preview: 'p', content: 'EACCES: permission denied', display: 'EACCES' },
     }
     expect(collectChanges([failed]).map((c) => c.path)).toEqual(['b.ts'])
+  })
+})
+
+describe('reviewed changes fold away, honestly', () => {
+  const entry = (id: number, path: string): import('./changes-tab').ChangeEntry => ({
+    id, tool: 'edit_file', path, ok: true, content: 'diff', revisions: 1, openPath: path,
+  })
+
+  it('hides an entry at or below its watermark, and resurfaces a newer write', () => {
+    // "Reviewed" means "seen as of THAT write". A newer write to the same path has a higher
+    // last-write id, outruns the watermark, and the row must come back — reviewing a file
+    // is never permission to hide what the agent does to it afterwards.
+    const reviewed = new Map([['a.ts', 5]])
+    const before = splitReviewed([entry(5, 'a.ts'), entry(3, 'b.ts')], reviewed)
+    expect(before.hidden.map((e) => e.path)).toEqual(['a.ts'])
+    expect(before.visible.map((e) => e.path)).toEqual(['b.ts'])
+
+    const after = splitReviewed([entry(9, 'a.ts'), entry(3, 'b.ts')], reviewed)
+    expect(after.hidden).toEqual([])
+    expect(after.visible.map((e) => e.path)).toEqual(['a.ts', 'b.ts'])
+  })
+
+  it('an empty reviewed set hides nothing', () => {
+    const { visible, hidden } = splitReviewed([entry(1, 'x.ts')], new Map())
+    expect(hidden).toEqual([])
+    expect(visible).toHaveLength(1)
   })
 })

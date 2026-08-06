@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { readFile, readdir, stat } from 'node:fs/promises'
-import { extname, join, relative, sep } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, extname, join, relative, sep } from 'node:path'
 import type { AgentEvents } from '../agent/loop.js'
 import { HEALTH_CHECK_TIMEOUT_MS } from '../cli/render.js'
 import type { ApprovalDecision, InteractionPort } from '../interaction.js'
 import { LlamaClient, LlamaRequestError } from '../llama/client.js'
 import { PermissionEngine } from '../permissions/engine.js'
 import {
-  loadLayers, localSettingsPath, projectSettingsPath, removeRuleFromSettings, userSettingsPath,
+  addRuleToSettings, loadLayers, localSettingsPath, projectSettingsPath, removeRuleFromSettings, userSettingsPath,
 } from '../permissions/settings.js'
 import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
@@ -53,6 +54,11 @@ import type {
   PermissionsListResult,
   PermissionsRemoveParams,
   PermissionsRemoveResult,
+  PermissionsAddParams,
+  PermissionsAddResult,
+  McpReadResult,
+  McpSaveParams,
+  McpSaveResult,
   FsReadParams,
   FsReadResult,
   FsTreeEntry,
@@ -386,6 +392,9 @@ export class SessionHost {
       case 'worklog.read': return this.worklogRead()
       case 'permissions.list': return this.permissionsList()
       case 'permissions.remove': return this.permissionsRemove(params as PermissionsRemoveParams)
+      case 'permissions.add': return this.permissionsAdd(params as PermissionsAddParams)
+      case 'mcp.read': return this.mcpRead()
+      case 'mcp.save': return this.mcpSave(params as McpSaveParams)
       case 'run.start': return this.runStart(params as RunStartParams)
       case 'run.stop': return this.runStop()
       default: throw new Error(`unknown method: "${method}"`)
@@ -1274,6 +1283,111 @@ export class SessionHost {
     // answered `Allowed by rule ...` citing a file that no longer contained the rule.
     this.engine?.forget(params.scope, params.list, params.rule)
     return { removed }
+  }
+
+  /**
+   * Writes one rule from the permissions screen — remove's mirror, disk AND live engine.
+   *
+   * Validation runs FIRST, against the live engine's own parser, and a problem returns
+   * without touching the file: a malformed rule written to disk would come back as a
+   * session-level problem string on every future session build, which is the wrong place
+   * to learn about a typo you made in a form five seconds ago.
+   */
+  private permissionsAdd(params: PermissionsAddParams): PermissionsAddResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const problem = this.engine?.adopt(params.scope, params.list, params.rule) ?? null
+    if (problem !== null) return { problem }
+    const path = params.scope === 'user'
+      ? userSettingsPath()
+      : params.scope === 'project'
+      ? projectSettingsPath(workspaceRoot)
+      : localSettingsPath(workspaceRoot)
+    try {
+      addRuleToSettings(path, params.list, params.rule)
+    } catch (e) {
+      // The live engine already holds it, so the rest of this session honours what was just
+      // written — same fallback remember() uses when a settings file cannot be written.
+      return { problem: `${(e as Error).message}; the rule applies for this session only` }
+    }
+    return { problem: null }
+  }
+
+  /** The configured servers as CONFIG (for the editor), not as connection state. */
+  private mcpRead(): McpReadResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const { servers, problems } = loadServers(workspaceRoot)
+    return {
+      servers: servers.map((s) => ({
+        name: s.name,
+        kind: s.spec.kind,
+        ...(s.spec.kind === 'stdio'
+          ? { command: s.spec.command, ...(s.spec.args !== undefined ? { args: s.spec.args } : {}) }
+          : { url: s.spec.url }),
+        source: s.source,
+      })),
+      problems,
+    }
+  }
+
+  /**
+   * Edits the PROJECT settings file's `mcpServers` key — a per-entry merge, never a
+   * replacement, so `env`, `headers`, `cwd`, `trustReadOnlyHints` and anything else this
+   * screen does not model survive an entry being edited in a form that never saw them.
+   * The same read-validate-refuse discipline `editRules` applies: a file that cannot be
+   * parsed is refused, not overwritten.
+   */
+  private mcpSave(params: McpSaveParams): McpSaveResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const path = projectSettingsPath(workspaceRoot)
+    let doc: Record<string, unknown> = {}
+    if (existsSync(path)) {
+      const raw = readFileSync(path, 'utf8')
+      let candidate: unknown
+      try {
+        candidate = JSON.parse(raw)
+      } catch (e) {
+        throw new Error(`${path} is not valid JSON (${(e as Error).message}); fix it by hand first`)
+      }
+      if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
+        throw new Error(`${path} has a non-object JSON root; fix it by hand first`)
+      }
+      doc = candidate as Record<string, unknown>
+    }
+    const serversRaw = doc['mcpServers']
+    if (serversRaw !== undefined && (typeof serversRaw !== 'object' || serversRaw === null || Array.isArray(serversRaw))) {
+      throw new Error(`"mcpServers" in ${path} is not an object; fix it by hand first`)
+    }
+    const servers: Record<string, unknown> = { ...(serversRaw as Record<string, unknown> | undefined) }
+
+    for (const name of params.remove ?? []) delete servers[name]
+    for (const entry of params.upsert ?? []) {
+      const name = entry.name.trim()
+      if (name === '') throw new Error('a server needs a name')
+      const hasCommand = typeof entry.command === 'string' && entry.command.trim() !== ''
+      const hasUrl = typeof entry.url === 'string' && entry.url.trim() !== ''
+      if (hasCommand === hasUrl) {
+        throw new Error(`"${name}" needs either a command (local server) or a URL (remote one), not ${hasCommand ? 'both' : 'neither'}`)
+      }
+      const existing = typeof servers[name] === 'object' && servers[name] !== null && !Array.isArray(servers[name])
+        ? servers[name] as Record<string, unknown>
+        : {}
+      const next: Record<string, unknown> = { ...existing }
+      if (hasCommand) {
+        next['command'] = entry.command!.trim()
+        if (entry.args !== undefined && entry.args.length > 0) next['args'] = entry.args
+        else delete next['args']
+        delete next['url']
+      } else {
+        next['url'] = entry.url!.trim()
+        delete next['command']
+        delete next['args']
+      }
+      servers[name] = next
+    }
+
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, `${JSON.stringify({ ...doc, mcpServers: servers }, null, 2)}\n`, 'utf8')
+    return {}
   }
 
   /**

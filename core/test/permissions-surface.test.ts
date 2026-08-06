@@ -153,6 +153,38 @@ describe('withdrawing a rule', () => {
     expect(engine.decide({ tool: 'run_command', command: 'npm publish --tag next' }).verdict).toBe('allow')
   })
 
+  test('a written rule applies to the live engine immediately, in any list', () => {
+    // `adopt` is `remember`'s generalisation, and the deny case is the one with teeth: a
+    // deny typed into the permissions screen that did not bite until the next session build
+    // would be the revoke hole again, pointed the more dangerous way — the user believes a
+    // protection is standing and it is not.
+    const engine = new PermissionEngine({
+      layers: [
+        { scope: 'project', path: projectSettingsPath(root), permissions: { allow: [], ask: [], deny: [] } },
+      ],
+      mode: 'autopilot',
+      workspaceRoot: root,
+    })
+    expect(engine.decide({ tool: 'run_command', command: 'npm publish' }).verdict).toBe('allow')
+
+    expect(engine.adopt('project', 'deny', 'run_command(npm publish:*)')).toBeNull()
+
+    expect(engine.decide({ tool: 'run_command', command: 'npm publish' }).verdict).toBe('deny')
+  })
+
+  test('a malformed rule is refused with a reason and adopts nothing', () => {
+    const engine = new PermissionEngine({
+      layers: [
+        { scope: 'project', path: projectSettingsPath(root), permissions: { allow: [], ask: [], deny: [] } },
+      ],
+      mode: 'normal',
+      workspaceRoot: root,
+    })
+    const problem = engine.adopt('project', 'deny', '!!not a rule!!')
+    expect(problem).toMatch(/not a valid rule/)
+    expect(engine.decide({ tool: 'run_command', command: 'anything' }).verdict).toBe('ask')
+  })
+
   test('a broken file is refused rather than overwritten', () => {
     // The same protection the writer already had: a file that cannot be parsed may hold deny
     // rules being relied on right now, and replacing it with a fresh document would erase
