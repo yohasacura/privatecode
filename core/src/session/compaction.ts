@@ -325,3 +325,87 @@ function clipToBudget(message: ChatMessage, maxTailTokens: number): ChatMessage 
 
 /** The same ratio `approxTokensOf` divides by, going the other way. */
 const CHARS_PER_TOKEN = 4
+
+// --- The continuation inventory --------------------------------------------------------
+
+/** Tools whose successful call means "the model has looked at this path". */
+const SEEN_TOOLS = new Set(['read_file', 'symbol_outline'])
+/** Tools whose successful call means "the model changed this path". */
+const CHANGED_TOOLS = new Set(['edit_file', 'write_file', 'move_file', 'delete_file'])
+/** Permanent context, so bounded. Past this the list stops being an aid and becomes noise. */
+const MAX_INVENTORY_PATHS = 40
+
+function pathOf(argsJson: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(argsJson)
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const p = (parsed as Record<string, unknown>)['path']
+    return typeof p === 'string' && p.trim() !== '' ? p.trim() : null
+  } catch {
+    return null
+  }
+}
+
+function listOf(paths: readonly string[]): string {
+  const shown = paths.slice(0, MAX_INVENTORY_PATHS)
+  const rest = paths.length - shown.length
+  return shown.map((p) => `  ${p}`).join('\n') +
+    (rest > 0 ? `\n  ... and ${rest} more` : '')
+}
+
+/**
+ * Facts about the session that a generated summary can get wrong, computed instead.
+ *
+ * The briefing is written BY the model, which means every fact in it is a fact the model
+ * recalled. That is fine for judgment ("we decided not to touch the parser") and unreliable
+ * for bookkeeping — which files it opened, what is still on the todo list. Those are in the
+ * transcript and in the todo store, exactly and cheaply, so they are read from there.
+ *
+ * Note what this deliberately does NOT say: "do not re-read these". After a swap the file
+ * CONTENTS are genuinely gone from the context, so re-reading is often the correct move, and
+ * an instruction not to would have the model working from knowledge it no longer has. It was
+ * already measured once being efficient on its own — answering a counting task with
+ * `search_code` instead of re-reading twenty files. What it lacks is not discipline, it is
+ * the list: which paths it has already been through, so it can re-acquire the one it needs
+ * narrowly instead of walking the tree again.
+ */
+export function continuationInventory(
+  messages: readonly ChatMessage[],
+  todos: readonly { text: string; status: 'pending' | 'in_progress' | 'completed' }[] = [],
+): string {
+  const seen: string[] = []
+  const changed: string[] = []
+  for (const m of messages) {
+    for (const call of m.tool_calls ?? []) {
+      const name = call.function.name
+      if (!SEEN_TOOLS.has(name) && !CHANGED_TOOLS.has(name)) continue
+      const path = pathOf(call.function.arguments)
+      if (path === null) continue
+      const into = CHANGED_TOOLS.has(name) ? changed : seen
+      if (!into.includes(path)) into.push(path)
+    }
+  }
+  // A file that was changed was necessarily worked on; listing it twice says nothing extra.
+  const seenOnly = seen.filter((p) => !changed.includes(p))
+  const open = todos.filter((t) => t.status !== 'completed')
+
+  const parts: string[] = []
+  if (seenOnly.length > 0) {
+    parts.push(
+      'Files you have already opened in this session. Their contents are NOT in context any ' +
+      'more — if you need one again, prefer search_code or a line range over reading the ' +
+      'whole file:',
+      listOf(seenOnly),
+    )
+  }
+  if (changed.length > 0) {
+    parts.push('Files you changed in this session:', listOf(changed))
+  }
+  if (open.length > 0) {
+    parts.push(
+      'Your todo list, as it actually stands (from the todo tool, not from memory):',
+      open.map((t) => `  [${t.status === 'in_progress' ? '>' : ' '}] ${t.text}`).join('\n'),
+    )
+  }
+  return parts.length === 0 ? '' : parts.join('\n\n')
+}

@@ -29,7 +29,8 @@ import type { ToolContext } from '../tools/types.js'
 import { Transcript } from '../transcript/transcript.js'
 import { Workspace } from '../workspace.js'
 import {
-  COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, generateCompaction, selectCompactionTail,
+  COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, continuationInventory, generateCompaction,
+  selectCompactionTail,
 } from './compaction.js'
 import { SessionStore, type CompactionMarker, type SessionMeta } from './store.js'
 
@@ -1504,7 +1505,24 @@ export class Session {
           : {}),
       }),
     })
-    next.append({ role: 'user', content: `${COMPACTION_BRIEFING_PREFIX}\n${summary}` })
+    // The generated briefing, then the facts it is not allowed to get wrong. Computed from
+    // the transcript being replaced and the live todo store, so "which files have I opened"
+    // and "what is still open" survive a swap as data rather than as something the model
+    // remembered to write down.
+    //
+    // Guarded, and the guard is the point rather than defensiveness for its own sake: this
+    // is an ENRICHMENT of a briefing that already works, and it must never be able to cost
+    // the session the briefing itself. A throw here would surface as a failed compaction —
+    // trading the whole summary for a list of file paths. Caught while writing it, by a
+    // caller whose toolset carries no todo store at all.
+    let inventory = ''
+    try {
+      inventory = continuationInventory(this.transcript.messages(), this.opts.toolset.todos?.list() ?? [])
+    } catch { /* the summary is what matters; the list is a bonus */ }
+    next.append({
+      role: 'user',
+      content: `${COMPACTION_BRIEFING_PREFIX}\n${summary}${inventory === '' ? '' : `\n\n${inventory}`}`,
+    })
     // The acknowledgement closes the briefing's round-trip -- unless the tail already opens
     // on an assistant message, which it can now do when a compaction lands mid-turn. Keeping
     // it there too would put two assistant messages back to back, and the natural shape is
