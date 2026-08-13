@@ -185,8 +185,22 @@ test('find_files matches a glob', async () => {
 test('C1 read_file bounds a one-line minified bundle by characters', async () => {
   const r = await readFileTool.execute({ path: 'big/one-line.js' }, ctx)
   expect(r.ok).toBe(true)
-  // Pre-fix this returned all 3,000,026 characters with no notice.
+  // Pre-fix this returned all 3,000,026 characters with no notice. The bound is what this
+  // test has always been for; the WORDING changed when large whole-file reads started
+  // answering with the file's shape instead of its text, and this file — one line of three
+  // megabytes — is the case that proves a line count is not a bound.
   expect(r.content.length).toBeLessThan(70_000)
+  expect(r.content).toMatch(/too large to put in context whole/)
+  // And it still says how big the thing it refused to inline actually is.
+  expect(r.content).toMatch(/3000k characters/)
+})
+
+test('C1 an explicit range is still honoured, and still capped', async () => {
+  // The other half of the same rule: the shape-instead-of-text path must catch only "give
+  // me all of it". A stated range is the model saying what it wants, and it gets it — up to
+  // the caps that have always applied.
+  const r = await readFileTool.execute({ path: 'big/one-line.js', start_line: 1, end_line: 1 }, ctx)
+  expect(r.ok).toBe(true)
   expect(r.content).toMatch(/stopped at the 60000-character cap/)
   expect(r.content).toMatch(/cannot resume inside a line/)
 })
@@ -514,4 +528,35 @@ test('F2 find_files applies the secrets denylist to an explicitly dotted pattern
   // Not a bare toContain('.env') check: the "No files match .env" message itself echoes
   // the pattern, so that assertion would pass trivially even if the entry were matched.
   expect(r.content.split('\n')).not.toContain('.env')
+})
+
+// --- Large whole-file reads answer with shape, not bytes ----------------------------
+
+test('a big source file read whole comes back as declarations, not text', async () => {
+  // The measured reason: 60,000 characters is 12% of a 131k window, spent permanently, on a
+  // file the model usually wants ten lines of — and context rot makes that cost accuracy as
+  // well as room. Structure plus line numbers turns the next call into a range.
+  const body = Array.from({ length: 400 }, (_, i) =>
+    `export function thing${i}(): number {\n  // padding to push this file over the limit\n  return ${i}\n}`).join('\n\n')
+  writeFileSync(join(tempRoot, "src", "big.ts"), body, "utf8")
+
+  const r = await readFileTool.execute({ path: 'src/big.ts' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(r.content).toMatch(/too large to put in context whole/)
+  expect(r.content).toContain('Declarations:')
+  // Line numbers are the point: they are the argument for the follow-up call.
+  expect(r.content).toMatch(/thing0\s+:1/)
+  // And it is far smaller than the file it describes.
+  expect(r.content.length).toBeLessThan(body.length / 2)
+  // It names the ways forward rather than leaving a dead end.
+  expect(r.content).toContain('start_line')
+  expect(r.content).toContain('search_code')
+})
+
+test('a small file is untouched by any of this', async () => {
+  writeFileSync(join(tempRoot, 'src', 'small.ts'), 'export const x = 1\n', 'utf8')
+  const r = await readFileTool.execute({ path: 'src/small.ts' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(r.content).toContain('export const x = 1')
+  expect(r.content).not.toMatch(/too large/)
 })

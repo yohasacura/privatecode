@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { fsErrorReason } from './atomic-write.js'
 import { BOM } from './line-endings.js'
+import { outlineFile } from '../outline/tree-sitter.js'
 import type { Tool } from './types.js'
 
 export interface ReadFileArgs {
@@ -22,6 +23,80 @@ const MAX_LINES = 2000
  * be reclaimed.
  */
 const MAX_CHARS = 60_000
+
+/**
+ * Above this, a request for a whole file is answered with its structure instead.
+ *
+ * ~6k tokens, about 5% of the window. Chosen as the point where a file stops being
+ * something you read and becomes something you navigate.
+ */
+const WHOLE_FILE_LIMIT = 24_000
+/** Enough to see the imports, the namespace and how the file opens. */
+const HEAD_LINES = 50
+/** One line of a minified bundle is the whole file; the head must survive that. */
+const HEAD_LINE_LIMIT = 300
+/** And the head as a whole stays small — this path exists to spend less, not differently. */
+const HEAD_CHAR_LIMIT = 4_000
+
+/**
+ * What a large file IS, in place of what it contains: its declarations with line numbers,
+ * its opening, and the three ways to get the part actually wanted.
+ *
+ * The line numbers are the point. Every entry doubles as the argument for the next call, so
+ * "read the whole thing" turns into "read lines 210-260" without a second round of guessing.
+ * A file with no grammar mapped to it (json, markdown, plain text) still gets its head and
+ * its options — less useful, and better than 15k tokens of a config file.
+ */
+async function shapeOf(
+  abs: string, path: string, text: string, lines: readonly string[], total: number,
+): Promise<string> {
+  const parts: string[] = [
+    `${path} (${total} lines, ${Math.round(text.length / 1000)}k characters) — too large to ` +
+    'put in context whole, so this is its shape.',
+  ]
+
+  let outlined = false
+  try {
+    const result = await outlineFile(abs, text)
+    if (Array.isArray(result) && result.length > 0) {
+      outlined = true
+      parts.push('', 'Declarations:')
+      for (const e of result) {
+        parts.push(`  ${'  '.repeat(e.depth)}${e.kind} ${e.name}  :${e.line}`)
+      }
+    }
+  } catch { /* no outline is a worse answer, not a failed one */ }
+
+  // Bounded by characters as well as by lines, because "50 lines" is not a bound at all on
+  // the file this most often fires for. A minified bundle is one line of three megabytes,
+  // and a head that emitted it whole would be a context-saving path that spends more than
+  // the read it replaced — caught by the test that has guarded that case since before this
+  // function existed.
+  const headLines: string[] = []
+  let headChars = 0
+  for (let i = 0; i < Math.min(HEAD_LINES, total); i++) {
+    const raw = lines[i] ?? ''
+    const clipped = raw.length > HEAD_LINE_LIMIT
+      ? `${raw.slice(0, HEAD_LINE_LIMIT)}… (line is ${raw.length} characters)`
+      : raw
+    const row = `${i + 1}\t${clipped}`
+    if (headChars + row.length > HEAD_CHAR_LIMIT) break
+    headLines.push(row)
+    headChars += row.length + 1
+  }
+  parts.push('', `First ${headLines.length} line${headLines.length === 1 ? '' : 's'}:`)
+  parts.push(...headLines)
+
+  parts.push(
+    '',
+    'To read a part of it: read_file with start_line and end_line — the line numbers ' +
+    (outlined ? 'above are where each declaration starts. ' : 'in the head above are a start. ') +
+    'To find something by name: search_code with path=' + path + '. ' +
+    'For C#, csharp_nav answers where a symbol is defined and what references it without ' +
+    'reading the file at all.',
+  )
+  return parts.join('\n')
+}
 
 /** Ceiling on the copy the APP shows (`ToolResult.display`). The model's budget bounds what
  * becomes permanent context; this one only bounds what one transcript card can weigh. */
@@ -81,8 +156,10 @@ export const readFileTool: Tool<ReadFileArgs> = {
   readOnly: true,
   description:
     'Read a text file from the workspace. Returns lines numbered from 1, at most ' +
-    `${MAX_LINES} lines and ${MAX_CHARS} characters per call. Prefer a line range over ` +
-    'reading a whole large file: everything read stays in context permanently.',
+    `${MAX_LINES} lines and ${MAX_CHARS} characters per call. Asking for a LARGE file ` +
+    'whole returns its structure — declarations with line numbers — instead of its text, ' +
+    'so read it by range: everything read stays in context permanently and crowds out ' +
+    'your own reasoning.',
   parameters: {
     type: 'object',
     properties: {
@@ -201,10 +278,27 @@ export const readFileTool: Tool<ReadFileArgs> = {
     // ignoring whitespace" for an anchor that was in fact verbatim. edit_file and
     // write_file put the BOM back on the way out, so dropping it here loses nothing.
     const decoded = buffer.toString('utf8')
-    const lines = splitLines(decoded.startsWith(BOM) ? decoded.slice(1) : decoded)
+    const text = decoded.startsWith(BOM) ? decoded.slice(1) : decoded
+    const lines = splitLines(text)
     const total = lines.length
     const header = `${args.path} (${total} lines)`
     if (total === 0) return { ok: true, content: header }
+
+    // A whole-file read of a big file answers with its SHAPE, not its bytes.
+    //
+    // This is the one place the tool overrides what was asked, and the reason is measured
+    // rather than tidy. Context rot is real for this model family: accuracy falls well
+    // before the window is full, and coherent related text — exactly what a transcript of
+    // source files is — degrades attention faster than unrelated text. A single 60,000
+    // character read is 12% of a 131k window, spent permanently, on a file the model
+    // usually needs ten lines of.
+    //
+    // An explicit range is NOT intercepted: there the model has said what it wants and is
+    // entitled to it. This only catches "give me all of it", which is the request that is
+    // almost never what was meant.
+    if (args.start_line === undefined && args.end_line === undefined && text.length > WHOLE_FILE_LIMIT) {
+      return { ok: true, content: await shapeOf(abs, args.path, text, lines, total) }
+    }
 
     if (start > total) {
       return {
