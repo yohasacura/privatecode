@@ -573,3 +573,49 @@ Then CDP into the launched release exe: `location.href` is `http://tauri.localho
 embedded frontend, not a dead vite), the stylesheet hash matches the one vite just emitted,
 `.mcp-editor-json` exists as a rule in the served CSS, and the sessions rail is populated —
 which only happens if the sidecar booted and answered.
+
+## Three asks, and only one of them was work (2026-08-13)
+
+**Job objects were already done** — `app/src-tauri/src/job.rs`, commit 45da361, measured on
+2026-08-04. Listing them the day before as "agreed, not started" was my error, not a gap in
+the tree. Re-verified rather than taken on trust: `cargo run --example orphan_check -- close`
+prints its pids, drops the job handle and leaves; child, grandchild and a real headless Edge
+were all gone three seconds later. The control mode (`no-job`) is what makes that mean
+anything, and it is in the example for exactly that reason.
+
+**The bun spike says no, and not because it fails.** Everything works identically — vendored
+tree-sitter wasm, vendored ripgrep, child processes, the whole stdio protocol, and the
+never-call-`process.exit()` shutdown — with no shim and no code change. It costs **+5.5 MB
+and +40 % on every session boot** (`--minify --bytecode` makes both worse), and the bug class
+it would have bought was already killed by hand that morning. Written up with the numbers in
+`docs/SPIKE-BUN.md` so the question is not re-argued from intuition; the intuition going in
+was "one binary must be smaller", and it is not.
+
+**Skills shipped.** The shape that was missing: `AGENTS.md` is facts the model always pays
+for, a slash command is a prompt the USER types, a tool is code — a skill is text the MODEL
+opens when the task it names comes up. Catalogue in message 0 (~15 tokens a line, permanent),
+body up to 20 KB read only by the session that needs it.
+
+Three decisions worth keeping:
+
+- **The asymmetry is the feature, not an inconsistency.** The catalogue is frozen into message
+  0 because the transcript is append-only; the body is re-read on every call because these are
+  files edited by hand while the app is open. So a changed PROCEDURE applies to the next call
+  and a changed DESCRIPTION waits for a new session. Both halves have a test.
+- **The file layout is Claude Code's on purpose**, folded YAML scalars included, so a skill
+  written for that tool works when dropped in a folder. A format of our own would have bought
+  nothing and cost every skill in existence.
+- **`use_skill` has its own jail**, checked after realpath against the skill's directory. A
+  user-scope skill lives in `%APPDATA%` and has no workspace to be inside of, so
+  `Workspace.resolve` could not have expressed this at all.
+
+Found while writing it, from the repo contradicting itself: my own docstring called project
+skills "checked in with the project" while `private-dir.ts` writes a `.gitignore` containing
+`*` into the very folder they live in. The location is right — beside `.privatecode/commands`,
+its sibling feature — so the claim was what changed, in the docstring and in the window.
+
+Verified on the artifact, per the rule these three days established: the shipped release
+sidecar was asked for this repo's skills over the real protocol and returned the one that
+exists, folded description parsed into a single line, no problems; the running window serves a
+new stylesheet hash containing the six `.skills-*` rules. 753 core tests, 145 app, both
+typechecks clean.
