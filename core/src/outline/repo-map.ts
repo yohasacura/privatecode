@@ -109,7 +109,39 @@ const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[a-z]+$/i
  *
  * It is textual, so it only ever decides the ORDER of a listing — never an answer.
  */
-export function rankByReferences(files: readonly FileOutline[]): FileOutline[] {
+/** Standard damping. 20 iterations is far past convergence at this graph size. */
+const DAMPING = 0.85
+const PAGERANK_ITERATIONS = 20
+/** How much of the restart mass goes to the focus files when there are any. The rest stays
+ * spread over the repository, so a focused map is still a map and not a keyhole. */
+const FOCUS_SHARE = 0.7
+
+/**
+ * Orders files by how much of the project refers to them, transitively.
+ *
+ * Deliberately NOT "how many symbols does this file export": that measure crowns barrel
+ * files and generated types, which are the least informative things in a repository. A file
+ * whose names turn up in twenty others is one you need to know about; a file nobody mentions
+ * can wait until someone opens it.
+ *
+ * Transitively, because flat in-degree gets the second question wrong. A file referenced by
+ * one file that everything else depends on matters more than a file referenced by three
+ * leaves, and counting edges cannot see that. This is PageRank over a graph whose edge
+ * A -> B means "A mentions a name B defines" — the technique Aider's repo map uses, whose
+ * benchmarks are the external evidence that ranking is what makes a map worth its tokens.
+ *
+ * `focus` personalises it: restart mass concentrates on those paths, so files near the work
+ * in progress rise. It is empty at session start — nothing has happened yet — and filled at
+ * a compaction swap, which is the one moment we are rebuilding the system message anyway.
+ * Re-ranking on every turn would be Aider's design, and here it would throw away the prompt
+ * cache on every request: measured at 90 s per full re-prefill on a 43k transcript, which is
+ * far more than a better-ordered map can be worth.
+ *
+ * Textual, so it only ever decides the ORDER of a listing — never an answer.
+ */
+export function rankByReferences(
+  files: readonly FileOutline[], focus: readonly string[] = [],
+): FileOutline[] {
   // identifier -> how many files contain it at all.
   const spread = new Map<string, number>()
   for (const file of files) {
@@ -119,20 +151,60 @@ export function rankByReferences(files: readonly FileOutline[]): FileOutline[] {
     ? Infinity
     : files.length * VOCABULARY_SHARE
 
-  const score = (file: FileOutline): number => {
-    let total = 0
+  // Who defines what, ignoring names too widespread to mean anything.
+  const definers = new Map<string, number[]>()
+  files.forEach((file, i) => {
     for (const entry of file.entries) {
       if (entry.depth !== 0 || entry.kind === '...') continue
-      const seen = spread.get(entry.name) ?? 1
-      if (seen >= vocabularyAt) continue
-      // Minus one: its own file always contains its own name, and that is not a reference.
-      total += Math.max(0, seen - 1)
+      if ((spread.get(entry.name) ?? 1) >= vocabularyAt) continue
+      const list = definers.get(entry.name)
+      if (list === undefined) definers.set(entry.name, [i])
+      else if (!list.includes(i)) list.push(i)
     }
-    return total
+  })
+
+  // Outgoing edges: file i mentions a name defined in file j.
+  const out: Map<number, number>[] = files.map(() => new Map<number, number>())
+  files.forEach((file, i) => {
+    for (const id of file.identifiers) {
+      const targets = definers.get(id)
+      if (targets === undefined) continue
+      for (const j of targets) {
+        if (j === i) continue // its own file always contains its own name
+        out[i]!.set(j, (out[i]!.get(j) ?? 0) + 1)
+      }
+    }
+  })
+
+  const n = files.length
+  if (n === 0) return []
+  const focusSet = new Set(focus)
+  const focused = files.map((f) => focusSet.has(f.path))
+  const focusCount = focused.filter(Boolean).length
+  // The restart distribution: uniform, or tilted toward the work when there is any.
+  const restart = files.map((_, i) =>
+    focusCount === 0
+      ? 1 / n
+      : (focused[i] ? FOCUS_SHARE / focusCount : 0) + (1 - FOCUS_SHARE) / n)
+
+  let rank = [...restart]
+  for (let iter = 0; iter < PAGERANK_ITERATIONS; iter++) {
+    const next = restart.map((r) => (1 - DAMPING) * r)
+    let dangling = 0
+    for (let i = 0; i < n; i++) {
+      const edges = out[i]!
+      let weight = 0
+      for (const w of edges.values()) weight += w
+      if (weight === 0) { dangling += rank[i]!; continue }
+      for (const [j, w] of edges) next[j]! += DAMPING * rank[i]! * (w / weight)
+    }
+    // A file that references nothing would otherwise leak its mass out of the system.
+    for (let i = 0; i < n; i++) next[i]! += DAMPING * dangling * restart[i]!
+    rank = next
   }
 
-  return [...files]
-    .map((file) => ({ file, score: score(file), test: TEST_PATH.test(file.path) }))
+  return files
+    .map((file, i) => ({ file, score: rank[i]!, test: TEST_PATH.test(file.path) }))
     .sort((a, b) =>
       (Number(a.test) - Number(b.test)) ||
       (b.score - a.score) ||
@@ -341,35 +413,79 @@ export function renderMultiRepoMap(
   return `${heading}\n${sections.join('\n\n')}`
 }
 
-/** Builds the map for a workspace. Never throws: a workspace it cannot index yields an empty
- * map, and a session with no map is exactly the session this feature did not exist for. */
-export async function buildRepoMap(
-  workspace: string | readonly Mount[], budget = DEFAULT_MAP_BUDGET,
-): Promise<string> {
+/**
+ * The parsed workspace, kept so the map can be re-ordered without touching the disk again.
+ *
+ * Indexing is the expensive half — a walk, a read and a tree-sitter parse per file, 577 ms
+ * on this project and more on a real one. Ranking is arithmetic over what is already in
+ * memory. Splitting them is what makes a focused re-rank affordable at all.
+ */
+export interface RepoIndex {
+  /** One entry per mount; a single-folder workspace has one, unnamed. */
+  folders: { name: string | null; access: 'write' | 'read'; files: FileOutline[] }[]
+}
+
+/** Walks and parses. Never throws: a workspace it cannot index yields an empty index. */
+export async function indexRepo(workspace: string | readonly Mount[]): Promise<RepoIndex> {
   try {
     if (typeof workspace === 'string' || workspace.length === 1) {
       const root = typeof workspace === 'string' ? workspace : workspace[0]!.root
-      return renderRepoMap(rankByReferences(await indexWorkspace(root)), budget)
+      return { folders: [{ name: null, access: 'write', files: await indexWorkspace(root) }] }
     }
-    const folders: MappedFolder[] = []
+    const folders: RepoIndex['folders'] = []
     for (const mount of workspace) {
-      // Ranked per folder, not across the whole workspace: the reference-count damping in
-      // rankByReferences is calibrated against how many files it is looking at, and pooling a
-      // 40-file project with a 900-file one silently retunes it for both.
       folders.push({
         name: mount.name,
         access: mount.access,
         // Prefixed here rather than left to the section heading: a model reads one of these
         // lines and calls read_file with exactly the text it saw, and a bare `src/boot.ts`
         // would be refused by the jail for not naming a folder.
-        ranked: rankByReferences(await indexWorkspace(mount.root)).map((file) => ({
+        files: (await indexWorkspace(mount.root)).map((file) => ({
           ...file,
           path: `${mount.name}/${file.path.split(/[\\/]/).join('/')}`,
         })),
       })
     }
-    return renderMultiRepoMap(folders, budget)
+    return { folders }
+  } catch {
+    return { folders: [] }
+  }
+}
+
+/**
+ * Ranks and renders. Cheap enough to redo, which is the point.
+ *
+ * `focus` is the set of workspace-relative paths the session has been working in. Empty —
+ * the session-start case, when nothing has happened yet — gives the plain repository
+ * ordering. Supplied, it pulls the neighbourhood of the work upward without dropping the
+ * rest, so what the model reads after a compaction swap is a map OF ITS TASK rather than a
+ * map of the project in the abstract.
+ */
+export function renderIndex(
+  index: RepoIndex, budget = DEFAULT_MAP_BUDGET, focus: readonly string[] = [],
+): string {
+  try {
+    if (index.folders.length === 0) return ''
+    if (index.folders.length === 1 && index.folders[0]!.name === null) {
+      return renderRepoMap(rankByReferences(index.folders[0]!.files, focus), budget)
+    }
+    // Ranked per folder, not across the whole workspace: the reference-count damping in
+    // rankByReferences is calibrated against how many files it is looking at, and pooling a
+    // 40-file project with a 900-file one silently retunes it for both.
+    return renderMultiRepoMap(index.folders.map((f) => ({
+      name: f.name ?? '',
+      access: f.access,
+      ranked: rankByReferences(f.files, focus),
+    })), budget)
   } catch {
     return ''
   }
+}
+
+/** Builds the map for a workspace. Never throws: a workspace it cannot index yields an empty
+ * map, and a session with no map is exactly the session this feature did not exist for. */
+export async function buildRepoMap(
+  workspace: string | readonly Mount[], budget = DEFAULT_MAP_BUDGET,
+): Promise<string> {
+  return renderIndex(await indexRepo(workspace), budget)
 }

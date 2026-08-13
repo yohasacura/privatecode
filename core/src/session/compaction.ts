@@ -376,10 +376,14 @@ function listOf(paths: readonly string[]): string {
  * the list: which paths it has already been through, so it can re-acquire the one it needs
  * narrowly instead of walking the tree again.
  */
-export function continuationInventory(
-  messages: readonly ChatMessage[],
-  todos: readonly { text: string; status: 'pending' | 'in_progress' | 'completed' }[] = [],
-): string {
+/**
+ * Which files this session has opened and which it has changed, from the transcript.
+ *
+ * Exported because two things need the same answer and must not compute it differently: the
+ * briefing's inventory, and the repository map's focus at a compaction swap. "What is this
+ * session about" has one answer, and it is this.
+ */
+export function touchedPaths(messages: readonly ChatMessage[]): { seen: string[]; changed: string[] } {
   const seen: string[] = []
   const changed: string[] = []
   for (const m of messages) {
@@ -392,6 +396,14 @@ export function continuationInventory(
       if (!into.includes(path)) into.push(path)
     }
   }
+  return { seen, changed }
+}
+
+export function continuationInventory(
+  messages: readonly ChatMessage[],
+  todos: readonly { text: string; status: 'pending' | 'in_progress' | 'completed' }[] = [],
+): string {
+  const { seen, changed } = touchedPaths(messages)
   // A file that was changed was necessarily worked on; listing it twice says nothing extra.
   const seenOnly = seen.filter((p) => !changed.includes(p))
   const open = todos.filter((t) => t.status !== 'completed')

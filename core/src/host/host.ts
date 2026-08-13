@@ -110,7 +110,7 @@ import { loadUiConfig, saveUiConfig } from './ui-config.js'
 import { replayEntries, toolOutcomes } from './replay.js'
 import { rankFiles, walkFiles } from './file-search.js'
 import { attachFiles } from './attachments.js'
-import { buildRepoMap } from '../outline/repo-map.js'
+import { indexRepo, renderIndex, type RepoIndex } from '../outline/repo-map.js'
 import { gitCommit, gitDiff, suggestCommitMessage } from './git.js'
 import { describeFolder, discoverRepos, repoRootFor, toRepoPaths } from './repos.js'
 import { searchSessions } from './session-search.js'
@@ -286,6 +286,7 @@ export class SessionHost {
    * compaction stays off for the rest of this process's life; never re-probed by a later
    * session switch, matching the REPL's own probe-once-at-startup behavior (`repl.ts`'s
    * `contextLength` variable). */
+  private repoIndex: RepoIndex | undefined
   private contextLength: number | null = null
   /** What the server said it is serving, discovered at init. See `FALLBACK_MODEL`. */
   private model: string = FALLBACK_MODEL
@@ -505,7 +506,11 @@ export class SessionHost {
     // is message 0 of an append-only transcript, so there is no later moment to add it to.
     // A workspace it cannot index yields '' and the session runs exactly as it did before
     // maps existed.
-    this.repoMap = await buildRepoMap(loaded.mounts)
+    // Indexed once (a disk walk and a parse per file), rendered from memory. Keeping the
+    // index is what lets a compaction swap re-order the map around the work in progress
+    // without touching the disk again.
+    this.repoIndex = await indexRepo(loaded.mounts)
+    this.repoMap = renderIndex(this.repoIndex)
     // A disk scan, so it happens here rather than in the Session constructor. Per workspace,
     // like the map and the MCP servers: cloning a repository into the project mid-session is
     // not something a session switch should have to notice.
@@ -693,6 +698,13 @@ export class SessionHost {
     if (memory.layers.length > 0) sessionOpts.memory = memory
     if (skills.skills.length > 0) sessionOpts.skills = skills
     if (this.repoMap !== '') sessionOpts.repoMap = this.repoMap
+    // The map the session gets at a compaction swap: same index, re-ranked around whatever
+    // it has been working on. Handed as a callback because the index is the host's and the
+    // moment is the session's.
+    if (this.repoIndex !== undefined) {
+      const index = this.repoIndex
+      sessionOpts.rerankRepoMap = (focus) => renderIndex(index, undefined, focus)
+    }
     if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
     if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
     if (verifying.verify) sessionOpts.verify = verifying.verify

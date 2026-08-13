@@ -30,7 +30,7 @@ import { Transcript } from '../transcript/transcript.js'
 import { Workspace } from '../workspace.js'
 import {
   COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, continuationInventory, generateCompaction,
-  selectCompactionTail,
+  selectCompactionTail, touchedPaths,
 } from './compaction.js'
 import { SessionStore, type CompactionMarker, type SessionMeta } from './store.js'
 
@@ -133,6 +133,17 @@ export interface SessionOptions {
    * through the tool context.
    */
   skills?: LoadedSkills
+  /**
+   * Re-renders the repository map around the files the session has touched.
+   *
+   * Called at a compaction swap and nowhere else. That moment is chosen because it is the
+   * one time the system message is being rebuilt anyway — doing it per turn is Aider's
+   * design and would cost a full prompt-cache re-prefill on every request (measured: 90 s on
+   * a 43k transcript), which is more than a better-ordered map can be worth. It is also the
+   * moment the answer is best: by then the session has a subject, and the map that survives
+   * the swap can be about the work rather than about the project in the abstract.
+   */
+  rerankRepoMap?: (focus: readonly string[]) => string
   /** The project map, ALREADY BUILT by the host -- mirroring how `memory` and `engine`
    * arrive ready-made. Carried across compaction swaps for the same reason memory is: it
    * belongs to the session, not to one agent instance. */
@@ -384,7 +395,13 @@ export class Session {
    * Note the asymmetry this creates deliberately: the catalogue survives a compaction swap
    * unchanged, while a skill's BODY is re-read from disk on every `use_skill` call. */
   private readonly skillsText: string | undefined
-  private readonly repoMapText: string | undefined
+  /**
+   * NOT readonly, and this is the one thing in the frozen set that moves. At a compaction
+   * swap the system message is rebuilt anyway, so that is the one moment the map can be
+   * re-ordered around the work at no cache cost — and the moment it is worth most, because
+   * only by then does the session have a subject. A second swap re-focuses from here again.
+   */
+  private repoMapText: string | undefined
   /** The project's formatter, when `.privatecode/settings.json` configures one. */
   private readonly formatRunner: FormatRunner | undefined
   /** Built once per Session so a hook's failure counter spans the session, not one turn. */
@@ -1485,6 +1502,23 @@ export class Session {
     const { tail, droppedMessages } = selectCompactionTail(
       this.transcript.messages(), keepRecent, tailBudget,
     )
+
+    // BEFORE the system message is built, because that is what consumes it: re-order the
+    // repository map around what this session turned out to be about. Guarded for the same
+    // reason the inventory below is — an enrichment must not be able to cost the swap. A
+    // failure leaves the map exactly as it was, which is the map that worked until now.
+    try {
+      const rerank = this.opts.rerankRepoMap
+      if (rerank !== undefined) {
+        const { seen, changed } = touchedPaths(this.transcript.messages())
+        // Changed first: a file the session edited is more its subject than one it read once.
+        const focus = [...changed, ...seen]
+        if (focus.length > 0) {
+          const focused = rerank(focus)
+          if (focused !== '') this.repoMapText = focused
+        }
+      }
+    } catch { /* the previous map stands */ }
 
     const next = new Transcript()
     next.append({

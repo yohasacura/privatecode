@@ -204,3 +204,45 @@ describe('breadth', () => {
     expect(rendered).not.toContain('m29')
   })
 })
+
+describe('ranking is transitive, and can be focused', () => {
+  /** A file whose only content is `entries` it defines plus `identifiers` it mentions. */
+  const f = (path: string, defines: string[], mentions: string[]): FileOutline => ({
+    path,
+    entries: defines.map((name) => ({ kind: 'class', name, line: 1, depth: 0 })),
+    identifiers: new Set([...defines, ...mentions]),
+  })
+
+  // hub is referenced by ONE file — but that file is what everything else refers to.
+  // popular is referenced by three files that nothing refers to. Flat in-degree crowns
+  // `popular`; transitive ranking sees that `hub` is the one that matters.
+  const files = [
+    f('hub.ts', ['Hub'], []),
+    f('core.ts', ['Core'], ['Hub']),
+    f('popular.ts', ['Popular'], []),
+    f('leafA.ts', ['LeafA'], ['Popular']),
+    f('leafB.ts', ['LeafB'], ['Popular']),
+    f('leafC.ts', ['LeafC'], ['Popular']),
+    ...Array.from({ length: 8 }, (_, i) => f(`user${i}.ts`, [`User${i}`], ['Core'])),
+  ]
+
+  test('importance flows through references, not just counted at the edge', () => {
+    const ranked = rankByReferences(files).map((r) => r.path)
+    // `hub.ts` is cited once and `popular.ts` three times; transitively hub wins because
+    // its one citer is itself heavily cited.
+    expect(ranked.indexOf('hub.ts')).toBeLessThan(ranked.indexOf('popular.ts'))
+  })
+
+  test('focus lifts the work without collapsing the map to it', () => {
+    const ranked = rankByReferences(files, ['leafA.ts']).map((r) => r.path)
+    expect(ranked[0]).toBe('leafA.ts')
+    // Still a map: the rest of the repository is present and ordered, not discarded.
+    expect(ranked).toHaveLength(files.length)
+    expect(ranked).toContain('core.ts')
+  })
+
+  test('no focus is the plain repository ordering, unchanged', () => {
+    expect(rankByReferences(files, []).map((r) => r.path))
+      .toEqual(rankByReferences(files).map((r) => r.path))
+  })
+})
