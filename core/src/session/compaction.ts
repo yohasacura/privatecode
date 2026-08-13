@@ -401,7 +401,11 @@ export function touchedPaths(messages: readonly ChatMessage[]): { seen: string[]
 
 export function continuationInventory(
   messages: readonly ChatMessage[],
-  todos: readonly { text: string; status: 'pending' | 'in_progress' | 'completed' }[] = [],
+  todos: readonly {
+    text: string
+    status: 'pending' | 'in_progress' | 'completed'
+    done_when?: string
+  }[] = [],
 ): string {
   const { seen, changed } = touchedPaths(messages)
   // A file that was changed was necessarily worked on; listing it twice says nothing extra.
@@ -423,7 +427,10 @@ export function continuationInventory(
   if (open.length > 0) {
     parts.push(
       'Your todo list, as it actually stands (from the todo tool, not from memory):',
-      open.map((t) => `  [${t.status === 'in_progress' ? '>' : ' '}] ${t.text}`).join('\n'),
+      // The done criterion rides along: after a swap, "what counts as finished" is exactly
+      // what the replaced conversation was carrying.
+      open.map((t) => `  [${t.status === 'in_progress' ? '>' : ' '}] ${t.text}` +
+        (t.done_when !== undefined ? `\n        done when: ${t.done_when}` : '')).join('\n'),
     )
   }
   return parts.length === 0 ? '' : parts.join('\n\n')

@@ -488,7 +488,7 @@ export class SessionHost {
     this.workspace = new Workspace(loaded.mounts)
     this.client = new LlamaClient({ baseUrl: params.serverUrl, model: this.model })
     const browserSettings = loadBrowserSettings(params.workspaceRoot)
-    this.toolset = createToolset({ browser: browserSettings.options })
+    this.toolset = createToolset({ browser: browserSettings.options, workspaceRoot: params.workspaceRoot })
     this.store = new SessionStore(params.workspaceRoot)
     this.serverUrl = params.serverUrl
     const probed = await this.probeServer(params.serverUrl)

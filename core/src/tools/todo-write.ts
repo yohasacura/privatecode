@@ -9,8 +9,10 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
   name: 'todo_write',
   readOnly: true,
   description:
-    'Record a list of todos. Replace-whole-list semantics: every call replaces the entire todo list. ' +
-    'Notifies the host if a listener is connected.',
+    'Record the plan for a multi-step task, and keep it current as you work. Every call ' +
+    'replaces the whole list. It survives compaction and app restarts, so on a long task ' +
+    'this is what remembers the shape of the work when the conversation no longer does. ' +
+    'Give each step a done_when: what will actually show it is finished.',
   parameters: {
     type: 'object',
     properties: {
@@ -24,6 +26,12 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
               type: 'string',
               enum: ['pending', 'in_progress', 'completed'],
               description: 'The status of the todo.',
+            },
+            done_when: {
+              type: 'string',
+              description:
+                'What will show this step is done — a command that passes, a file that ' +
+                'exists, a behaviour you can observe. Not a restatement of the step.',
             },
           },
           required: ['text', 'status'],
@@ -59,6 +67,10 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
       if (!validStatuses.has(item.status)) {
         return { ok: false, error: `todos[${i}].status must be 'pending', 'in_progress', or 'completed'` }
       }
+      if (item.done_when !== undefined &&
+          (typeof item.done_when !== 'string' || item.done_when.length > 200)) {
+        return { ok: false, error: `todos[${i}].done_when must be a string of at most 200 characters` }
+      }
       if (item.status === 'in_progress') {
         inProgressCount++
       }
@@ -68,7 +80,16 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
       return { ok: false, error: 'at most one todo may have status in_progress' }
     }
 
-    return { ok: true, args: { todos: r.todos } }
+    // Normalised rather than passed through: `todos` arrives as `Partial<TodoItem>[]` and
+    // the persisted plan must not carry stray keys the model invented.
+    const todos = r.todos.map((t) => ({
+      text: t!.text!,
+      status: t!.status!,
+      ...(typeof t!.done_when === 'string' && t!.done_when.trim() !== ''
+        ? { done_when: t!.done_when.trim() }
+        : {}),
+    }))
+    return { ok: true, args: { todos } }
   },
   async execute(args, ctx) {
     if (!ctx.todos) {

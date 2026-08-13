@@ -32,12 +32,15 @@ export interface Toolset {
 
 export interface ToolsetOptions {
   browser?: BrowserOptions
+  /** Where the plan is persisted. Absent keeps the plan in memory only, which is what the
+   * one-shot CLI and most tests want. */
+  workspaceRoot?: string
 }
 
 export function createToolset(opts: ToolsetOptions = {}): Toolset {
   const registry = new ToolRegistry()
   const background = new BackgroundTasks()
-  const todos = new TodoStore()
+  const todos = new TodoStore(opts.workspaceRoot)
   const browser = new BrowserManager(opts.browser ?? {})
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
