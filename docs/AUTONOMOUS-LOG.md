@@ -545,3 +545,31 @@ Meta-lesson, third of its kind this week: "rebuilt and relaunched" was a claim a
 actions, not about what the user's window served. The artifact — here, the served page —
 is the only honest completion measure. Two diagnoses were written before anyone asked the
 page what it was showing.
+
+## The tail, closed (2026-08-13)
+
+Three days after the release build became the daily driver, the first thing it did on the
+user's machine was fail to start its own agent. `strip_verbatim_prefix` had been written for
+the DEBUG branch, where OUR code calls `canonicalize`; nobody suspected the release branch
+because our code calls nothing there — but Tauri's own `resource_dir()` returns a `\?\`
+path on Windows, and Node dies in `resolveMainPath` with `EISDIR: lstat 'D:'` given one.
+**The same bug, in the same file, found twice, because the second path to it went through
+someone else's function.** Fixed, and confirmed at the artifact: the spawned sidecar's
+command line now reads `D:\...\sidecar\node.exe D:\...\agent.cjs`, no prefix, process alive.
+
+MCP configuration became the JSON document itself (`mcp.rawRead` / `mcp.rawSave` replacing
+the modelled `mcp.read` / `mcp.save`), which left `mcp-editor.test.ts` driving deleted
+methods — the red the core suite had been carrying. Rewritten around the property that
+replaced the merge: the editor can express everything the loader can read, and no refusal
+ever touches the file. 740/741 core (the one red is `repo-map-mounts` timing out under
+full-suite parallelism — 464 ms alone against a 15 s limit), 145/145 app, both typechecks
+clean.
+
+**Verified the way the last three days taught: by asking the running window.** The staged
+sidecar was two hours older than the host changes it was supposed to carry, so a rebuild
+without `npm run bundle` would have shipped the old protocol under a new exe — checked by
+grepping the built `agent.cjs` for `mcp.rawRead` (2 hits, and 0 for the deleted methods).
+Then CDP into the launched release exe: `location.href` is `http://tauri.localhost/` (the
+embedded frontend, not a dead vite), the stylesheet hash matches the one vite just emitted,
+`.mcp-editor-json` exists as a rule in the served CSS, and the sessions rail is populated —
+which only happens if the sidecar booted and answered.
