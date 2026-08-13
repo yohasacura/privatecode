@@ -171,6 +171,9 @@ export interface AgentOptions {
   memory?: string
   /** The project map for the system prompt; see `outline/repo-map.ts`. */
   repoMap?: string
+  /** What earlier sessions learned; see `memory/project-notes.ts`. Frozen into message 0
+   * like the rest — a note recorded mid-session lands in the NEXT one. */
+  notes?: string
   /** The skills catalogue for the system prompt; see `skills/skills.ts`. Frozen into
    * message 0 like `memory`, and for the same reason — which is why a skill's DESCRIPTION
    * needs a new session while its body does not. */
@@ -441,6 +444,7 @@ export class Agent {
           // Conditional spread, not `memory: opts.memory`: tsconfig sets
           // exactOptionalPropertyTypes, so an explicit undefined is not the same as absent.
           ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
+          ...(opts.notes !== undefined ? { notes: opts.notes } : {}),
           ...(opts.skills !== undefined ? { skills: opts.skills } : {}),
           ...(opts.repoMap !== undefined ? { repoMap: opts.repoMap } : {}),
           ...(opts.context.workspace.multi

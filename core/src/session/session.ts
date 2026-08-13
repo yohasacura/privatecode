@@ -132,6 +132,9 @@ export interface SessionOptions {
    * itself. Its `catalogue` goes in the system message; the list itself reaches `use_skill`
    * through the tool context.
    */
+  /** What earlier sessions learned, ALREADY LOADED and already re-checked against the code
+   * it describes — see `memory/project-notes.ts`. */
+  notes?: string
   skills?: LoadedSkills
   /**
    * Re-renders the repository map around the files the session has touched.
@@ -395,6 +398,8 @@ export class Session {
    * Note the asymmetry this creates deliberately: the catalogue survives a compaction swap
    * unchanged, while a skill's BODY is re-read from disk on every `use_skill` call. */
   private readonly skillsText: string | undefined
+  /** Frozen like the rest of message 0: a note recorded this session lands in the next. */
+  private readonly notesText: string | undefined
   /**
    * NOT readonly, and this is the one thing in the frozen set that moves. At a compaction
    * swap the system message is rebuilt anyway, so that is the one moment the map can be
@@ -439,6 +444,7 @@ export class Session {
     // cannot drift, and a mid-session edit to AGENTS.md cannot reach message 0.
     this.memoryText = opts.memory && opts.memory.text !== '' ? opts.memory.text : undefined
     this.skillsText = opts.skills && opts.skills.catalogue !== '' ? opts.skills.catalogue : undefined
+    this.notesText = opts.notes !== undefined && opts.notes !== '' ? opts.notes : undefined
     this.repoMapText = opts.repoMap !== undefined && opts.repoMap !== '' ? opts.repoMap : undefined
     this.formatRunner = opts.formatRules && opts.formatRules.length > 0
       ? createFormatRunner(opts.formatRules, this.workspace)
@@ -1532,6 +1538,7 @@ export class Session {
         workspaceRoot: this.workspace.root,
         mode: this.meta.mode,
         ...(this.memoryText !== undefined ? { memory: this.memoryText } : {}),
+        ...(this.notesText !== undefined ? { notes: this.notesText } : {}),
         ...(this.skillsText !== undefined ? { skills: this.skillsText } : {}),
         ...(this.repoMapText !== undefined ? { repoMap: this.repoMapText } : {}),
         ...(this.workspace.multi
@@ -1843,6 +1850,7 @@ export class Session {
       loopDetector: this.loopDetector,
     }
     if (this.memoryText !== undefined) agentOpts.memory = this.memoryText
+    if (this.notesText !== undefined) agentOpts.notes = this.notesText
     if (this.skillsText !== undefined) agentOpts.skills = this.skillsText
     // One step may append at most the tail allowance. The two constants are the same
     // number on purpose: a batched step is atomic to the tail selector (one assistant

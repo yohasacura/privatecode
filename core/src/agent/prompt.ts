@@ -36,6 +36,14 @@ export interface PromptOptions {
     mcpServers: string[]
   }
   /**
+   * What earlier sessions worked out about this project (see `memory/project-notes.ts`).
+   *
+   * Beside `memory`, and after it, because the user's own standing notes outrank the
+   * agent's: one is instruction and the other is recollection. Absent leaves this function
+   * returning byte-for-byte what it returned before notes existed.
+   */
+  notes?: string
+  /**
    * The skills catalogue (see `skills/skills.ts`), or absent.
    *
    * It goes BEFORE `repoMap` and `memory` and after the tool paragraphs, because it is the
@@ -173,5 +181,6 @@ export function buildSystemPrompt(opts: PromptOptions): string {
   // function returning byte-for-byte what it returned before memory existed, which is what
   // keeps every existing assertion about this prompt meaningful.
   if (opts.memory !== undefined && opts.memory !== '') parts.push('', opts.memory)
+  if (opts.notes !== undefined && opts.notes !== '') parts.push('', opts.notes)
   return parts.join('\n')
 }

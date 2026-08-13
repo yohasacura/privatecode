@@ -14,6 +14,7 @@ import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory } from '../memory/project-memory.js'
+import { loadProjectNotes } from '../memory/project-notes.js'
 import { loadSkills, projectSkillsDir, userSkillsDir } from '../skills/skills.js'
 import { stopNavProcess } from '../csharp/nav-process.js'
 import { expandCommand, listCommands } from '../commands/custom.js'
@@ -660,6 +661,9 @@ export class SessionHost {
     // app: a skill added while the window is open should arrive with the next New session,
     // which is the same contract AGENTS.md has.
     const skills = loadSkills(workspaceRoot)
+    // Re-checked against the code on every session build, which is what keeps it honest: a
+    // note whose files moved since it was written is dropped here, not carried forward.
+    const notes = loadProjectNotes(workspaceRoot)
     const formatting = loadFormatRules(workspaceRoot)
     const hooking = loadHooks(workspaceRoot)
     const verifying = loadVerify(workspaceRoot)
@@ -697,6 +701,7 @@ export class SessionHost {
     }
     if (memory.layers.length > 0) sessionOpts.memory = memory
     if (skills.skills.length > 0) sessionOpts.skills = skills
+    if (notes.text !== '') sessionOpts.notes = notes.text
     if (this.repoMap !== '') sessionOpts.repoMap = this.repoMap
     // The map the session gets at a compaction swap: same index, re-ranked around whatever
     // it has been working on. Handed as a callback because the index is the host's and the
@@ -730,7 +735,8 @@ export class SessionHost {
     // session switch rather than only on the init that produced it: a user who switches
     // sessions must not lose the notice that one of their MCP servers failed to start.
     const problems = [
-      ...engine.problems, ...memory.problems, ...skills.problems, ...formatting.problems,
+      ...engine.problems, ...memory.problems, ...skills.problems, ...notes.problems,
+      ...formatting.problems,
       ...hooking.problems,
       ...verifying.problems,
       ...this.externalProblems,
