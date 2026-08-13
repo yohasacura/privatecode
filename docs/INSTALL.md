@@ -11,12 +11,13 @@ enabled. Nothing to run. (This section used to say the rule was missing and give
 command; it was created since, and the check that settles it is
 `Get-NetFirewallRule -Direction Inbound -Enabled True` filtered on port 8080.)
 
-The address the work laptop should point at, measured on this machine:
+The address the work laptop should point at: **`http://192.168.10.136:8080`** — this
+machine's Wi-Fi address, measured 2026-08-13. Both laptops must be on the same network, per
+the design.
 
-| route | URL | when |
-|---|---|---|
-| Tailscale | `http://100.120.168.94:8080` | anywhere, survives a DHCP change — **prefer this** |
-| Wi-Fi LAN | `http://192.168.10.136:8080` | same network only; the IP can change unless reserved |
+That address is handed out by DHCP and can change. Re-read it with `ipconfig` (the Wi-Fi
+adapter's IPv4) if the app suddenly cannot reach the server, or give the router a
+reservation for this machine.
 
 ## 1. Build the installer (GPU laptop)
 
@@ -54,14 +55,14 @@ unresolved, and the only fixes are turning it off (a reset to do so) or signing 
 
 Then, on first run, open **Settings** (gear, bottom right):
 
-- **Server URL** — one of the two addresses in step 0. The default `http://127.0.0.1:8080`
-  is the GPU laptop's own loopback and is wrong on any other machine; this is the single
-  most likely reason a fresh copy appears dead.
+- **Server URL** — the address from step 0. The default `http://127.0.0.1:8080` is the GPU
+  laptop's own loopback and is wrong on any other machine; this is the single most likely
+  reason a fresh copy appears dead.
 - **Workspace** — the project folder you will work on.
 
 The status bar's server dot goes green when the server is reachable. If it stays red: the
-llama.cpp server is not running on the GPU laptop, or the Wi-Fi address changed (use the
-Tailscale one, which does not).
+llama.cpp server is not running on the GPU laptop, the two machines are not on the same
+network, or its DHCP address changed — re-read it with `ipconfig`.
 
 ## 3. Daily use
 
