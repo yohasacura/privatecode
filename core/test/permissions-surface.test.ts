@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { PermissionEngine } from '../src/permissions/engine.js'
+import { parseRule, ruleMatches, suggestRules } from '../src/permissions/rules.js'
 import {
   addRuleToSettings, loadLayers, projectSettingsPath, removeRuleFromSettings,
 } from '../src/permissions/settings.js'
@@ -193,5 +194,59 @@ describe('withdrawing a rule', () => {
     writeFileSync(path, '{ this is not json', 'utf8')
     expect(() => removeRuleFromSettings(path, 'allow', 'x')).toThrow(/not valid JSON/)
     expect(readFileSync(path, 'utf8')).toBe('{ this is not json')
+  })
+})
+
+describe('what an approval offers to remember', () => {
+  /**
+   * The default offer has to be a rule that will still match tomorrow.
+   *
+   * Reported from a real session: "Allow for this session" was pressed and the same prompt
+   * came back immediately. The cause was the ORDER of the offers — the exact command line
+   * led the list and was therefore preselected, and the model rewrites the tail of a command
+   * between calls. These three are one decision to a person and three different keys to the
+   * engine:
+   *
+   *     dotnet build x.csproj 2>&1 | Select-Object -Last 30
+   *     dotnet build x.csproj 2>&1 | Select-Object -Last 20
+   *     dotnet build x.csproj 2>&1 | Select-Object -Last 20
+   */
+  const BUILD_30 = 'dotnet build src/W.csproj 2>&1 | Select-Object -Last 30'
+  const BUILD_20 = 'dotnet build src/W.csproj 2>&1 | Select-Object -Last 20'
+
+  test('the verb-plus-subcommand rule leads, and it survives the tail changing', () => {
+    const offers = suggestRules({ tool: 'run_command', command: BUILD_30 })
+    expect(offers[0]).toBe('run_command(dotnet build:*)')
+
+    // The property the ordering exists for: what the user accepted still covers the NEXT
+    // call. Asserted through the matcher, not by eyeballing the string.
+    const rule = parseRule(offers[0]!)
+    expect(rule).not.toBeNull()
+    expect(ruleMatches(rule!, { tool: 'run_command', command: BUILD_20 })).toBe(true)
+  })
+
+  test('the exact command is still offered, and it is the one that does NOT survive', () => {
+    const offers = suggestRules({ tool: 'run_command', command: BUILD_30 })
+    // Lowercased: `normalizeCommand` folds case, which is why a rule matches `GIT.EXE PUSH`
+    // as well as `git push`.
+    const exact = offers.find((o) => o.includes('last 30'))
+    expect(exact).toBeDefined()
+    const rule = parseRule(exact!)
+    expect(ruleMatches(rule!, { tool: 'run_command', command: BUILD_30 })).toBe(true)
+    expect(ruleMatches(rule!, { tool: 'run_command', command: BUILD_20 })).toBe(false)
+  })
+
+  test('a one-word command has no subcommand to generalise, so the exact rule leads', () => {
+    expect(suggestRules({ tool: 'run_command', command: 'ls' }))
+      .toEqual(['run_command(ls)', 'run_command(ls:*)'])
+  })
+
+  test('a session grant made from the leading offer stops the second prompt', () => {
+    // End to end through the engine, because that is where the user's complaint lives:
+    // ask once, remember, and the next variant must not ask again.
+    const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })
+    expect(engine.decide({ tool: 'run_command', command: BUILD_30 }).verdict).toBe('ask')
+    engine.addSessionRule(suggestRules({ tool: 'run_command', command: BUILD_30 })[0]!)
+    expect(engine.decide({ tool: 'run_command', command: BUILD_20 }).verdict).toBe('allow')
   })
 })

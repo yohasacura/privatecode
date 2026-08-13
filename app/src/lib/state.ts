@@ -118,7 +118,7 @@ export type ChatItem =
      * cleared the box and printed nothing at all, which reads as the app ignoring you. An
      * operation that occupies the model for minutes and then changes nothing has to say so.
      */
-    state: 'running' | 'applied' | 'skipped' | 'failed'
+    state: 'running' | 'ready' | 'applied' | 'skipped' | 'failed'
     /** Distinguishes "too short to be worth summarising" from "tried and could not help". */
     reason?: 'nothing-to-gain'
     beforeTokens?: number
@@ -945,15 +945,24 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         const item: ChatItem = { kind: 'compaction-record', id: state.nextId, state: 'running' }
         return { ...next, items: [...state.items, item], nextId: state.nextId + 1 }
       }
-      // `ready` is the summary arriving, not the swap landing: nothing to say yet.
-      if (action.state === 'ready') return next
-
-      const outcome: 'applied' | 'skipped' | 'failed' = action.state === 'applied'
+      // `ready` is the summary arriving, not the swap landing — and it used to update
+      // nothing at all, which is the bug this line replaces. The swap happens inside the
+      // NEXT send() (session.ts), so after a background compaction finishes, a user who
+      // simply waits is looking at a row that says "compacting…" and a spinner that will
+      // never stop. Reported as "it spins forever, I waited 30 minutes". It was not stuck:
+      // it was finished and waiting for a message the row never asked for.
+      const outcome: 'ready' | 'applied' | 'skipped' | 'failed' = action.state === 'ready'
+        ? 'ready'
+        : action.state === 'applied'
         ? 'applied'
         : action.state === 'postponed' ? 'skipped' : 'failed'
       let updated = false
       const items: ChatItem[] = [...state.items].reverse().map((item): ChatItem => {
-        if (updated || item.kind !== 'compaction-record' || item.state !== 'running') return item
+        // `ready` closes a running row; `applied` then closes the ready one. Both are live
+        // rows waiting for an outcome, so both are what a later event may land on.
+        const live = item.kind === 'compaction-record' &&
+          (item.state === 'running' || item.state === 'ready')
+        if (updated || !live) return item
         updated = true
         return {
           ...item,

@@ -954,3 +954,33 @@ describe('reduceChat: a tool call that never runs', () => {
     expect(cards[1]).toMatchObject({ args: '{"path":"b.ts"}' })
   })
 })
+
+describe('reduceChat: a background compaction that finishes while nobody is typing', () => {
+  /**
+   * The reported symptom was "it spins forever — I waited 30 minutes and then ran /compact
+   * myself". Nothing was stuck. Background compaction finishes at the end of a turn and
+   * parks the summary; the swap into the transcript happens inside the NEXT send(). The
+   * window had no state for that gap, so the live row kept saying "compacting…".
+   */
+  const phases = (...states: string[]): ChatAction[] =>
+    states.map((state) => ({ type: 'compaction', state }) as ChatAction)
+  const rowsOf = (s: ChatState): unknown[] => s.items.filter((i) => i.kind === 'compaction-record')
+
+  it('ready closes the spinner instead of leaving it running', () => {
+    const rows = rowsOf(run(phases('started', 'ready')))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ state: 'ready' })
+  })
+
+  it('the swap then lands on that same row rather than adding a second one', () => {
+    const rows = rowsOf(run(phases('started', 'ready', 'applied')))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ state: 'applied' })
+  })
+
+  it('a failure after ready still closes the same row', () => {
+    const rows = rowsOf(run(phases('started', 'ready', 'failed')))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ state: 'failed' })
+  })
+})

@@ -278,6 +278,21 @@ function CompactionRecord({ item }: { item: Extract<ChatItem, { kind: 'compactio
     )
   }
 
+  // The state that used to be invisible, and looked exactly like a hang because of it.
+  // The summary is written; the swap into the transcript happens at the START of the next
+  // turn (session.ts applies it inside send()), so there is genuinely nothing to wait for
+  // and nothing to do — which is only obvious if the row says it.
+  if (item.state === 'ready') {
+    return (
+      <Row kind="record record-compaction" marker={Icon.check()}>
+        <span class="record-text">
+          summary ready — it replaces the earlier conversation when you send your next
+          message. Nothing to wait for.
+        </span>
+      </Row>
+    )
+  }
+
   // The two outcomes that change nothing used to print nothing at all, so a `/compact` that
   // could not help looked exactly like a `/compact` that was ignored.
   if (item.state === 'skipped') {

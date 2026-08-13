@@ -456,14 +456,37 @@ export function ruleMatches(rule: ParsedRule, key: PermissionKey): boolean {
   return false
 }
 
+/**
+ * Command rules, and the one place "most specific first" is the wrong default.
+ *
+ * It is right for paths: `edit_file(src/app.ts)` is a decision a person can hold in their
+ * head, and the next edit to that file is genuinely the same decision. A command is not
+ * like that, because the model rewrites the tail of it constantly. Measured in a real
+ * session, three consecutive approvals for what a person would call one command:
+ *
+ *     dotnet build ...csproj 2>&1 | Select-Object -Last 30
+ *     dotnet build ...csproj 2>&1 | Select-Object -Last 20
+ *     dotnet build ...csproj 2>&1 | Select-Object -Last 20
+ *
+ * Leading with the exact string meant the DEFAULT choice in the approval dropdown was a
+ * rule that would essentially never match again — so "allow this for the session" was
+ * followed by the same prompt, over and over, which is how the user reported it. A default
+ * that cannot work is worse than a narrow one: it teaches people that remembering does not
+ * work, and they go back to clicking Allow forever.
+ *
+ * So the verb-plus-subcommand form leads, and the exact string stays in the list for
+ * someone who wants exactly it. Both are still shown in full before anything is granted —
+ * this changes which one is preselected, not what the user is told.
+ */
 function commandSuggestions(tool: string, command: string): string[] {
   const normalized = normalizeCommand(command)
   const tokens = normalized.split(' ').filter((t) => t.length > 0)
-  const suggestions = [`${tool}(${normalized})`]
+  const suggestions: string[] = []
   if (tokens.length >= 2) {
-    // Guarded by the length check above: tokens[0] and tokens[1] are real tokens.
+    // Guarded by the length check: tokens[0] and tokens[1] are real tokens.
     suggestions.push(`${tool}(${tokens[0]!} ${tokens[1]!}:*)`)
   }
+  suggestions.push(`${tool}(${normalized})`)
   if (tokens.length >= 1) {
     suggestions.push(`${tool}(${tokens[0]!}:*)`)
   }
