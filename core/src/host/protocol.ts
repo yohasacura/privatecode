@@ -325,7 +325,18 @@ export interface McpServerInfo {
 
 export interface StatusResult {
   serverUp: boolean
+  /**
+   * What the server reports it is serving, from its `/props` model path — not a constant
+   * this build was compiled with. Point the app at a different GGUF and this follows;
+   * before, it kept displaying the model the tool was originally written for.
+   */
   model?: string
+  /**
+   * The server's context window, in tokens. Worth showing beside the model because the two
+   * change together and the second explains the first: a 32k window compacts many times in
+   * a session where a 131k one never does.
+   */
+  contextLength?: number
   /** Absent before `init`. Empty means none are configured, which is the normal case. */
   mcpServers?: McpServerInfo[]
   /** Whether a browser is currently open, and where it is. */

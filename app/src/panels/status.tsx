@@ -40,6 +40,7 @@ export function StatusBar({
 }): VNode {
   const [serverUp, setServerUp] = useState<boolean | null>(null)
   const [model, setModel] = useState<string | null>(null)
+  const [contextLength, setContextLength] = useState<number | null>(null)
   const [flash, setFlash] = useState<string | null>(null)
   const turnRunningRef = useRef(chatState.turnRunning)
   turnRunningRef.current = chatState.turnRunning
@@ -55,6 +56,7 @@ export function StatusBar({
         if (cancelled) return
         setServerUp(r.serverUp)
         setModel(r.model ?? null)
+        setContextLength(r.contextLength ?? null)
       }).catch(() => { if (!cancelled) setServerUp(false) })
     }
     poll()
@@ -87,7 +89,18 @@ export function StatusBar({
         class={`status-dot ${serverUp === null ? 'dot-unknown' : serverUp ? 'dot-up' : 'dot-down'}`}
         title={serverUp === null ? 'checking the model server…' : serverUp ? 'model server is answering' : 'model server is not answering'}
       />
-      <span class="status-model">{model ?? 'no model'}</span>
+      {/* Both come from the server's own /props, not from a constant this build carries.
+          The window size is in the tooltip rather than the bar because it is the answer to
+          a question you only ask once a session — "why is it compacting so often" — and a
+          32k model answers it immediately where a 131k one never raises it. */}
+      <span
+        class="status-model"
+        title={contextLength !== null
+          ? `${model ?? 'no model'} — ${Math.round(contextLength / 1024)}k token context window`
+          : 'the model server has not said what it is serving yet'}
+      >
+        {model ?? 'no model'}
+      </span>
 
       {session && <span class={`status-mode mode-${session.mode}`}>{session.mode}</span>}
 

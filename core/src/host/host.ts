@@ -151,7 +151,36 @@ function describeFailure(e: unknown): string {
 /** Same hardcoded model id `cli.ts` uses -- the wire protocol's `InitParams` carries a
  * `serverUrl` but no model name, so this host resolves it the same way the CLI does rather
  * than inventing a second source of truth. */
-const MODEL = 'Qwen3.6-35B-A3B'
+/**
+ * What to call the model when the server will not say.
+ *
+ * llama.cpp serves whatever GGUF it was launched with and ignores the `model` field of a
+ * request entirely, so this was never a selector — it was a label, and a label that went
+ * stale the moment the user pointed the app at a different model. Reported exactly that way:
+ * an 80B was loaded and the window still said Qwen3.6-35B-A3B.
+ *
+ * The real name now comes from `/props`, once per workspace open. This remains only as the
+ * answer to "the server did not respond", where naming the model we cannot see would be a
+ * worse lie than naming the one this build was written for.
+ */
+const FALLBACK_MODEL = 'Qwen3.6-35B-A3B'
+
+/**
+ * `D:\models\Qwen3-Coder-Next-UD-Q3_K_XL.gguf` -> `Qwen3-Coder-Next-UD-Q3_K_XL`.
+ *
+ * The file name IS the useful name: it carries the family, the size and the quantisation,
+ * which are exactly the three things a person checking "what am I talking to" wants. A
+ * server that reports no path at all (an OpenAI-compatible proxy, say) yields null and the
+ * caller keeps its fallback rather than displaying an empty label.
+ */
+function modelNameFrom(modelPath: string | undefined): string | null {
+  if (modelPath === undefined || modelPath.trim() === '') return null
+  // Both separators: llama.cpp reports the path it was given, and on this platform that is
+  // a Windows one. Splitting on `/` alone returns the entire path as the "name".
+  const base = modelPath.split(/[\\/]/).pop() ?? ''
+  const name = base.replace(/\.gguf$/i, '').trim()
+  return name === '' ? null : name
+}
 
 /** Mirrors `tools/read-file.ts`'s `MAX_LINES`/`MAX_CHARS` (2000 lines / 60,000 chars) --
  * RESTATED here, not imported: those constants are not exported from read-file.ts, and this
@@ -257,6 +286,8 @@ export class SessionHost {
    * session switch, matching the REPL's own probe-once-at-startup behavior (`repl.ts`'s
    * `contextLength` variable). */
   private contextLength: number | null = null
+  /** What the server said it is serving, discovered at init. See `FALLBACK_MODEL`. */
+  private model: string = FALLBACK_MODEL
 
   private session: Session | undefined
   private engine: PermissionEngine | undefined
@@ -448,12 +479,18 @@ export class SessionHost {
     this.workspaceProblems = loaded.problems
     this.workspaceFile = loaded.file
     this.workspace = new Workspace(loaded.mounts)
-    this.client = new LlamaClient({ baseUrl: params.serverUrl, model: MODEL })
+    this.client = new LlamaClient({ baseUrl: params.serverUrl, model: this.model })
     const browserSettings = loadBrowserSettings(params.workspaceRoot)
     this.toolset = createToolset({ browser: browserSettings.options })
     this.store = new SessionStore(params.workspaceRoot)
     this.serverUrl = params.serverUrl
-    this.contextLength = await this.probeContextLength(params.serverUrl)
+    const probed = await this.probeServer(params.serverUrl)
+    this.contextLength = probed.contextLength
+    this.model = probed.model
+    // Built with the name we had a moment ago; rebuilt now that the server has told us. The
+    // field is only a label to llama.cpp, but it appears in its logs, and a log that says
+    // one model while another is loaded costs somebody an hour one day.
+    this.client = new LlamaClient({ baseUrl: params.serverUrl, model: this.model })
     this.externalProblems = [
       ...migrationProblems,
       ...browserSettings.problems,
@@ -513,13 +550,29 @@ export class SessionHost {
    * failure (network, timeout, a response missing the field) resolves to `null`, never
    * throws; `init`'s caller treats `null` as "compaction off, reported as a problem".
    */
-  private async probeContextLength(serverUrl: string): Promise<number | null> {
-    const probe = new LlamaClient({ baseUrl: serverUrl, model: MODEL, requestTimeoutMs: HEALTH_CHECK_TIMEOUT_MS })
+  /**
+   * What the server is actually serving: how big its window is, and what it is called.
+   *
+   * One request for both, because they come from the same `/props` and both go stale for
+   * the same reason — someone loaded a different model. The context length drives
+   * compaction, and the name is what the window shows; getting one right while the other
+   * was a hardcoded constant is how the app came to display a 35B label over an 80B.
+   *
+   * Never throws. A failure leaves the name at `FALLBACK_MODEL` and the length `null`,
+   * which `init` already treats as "compaction off, reported as a problem".
+   */
+  private async probeServer(serverUrl: string): Promise<{ contextLength: number | null; model: string }> {
+    const probe = new LlamaClient({
+      baseUrl: serverUrl, model: FALLBACK_MODEL, requestTimeoutMs: HEALTH_CHECK_TIMEOUT_MS,
+    })
     try {
       const props = await probe.props()
-      return props.contextLength ?? null
+      return {
+        contextLength: props.contextLength ?? null,
+        model: modelNameFrom(props.modelPath) ?? FALLBACK_MODEL,
+      }
     } catch {
-      return null
+      return { contextLength: null, model: FALLBACK_MODEL }
     }
   }
 
@@ -578,8 +631,15 @@ export class SessionHost {
     // order — left compaction off for the whole life of that workspace, with a warning that
     // named the symptom and no way back except knowing to re-open the workspace. Now New
     // session is the cure, and it costs one short GET on a path that is already broken.
+    // With an 80B this is no longer the unlucky case — it is the ordinary one. Loading tens
+    // of gigabytes takes minutes, the window opens in a second, and the first probe in
+    // `init` therefore misses on every cold start. It re-reads the NAME as well as the
+    // length now: getting the window size right while the label still said whatever the
+    // last successful probe said is how the app came to show a 35B over an 80B.
     if (this.contextLength === null && this.serverUrl !== undefined) {
-      this.contextLength = await this.probeContextLength(this.serverUrl)
+      const probed = await this.probeServer(this.serverUrl)
+      this.contextLength = probed.contextLength
+      this.model = probed.model
     }
 
     const { layers, problems: settingsProblems } = loadLayers(workspaceRoot)
@@ -1478,7 +1538,8 @@ export class SessionHost {
   private async status(): Promise<StatusResult> {
     if (!this.client) return { serverUp: false }
     const serverUp = await this.client.health()
-    const result: StatusResult = { serverUp, model: MODEL }
+    const result: StatusResult = { serverUp, model: this.model }
+    if (this.contextLength !== null) result.contextLength = this.contextLength
     if (this.mcp) result.mcpServers = this.mcp.servers()
     if (this.toolset) {
       const url = this.toolset.browser.currentUrl()
