@@ -1993,6 +1993,17 @@ kbd {
   cursor: pointer;
 }
 
+/* The selection, said out loud above the rows: the per-file checkbox lives in the row's
+   icon slot, which everywhere else in this column is decoration. */
+.commit-selection {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px var(--row-pad);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
 .commit-box {
   display: flex;
   gap: 6px;
@@ -2000,6 +2011,13 @@ kbd {
   border-top: 1px solid var(--border-soft);
 }
 .commit-box .input { flex: 1; min-width: 0; }
+/* Why Commit is disabled — on screen, not in a tooltip attached to the disabled control. */
+.commit-blocked {
+  padding: 0 var(--row-pad) 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
 
 /* The one place a session's own change can be undone on its own. Deliberately reached
    through a second click and never offered on a failed write, which changed nothing. */

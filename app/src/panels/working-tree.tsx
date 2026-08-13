@@ -133,6 +133,28 @@ function RepoSection({
         ? <PanelRow icon={Icon.check()} label="Nothing uncommitted" />
         : (
           <>
+            {/*
+              The selection, stated. The per-file checkbox sits in the row's ICON slot, which
+              in every other list in this column holds a decorative mark — so the column reads
+              as decoration, and the one thing standing between a typed message and a commit
+              was invisible. This line names the count, and is where "all of them" lives.
+            */}
+            <div class="commit-selection">
+              <input
+                type="checkbox"
+                class="tree-check"
+                checked={selected.size === repo.files.length}
+                onChange={() => setSelected(
+                  selected.size === repo.files.length
+                    ? new Set()
+                    : new Set(repo.files.map((f) => f.path)),
+                )}
+                title={selected.size === repo.files.length ? 'Clear the selection' : 'Select every file'}
+              />
+              <span>
+                {selected.size} of {repo.files.length} selected
+              </span>
+            </div>
             {repo.files.map((file) => (
               <FileRow
                 key={file.path}
@@ -159,6 +181,25 @@ function RepoSection({
                 {busy ? 'Committing…' : `Commit ${selected.size || ''}`.trim()}
               </button>
             </div>
+            {/*
+              Why the button is dead, on screen rather than in a tooltip. It USED to say this
+              only in `title` — on the disabled button itself, which is both the last place
+              anyone looks and an element whose tooltip a browser may decline to show at all.
+              So typing a message and finding the button still grey had no explanation
+              anywhere, which is exactly how it was reported.
+            */}
+            {selected.size === 0 && !busy && (
+              <div class="commit-blocked">
+                Tick the files to include — a commit takes what you selected, never the whole
+                tree.{' '}
+                <button
+                  class="link-button"
+                  onClick={() => setSelected(new Set(repo.files.map((f) => f.path)))}
+                >
+                  Select all {repo.files.length}
+                </button>
+              </div>
+            )}
           </>
           )}
     </PanelSection>
