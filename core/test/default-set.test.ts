@@ -16,6 +16,10 @@ import { buildRegistry } from '../src/tools/default-set.js'
 test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
   expect(buildRegistry().readOnlyNames().sort()).toEqual(
     ['ask_user', 'find_files', 'git_status', 'list_dir', 'read_file', 'search_code',
-     'symbol_outline', 'todo_write'],
+     'symbol_outline', 'todo_write',
+     // Reads a file the user wrote and returns its text; it runs nothing. Read-only is
+     // what makes it available in PLAN mode, which is where reading a procedure before
+     // proposing a plan is most of the point.
+     'use_skill'],
   )
 })

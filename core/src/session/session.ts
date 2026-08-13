@@ -14,6 +14,7 @@ import { recordToolOutcome } from '../host/replay.js'
 import { DecisionQueue, queueingPort } from './decisions.js'
 import type { Mount } from '../mounts.js'
 import type { LoadedMemory } from '../memory/project-memory.js'
+import type { LoadedSkills } from '../skills/skills.js'
 import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
 import { createHookRunner, type HookRunner, type HookSpec } from '../hooks/hooks.js'
@@ -124,6 +125,13 @@ export interface SessionOptions {
    * transcript discipline forbids.
    */
   memory?: LoadedMemory
+  /**
+   * The skills this workspace offers, ALREADY LOADED by the host — same discipline as
+   * `memory` and `engine`: the Session is handed ready-made state rather than reading files
+   * itself. Its `catalogue` goes in the system message; the list itself reaches `use_skill`
+   * through the tool context.
+   */
+  skills?: LoadedSkills
   /** The project map, ALREADY BUILT by the host -- mirroring how `memory` and `engine`
    * arrive ready-made. Carried across compaction swaps for the same reason memory is: it
    * belongs to the session, not to one agent instance. */
@@ -371,6 +379,10 @@ export class Session {
    * `opts.memory` so both build sites — `buildAgent` and `applyCompactionSwap` — use the
    * same text and cannot drift. */
   private readonly memoryText: string | undefined
+  /** The skills catalogue, frozen the same way and for the same reason as `memoryText`.
+   * Note the asymmetry this creates deliberately: the catalogue survives a compaction swap
+   * unchanged, while a skill's BODY is re-read from disk on every `use_skill` call. */
+  private readonly skillsText: string | undefined
   private readonly repoMapText: string | undefined
   /** The project's formatter, when `.privatecode/settings.json` configures one. */
   private readonly formatRunner: FormatRunner | undefined
@@ -408,6 +420,7 @@ export class Session {
     // Frozen here, once: both places that build a system message read this field, so they
     // cannot drift, and a mid-session edit to AGENTS.md cannot reach message 0.
     this.memoryText = opts.memory && opts.memory.text !== '' ? opts.memory.text : undefined
+    this.skillsText = opts.skills && opts.skills.catalogue !== '' ? opts.skills.catalogue : undefined
     this.repoMapText = opts.repoMap !== undefined && opts.repoMap !== '' ? opts.repoMap : undefined
     this.formatRunner = opts.formatRules && opts.formatRules.length > 0
       ? createFormatRunner(opts.formatRules, this.workspace)
@@ -1484,6 +1497,7 @@ export class Session {
         workspaceRoot: this.workspace.root,
         mode: this.meta.mode,
         ...(this.memoryText !== undefined ? { memory: this.memoryText } : {}),
+        ...(this.skillsText !== undefined ? { skills: this.skillsText } : {}),
         ...(this.repoMapText !== undefined ? { repoMap: this.repoMapText } : {}),
         ...(this.workspace.multi
           ? { folders: this.workspace.mounts.map((m) => ({ name: m.name, access: m.access })) }
@@ -1760,6 +1774,9 @@ export class Session {
     // Built once per Session, so the circuit breaker inside it counts failures across the
     // whole session rather than resetting every turn.
     if (this.formatRunner) context.format = this.formatRunner
+    // The LIST, not the catalogue text: `use_skill` resolves a name to a folder and reads
+    // the body from disk itself.
+    if (this.opts.skills && this.opts.skills.skills.length > 0) context.skills = this.opts.skills
     // The queueing wrapper, when this is an unattended run. Both the tool context (which
     // `ask_user` reads) and the agent's own gate get the SAME port: a question that parks in
     // one place and blocks in the other would stall the run on whichever path came first.
@@ -1774,6 +1791,7 @@ export class Session {
       loopDetector: this.loopDetector,
     }
     if (this.memoryText !== undefined) agentOpts.memory = this.memoryText
+    if (this.skillsText !== undefined) agentOpts.skills = this.skillsText
     // One step may append at most the tail allowance. The two constants are the same
     // number on purpose: a batched step is atomic to the tail selector (one assistant
     // message and its N replies cannot be split without invalidating the transcript), so

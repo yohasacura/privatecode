@@ -15,6 +15,7 @@ import { todoWriteTool } from './todo-write.js'
 import { askUserTool } from './ask-user.js'
 import { symbolOutlineTool } from './symbol-outline.js'
 import { browserTool } from './browser.js'
+import { useSkillTool } from './use-skill.js'
 import { BrowserManager, type BrowserOptions } from '../browser/manager.js'
 
 export interface Toolset {
@@ -39,7 +40,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
-                   symbolOutlineTool, browserTool]) {
+                   symbolOutlineTool, browserTool, useSkillTool]) {
     registry.register(t)
   }
   return { registry, background, todos, browser }

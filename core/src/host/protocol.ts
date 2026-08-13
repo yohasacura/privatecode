@@ -445,6 +445,7 @@ export interface HostMethodMap {
   'permissions.list': { params: PermissionsListParams; result: PermissionsListResult }
   'permissions.remove': { params: PermissionsRemoveParams; result: PermissionsRemoveResult }
   'permissions.add': { params: PermissionsAddParams; result: PermissionsAddResult }
+  'skills.list': { params: SkillsListParams; result: SkillsListResult }
   'mcp.rawRead': { params: McpRawReadParams; result: McpRawReadResult }
   'mcp.rawSave': { params: McpRawSaveParams; result: McpRawSaveResult }
   'run.start': { params: RunStartParams; result: RunStartResult }
@@ -731,6 +732,32 @@ export interface PermissionsAddParams {
   rule: string
 }
 export interface PermissionsAddResult { problem: string | null }
+
+/**
+ * The skills this workspace offers the model — what loaded, and what failed to.
+ *
+ * Read fresh from disk on every call rather than reported from the running session: the
+ * question this answers is "did the folder I just created get picked up", and answering it
+ * from a session built before that folder existed would answer the wrong question. The
+ * catalogue the RUNNING session is using is frozen in its message 0, so the screen says
+ * which of the two a reader is looking at.
+ */
+export type SkillsListParams = Empty
+export interface SkillView {
+  name: string
+  scope: 'user' | 'project'
+  description: string
+  /** Its SKILL.md, shown so the edit is never to a mystery location. */
+  path: string
+  /** Files bundled beside it, which `use_skill` can be asked for by name. */
+  files: string[]
+}
+export interface SkillsListResult {
+  skills: SkillView[]
+  problems: string[]
+  /** The two folders skills are read from, so an empty list can say where to put one. */
+  dirs: { scope: 'user' | 'project'; path: string }[]
+}
 
 /**
  * The PROJECT settings file's `mcpServers` object, verbatim, for direct editing.

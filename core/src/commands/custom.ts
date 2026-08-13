@@ -26,7 +26,7 @@ const MAX_COMMANDS = 100
 
 /** The REPL's own commands. A file named after one of these would be unreachable, so it
  * is reported rather than silently shadowed. */
-const RESERVED = new Set(['help', 'mode', 'new', 'sessions', 'resume', 'todos', 'compact', 'exit', 'memory'])
+const RESERVED = new Set(['help', 'mode', 'new', 'sessions', 'resume', 'todos', 'compact', 'exit', 'memory', 'skills'])
 
 /** Where the caller's arguments are substituted. Absent, they are appended on a new line
  * instead, so a template that forgets the placeholder still receives them. */

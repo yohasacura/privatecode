@@ -171,6 +171,10 @@ export interface AgentOptions {
   memory?: string
   /** The project map for the system prompt; see `outline/repo-map.ts`. */
   repoMap?: string
+  /** The skills catalogue for the system prompt; see `skills/skills.ts`. Frozen into
+   * message 0 like `memory`, and for the same reason — which is why a skill's DESCRIPTION
+   * needs a new session while its body does not. */
+  skills?: string
   /** User-configured after-tool hooks. Absent means none, the normal case. */
   hooks?: HookRunner
   /**
@@ -437,6 +441,7 @@ export class Agent {
           // Conditional spread, not `memory: opts.memory`: tsconfig sets
           // exactOptionalPropertyTypes, so an explicit undefined is not the same as absent.
           ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
+          ...(opts.skills !== undefined ? { skills: opts.skills } : {}),
           ...(opts.repoMap !== undefined ? { repoMap: opts.repoMap } : {}),
           ...(opts.context.workspace.multi
             ? {

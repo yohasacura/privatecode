@@ -14,6 +14,7 @@ import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory } from '../memory/project-memory.js'
+import { loadSkills, projectSkillsDir, userSkillsDir } from '../skills/skills.js'
 import { expandCommand, listCommands } from '../commands/custom.js'
 import { Session, type SessionOptions } from '../session/session.js'
 import { SessionStore } from '../session/store.js'
@@ -57,6 +58,7 @@ import type {
   PermissionsAddParams,
   PermissionsAddResult,
   McpRawReadResult,
+  SkillsListResult,
   McpRawSaveParams,
   McpRawSaveResult,
   FsReadParams,
@@ -393,6 +395,7 @@ export class SessionHost {
       case 'permissions.list': return this.permissionsList()
       case 'permissions.remove': return this.permissionsRemove(params as PermissionsRemoveParams)
       case 'permissions.add': return this.permissionsAdd(params as PermissionsAddParams)
+      case 'skills.list': return this.skillsList()
       case 'mcp.rawRead': return this.mcpRawRead()
       case 'mcp.rawSave': return this.mcpRawSave(params as McpRawSaveParams)
       case 'run.start': return this.runStart(params as RunStartParams)
@@ -578,6 +581,10 @@ export class SessionHost {
     // Loaded here, beside the settings layers, for the same reason: the Session is handed
     // ready-made state rather than reading files itself.
     const memory = loadProjectMemory(workspaceRoot)
+    // Beside memory for the same reason, and read per session build rather than once per
+    // app: a skill added while the window is open should arrive with the next New session,
+    // which is the same contract AGENTS.md has.
+    const skills = loadSkills(workspaceRoot)
     const formatting = loadFormatRules(workspaceRoot)
     const hooking = loadHooks(workspaceRoot)
     const verifying = loadVerify(workspaceRoot)
@@ -614,6 +621,7 @@ export class SessionHost {
       },
     }
     if (memory.layers.length > 0) sessionOpts.memory = memory
+    if (skills.skills.length > 0) sessionOpts.skills = skills
     if (this.repoMap !== '') sessionOpts.repoMap = this.repoMap
     if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
     if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
@@ -640,7 +648,8 @@ export class SessionHost {
     // session switch rather than only on the init that produced it: a user who switches
     // sessions must not lose the notice that one of their MCP servers failed to start.
     const problems = [
-      ...engine.problems, ...memory.problems, ...formatting.problems, ...hooking.problems,
+      ...engine.problems, ...memory.problems, ...skills.problems, ...formatting.problems,
+      ...hooking.problems,
       ...verifying.problems,
       ...this.externalProblems,
       // A folder that failed to attach is invisible in the tree, and an invisible folder is
@@ -1310,6 +1319,22 @@ export class SessionHost {
       return { problem: `${(e as Error).message}; the rule applies for this session only` }
     }
     return { problem: null }
+  }
+
+  /** What is on disk right now — see the protocol's note on why not the running session. */
+  private skillsList(): SkillsListResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const loaded = loadSkills(workspaceRoot)
+    return {
+      skills: loaded.skills.map((s) => ({
+        name: s.name, scope: s.scope, description: s.description, path: s.path, files: s.files,
+      })),
+      problems: loaded.problems,
+      dirs: [
+        { scope: 'project', path: projectSkillsDir(workspaceRoot) },
+        { scope: 'user', path: userSkillsDir() },
+      ],
+    }
   }
 
   /** The project file's `mcpServers` object, verbatim — see the protocol's rationale. */

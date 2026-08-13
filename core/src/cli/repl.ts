@@ -9,6 +9,7 @@ import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory, type LoadedMemory } from '../memory/project-memory.js'
+import { loadSkills, projectSkillsDir, userSkillsDir, type LoadedSkills } from '../skills/skills.js'
 import { expandCommand, listCommands } from '../commands/custom.js'
 import { Session, type SessionOptions } from '../session/session.js'
 import type { SessionStore } from '../session/store.js'
@@ -44,6 +45,8 @@ const HELP_TEXT =
   '  /sessions          list saved sessions in this workspace\n' +
   '  /resume <id>       resume a saved session\n' +
   '  /todos             show the current todo list\n' +
+  '  /memory            show which AGENTS.md files this session loaded\n' +
+  '  /skills            show the skills this session offers the model\n' +
   '  /compact           summarise and compact the context now\n' +
   '  /exit              save and quit\n\n' +
   'Anything else is sent to the model. Esc or Ctrl+C aborts a turn in progress; ' +
@@ -198,6 +201,9 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   /** The AGENTS.md layers this session was built with, and anything that went wrong
    * loading them -- printed beside `engine.problems` and reported by `/memory`. */
   let loadedMemory: LoadedMemory | undefined
+  /** Same idea for skills: what the catalogue in message 0 was built from, so `/skills`
+   * can answer "did my folder get picked up" — which nothing else can. */
+  let loadedSkills: LoadedSkills | undefined
   let memoryProblems: string[] = []
 
   /**
@@ -222,11 +228,14 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
 
     const { layers, problems } = loadLayers(opts.workspaceRoot)
     const memory = loadProjectMemory(opts.workspaceRoot)
+    const skills = loadSkills(opts.workspaceRoot)
     const formatting = loadFormatRules(opts.workspaceRoot)
     const hooking = loadHooks(opts.workspaceRoot)
     const verifying = loadVerify(opts.workspaceRoot)
     loadedMemory = memory
-    memoryProblems = [...memory.problems, ...formatting.problems, ...hooking.problems]
+    loadedSkills = skills
+    memoryProblems = [...memory.problems, ...skills.problems, ...formatting.problems,
+                      ...hooking.problems]
     const newEngine = new PermissionEngine({
       layers, mode: explicitMode ?? 'normal', workspaceRoot: opts.workspaceRoot, problems,
     })
@@ -240,6 +249,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       events: turnRenderer.events,
       interaction: port,
       ...(memory.layers.length > 0 ? { memory } : {}),
+      ...(skills.skills.length > 0 ? { skills } : {}),
       ...(formatting.rules.length > 0 ? { formatRules: formatting.rules } : {}),
       ...(hooking.hooks.length > 0 ? { hooks: hooking.hooks } : {}),
       ...(verifying.verify ? {
@@ -465,6 +475,31 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       'Edit these files and run /new to reload; a running session cannot pick them up.\n')
   }
 
+  /**
+   * What the skills catalogue was built from. The same argument `/memory` makes: a skill
+   * that loaded is invisible (the model simply knows to call it) and a skill that did NOT
+   * load is invisible in exactly the same way, so the two states are indistinguishable
+   * without asking.
+   */
+  function handleSkills(): void {
+    const loaded = loadedSkills
+    if (!loaded || loaded.skills.length === 0) {
+      process.stdout.write(
+        'No skills loaded. A skill is a folder with a SKILL.md in it, under\n' +
+        `  ${projectSkillsDir(opts.workspaceRoot)}\n  ${userSkillsDir()}\n`)
+      for (const p of loaded?.problems ?? []) process.stdout.write(`  problem: ${p}\n`)
+      return
+    }
+    for (const s of loaded.skills) {
+      process.stdout.write(`  ${s.name} (${s.scope})  ${s.description}\n`)
+      process.stdout.write(`      ${s.path}\n`)
+      if (s.files.length > 0) process.stdout.write(`      bundled: ${s.files.join(', ')}\n`)
+    }
+    for (const p of loaded.problems) process.stdout.write(`  problem: ${p}\n`)
+    process.stdout.write(
+      'Bodies are re-read on every use; a changed DESCRIPTION needs /new to reach the prompt.\n')
+  }
+
   function handleTodos(): void {
     const todos = opts.toolset.todos.list()
     if (todos.length === 0) {
@@ -520,6 +555,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       case '/resume': await handleResume(arg); return
       case '/todos': handleTodos(); return
       case '/memory': handleMemory(); return
+      case '/skills': handleSkills(); return
       case '/compact': await handleCompact(); return
       case '/exit': await shutdown(); return
       default: process.stdout.write(`Unknown command "${cmd}". Type /help for the list.\n`); return

@@ -36,6 +36,17 @@ export interface PromptOptions {
     mcpServers: string[]
   }
   /**
+   * The skills catalogue (see `skills/skills.ts`), or absent.
+   *
+   * It goes BEFORE `repoMap` and `memory` and after the tool paragraphs, because it is the
+   * same kind of thing those are: a statement about what this session can do and when to
+   * reach for it. The two blocks after it are listings — a derived map and the user's
+   * standing notes — and an instruction placed after a listing competes with it for
+   * attention. Absent leaves this function returning byte-for-byte what it returned before
+   * skills existed.
+   */
+  skills?: string
+  /**
    * The folders this workspace is made of, when there is more than one.
    *
    * Names only, never paths: the model addresses `engine/lib.rs`, and where that folder
@@ -156,6 +167,7 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     )
   }
 
+  if (opts.skills !== undefined && opts.skills !== '') parts.push('', opts.skills)
   if (opts.repoMap !== undefined && opts.repoMap !== '') parts.push('', opts.repoMap)
   // Memory goes LAST -- see PromptOptions.memory. An absent or empty block leaves this
   // function returning byte-for-byte what it returned before memory existed, which is what

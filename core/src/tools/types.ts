@@ -2,6 +2,7 @@ import type { Workspace } from '../workspace.js'
 import type { InteractionPort, TodoStore } from '../interaction.js'
 import type { FormatRunner } from '../format/runner.js'
 import type { BrowserManager } from '../browser/manager.js'
+import type { LoadedSkills } from '../skills/skills.js'
 
 export interface ToolContext {
   workspace: Workspace
@@ -14,6 +15,15 @@ export interface ToolContext {
    * is the normal case. See `format/runner.ts` for why this runs inside the write tools
    * rather than as an after-tool hook. */
   format?: FormatRunner
+  /**
+   * The skills this session was built with, for `use_skill` to resolve a name against.
+   *
+   * Only the LOCATIONS travel here — bodies are read from disk at call time (see
+   * `readSkillText`), so a skill edited while the app is open takes effect on the next call
+   * rather than the next session. Absent means the session has none, which is the normal
+   * state of a workspace nobody has written one for.
+   */
+  skills?: LoadedSkills
 }
 
 export interface ToolResult {

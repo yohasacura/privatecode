@@ -14,6 +14,7 @@ import { runUnattended } from './cli/unattended.js'
 import { PermissionEngine, type AgentMode } from './permissions/engine.js'
 import { loadLayers } from './permissions/settings.js'
 import { loadProjectMemory } from './memory/project-memory.js'
+import { loadSkills } from './skills/skills.js'
 import { loadFormatRules } from './format/config.js'
 import { loadHooks } from './hooks/hooks.js'
 import { loadVerify } from './verify/config.js'
@@ -246,6 +247,10 @@ async function main() {
   // same workspace, which is the kind of difference nobody ever thinks to check.
   const memory = loadProjectMemory(values.workspace)
   problems.push(...memory.problems)
+  // Same argument once more: a workspace's skills are part of what the agent IS there, and
+  // a REPL that did not offer them would be a second set of rules for the same project.
+  const skills = loadSkills(values.workspace)
+  problems.push(...skills.problems)
   // Same argument as the line above, applied to the rest of the workspace's configuration:
   // a one-shot --task that quietly skipped the formatter, the after-tool hooks and the
   // verify command was a second set of rules for the same project, and the comment warning
@@ -273,6 +278,7 @@ async function main() {
     events: renderer.events,
   }
   if (memory.layers.length > 0) sessionOpts.memory = memory
+  if (skills.skills.length > 0) sessionOpts.skills = skills
   if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
   if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
   if (verifying.verify) {

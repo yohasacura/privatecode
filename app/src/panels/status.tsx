@@ -10,6 +10,7 @@ import type { SessionSwitch } from './sessions-rail'
 import { Folders } from './folders'
 import { Permissions } from './permissions'
 import { McpEditor } from './mcp-editor'
+import { Skills } from './skills'
 
 /**
  * The status bar and the settings modal.
@@ -189,7 +190,7 @@ export function SettingsModal({
   const [recent, setRecent] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
-  const [tab, setTab] = useState<'workspace' | 'permissions' | 'mcp'>('workspace')
+  const [tab, setTab] = useState<'workspace' | 'permissions' | 'skills' | 'mcp'>('workspace')
 
   useEffect(() => {
     client.call('config.get', {})
@@ -248,6 +249,7 @@ export function SettingsModal({
           {([
             ['workspace', 'Workspace'],
             ['permissions', 'Permissions'],
+            ['skills', 'Skills'],
             ['mcp', 'MCP servers'],
           ] as const).map(([id, label]) => (
             <button
@@ -326,6 +328,8 @@ export function SettingsModal({
         {tab === 'permissions' && (
           <Permissions client={client} {...(liveMode !== undefined ? { liveMode } : {})} />
         )}
+
+        {tab === 'skills' && <Skills client={client} />}
 
         {tab === 'mcp' && (
           <>

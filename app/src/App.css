@@ -2464,6 +2464,33 @@ kbd {
 .perms-add-rule { flex: 1; min-width: 0; font-family: var(--mono); }
 .perms-add-scope { flex: none; width: 118px; }
 
+/* Skills: a read-only audit of what the model was offered. Nothing here is editable — the
+   thing that edits markdown well is already on this machine — so the whole screen is a list
+   plus the two folders it was read from. */
+.skills { display: flex; flex-direction: column; gap: 4px; }
+.skills-scope {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.skills-description { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+.skills-path {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* The end of a path identifies it; the start is the same for every row. */
+  direction: rtl;
+  text-align: left;
+}
+.skills-files { margin-top: 3px; font-size: 11px; color: var(--text-faint); }
+.skills-dir { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+
 /* The MCP editor, VS Code's way: the JSON document itself. The textarea is the whole
    point — everything the loader can read is expressible, including fields no form
    anticipated. */
