@@ -179,3 +179,16 @@ describe('recognising the server\'s own overflow refusal', () => {
     }))).toBeNull()
   })
 })
+
+test('the summary request asks the model not to think', () => {
+  // Not a style preference: with thinking on, both compactions of a real run generated past
+  // the 3000-token budget (4022 and 4298), which means each was truncated and re-generated
+  // at 4500 to produce one clipped briefing. Turning it off is what makes the budget enough.
+  const req = buildCompactionRequest({
+    messages: [{ role: 'user', content: 'do the thing' }, { role: 'assistant', content: 'done' }],
+    workspaceRoot: 'D:/x',
+    budgetTokens: 0,
+  })
+  expect(req.disableThinking).toBe(true)
+  expect(req.toolChoice).toBe('none')
+})

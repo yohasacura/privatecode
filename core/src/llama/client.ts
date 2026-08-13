@@ -83,6 +83,10 @@ export class LlamaClient {
     }
     if (req.tools?.length) payload.tools = req.tools
     if (req.toolChoice) payload.tool_choice = req.toolChoice
+    // `chat_template_kwargs` and NOT `reasoning_budget`: both are accepted by the server and
+    // only the first one works. Measured — `reasoning_budget: 0` came back with 3554
+    // characters of thinking, i.e. silently ignored.
+    if (req.disableThinking) payload.chat_template_kwargs = { enable_thinking: false }
 
     const started = performance.now()
     const data = await this.post('/v1/chat/completions', payload, req.signal)

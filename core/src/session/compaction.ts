@@ -143,6 +143,13 @@ export function buildCompactionRequest(input: CompactionInput): ChatRequest {
     messages: [...fitForSummary(input.messages, input.budgetTokens), briefing],
     maxTokens: MAX_TOKENS,
     toolChoice: 'none',
+    // The one request in this system with nothing to decide: the whole conversation is in
+    // front of it and the job is to restate it. Measured in a real 27-minute run before
+    // this line existed, both compactions generated 4022 and 4298 tokens against a 3000
+    // budget — they were over the cap, truncated, and re-generated at 4500. The thinking
+    // was eating the budget the briefing needed, so every compaction paid for two
+    // generations to produce one clipped summary. See `disableThinking`.
+    disableThinking: true,
   }
 }
 

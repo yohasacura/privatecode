@@ -166,3 +166,25 @@ test('props() maps all fields from /props correctly', async () => {
   expect(result.contextLength).toBe(131072)
   expect(result.totalSlots).toBe(1)
 })
+
+test('thinking can be switched off for one request, and is on by default', async () => {
+  // The switch that makes compaction affordable. Measured on the real server: same prompt,
+  // 900-token budget — thinking on gave 20.7 s and 719 characters of answer, thinking off
+  // gave 5.2 s and 1069. The budget was going to the thinking and the ANSWER was what got
+  // truncated, which is why every compaction was generating twice.
+  const seen: Record<string, unknown>[] = []
+  const fake = await startFakeServer((body) => {
+    seen.push(body as Record<string, unknown>)
+    return { choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] }
+  })
+  stop = fake.close
+  const client = new LlamaClient({ baseUrl: fake.url, model: 'Qwen3.6-35B-A3B' })
+
+  await client.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 10 })
+  expect(seen[0]!['chat_template_kwargs']).toBeUndefined()
+
+  await client.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 10, disableThinking: true })
+  // `chat_template_kwargs`, not `reasoning_budget`: the server accepts both and honours only
+  // this one — `reasoning_budget: 0` came back with 3554 characters of thinking.
+  expect(seen[1]!['chat_template_kwargs']).toEqual({ enable_thinking: false })
+})

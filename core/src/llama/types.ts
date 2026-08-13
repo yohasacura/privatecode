@@ -33,6 +33,22 @@ export interface ChatRequest {
   maxTokens: number
   /** Optional override; defaults to the fixed Qwen sampling profile. */
   sampling?: Sampling
+  /**
+   * Turns Qwen3.6's thinking OFF for this one request.
+   *
+   * The model thinks by default and that is deliberate everywhere it decides something.
+   * It is waste on a request that only has to restate material already in front of it,
+   * and the waste is not small — measured on this server, same prompt, 900-token budget:
+   *
+   *   thinking on   20.7 s   3079 chars of thinking,  719 chars of answer
+   *   thinking off   5.2 s      0                    1069 chars of answer
+   *
+   * Four times faster AND more of the thing that was asked for, because with thinking on
+   * most of the budget went to the thinking and the answer was what got truncated.
+   *
+   * Absent means on, so every existing caller is unaffected.
+   */
+  disableThinking?: boolean
   signal?: AbortSignal
 }
 
