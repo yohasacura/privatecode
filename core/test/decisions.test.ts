@@ -56,7 +56,7 @@ describe('the queue file', () => {
     // What a crash mid-append looks like.
     const q = new DecisionQueue(root)
     q.add({ kind: 'question', id: 'd4', at: 'now', sessionId: 's1', question: 'kept', options: [] })
-    const path = join(root, '.privatecode', 'decisions.jsonl')
+    const path = join(root, '.privatecode', 'state', 'decisions.jsonl')
     const body = readFileSync(path, 'utf8')
     rmSync(path)
     const half = '{"kind":"question","id":"d5"'

@@ -18,7 +18,7 @@ let root: string
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'pc-replay-'))
-  mkdirSync(join(root, '.privatecode', 'sessions'), { recursive: true })
+  mkdirSync(join(root, '.privatecode', 'state', 'sessions'), { recursive: true })
 })
 afterEach(() => { rmSync(root, { recursive: true, force: true }) })
 
@@ -189,7 +189,7 @@ describe('whether each call worked', () => {
   })
 
   test('a corrupt line loses one tick mark, not the file', () => {
-    const path = join(root, '.privatecode', 'sessions', 's2.ui.jsonl')
+    const path = join(root, '.privatecode', 'state', 'sessions', 's2.ui.jsonl')
     writeFileSync(path, `{"id":"c1","ok":false}\n{not json\n{"id":"c2","ok":false}\n`, 'utf8')
     const outcomes = toolOutcomes(root, 's2')
     expect(outcomes.get('c1')).toBe(false)

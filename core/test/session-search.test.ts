@@ -16,13 +16,13 @@ let root: string
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'pc-search-'))
-  mkdirSync(join(root, '.privatecode', 'sessions'), { recursive: true })
+  mkdirSync(join(root, '.privatecode', 'state', 'sessions'), { recursive: true })
 })
 afterEach(() => { rmSync(root, { recursive: true, force: true }) })
 
 function session(id: string, title: string, messages: { role: string; content: string }[], updatedAt = '2026-08-01T10:00:00.000Z'): SessionMeta {
   writeFileSync(
-    join(root, '.privatecode', 'sessions', `${id}.jsonl`),
+    join(root, '.privatecode', 'state', 'sessions', `${id}.jsonl`),
     messages.map((m) => JSON.stringify(m)).join('\n') + '\n',
     'utf8',
   )

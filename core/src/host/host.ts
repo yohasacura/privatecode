@@ -28,7 +28,7 @@ import {
   type Mount, type WorkspaceFile,
 } from '../mounts.js'
 import { discoverUnits, type SnapshotUnit } from '../checkpoints/units.js'
-import { PRIVATE_DIR } from '../private-dir.js'
+import { PRIVATE_DIR, STATE_DIR, migratePrivateDir, statePath } from '../private-dir.js'
 import { runUnattended } from '../cli/unattended.js'
 import type {
   AbortResult,
@@ -434,6 +434,10 @@ export class SessionHost {
     await this.stopExternal()
 
     this.workspaceRoot = params.workspaceRoot
+    // BEFORE anything opens a session store or a checkpoint store: this renames directories,
+    // and renaming a path a live object already holds is how a migration eats history. Every
+    // teardown above has already run, so nothing of the OLD workspace is holding these.
+    const migrationProblems = migratePrivateDir(params.workspaceRoot)
     this.fileIndex = undefined
     // The folders this workspace is made of. A folder with no definition file is one mount
     // and behaves exactly as it always has; a folder that was renamed or now overlaps another
@@ -451,6 +455,7 @@ export class SessionHost {
     this.serverUrl = params.serverUrl
     this.contextLength = await this.probeContextLength(params.serverUrl)
     this.externalProblems = [
+      ...migrationProblems,
       ...browserSettings.problems,
       ...await this.connectMcpServers(params.workspaceRoot),
     ]
@@ -1228,9 +1233,9 @@ export class SessionHost {
 
   private async worklogRead(): Promise<WorklogReadResult> {
     const { workspaceRoot } = this.requireInitialized()
-    const path = `${PRIVATE_DIR}/worklog.md`
+    const path = `${PRIVATE_DIR}/${STATE_DIR}/worklog.md`
     try {
-      return { text: await readFile(join(workspaceRoot, PRIVATE_DIR, 'worklog.md'), 'utf8'), path }
+      return { text: await readFile(statePath(workspaceRoot, 'worklog.md'), 'utf8'), path }
     } catch {
       // An absent log is the normal state of a workspace that has never run unattended, not
       // an error to put in front of someone.

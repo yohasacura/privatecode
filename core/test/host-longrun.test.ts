@@ -140,7 +140,7 @@ test('the work log reads back, and an empty one is not an error', async () => {
     await host.handle({ id: 2, method: 'worklog.read', params: {} })
     // A workspace that has never run is the normal case, not something to put in front of
     // someone as a failure.
-    expect(replyOf(transport, 2)).toMatchObject({ text: '', path: '.privatecode/worklog.md' })
+    expect(replyOf(transport, 2)).toMatchObject({ text: '', path: '.privatecode/state/worklog.md' })
 
     await host.handle({ id: 3, method: 'send', params: { text: 'do a thing' } })
     await host.handle({ id: 4, method: 'worklog.read', params: {} })

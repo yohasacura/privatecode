@@ -16,7 +16,7 @@ let root: string
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'pc-worklog-')) })
 afterEach(() => { rmSync(root, { recursive: true, force: true }) })
 
-const body = (): string => readFileSync(join(root, '.privatecode', 'worklog.md'), 'utf8')
+const body = (): string => readFileSync(join(root, '.privatecode', 'state', 'worklog.md'), 'utf8')
 const at = new Date('2026-08-04T14:22:00')
 
 describe('an entry', () => {

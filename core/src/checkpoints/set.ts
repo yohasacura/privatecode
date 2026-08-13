@@ -1,6 +1,6 @@
 import { appendFileSync, readFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
-import { ensurePrivateDir, PRIVATE_DIR } from '../private-dir.js'
+import { ensureStateDir, statePath } from '../private-dir.js'
 import { type Checkpoint, CheckpointStore } from './store.js'
 import type { SnapshotUnit } from './units.js'
 
@@ -49,7 +49,7 @@ export class CheckpointSet {
     this.units = units
     this.stores = units.map((u) => new CheckpointStore(u))
     this.primaryRoot = primaryRoot
-    this.manifestPath = join(primaryRoot, PRIVATE_DIR, MANIFEST_DIR, MANIFEST_FILE)
+    this.manifestPath = statePath(primaryRoot, MANIFEST_DIR, MANIFEST_FILE)
     // One unit and nothing nested inside it: the old world, untouched.
     this.single = units.length === 1 ? this.stores[0]! : null
   }
@@ -262,7 +262,7 @@ export class CheckpointSet {
   }
 
   private append(record: CheckpointSetRecord): void {
-    ensurePrivateDir(this.primaryRoot, MANIFEST_DIR)
+    ensureStateDir(this.primaryRoot, MANIFEST_DIR)
     appendFileSync(this.manifestPath, `${JSON.stringify(record)}\n`, 'utf8')
   }
 }

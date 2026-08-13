@@ -78,8 +78,8 @@ export function Skills({ client }: { client: ProtocolClient }): VNode {
         This is what is on disk now. The running session uses the catalogue it started with,
         so a NEW skill — or a changed description — reaches the model on New session. A
         change to a skill's steps applies immediately, because the body is read each time
-        it is used. The project folder is inside <code>.privatecode</code>, which is
-        git-ignored: a skill there stays in this checkout.
+        it is used. The project folder lives in <code>.privatecode/skills</code> and is
+        <em>not</em> git-ignored, so a skill there can travel with the repository.
       </div>
     </div>
   )

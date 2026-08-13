@@ -247,7 +247,7 @@ test('a session driven without the host records its outcomes too', async () => {
   })
   await session.send('read a file that is not there')
 
-  const raw = readFileSync(join(root, PRIVATE_DIR, 'sessions', `${session.id}.ui.jsonl`), 'utf8')
+  const raw = readFileSync(join(root, PRIVATE_DIR, 'state', 'sessions', `${session.id}.ui.jsonl`), 'utf8')
   const lines = raw.split('\n').filter((l) => l.trim() !== '').map((l) => JSON.parse(l))
   expect(lines).toContainEqual({ id: 'z1', ok: false })
 }, 30_000)
@@ -272,7 +272,7 @@ test('every call of a step gets its own recorded outcome, under its own id', asy
     await host.handle({ id: 2, method: 'send', params: { text: 'go' } })
     const sessionId = replyOf(transport, 1).sessionId as string
 
-    const raw = readFileSync(join(root, PRIVATE_DIR, 'sessions', `${sessionId}.ui.jsonl`), 'utf8')
+    const raw = readFileSync(join(root, PRIVATE_DIR, 'state', 'sessions', `${sessionId}.ui.jsonl`), 'utf8')
     const outcomes = new Map<string, boolean>(
       raw.split('\n').filter((l) => l.trim() !== '')
         .map((l) => JSON.parse(l) as { id: string; ok: boolean })

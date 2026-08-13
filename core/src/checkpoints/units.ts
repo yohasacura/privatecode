@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { readdir } from 'node:fs/promises'
 import { basename, join, relative, resolve, sep } from 'node:path'
 import type { Mount } from '../mounts.js'
-import { PRIVATE_DIR } from '../private-dir.js'
+import { PRIVATE_DIR, statePath } from '../private-dir.js'
 
 /**
  * What the undo store actually snapshots.
@@ -123,7 +123,7 @@ export function soleUnit(root: string): SnapshotUnit {
     id: unitId(label, abs),
     root: abs,
     label,
-    gitDir: join(abs, PRIVATE_DIR, LEGACY_GIT_DIR),
+    gitDir: statePath(abs, LEGACY_GIT_DIR),
     stateRoot: abs,
     excluded: [],
   }
@@ -148,8 +148,8 @@ export async function discoverUnits(
       root: resolve(mount.root),
       label: mount.name,
       gitDir: mount.primary
-        ? join(primaryRoot, PRIVATE_DIR, LEGACY_GIT_DIR)
-        : join(primaryRoot, PRIVATE_DIR, UNIT_DIR, `${unitId(mount.name, mount.root)}.git`),
+        ? statePath(primaryRoot, LEGACY_GIT_DIR)
+        : statePath(primaryRoot, UNIT_DIR, `${unitId(mount.name, mount.root)}.git`),
       stateRoot: primaryRoot,
       excluded: [],
     }
@@ -161,7 +161,7 @@ export async function discoverUnits(
         id: unitId(label, repo),
         root: repo,
         label,
-        gitDir: join(primaryRoot, PRIVATE_DIR, UNIT_DIR, `${unitId(label, repo)}.git`),
+        gitDir: statePath(primaryRoot, UNIT_DIR, `${unitId(label, repo)}.git`),
         stateRoot: primaryRoot,
         excluded: [],
       })

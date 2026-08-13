@@ -74,8 +74,12 @@ network, or its DHCP address changed — re-read it with `ipconfig`.
   `<workspace>\.privatecode\settings.json` (project layer).
 - Esc interrupts a running turn; the partial reply is kept and the model continues
   cheaply (warm prefix).
-- Sessions persist under `<workspace>\.privatecode\sessions\` and resume from the
-  sessions drawer.
+- `<workspace>\.privatecode\` splits in two. What you write is at the top —
+  `settings.json`, `skills\`, `commands\`, `checkpoints.exclude` — and is NOT git-ignored,
+  so it can travel with the project. Everything the tool writes for itself is under
+  `state\` (sessions, logs, the work log, the checkpoint stores) and is ignored; there is
+  nothing in there to read or edit. An existing workspace is rearranged into this shape the
+  first time it is opened.
 - Settings also holds **Permissions** (what has standing permission, and how to take it
   back), **Skills** (what procedures this workspace offers the model, and where to put
   more) and **MCP servers** (the `mcpServers` JSON, edited directly).

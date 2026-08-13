@@ -1,6 +1,6 @@
 import { readdir, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { PRIVATE_DIR, ensurePrivateDir } from '../private-dir.js'
+import { PRIVATE_DIR, STATE_DIR, ensureStateDir } from '../private-dir.js'
 import type { Workspace } from '../workspace.js'
 
 /**
@@ -24,7 +24,7 @@ import type { Workspace } from '../workspace.js'
 
 /** Where overflow logs live, workspace-relative. Used in messages to the model, so it is
  * spelled with forward slashes: that is what its tools accept on every platform. */
-export const LOG_DIR = `${PRIVATE_DIR}/logs`
+export const LOG_DIR = `${PRIVATE_DIR}/${STATE_DIR}/logs`
 
 /** How many log files to keep. Old ones are the least likely to be wanted and the most
  * likely to be forgotten, so the directory prunes itself rather than growing forever. */
@@ -62,7 +62,7 @@ export async function spillToLog(
     const abs = workspace.resolve(relative)
     // Creates the directory AND its self-ignore, so a workspace that is a git repository
     // never sees these logs in `git status`. See private-dir.ts.
-    const dir = ensurePrivateDir(workspace.root, 'logs')
+    const dir = ensureStateDir(workspace.root, 'logs')
     await writeFile(abs, text, 'utf8')
     void prune(dir)
     return { path: relative, lines: countLines(text) }

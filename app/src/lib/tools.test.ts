@@ -51,21 +51,21 @@ describe('the browser tool', () => {
 
 describe('screenshotPathOf', () => {
   it('recognises exactly what the screenshot action writes', () => {
-    expect(screenshotPathOf('browser', '.privatecode/browser/shot-001.png'))
-      .toBe('.privatecode/browser/shot-001.png')
+    expect(screenshotPathOf('browser', '.privatecode/state/browser/shot-001.png'))
+      .toBe('.privatecode/state/browser/shot-001.png')
   })
 
   it('ignores prose that merely names a screenshot', () => {
     // The tool's own `content` and the model's answer both mention the path. Matching
     // loosely would turn any message that talks ABOUT a screenshot into an image.
-    expect(screenshotPathOf('browser', 'Screenshot saved to .privatecode/browser/shot-001.png for the user'))
+    expect(screenshotPathOf('browser', 'Screenshot saved to .privatecode/state/browser/shot-001.png for the user'))
       .toBeNull()
   })
 
   it('is scoped to the browser tool and to that directory', () => {
-    expect(screenshotPathOf('read_file', '.privatecode/browser/shot-001.png')).toBeNull()
+    expect(screenshotPathOf('read_file', '.privatecode/state/browser/shot-001.png')).toBeNull()
     expect(screenshotPathOf('browser', 'assets/logo.png')).toBeNull()
-    expect(screenshotPathOf('browser', '.privatecode/logs/run.log')).toBeNull()
+    expect(screenshotPathOf('browser', '.privatecode/state/logs/run.log')).toBeNull()
     expect(screenshotPathOf('browser', undefined)).toBeNull()
   })
 })

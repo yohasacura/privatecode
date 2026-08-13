@@ -100,7 +100,7 @@ test('a mid-turn compaction writes the work it is about to summarise away', asyn
   })
   await session.send('do a lot of work')
 
-  const raw = readFileSync(join(root, '.privatecode', 'sessions', `${session.id}.jsonl`), 'utf8')
+  const raw = readFileSync(join(root, '.privatecode', 'state', 'sessions', `${session.id}.jsonl`), 'utf8')
   const markers = raw.split('\n').filter((l) => l.includes('"__event":"compaction"'))
   expect(markers.length).toBeGreaterThan(0)
 
@@ -168,7 +168,7 @@ test('a crash between the two writes leaves the full pre-swap transcript', async
   })
   await session.send('do the work')
 
-  const raw = readFileSync(join(root, '.privatecode', 'sessions', `${session.id}.jsonl`), 'utf8')
+  const raw = readFileSync(join(root, '.privatecode', 'state', 'sessions', `${session.id}.jsonl`), 'utf8')
   // No marker landed...
   expect(raw).not.toContain('"__event":"compaction"')
   // ...and everything the turn had produced up to that point is on disk, so a reload
@@ -277,7 +277,7 @@ test('a failed marker write does not duplicate the turn in the session file', as
   })
   await session.send('do the work')
 
-  const lines = readFileSync(join(root, '.privatecode', 'sessions', `${session.id}.jsonl`), 'utf8')
+  const lines = readFileSync(join(root, '.privatecode', 'state', 'sessions', `${session.id}.jsonl`), 'utf8')
     .split('\n').filter((l) => l.trim() !== '')
   const requests = lines.filter((l) => l.includes('do the work')).length
   expect(requests).toBe(1)

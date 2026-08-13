@@ -1,7 +1,7 @@
 import { execa } from 'execa'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { ensurePrivateDir, PRIVATE_DIR } from '../private-dir.js'
+import { ensurePrivateDir, PRIVATE_DIR, STATE_DIR, statePath } from '../private-dir.js'
 import type { SnapshotUnit } from './units.js'
 
 /**
@@ -107,7 +107,7 @@ export class CheckpointStore {
     if (typeof spec === 'string') {
       this.root = spec
       this.stateRoot = spec
-      this.gitDir = join(spec, PRIVATE_DIR, CHECKPOINT_DIR)
+      this.gitDir = statePath(spec, CHECKPOINT_DIR)
       this.excluded = []
       return
     }
@@ -357,9 +357,6 @@ export class CheckpointStore {
         await execa('git', ['--git-dir', this.gitDir, 'config', 'core.bare', 'false'], {
           timeout: GIT_TIMEOUT_MS, windowsHide: true, reject: false,
         })
-        await execa('git', ['--git-dir', this.gitDir, 'config', 'core.excludesFile', excludePath], {
-          timeout: GIT_TIMEOUT_MS, windowsHide: true, reject: false,
-        })
         // A snapshot store wants byte-for-byte fidelity, and git's line-ending translation
         // is the opposite of that. `core.autocrlf=true` is the Windows default and is set
         // globally on this machine: with it, a rewind rewrites the line endings of every
@@ -372,6 +369,15 @@ export class CheckpointStore {
         }
       }
 
+      // Set on every init rather than only at creation, for the same reason `info/exclude`
+      // just below is: a path baked in once goes stale silently. It pointed at an absolute
+      // path written when the store was created, so anything that moved this folder
+      // afterwards left every exclusion switched off with no symptom — which is the
+      // "a checkpoint swallowed my build output" failure, arriving without a message.
+      await execa('git', ['--git-dir', this.gitDir, 'config', 'core.excludesFile', excludePath], {
+        timeout: GIT_TIMEOUT_MS, windowsHide: true, reject: false,
+      })
+
       // Rewritten on every init rather than only at creation: someone clones a repository
       // into their project and the set of nested repositories has changed. A stale exclusion
       // list is the gitlink hole again, silently.
@@ -383,6 +389,15 @@ export class CheckpointStore {
         '# are snapshotted separately; a checkpoint that swallowed one would record a\n' +
         '# pointer to a commit instead of its files, and a rewind would restore nothing\n' +
         '# inside it. Edit .privatecode/checkpoints.exclude instead — this file is rewritten.\n' +
+        // Our own bookkeeping, named explicitly rather than relied upon accidentally. It used
+        // to be excluded as a side effect of `.privatecode/.gitignore` containing `*` — which
+        // hid the WHOLE folder, including the user's settings and skills. Now that the
+        // gitignore only covers what is ours, these two have to say so themselves, and the
+        // user's own files under `.privatecode/` are snapshotted like any other source: a
+        // rewind should put back a skill the agent edited.
+        `${PRIVATE_DIR}/${STATE_DIR}/\n` +
+        `${PRIVATE_DIR}/.gitignore\n` +
+        `${PRIVATE_DIR}/${EXCLUDE_FILE}\n` +
         this.excluded.map((e) => `${e}\n`).join(''),
         'utf8',
       )

@@ -97,7 +97,7 @@ function str(o: Record<string, unknown>, key: string): string | null {
  */
 export function screenshotPathOf(name: string, display: string | undefined): string | null {
   if (name !== 'browser' || display === undefined) return null
-  return /^\.privatecode\/browser\/shot-\d+\.png$/.test(display) ? display : null
+  return /^\.privatecode\/state\/browser\/shot-\d+\.png$/.test(display) ? display : null
 }
 
 /** `mcp__sqlite__query` → `sqlite / query`. Which server answered is the part a person

@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { ChatMessage } from '../llama/types.js'
-import { PRIVATE_DIR } from '../private-dir.js'
+import { statePath } from '../private-dir.js'
 import { COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX } from '../session/compaction.js'
 import type { TranscriptEntry } from './protocol.js'
 
@@ -25,7 +25,7 @@ const OUTCOMES_SUFFIX = '.ui.jsonl'
 interface Outcome { id: string; ok: boolean }
 
 function outcomesPath(workspaceRoot: string, sessionId: string): string {
-  return join(workspaceRoot, PRIVATE_DIR, 'sessions', `${sessionId}${OUTCOMES_SUFFIX}`)
+  return statePath(workspaceRoot, 'sessions', `${sessionId}${OUTCOMES_SUFFIX}`)
 }
 
 /**

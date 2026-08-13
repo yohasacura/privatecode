@@ -69,7 +69,7 @@ test('writes under .privatecode are denied in every mode', () => {
 
 test('reading inside .privatecode stays allowed', () => {
   const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })
-  expect(engine.decide({ tool: 'read_file', paths: ['.privatecode/logs/run.log'] }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'read_file', paths: ['.privatecode/state/logs/run.log'] }).verdict).toBe('allow')
 })
 
 test('a path that merely starts with the same letters is untouched', () => {

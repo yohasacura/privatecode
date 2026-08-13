@@ -90,7 +90,7 @@ describe('the units a workspace needs', () => {
       { name: 'app', root: app, access: 'write', primary: true },
       { name: 'engine', root: engine, access: 'write', primary: false },
     ], app)
-    expect(units[0]?.gitDir).toBe(join(app, '.privatecode', 'checkpoints.git'))
+    expect(units[0]?.gitDir).toBe(join(app, '.privatecode', 'state', 'checkpoints.git'))
     // Under the PRIMARY folder, not under the attached one: pointing the agent at someone
     // else's project is not permission to leave our files in it.
     expect(units[1]?.gitDir.startsWith(join(app, '.privatecode'))).toBe(true)
@@ -236,7 +236,7 @@ describe('a failing checkpoint store can be heard', () => {
         id: 'primary',
         label: 'primary',
         root,
-        gitDir: join(root, '.privatecode', 'checkpoints.git'),
+        gitDir: join(root, '.privatecode', 'state', 'checkpoints.git'),
         stateRoot: root,
         excluded: [],
       }], root)

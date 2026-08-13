@@ -181,7 +181,7 @@ describe('execute', () => {
   test('page text over the cap is paged, not elided', async () => {
     const huge = Array.from({ length: 3000 }, (_, i) => `line ${i} of a very long page`).join('\n')
     const result = await browserTool.execute(valid({ action: 'read' }), ctxWith({ text: huge }))
-    expect(result.content).toMatch(/read_file\(path="\.privatecode\/logs\//)
+    expect(result.content).toMatch(/read_file\(path="\.privatecode\/state\/logs\//)
     expect(result.content!.length).toBeLessThan(huge.length)
     // The person watching gets all of it.
     expect(result.display!.length).toBeGreaterThan(huge.length - 100)
@@ -202,7 +202,7 @@ describe('execute', () => {
     const result = await browserTool.execute(valid({ action: 'screenshot' }), ctxWith())
     expect(result.ok).toBe(true)
     expect(result.content).toMatch(/You cannot read images/)
-    const relative = /(\.privatecode\/browser\/shot-\d+\.png)/.exec(result.content!)![1]!
+    const relative = /(\.privatecode\/state\/browser\/shot-\d+\.png)/.exec(result.content!)![1]!
     expect(readFileSync(join(root, relative)).subarray(0, 4))
       .toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
   })

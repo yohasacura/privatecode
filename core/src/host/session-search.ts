@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { PRIVATE_DIR } from '../private-dir.js'
+import { statePath } from '../private-dir.js'
 import type { SessionMeta } from '../session/store.js'
 
 /**
@@ -58,7 +58,7 @@ export function searchSessions(
   for (const meta of metas) {
     let raw: string
     try {
-      raw = readFileSync(join(workspaceRoot, PRIVATE_DIR, 'sessions', `${meta.id}.jsonl`), 'utf8')
+      raw = readFileSync(statePath(workspaceRoot, 'sessions', `${meta.id}.jsonl`), 'utf8')
     } catch {
       continue // a session with no transcript on disk is not an error, just nothing to search
     }

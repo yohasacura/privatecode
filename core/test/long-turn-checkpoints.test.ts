@@ -119,7 +119,7 @@ test('a long turn leaves a readable timeline, not one entry written at the end',
   })
   await session.send('write three notes')
 
-  const log = readFileSync(join(root, '.privatecode', 'worklog.md'), 'utf8')
+  const log = readFileSync(join(root, '.privatecode', 'state', 'worklog.md'), 'utf8')
   // The turn's own entry is still there...
   expect(log).toContain('write three notes')
   // ...and so is the progress inside it, naming the step it was at.

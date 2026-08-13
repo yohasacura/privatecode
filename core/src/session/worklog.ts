@@ -1,6 +1,6 @@
 import { appendFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { ensurePrivateDir, PRIVATE_DIR } from '../private-dir.js'
+import { PRIVATE_DIR, STATE_DIR, ensureStateDir, statePath } from '../private-dir.js'
 
 /**
  * What the agent actually did, in a form a person can read over coffee.
@@ -159,12 +159,12 @@ export class WorkLog {
 
   constructor(workspaceRoot: string) {
     this.root = workspaceRoot
-    this.path = join(workspaceRoot, PRIVATE_DIR, WORKLOG_FILE)
+    this.path = statePath(workspaceRoot, WORKLOG_FILE)
   }
 
   /** Workspace-relative, so it can be handed to the model or shown in the app. */
   relativePath(): string {
-    return `${PRIVATE_DIR}/${WORKLOG_FILE}`
+    return `${PRIVATE_DIR}/${STATE_DIR}/${WORKLOG_FILE}`
   }
 
   /**
@@ -199,7 +199,7 @@ export class WorkLog {
 
   private write(body: string, at: Date): void {
     try {
-      ensurePrivateDir(this.root)
+      ensureStateDir(this.root)
       // A dated header once per process, so a file spanning several days is still readable
       // — the per-entry stamps are times only, which is what makes the entries scannable.
       const header = this.started ? '' : `\n# ${at.toISOString().slice(0, 10)}\n\n`

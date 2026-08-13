@@ -577,7 +577,7 @@ test('a search scoped to a single file finds matches in it', async () => {
 /** A scoped search reaches into dot-directories: naming a location explicitly means you
  * want what is in it, and it is what makes a saved output log searchable at all. */
 test('a scoped search looks inside a hidden directory', async () => {
-  const logDir = join(ctx.workspace.root, '.privatecode', 'logs')
+  const logDir = join(ctx.workspace.root, '.privatecode', 'state', 'logs')
   mkdirSync(logDir, { recursive: true })
   writeFileSync(join(logDir, 'run.log'), 'noise\nNEEDLE_IN_LOG here\nnoise\n')
 
@@ -585,7 +585,7 @@ test('a scoped search looks inside a hidden directory', async () => {
   expect(unscoped.content).toMatch(/no matches/i)
 
   const scoped = await searchCodeTool.execute(
-    { pattern: 'NEEDLE_IN_LOG', path: '.privatecode/logs' }, ctx)
+    { pattern: 'NEEDLE_IN_LOG', path: '.privatecode/state/logs' }, ctx)
   expect(scoped.ok).toBe(true)
   expect(scoped.content).toMatch(/run\.log:2:NEEDLE_IN_LOG here/)
 })

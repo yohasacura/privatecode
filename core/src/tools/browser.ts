@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import type { BrowserManager } from '../browser/manager.js'
 import type { ConsoleEntry, NetEntry, Page } from '../browser/page.js'
 import { knownKeys } from '../browser/page.js'
-import { ensurePrivateDir, PRIVATE_DIR } from '../private-dir.js'
+import { PRIVATE_DIR, STATE_DIR, ensureStateDir } from '../private-dir.js'
 import { countLines, headLines, overflowNotice, spillToLog } from './output-log.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } from './types.js'
 
@@ -35,8 +35,9 @@ const MAX_OUTPUT_CHARS = 8_000
 const HEAD_LINES = 60
 /** Console/network lines handed to the model in one call. `display` always carries them all. */
 const MAX_ENTRIES = 50
-/** Where screenshots land. Inside `.privatecode/`, which is write-denied to the model but
- * written here by the engine — the same arrangement session transcripts and logs use. */
+/** Where screenshots land. Inside `.privatecode/state/`, which is write-denied to the model
+ * but written here by the engine — the same arrangement session transcripts and logs use.
+ * State rather than the top level because nobody writes a screenshot by hand. */
 const SHOT_DIR = 'browser'
 
 const ACTIONS_NEEDING_PAGE: ReadonlySet<BrowserAction> =
@@ -322,10 +323,10 @@ async function run(args: BrowserArgs, page: Page, ctx: ToolContext): Promise<Too
 
     case 'screenshot': {
       const png = await page.screenshot()
-      const dir = ensurePrivateDir(ctx.workspace.root, SHOT_DIR)
+      const dir = ensureStateDir(ctx.workspace.root, SHOT_DIR)
       const name = `shot-${String(++shotCounter).padStart(3, '0')}.png`
       await writeFile(join(dir, name), png)
-      const relative = `${PRIVATE_DIR}/${SHOT_DIR}/${name}`
+      const relative = `${PRIVATE_DIR}/${STATE_DIR}/${SHOT_DIR}/${name}`
       return {
         ok: true,
         // Stated flatly, because the alternative is the model spending a step trying to
