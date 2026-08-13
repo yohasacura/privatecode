@@ -4,3 +4,5 @@ target/
 __pycache__/
 *.log
 docs/SPIKE-*.json
+tools/roslyn-nav/bin/
+tools/roslyn-nav/obj/

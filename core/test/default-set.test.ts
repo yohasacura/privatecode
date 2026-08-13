@@ -15,7 +15,12 @@ import { buildRegistry } from '../src/tools/default-set.js'
  */
 test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
   expect(buildRegistry().readOnlyNames().sort()).toEqual(
-    ['ask_user', 'find_files', 'git_status', 'list_dir', 'read_file', 'search_code',
+    ['ask_user',
+     // Parses C# and answers a question about it. Available in PLAN mode for the same
+     // reason as use_skill: understanding how the code connects is most of what planning
+     // is, and it is the one tool that answers that without reading files.
+     'csharp_nav',
+     'find_files', 'git_status', 'list_dir', 'read_file', 'search_code',
      'symbol_outline', 'todo_write',
      // Reads a file the user wrote and returns its text; it runs nothing. Read-only is
      // what makes it available in PLAN mode, which is where reading a procedure before

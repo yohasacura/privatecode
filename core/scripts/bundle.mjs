@@ -73,6 +73,12 @@ function verifyManifest() {
   if (existsSync(join(coreRoot, '..', 'vendor', 'node', 'node.exe'))) {
     manifest.push(join(sidecarDir, 'node.exe'))
   }
+  // The C# navigator is OPTIONAL: it is 92 MB and only earns its place on a machine that
+  // works on C#. A build without it is a build whose csharp_nav says so and carries on, so
+  // its absence must not fail the bundle -- but a staged copy that is empty must.
+  if (existsSync(join(repoRoot, 'vendor', 'roslyn', 'roslyn-nav.exe'))) {
+    manifest.push(join(sidecarDir, 'vendor', 'roslyn', 'roslyn-nav.exe'))
+  }
   for (const path of manifest) {
     if (!existsSync(path)) throw new Error(`bundle.mjs: staging manifest failed -- missing ${path}`)
     const size = statSync(path).size
@@ -100,6 +106,12 @@ async function main() {
 
   stageVendor('ripgrep', ['rg.exe'])
   stageVendor('tree-sitter', null)
+  // Optional, and staged only when it has been published — see verifyManifest. 92 MB of
+  // self-contained .NET buys semantic C# navigation on a machine with no SDK installed;
+  // on a machine that never touches C# it is 92 MB of nothing.
+  if (existsSync(join(repoRoot, 'vendor', 'roslyn', 'roslyn-nav.exe'))) {
+    stageVendor('roslyn', ['roslyn-nav.exe'])
+  }
   // The vendored Node runtime (Task 9) rides at the sidecar root, next to agent.cjs,
   // so the release shell's launch line is simply `sidecar/node.exe sidecar/agent.cjs`.
   // Optional until vendor/node exists (pre-Task-9 checkouts still bundle for dev use,

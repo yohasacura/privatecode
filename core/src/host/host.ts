@@ -15,6 +15,7 @@ import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory } from '../memory/project-memory.js'
 import { loadSkills, projectSkillsDir, userSkillsDir } from '../skills/skills.js'
+import { stopNavProcess } from '../csharp/nav-process.js'
 import { expandCommand, listCommands } from '../commands/custom.js'
 import { Session, type SessionOptions } from '../session/session.js'
 import { SessionStore } from '../session/store.js'
@@ -376,6 +377,10 @@ export class SessionHost {
       toolset ? toolset.background.stopAll().catch(() => {}) : Promise.resolve(),
       toolset ? toolset.browser.close().catch(() => {}) : Promise.resolve(),
       this.mcp ? this.mcp.closeAll().catch(() => {}) : Promise.resolve(),
+      // The C# navigator holds a whole compilation in memory and is per-workspace, so it
+      // belongs in exactly this list: an `init` that switched workspaces while leaving the
+      // old index resident is the orphaned-dev-server defect wearing a different hat.
+      stopNavProcess().catch(() => {}),
     ])
     this.mcp = undefined
   }

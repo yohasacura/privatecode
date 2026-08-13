@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The semantic half of code navigation, as a helper process beside the app.
+
+    Why a separate binary at all: Roslyn is the only thing that actually knows what a C#
+    symbol IS. ripgrep finds a string; tree-sitter finds a shape in one file; neither can
+    answer "who calls this method" without the model reading the files and working it out —
+    which is where two thirds of a long run's time was measured going.
+
+    Why self-contained: the work laptop has no .NET and is not going to get one. This
+    publishes with its own runtime so the only thing that travels is a folder.
+
+    Deliberately NOT using MSBuildWorkspace: that needs an installed SDK to locate MSBuild,
+    which is exactly the dependency this is avoiding. The compilation is built by hand from
+    the source files plus whatever assemblies the project has already produced — see
+    Program.cs.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>roslyn-nav</AssemblyName>
+    <RootNamespace>RoslynNav</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- One file to copy, and no console window when the sidecar spawns it. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- Trimming is OFF on purpose: Roslyn resolves a great deal by reflection and a
+         trimmed build fails at runtime in ways that only show up on the machine that has
+         no SDK to debug it with. Size is the cheaper thing to spend here. -->
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.14.0" />
+  </ItemGroup>
+
+</Project>

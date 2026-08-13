@@ -132,6 +132,14 @@ fn sidecar_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)
 /// hand back the handles" step.
 fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
     let (node_exe, agent_cjs, rg_exe, wasm_dir) = sidecar_paths(app)?;
+    // Optional, unlike the two above: the C# navigator is 92 MB and a build may ship
+    // without it. Setting the variable to a path that does not exist would be a lie the
+    // tool has to discover at call time, so an absent binary sets nothing at all and
+    // `navProcess()` reports the feature as unavailable, which is what it is.
+    let roslyn_exe = wasm_dir
+        .parent()
+        .map(|vendor| vendor.join("roslyn").join("roslyn-nav.exe"))
+        .filter(|p| p.exists());
 
     let mut cmd = Command::new(&node_exe);
     cmd.arg(&agent_cjs)
@@ -140,6 +148,9 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(path) = &roslyn_exe {
+        cmd.env("PRIVATECODE_ROSLYN", path);
+    }
 
     #[cfg(windows)]
     {
