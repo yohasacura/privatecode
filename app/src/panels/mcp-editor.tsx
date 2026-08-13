@@ -1,146 +1,120 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
-import type { McpServerView } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
-import { PanelEmpty, PanelError, PanelRow } from '../components/panel'
-import { Icon } from '../components/icons'
+import { PanelError } from '../components/panel'
 
 /**
- * Configuring MCP servers from the window.
+ * MCP configuration, VS Code's way: the JSON document itself, editable in place.
  *
- * Before this, MCP existed in the interface only as a read-only status list that hid itself
- * entirely when no servers were configured — so for anyone who had not already hand-written
- * the JSON, the feature was invisible. There was no way to learn it existed, let alone add
- * a server.
+ * This replaced a name-plus-command form at the user's request, and the request was right.
+ * A form models a subset — env blocks, headers, cwd and trust flags all needed "edit the
+ * file by hand anyway" — while the JSON IS the configuration, so an editor over it can
+ * express everything the loader can read, including entries the form's author never
+ * anticipated. The window's job shrinks to what it can do honestly: syntax-check before
+ * writing, preserve the rest of the settings file, and reconnect.
  *
- * The editor manages the PROJECT settings file. Entries defined in the user or local file
- * are shown with their source and left read-only here rather than hidden: a merged list
- * that omitted them would misstate what the agent can reach. Saving re-opens the workspace
- * (the same `connect()` the Folders manager already triggers) because connections and the
- * system prompt that names the servers are built at init — an edit that silently applied
- * to neither would be the permissions screen's revoke hole all over again.
+ * Deeper validation (a server with neither command nor url) is deliberately left to the
+ * connect that follows — the same problems pipeline every hand edit has always used, shown
+ * in the status list above this editor. It is legal to save a half-written entry.
  */
+
+const PLACEHOLDER = `{
+  "docs": { "command": "node", "args": ["docs-server.js"] },
+  "search": { "url": "https://mcp.example.com/sse" }
+}`
+
 export function McpEditor({
   client, onApply,
 }: {
   client: ProtocolClient
-  /** Re-opens the workspace so the edit actually connects. The caller owns HOW (it is the
-   * modal's own connect()), this component only says WHEN. */
+  /** Re-opens the workspace so the edit actually connects; the modal's own connect(). */
   onApply: () => void
 }): VNode {
-  const [servers, setServers] = useState<McpServerView[] | null>(null)
-  const [problems, setProblems] = useState<string[]>([])
+  const [text, setText] = useState<string | null>(null)
+  const [path, setPath] = useState('')
+  const [saved, setSaved] = useState('')
   const [error, setError] = useState<string | null>(null)
-  /** The add form. `target` is one field for both kinds: a URL is recognised by its
-   * scheme, anything else is a command line (first token command, rest args). */
-  const [name, setName] = useState('')
-  const [target, setTarget] = useState('')
   const [saving, setSaving] = useState(false)
 
   const load = useCallback(() => {
     setError(null)
-    client.call('mcp.read', {})
-      .then((r) => { setServers(r.servers); setProblems(r.problems) })
+    client.call('mcp.rawRead', {})
+      .then((r) => { setText(r.json); setSaved(r.json); setPath(r.path) })
       .catch((e: Error) => setError(e.message))
   }, [client])
   useEffect(load, [load])
 
-  function save(params: { upsert?: { name: string; command?: string; args?: string[]; url?: string }[]; remove?: string[] }): void {
+  /** Parse locally on every keystroke, so the Save button can say WHY it is disabled
+   * before anything is sent — the same check the host repeats before writing. */
+  const syntaxProblem = ((): string | null => {
+    if (text === null) return null
+    try {
+      const parsed: unknown = JSON.parse(text)
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return 'the root must be an object: { "server-name": { … } }'
+      }
+      return null
+    } catch (e) {
+      return (e as Error).message
+    }
+  })()
+  const dirty = text !== null && text !== saved
+
+  function save(): void {
+    if (text === null || syntaxProblem !== null) return
     setSaving(true)
     setError(null)
-    client.call('mcp.save', params)
+    client.call('mcp.rawSave', { json: text })
       .then(() => {
-        setName('')
-        setTarget('')
-        load()
-        // The file changed; the connections and the prompt have not. Re-opening the
-        // workspace is what makes the two agree, and it is one call the modal already has.
+        setSaved(text)
+        // The file changed; the connections and the prompt naming the servers have not.
+        // Re-opening the workspace is what makes them agree.
         onApply()
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setSaving(false))
   }
 
-  function add(): void {
-    const trimmedName = name.trim()
-    const trimmedTarget = target.trim()
-    if (trimmedName === '' || trimmedTarget === '') return
-    if (/^https?:\/\//i.test(trimmedTarget)) {
-      save({ upsert: [{ name: trimmedName, url: trimmedTarget }] })
-      return
-    }
-    const [command, ...args] = trimmedTarget.split(/\s+/)
-    save({ upsert: [{ name: trimmedName, command: command!, ...(args.length > 0 ? { args } : {}) }] })
-  }
-
-  const editable = (s: McpServerView): boolean => s.source === 'project settings'
-
   return (
     <div class="mcp-editor">
-      {problems.map((p) => <PanelError key={p} message={p} />)}
       {error !== null && <PanelError message={error} onRetry={load} />}
 
-      {servers !== null && servers.length === 0 && (
-        <PanelEmpty
-          icon={Icon.jobs()}
-          title="No MCP servers configured"
-          hint="An MCP server adds its tools to the agent — a database, a docs index, a browser. Add one below; its tools ask for approval like everything else."
-        />
-      )}
-
-      {(servers ?? []).map((s) => (
-        <PanelRow
-          key={s.name}
-          mono
-          label={s.name}
-          title={s.kind === 'stdio' ? `${s.command ?? ''} ${(s.args ?? []).join(' ')}`.trim() : s.url ?? ''}
-          meta={
-            <span class="mcp-editor-target" title={s.kind === 'stdio' ? undefined : s.url}>
-              {s.kind === 'stdio' ? `${s.command ?? ''} ${(s.args ?? []).join(' ')}`.trim() : s.url}
-            </span>
-          }
-          actions={editable(s)
-            ? (
-              <button
-                class="btn btn-small"
-                disabled={saving}
-                onClick={() => save({ remove: [s.name] })}
-                title="Remove this server from the project settings"
-              >
-                Remove
-              </button>
-              )
-            : <span class="mcp-editor-source" title={`Defined in ${s.source}; edit that file to change it`}>{s.source}</span>}
-        />
-      ))}
-
-      <div class="field-label">Add a server</div>
-      <div class="mcp-editor-form">
-        <input
-          class="input input-small mcp-editor-name"
-          placeholder="name"
-          value={name}
-          onInput={(e) => setName(e.currentTarget.value)}
-        />
-        <input
-          class="input input-small"
-          placeholder="command with args, or an https:// URL"
-          value={target}
-          onInput={(e) => setTarget(e.currentTarget.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') add() }}
-        />
+      <div class="mcp-editor-pathrow">
+        <span class="mcp-editor-key">"mcpServers"</span>
+        <span class="mcp-editor-path" title={path}>{path}</span>
+      </div>
+      <textarea
+        class={`mcp-editor-json ${syntaxProblem !== null && dirty ? 'mcp-editor-json-bad' : ''}`}
+        spellcheck={false}
+        value={text ?? ''}
+        placeholder={PLACEHOLDER}
+        disabled={text === null}
+        onInput={(e) => setText(e.currentTarget.value)}
+      />
+      <div class="mcp-editor-foot">
+        <span class="mcp-editor-status">
+          {syntaxProblem !== null && dirty
+            ? syntaxProblem
+            : dirty
+            ? 'unsaved changes'
+            : text === '{}'
+            ? 'no servers configured — the placeholder above is the shape'
+            : ''}
+        </span>
         <button
-          class="btn btn-small"
-          disabled={saving || name.trim() === '' || target.trim() === ''}
-          onClick={add}
+          class="btn btn-primary btn-small"
+          disabled={saving || !dirty || syntaxProblem !== null}
+          onClick={save}
+          title="Write the file, then re-open the workspace so the servers connect"
         >
-          {saving ? 'Saving…' : 'Add'}
+          {saving ? 'Saving…' : 'Save & reconnect'}
         </button>
       </div>
       <div class="field-hint">
-        Saved to this project's .privatecode/settings.json, then the workspace re-opens to
-        connect it. Extra fields you add by hand there (env, headers, cwd) survive edits made
-        here.
+        Each entry is a server: <code>{'{ "command": "...", "args": [...] }'}</code> for a
+        local one, <code>{'{ "url": "https://..." }'}</code> for a remote one. Optional:
+        <code>env</code>, <code>cwd</code>, <code>headers</code>,
+        <code>trustReadOnlyHints</code>. Whether each server connected is shown above.
       </div>
     </div>
   )

@@ -106,7 +106,17 @@ fn sidecar_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf)
         // Task 9's other half: core/dist/sidecar/** (agent.cjs, node.exe, rg.exe, wasm)
         // ships as a bundled resource tree under tauri.conf.json's `bundle.resources`,
         // staged at `resource_dir()/sidecar` in the installed app.
-        let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+        //
+        // Stripped of the verbatim prefix, same as the debug branch — and this line's
+        // absence was the strip's own comment coming true in reverse. That comment said
+        // the release build "never calls canonicalize, which is why this stayed hidden":
+        // true of OUR code, but Tauri's `resource_dir()` returns a `\\?\`-prefixed path
+        // itself on Windows, so the very first release run died in `resolveMainPath` with
+        // `EISDIR: lstat 'D:'` — the exact failure the dev branch had already been cured
+        // of, reported by the user on first launch.
+        let resource_dir = strip_verbatim_prefix(
+            app.path().resource_dir().map_err(|e| e.to_string())?,
+        );
         let sidecar_dir = resource_dir.join("sidecar");
         Ok((
             sidecar_dir.join("node.exe"),

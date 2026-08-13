@@ -9,13 +9,15 @@ import { projectSettingsPath } from '../src/permissions/settings.js'
 import { startFakeServer } from './fake-server.js'
 
 /**
- * Editing MCP servers from the window.
+ * Editing MCP servers from the window — the JSON document itself, VS Code's way.
  *
- * The MCP status block was read-only and hidden entirely when no servers were configured —
- * so for anyone who had not already hand-written the JSON, the feature did not visibly
- * exist. The editor writes the PROJECT settings file's `mcpServers` key, and the property
- * these tests defend is the merge: a hand-tuned entry (env, headers, cwd, trust flags) must
- * survive being edited in a form that never saw those fields.
+ * A name-plus-command form came first and was replaced at the user's request: it modelled a
+ * subset, so env blocks, headers, cwd and trust flags all ended in "edit the file by hand
+ * anyway". The property these tests defend moved with it. It is no longer the per-entry
+ * merge (nothing is merged now — what you saved is what is there); it is that the editor
+ * can express EVERYTHING the loader can read, and that a typo costs nothing: the text is
+ * checked before the file is opened for writing, and every other key of the settings file
+ * survives the write.
  */
 
 let stop: (() => Promise<void>) | undefined
@@ -55,86 +57,110 @@ async function host(): Promise<{ host: SessionHost; transport: Captured }> {
   return { host: h, transport }
 }
 
-describe('mcp.save', () => {
-  test('an upsert keeps every field the form does not model', () => {
-    // The hand-written entry carries env and a trust flag. Renaming its command through the
-    // editor must not cost either — the same discipline editRules applies to permissions.
-    return host().then(async ({ host: h, transport }) => {
-      writeFileSync(projectSettingsPath(root), JSON.stringify({
-        verify: 'npm test',
-        mcpServers: {
-          docs: {
-            command: 'node', args: ['old.js'],
-            env: { DOCS_TOKEN: 'secret' }, trustReadOnlyHints: true,
-          },
-        },
-      }, null, 2), 'utf8')
-      await h.handle({
-        id: 2, method: 'mcp.save',
-        params: { upsert: [{ name: 'docs', command: 'node', args: ['new.js'] }] },
-      })
-      expect(replyOf(transport, 2)).toEqual({})
-
-      const doc = JSON.parse(readFileSync(projectSettingsPath(root), 'utf8'))
-      expect(doc.mcpServers.docs).toEqual({
-        command: 'node', args: ['new.js'],
-        env: { DOCS_TOKEN: 'secret' }, trustReadOnlyHints: true,
-      })
-      // And the rest of the file is untouched.
-      expect(doc.verify).toBe('npm test')
-      await h.shutdown()
-    })
-  })
-
-  test('switching a server from command to url drops the stdio fields, keeps the rest', async () => {
-    const { host: h } = await host()
-    writeFileSync(projectSettingsPath(root), JSON.stringify({
-      mcpServers: { search: { command: 'node', args: ['s.js'], trustReadOnlyHints: true } },
-    }), 'utf8')
-    await h.handle({
-      id: 2, method: 'mcp.save',
-      params: { upsert: [{ name: 'search', url: 'https://mcp.example.com/sse' }] },
-    })
-    const doc = JSON.parse(readFileSync(projectSettingsPath(root), 'utf8'))
-    expect(doc.mcpServers.search).toEqual({ url: 'https://mcp.example.com/sse', trustReadOnlyHints: true })
-    await h.shutdown()
-  })
-
-  test('remove deletes only the named entry', async () => {
-    // Written AFTER init: init CONNECTS configured servers, and a bare `node` is a REPL
-    // that hangs the handshake. mcp.save reads the disk fresh, so the order is free.
-    const { host: h } = await host()
-    writeFileSync(projectSettingsPath(root), JSON.stringify({
-      mcpServers: { a: { command: 'node' }, b: { url: 'https://x.example/sse' } },
-    }), 'utf8')
-    await h.handle({ id: 2, method: 'mcp.save', params: { remove: ['a'] } })
-    const doc = JSON.parse(readFileSync(projectSettingsPath(root), 'utf8'))
-    expect(Object.keys(doc.mcpServers)).toEqual(['b'])
-    await h.shutdown()
-  })
-
-  test('a server with both command and url, or neither, is refused before the file changes', async () => {
-    const { host: h, transport } = await host()
-    await h.handle({
-      id: 2, method: 'mcp.save',
-      params: { upsert: [{ name: 'x', command: 'node', url: 'https://x.example/sse' }] },
-    })
-    expect(errorOf(transport, 2)).toMatch(/not both/)
-    await h.handle({ id: 3, method: 'mcp.save', params: { upsert: [{ name: 'y' }] } })
-    expect(errorOf(transport, 3)).toMatch(/neither/)
-    await h.shutdown()
-  })
-
-  test('mcp.read reports what the editor will edit, with its source', async () => {
+describe('mcp.rawRead', () => {
+  test('gives back the mcpServers object verbatim, and the file it lives in', async () => {
+    // Verbatim is the whole design: an env block and a trust flag are just text here, so
+    // there is no field the screen "does not model" and therefore none it can lose.
     const { host: h, transport } = await host()
     writeFileSync(projectSettingsPath(root), JSON.stringify({
-      mcpServers: { docs: { command: 'node', args: ['d.js'] } },
-    }), 'utf8')
-    await h.handle({ id: 2, method: 'mcp.read', params: {} })
-    const { servers } = replyOf(transport, 2)
-    expect(servers).toEqual([
-      { name: 'docs', kind: 'stdio', command: 'node', args: ['d.js'], source: 'project settings' },
-    ])
+      verify: 'npm test',
+      mcpServers: {
+        docs: { command: 'node', args: ['d.js'], env: { DOCS_TOKEN: 'secret' }, trustReadOnlyHints: true },
+      },
+    }, null, 2), 'utf8')
+    await h.handle({ id: 2, method: 'mcp.rawRead', params: {} })
+    const { json, path } = replyOf(transport, 2)
+    expect(JSON.parse(json)).toEqual({
+      docs: { command: 'node', args: ['d.js'], env: { DOCS_TOKEN: 'secret' }, trustReadOnlyHints: true },
+    })
+    expect(path).toBe(projectSettingsPath(root))
+    await h.shutdown()
+  })
+
+  test('an absent file, and an unparseable one, both open the editor at {}', async () => {
+    // The editor must open on a workspace that has never configured a server, and must not
+    // refuse to open on a file someone broke by hand — that file is exactly what needs
+    // editing. loadLayers reports the parse failure through the problems list instead.
+    const { host: h, transport } = await host()
+    await h.handle({ id: 2, method: 'mcp.rawRead', params: {} })
+    expect(replyOf(transport, 2).json).toBe('{}')
+
+    writeFileSync(projectSettingsPath(root), '{ this is not json', 'utf8')
+    await h.handle({ id: 3, method: 'mcp.rawRead', params: {} })
+    expect(replyOf(transport, 3).json).toBe('{}')
+    await h.shutdown()
+  })
+})
+
+describe('mcp.rawSave', () => {
+  test('replaces mcpServers and leaves every other key of the file alone', async () => {
+    const { host: h, transport } = await host()
+    writeFileSync(projectSettingsPath(root), JSON.stringify({
+      verify: 'npm test',
+      permissions: { deny: ['run_command(npm publish:*)'] },
+      mcpServers: { old: { command: 'node' } },
+    }, null, 2), 'utf8')
+    await h.handle({
+      id: 2, method: 'mcp.rawSave',
+      params: { json: '{ "docs": { "url": "https://mcp.example.com/sse", "headers": { "X-Key": "k" } } }' },
+    })
+    expect(replyOf(transport, 2)).toEqual({})
+
+    const doc = JSON.parse(readFileSync(projectSettingsPath(root), 'utf8'))
+    // A replacement, not a merge: `old` is gone because the saved document does not name it.
+    expect(doc.mcpServers).toEqual({ docs: { url: 'https://mcp.example.com/sse', headers: { 'X-Key': 'k' } } })
+    expect(doc.verify).toBe('npm test')
+    expect(doc.permissions).toEqual({ deny: ['run_command(npm publish:*)'] })
+    await h.shutdown()
+  })
+
+  test('a typo is refused before the file is touched', async () => {
+    const { host: h, transport } = await host()
+    const before = JSON.stringify({ mcpServers: { docs: { command: 'node' } } }, null, 2)
+    writeFileSync(projectSettingsPath(root), before, 'utf8')
+
+    await h.handle({ id: 2, method: 'mcp.rawSave', params: { json: '{ "docs": { "command": "node" ' } })
+    expect(errorOf(transport, 2)).toMatch(/not valid JSON/)
+    // An array parses, and is still not the one shape loadServers can read.
+    await h.handle({ id: 3, method: 'mcp.rawSave', params: { json: '["docs"]' } })
+    expect(errorOf(transport, 3)).toMatch(/must be an object/)
+    // A named entry that is not an object says WHICH one, because the document may be long.
+    await h.handle({ id: 4, method: 'mcp.rawSave', params: { json: '{ "docs": "node d.js" }' } })
+    expect(errorOf(transport, 4)).toMatch(/"docs" must be an object/)
+
+    expect(readFileSync(projectSettingsPath(root), 'utf8')).toBe(before)
+    await h.shutdown()
+  })
+
+  test('a half-written entry saves — the connect that follows is what judges it', async () => {
+    // Deliberate: direct editing means you may leave a server mid-thought and come back.
+    // Depth is judged by loadServers at connect, through the problems list the window
+    // already shows above this editor — not by a gate that refuses to save your work.
+    const { host: h, transport } = await host()
+    await h.handle({ id: 2, method: 'mcp.rawSave', params: { json: '{ "docs": { "args": ["d.js"] } }' } })
+    expect(replyOf(transport, 2)).toEqual({})
+    const doc = JSON.parse(readFileSync(projectSettingsPath(root), 'utf8'))
+    expect(doc.mcpServers).toEqual({ docs: { args: ['d.js'] } })
+    await h.shutdown()
+  })
+
+  test('an unparseable settings file is refused, not overwritten', async () => {
+    // The same read-validate-refuse discipline editRules applies: whatever else is in that
+    // file, a save must not be the thing that destroys it.
+    const { host: h, transport } = await host()
+    writeFileSync(projectSettingsPath(root), '{ "verify": "npm test",', 'utf8')
+    await h.handle({ id: 2, method: 'mcp.rawSave', params: { json: '{ "docs": { "command": "node" } }' } })
+    expect(errorOf(transport, 2)).toBeDefined()
+    expect(readFileSync(projectSettingsPath(root), 'utf8')).toBe('{ "verify": "npm test",')
+    await h.shutdown()
+  })
+
+  test('what rawSave writes is what rawRead gives back', async () => {
+    const { host: h, transport } = await host()
+    const json = '{ "docs": { "command": "node", "args": ["d.js"], "env": { "T": "1" } } }'
+    await h.handle({ id: 2, method: 'mcp.rawSave', params: { json } })
+    await h.handle({ id: 3, method: 'mcp.rawRead', params: {} })
+    expect(JSON.parse(replyOf(transport, 3).json)).toEqual(JSON.parse(json))
     await h.shutdown()
   })
 

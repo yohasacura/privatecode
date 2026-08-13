@@ -445,8 +445,8 @@ export interface HostMethodMap {
   'permissions.list': { params: PermissionsListParams; result: PermissionsListResult }
   'permissions.remove': { params: PermissionsRemoveParams; result: PermissionsRemoveResult }
   'permissions.add': { params: PermissionsAddParams; result: PermissionsAddResult }
-  'mcp.read': { params: McpReadParams; result: McpReadResult }
-  'mcp.save': { params: McpSaveParams; result: McpSaveResult }
+  'mcp.rawRead': { params: McpRawReadParams; result: McpRawReadResult }
+  'mcp.rawSave': { params: McpRawSaveParams; result: McpRawSaveResult }
   'run.start': { params: RunStartParams; result: RunStartResult }
   'run.stop': { params: RunStopParams; result: RunStopResult }
 }
@@ -733,36 +733,31 @@ export interface PermissionsAddParams {
 export interface PermissionsAddResult { problem: string | null }
 
 /**
- * The configured MCP servers, for editing — the raw config, not the connection state.
- * `source` says which settings file each entry came from; only project-file entries are
- * editable through `mcp.save`, and the screen says so for the rest rather than hiding them.
+ * The PROJECT settings file's `mcpServers` object, verbatim, for direct editing.
+ *
+ * VS Code's shape, at the user's request: the configuration IS a JSON document you edit,
+ * not a form that models a subset of it. What comes back is exactly what sits in the file
+ * (pretty-printed; `{}` when absent), so nothing an editor cannot represent exists —
+ * env blocks, headers, cwd, trust flags are all just text here.
  */
-export type McpReadParams = Empty
-export interface McpServerView {
-  name: string
-  kind: 'stdio' | 'http'
-  command?: string
-  args?: string[]
-  url?: string
-  /** e.g. "project settings" — where the merged entry was defined last. */
-  source: string
+export type McpRawReadParams = Empty
+export interface McpRawReadResult {
+  /** The `mcpServers` object as JSON text. */
+  json: string
+  /** The file it lives in, shown so the edit is never to a mystery location. */
+  path: string
 }
-export interface McpReadResult { servers: McpServerView[]; problems: string[] }
 
 /**
- * Edit the PROJECT settings file's `mcpServers` key. A merge, not a replacement: an entry
- * being upserted keeps every field this screen does not model (`env`, `headers`, `cwd`,
- * `trustReadOnlyHints`), the same discipline `editRules` applies to the permissions key —
- * a hand-tuned entry must survive being renamed in a form that never saw its env block.
- * Applying the change is the caller's second step: re-open the workspace (the same
- * `connect()` the Folders manager already triggers), which reconnects servers and rebuilds
- * the prompt that names them.
+ * Replace the `mcpServers` key with the edited document. Syntax and root-shape are checked
+ * BEFORE anything is written — a typo comes back as an error and the file is untouched;
+ * every other top-level key of the settings file survives. Deeper validation (does each
+ * entry have a command or a url) happens where it always has: at connect, through the same
+ * problems pipeline the window already shows. Applying is the caller's second step —
+ * re-open the workspace, which reconnects servers and rebuilds the prompt naming them.
  */
-export interface McpSaveParams {
-  upsert?: { name: string; command?: string; args?: string[]; url?: string }[]
-  remove?: string[]
-}
-export type McpSaveResult = Empty
+export interface McpRawSaveParams { json: string }
+export type McpRawSaveResult = Empty
 
 export type WorklogReadParams = Empty
 /** `text` is empty when nothing has been logged yet, which is the normal state of a

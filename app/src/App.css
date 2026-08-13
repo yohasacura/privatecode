@@ -2464,22 +2464,51 @@ kbd {
 .perms-add-rule { flex: 1; min-width: 0; font-family: var(--mono); }
 .perms-add-scope { flex: none; width: 118px; }
 
-/* The MCP editor: what is configured, and one row to add more. */
-.mcp-editor { display: flex; flex-direction: column; gap: 4px; }
-.mcp-editor-target {
+/* The MCP editor, VS Code's way: the JSON document itself. The textarea is the whole
+   point — everything the loader can read is expressible, including fields no form
+   anticipated. */
+.mcp-editor { display: flex; flex-direction: column; gap: 8px; }
+.mcp-editor-pathrow { display: flex; align-items: baseline; gap: 8px; }
+.mcp-editor-key { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+.mcp-editor-path {
+  flex: 1;
+  min-width: 0;
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text-faint);
-  max-width: 200px;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+}
+.mcp-editor-json {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  tab-size: 2;
+}
+.mcp-editor-json:focus-visible { outline: none; border-color: var(--accent-line); }
+/* A parse error colours the frame, not the text: the text is what you are fixing. */
+.mcp-editor-json-bad { border-color: var(--red); }
+.mcp-editor-foot { display: flex; align-items: center; gap: 10px; }
+.mcp-editor-status {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* An entry defined in another settings file: named, not hidden — a merged list that
-   omitted it would misstate what the agent can reach — but not editable from here. */
-.mcp-editor-source { font-size: 10px; color: var(--text-faint); font-style: italic; }
-.mcp-editor-form { display: flex; gap: 6px; align-items: center; }
-.mcp-editor-name { flex: none; width: 110px; }
 
 /* Reviewed changes fold away rather than scroll forever. */
 .changes-total-spacer { flex: 1; }

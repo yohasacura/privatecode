@@ -56,9 +56,9 @@ import type {
   PermissionsRemoveResult,
   PermissionsAddParams,
   PermissionsAddResult,
-  McpReadResult,
-  McpSaveParams,
-  McpSaveResult,
+  McpRawReadResult,
+  McpRawSaveParams,
+  McpRawSaveResult,
   FsReadParams,
   FsReadResult,
   FsTreeEntry,
@@ -393,8 +393,8 @@ export class SessionHost {
       case 'permissions.list': return this.permissionsList()
       case 'permissions.remove': return this.permissionsRemove(params as PermissionsRemoveParams)
       case 'permissions.add': return this.permissionsAdd(params as PermissionsAddParams)
-      case 'mcp.read': return this.mcpRead()
-      case 'mcp.save': return this.mcpSave(params as McpSaveParams)
+      case 'mcp.rawRead': return this.mcpRawRead()
+      case 'mcp.rawSave': return this.mcpRawSave(params as McpRawSaveParams)
       case 'run.start': return this.runStart(params as RunStartParams)
       case 'run.stop': return this.runStop()
       default: throw new Error(`unknown method: "${method}"`)
@@ -1312,32 +1312,52 @@ export class SessionHost {
     return { problem: null }
   }
 
-  /** The configured servers as CONFIG (for the editor), not as connection state. */
-  private mcpRead(): McpReadResult {
+  /** The project file's `mcpServers` object, verbatim — see the protocol's rationale. */
+  private mcpRawRead(): McpRawReadResult {
     const { workspaceRoot } = this.requireInitialized()
-    const { servers, problems } = loadServers(workspaceRoot)
-    return {
-      servers: servers.map((s) => ({
-        name: s.name,
-        kind: s.spec.kind,
-        ...(s.spec.kind === 'stdio'
-          ? { command: s.spec.command, ...(s.spec.args !== undefined ? { args: s.spec.args } : {}) }
-          : { url: s.spec.url }),
-        source: s.source,
-      })),
-      problems,
+    const path = projectSettingsPath(workspaceRoot)
+    let json = '{}'
+    if (existsSync(path)) {
+      try {
+        const doc: unknown = JSON.parse(readFileSync(path, 'utf8'))
+        if (typeof doc === 'object' && doc !== null && !Array.isArray(doc)) {
+          const servers = (doc as Record<string, unknown>)['mcpServers']
+          if (servers !== undefined) json = JSON.stringify(servers, null, 2)
+        }
+      } catch { /* an unparseable file is reported by loadLayers; the editor starts from {} */ }
     }
+    return { json, path }
   }
 
   /**
-   * Edits the PROJECT settings file's `mcpServers` key — a per-entry merge, never a
-   * replacement, so `env`, `headers`, `cwd`, `trustReadOnlyHints` and anything else this
-   * screen does not model survive an entry being edited in a form that never saw them.
-   * The same read-validate-refuse discipline `editRules` applies: a file that cannot be
-   * parsed is refused, not overwritten.
+   * Replaces the `mcpServers` key with the edited JSON document.
+   *
+   * Two checks and no more, both BEFORE anything is written: the text must parse, and its
+   * root must be an object of objects — the one shape `loadServers` can read at all. A typo
+   * comes back as this method's error with the file untouched. Anything deeper (a server
+   * with neither command nor url) is deliberately NOT judged here: it is legal to save a
+   * half-written entry, and the connect that follows reports it through the same problems
+   * pipeline every hand edit has always used. Direct editing means the file is the truth,
+   * so unlike the form this replaces, nothing is merged per entry — what you saved is what
+   * is there.
    */
-  private mcpSave(params: McpSaveParams): McpSaveResult {
+  private mcpRawSave(params: McpRawSaveParams): McpRawSaveResult {
     const { workspaceRoot } = this.requireInitialized()
+    let edited: unknown
+    try {
+      edited = JSON.parse(params.json)
+    } catch (e) {
+      throw new Error(`that is not valid JSON: ${(e as Error).message}`)
+    }
+    if (typeof edited !== 'object' || edited === null || Array.isArray(edited)) {
+      throw new Error('the document root must be an object: { "server-name": { ... }, ... }')
+    }
+    for (const [name, entry] of Object.entries(edited as Record<string, unknown>)) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+        throw new Error(`"${name}" must be an object with a "command" or a "url"`)
+      }
+    }
+
     const path = projectSettingsPath(workspaceRoot)
     let doc: Record<string, unknown> = {}
     if (existsSync(path)) {
@@ -1353,40 +1373,9 @@ export class SessionHost {
       }
       doc = candidate as Record<string, unknown>
     }
-    const serversRaw = doc['mcpServers']
-    if (serversRaw !== undefined && (typeof serversRaw !== 'object' || serversRaw === null || Array.isArray(serversRaw))) {
-      throw new Error(`"mcpServers" in ${path} is not an object; fix it by hand first`)
-    }
-    const servers: Record<string, unknown> = { ...(serversRaw as Record<string, unknown> | undefined) }
-
-    for (const name of params.remove ?? []) delete servers[name]
-    for (const entry of params.upsert ?? []) {
-      const name = entry.name.trim()
-      if (name === '') throw new Error('a server needs a name')
-      const hasCommand = typeof entry.command === 'string' && entry.command.trim() !== ''
-      const hasUrl = typeof entry.url === 'string' && entry.url.trim() !== ''
-      if (hasCommand === hasUrl) {
-        throw new Error(`"${name}" needs either a command (local server) or a URL (remote one), not ${hasCommand ? 'both' : 'neither'}`)
-      }
-      const existing = typeof servers[name] === 'object' && servers[name] !== null && !Array.isArray(servers[name])
-        ? servers[name] as Record<string, unknown>
-        : {}
-      const next: Record<string, unknown> = { ...existing }
-      if (hasCommand) {
-        next['command'] = entry.command!.trim()
-        if (entry.args !== undefined && entry.args.length > 0) next['args'] = entry.args
-        else delete next['args']
-        delete next['url']
-      } else {
-        next['url'] = entry.url!.trim()
-        delete next['command']
-        delete next['args']
-      }
-      servers[name] = next
-    }
 
     mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, `${JSON.stringify({ ...doc, mcpServers: servers }, null, 2)}\n`, 'utf8')
+    writeFileSync(path, `${JSON.stringify({ ...doc, mcpServers: edited }, null, 2)}\n`, 'utf8')
     return {}
   }
 
