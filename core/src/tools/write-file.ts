@@ -216,6 +216,9 @@ export const writeFileTool: Tool<WriteFileArgs> = {
     }
 
     const note = notes.length === 0 ? '' : `\n(note: ${notes.join('; ')})`
+    // Same reason as in `edit-file`: a re-read after this is verification, which is the one
+    // repeat the cheap answer is for. See `ReadMemory.markWritten`.
+    ctx.reads?.markWritten(args.path)
     return {
       ok: true,
       content: replaced === null

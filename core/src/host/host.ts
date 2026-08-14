@@ -168,6 +168,15 @@ function describeFailure(e: unknown): string {
 const FALLBACK_MODEL = 'Qwen3.6-35B-A3B'
 
 /**
+ * The most steps one turn may take in the window.
+ *
+ * A backstop, not a budget: at roughly 30-60 s per step this is two to four hours of one
+ * turn, which is far past any honest task and well short of forever. Before this the app
+ * passed nothing and `loop.ts` defaulted to Infinity.
+ */
+const MAX_STEPS_PER_TURN = 200
+
+/**
  * `D:\models\Qwen3-Coder-Next-UD-Q3_K_XL.gguf` -> `Qwen3-Coder-Next-UD-Q3_K_XL`.
  *
  * The file name IS the useful name: it carries the family, the size and the quantisation,
@@ -796,6 +805,18 @@ export class SessionHost {
     }
     if (resumeId !== undefined) sessionOpts.resume = resumeId
     if (this.contextLength !== null) sessionOpts.compaction = { contextLength: this.contextLength }
+
+    // A crash barrier on one turn. `loop.ts` defaults `maxSteps` to Infinity and only the CLI
+    // ever set it, so every turn the window has ever run was unbounded — while the loop
+    // detector, the only other thing that can stop a spinning turn, was comparing results
+    // whose first characters were a wall-clock duration. Between them there was no stop
+    // condition at all for an autopilot turn that had started chasing its own tail.
+    //
+    // Deliberately generous. The detector is the precise instrument and should do the real
+    // work; this only catches what it cannot see. The recorded corpus was shaped by the CLI's
+    // 40, which shows both sides: it terminated two thrash bursts, and it also cut off eight
+    // turns mid-task with "stopped after 40 steps without finishing".
+    sessionOpts.maxSteps = MAX_STEPS_PER_TURN
 
     const session = new Session(sessionOpts)
     this.session = session

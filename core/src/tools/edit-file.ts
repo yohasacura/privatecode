@@ -347,6 +347,11 @@ export const editFileTool: Tool<EditFileArgs> = {
     }
     const note = notes.length === 0 ? '' : `\n(note: ${notes.join('; ')})`
 
+    // A later re-read of this path is the model checking its own work, and that is the one
+    // repeat the cheap "unchanged"/diff answer is for. Without this mark every repeat looks
+    // like a lookup and gets the whole file back. See `ReadMemory.markWritten`.
+    ctx.reads?.markWritten(args.path)
+
     return { ok: true, content: `${renderDiff(lfBody, finalText, args.path)}${note}` }
   },
 }

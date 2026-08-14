@@ -540,6 +540,16 @@ export class Session {
     // time out into a file they will read tomorrow.
     this.decisions = opts.longRun || opts.unattended ? new DecisionQueue(opts.workspaceRoot) : null
     this.unattendedActive = opts.unattended !== undefined
+
+    // The other half of the correctness condition recorded at `applyCompactionSwap`, and it
+    // was missing. The toolset — and with it the read memory — is built once per WORKSPACE
+    // and reused for every `sessions.new` and `sessions.resume`, so a fresh session inherited
+    // the previous one's reads and answered a first read with "unchanged since you read it
+    // earlier in this session, the text you already have is current" about text that appears
+    // in no transcript this session can see. A lie the model has no way to detect. Replayed
+    // over one recorded app run of three sessions sharing a toolset, it would have answered
+    // that way 11 times and been right none of them.
+    this.opts.toolset.reads?.clear()
   }
 
   /**

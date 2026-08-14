@@ -103,3 +103,39 @@ describe('what the model is told', () => {
     expect(text).toMatch(/say plainly what you are stuck on/)
   })
 })
+
+describe('results that change for reasons the model did not cause', () => {
+  test('a command re-run to the same effect is caught despite its duration differing', () => {
+    // The hole that made the detector nearly inert. `run_command` opens every result with
+    // `exit 0 in 1.7 s`, so a wall-clock number sat at character 0 of the compared prefix and
+    // two identical builds only matched when they happened to round to the same tenth. In the
+    // recorded corpus the detector fired twice in ~537 calls -- and one of those two fired by
+    // coincidence, because two builds both rounded to 1.7 s.
+    const d = new LoopDetector()
+    const args = JSON.stringify({ command: 'dotnet build' })
+    const result = (s: string): string =>
+      `exit 0 in ${s} s\nBuild succeeded.\n  1 Warning(s)\n  CS8602: possible null dereference\n`
+
+    d.record('run_command', args, result('1.7'))
+    d.record('run_command', args, result('2.3'))
+    expect(d.wouldRepeat('run_command', args)).toBe(true)
+  })
+
+  test('a genuinely different exit code is still progress', () => {
+    // The normalisation must not flatten the thing that actually distinguishes two runs.
+    const d = new LoopDetector()
+    const args = JSON.stringify({ command: 'dotnet build' })
+    d.record('run_command', args, 'exit 1 in 1.7 s\nBuild FAILED.\n')
+    d.record('run_command', args, 'exit 0 in 2.3 s\nBuild succeeded.\n')
+    expect(d.wouldRepeat('run_command', args)).toBe(false)
+  })
+
+  test('a duration further into the output is left alone', () => {
+    // Only the header is volatile by construction. A number inside a test report is content.
+    const d = new LoopDetector()
+    const args = JSON.stringify({ command: 'dotnet test' })
+    d.record('run_command', args, 'exit 0 in 1.0 s\nPassed! Duration: 3.1 s\n')
+    d.record('run_command', args, 'exit 0 in 1.0 s\nPassed! Duration: 9.8 s\n')
+    expect(d.wouldRepeat('run_command', args)).toBe(false)
+  })
+})

@@ -312,8 +312,12 @@ export const readFileTool: Tool<ReadFileArgs> = {
 
     // A second look costs what a second look is worth.
     //
-    // Measured over every session this tool has run: one 40k-character file was read whole
-    // 31 times in one session — roughly 310k tokens on a 131k window, for one file. The
+    // Measured over every session this tool has run, counting by distinct tool_call id: one
+    // 40k-character file was read whole 21 times in the biggest session and 30 times across
+    // four. (This comment first said "31 times in one session — roughly 310k tokens". That
+    // came from a raw record count, and 82 of the corpus's 703 records are the same call
+    // logged twice, because a compaction swap appends the whole rewritten transcript. The
+    // shape of the finding held; the number did not.) The
     // pattern is read, edit, read, edit: the model checking its own work, which was the only
     // way it had. So a repeat is answered with what CHANGED, and `full: true` still returns
     // the text — the model decides, but the cheap answer is the one it gets without asking.
@@ -324,7 +328,21 @@ export const readFileTool: Tool<ReadFileArgs> = {
     if (wholeFile && args.full !== true) {
       const before = ctx.reads?.get(args.path) ?? null
       if (before !== null) {
-        if (before === text) {
+        // The cheap answer belongs to ONE of the two repeats that look alike here.
+        //
+        // Read → edit → read is the model checking its own work; it knows what it is looking
+        // for and "unchanged" or a diff answers it exactly. Read → (something is asked) →
+        // read is the model looking a fact up, and telling it "you already have this" answers
+        // a question it did not ask: it came back precisely because it could not find the
+        // thing. The observed cost is not even the tokens saved — it is a wasted round trip,
+        // because the next call is the same read with `full: true`, or worse, an answer given
+        // from a memory that failed once already.
+        //
+        // A write since the last look is what tells them apart, and it is a fact rather than
+        // a guess about intent. With no write, the file goes back in front of the model — and
+        // being recent in the context is itself most of why that helps. Repeating THAT is the
+        // loop detector's job, not this one's.
+        if (before === text && ctx.reads?.wasWritten(args.path) === true) {
           return {
             ok: true,
             content:
@@ -333,14 +351,19 @@ export const readFileTool: Tool<ReadFileArgs> = {
               'it in front of you again.',
           }
         }
-        ctx.reads?.record(args.path, text)
-        return {
-          ok: true,
-          content:
-            `${args.path} changed since you read it (${total} lines now). What changed:\n` +
-            `${renderDiff(before, text, args.path)}\n\n` +
-            'Use read_file with full: true for the whole file.',
+        // Changed since the model saw it: what changed IS the answer, whatever the repeat
+        // was for, and it is strictly smaller than the file.
+        if (before !== text) {
+          ctx.reads?.record(args.path, text)
+          return {
+            ok: true,
+            content:
+              `${args.path} changed since you read it (${total} lines now). What changed:\n` +
+              `${renderDiff(before, text, args.path)}\n\n` +
+              'Use read_file with full: true for the whole file.',
+          }
         }
+        // Unchanged and nothing wrote it: fall through and hand over the file again.
       }
     }
 

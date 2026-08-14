@@ -564,7 +564,9 @@ test('a small file is untouched by any of this', async () => {
 
 // --- A second look costs what a second look is worth --------------------------------
 
-test('re-reading an unchanged file says so instead of sending it again', async () => {
+test('re-reading an unchanged file AFTER writing it says so instead of sending it again', async () => {
+  // The repeat this was built for: read, edit, read — the model checking its own work. It
+  // knows what it is looking for, so "unchanged" answers it exactly.
   const reads = new ReadMemory()
   const withMemory = { ...ctx, reads }
   writeFileSync(join(tempRoot, 'src', 'repeat.ts'), 'export const a = 1\n', 'utf8')
@@ -572,11 +574,55 @@ test('re-reading an unchanged file says so instead of sending it again', async (
   const first = await readFileTool.execute({ path: 'src/repeat.ts' }, withMemory)
   expect(first.content).toContain('export const a = 1')
 
+  // An edit that left the bytes as they were — a failed match, or an idempotent write.
+  // Without the mark this is indistinguishable from a lookup.
+  reads.markWritten('src/repeat.ts')
+
   const second = await readFileTool.execute({ path: 'src/repeat.ts' }, withMemory)
   expect(second.ok).toBe(true)
   expect(second.content).toMatch(/unchanged since you read it/)
   expect(second.content).not.toContain('export const a = 1')
   expect(second.content).toContain('full: true')
+})
+
+test('re-reading a file nothing has written hands it back, because that repeat is a lookup', async () => {
+  // The reported case, and the one the cheap answer was answering wrongly: the model read
+  // the file, was then asked which parameter controls some behaviour, and went back for it.
+  // "You already have this" replies to a question it did not ask — it came back precisely
+  // because it could not find the thing — and costs a round trip, since the next call is the
+  // same read with `full: true`. Being recent in the context is most of why re-sending helps
+  // at all. Bounding THAT is the loop detector's job, not this one's.
+  const reads = new ReadMemory()
+  const withMemory = { ...ctx, reads }
+  writeFileSync(join(tempRoot, 'src', 'lookup.ts'), 'export const timeoutMs = 5000\n', 'utf8')
+
+  await readFileTool.execute({ path: 'src/lookup.ts' }, withMemory)
+  const again = await readFileTool.execute({ path: 'src/lookup.ts' }, withMemory)
+
+  expect(again.ok).toBe(true)
+  expect(again.content).toContain('export const timeoutMs = 5000')
+  expect(again.content).not.toMatch(/unchanged since you read it/)
+})
+
+test('the write mark survives a cheap answer, and is spent by handing the file over', async () => {
+  // The cheap answer does not put the text back in front of the model, so the mark has to
+  // outlive it — otherwise the second verification read of the same edit reads as a lookup
+  // and dumps the file. Handing the file over is what settles it.
+  const reads = new ReadMemory()
+  const withMemory = { ...ctx, reads }
+  writeFileSync(join(tempRoot, 'src', 'spent.ts'), 'export const a = 1\n', 'utf8')
+
+  await readFileTool.execute({ path: 'src/spent.ts' }, withMemory)
+  reads.markWritten('src/spent.ts')
+  expect((await readFileTool.execute({ path: 'src/spent.ts' }, withMemory)).content)
+    .toMatch(/unchanged since you read it/)
+  expect((await readFileTool.execute({ path: 'src/spent.ts' }, withMemory)).content)
+    .toMatch(/unchanged since you read it/)
+
+  // `full: true` hands it over, which spends the mark: the next repeat is a lookup again.
+  await readFileTool.execute({ path: 'src/spent.ts', full: true }, withMemory)
+  expect((await readFileTool.execute({ path: 'src/spent.ts' }, withMemory)).content)
+    .toContain('export const a = 1')
 })
 
 test('re-reading a CHANGED file answers with the diff', async () => {
