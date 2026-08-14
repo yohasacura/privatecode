@@ -389,15 +389,12 @@ export class CheckpointStore {
         '# are snapshotted separately; a checkpoint that swallowed one would record a\n' +
         '# pointer to a commit instead of its files, and a rewind would restore nothing\n' +
         '# inside it. Edit .privatecode/checkpoints.exclude instead — this file is rewritten.\n' +
-        // Our own bookkeeping, named explicitly rather than relied upon accidentally. It used
-        // to be excluded as a side effect of `.privatecode/.gitignore` containing `*` — which
-        // hid the WHOLE folder, including the user's settings and skills. Now that the
-        // gitignore only covers what is ours, these two have to say so themselves, and the
-        // user's own files under `.privatecode/` are snapshotted like any other source: a
-        // rewind should put back a skill the agent edited.
-        `${PRIVATE_DIR}/${STATE_DIR}/\n` +
-        `${PRIVATE_DIR}/.gitignore\n` +
-        `${PRIVATE_DIR}/${EXCLUDE_FILE}\n` +
+        // Our own directory, named rather than relied upon. It is already hidden by the `*`
+        // in its own `.gitignore`, and that is exactly the kind of load-bearing coincidence
+        // worth removing: an exclusion that holds only because a courtesy file happens to
+        // exist is one edit away from silently not holding, and the symptom would be a
+        // checkpoint quietly swallowing every session file in the workspace.
+        `${PRIVATE_DIR}/\n` +
         this.excluded.map((e) => `${e}\n`).join(''),
         'utf8',
       )

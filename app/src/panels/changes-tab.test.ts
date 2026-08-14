@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatItem } from '../lib/state'
-import { collectChanges, splitReviewed } from './changes-tab'
+import { collectChanges, splitReviewed, type ChangeEntry } from './changes-tab'
+import { groupByDirectory } from '../lib/path-tree'
 
 function tool(id: number, name: string, args: string, content = 'diff body', ok = true): ChatItem {
   return { kind: 'tool', id, name, args, startedAtMs: id, result: { ok, preview: 'p', content, display: content } }
@@ -165,5 +166,25 @@ describe('reviewed changes fold away, honestly', () => {
     const { visible, hidden } = splitReviewed([entry(1, 'x.ts')], new Map())
     expect(hidden).toEqual([])
     expect(visible).toHaveLength(1)
+  })
+})
+
+describe('grouping the change list', () => {
+  it('groups a move by where it landed, and keeps the whole "old → new" label', () => {
+    // `ChangeEntry.path` is the DISPLAY string, and for a move that is `old → new`. Grouping
+    // by it split on the last slash of the second half: heading `src/old.ts → src`, row
+    // `new.ts`, and the half that says where the file came from simply gone.
+    const entries: ChangeEntry[] = [
+      { id: 2, tool: 'move_file', path: 'src/old.ts → src/lib/new.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/new.ts' },
+      { id: 1, tool: 'write_file', path: 'src/lib/other.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/other.ts' },
+    ]
+    const { groups, commonPrefix } = groupByDirectory(entries, (e) => e.openPath)
+    expect(commonPrefix).toBe('src/lib')
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.items.map((i) => i.item.id)).toEqual([2, 1])
+    // The row for the move is labelled from `path`, not from the grouped file name.
+    const move = groups[0]!.items[0]!
+    expect(move.name).toBe('new.ts')
+    expect(move.item.path).toBe('src/old.ts → src/lib/new.ts')
   })
 })

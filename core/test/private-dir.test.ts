@@ -33,14 +33,13 @@ const legacy = (): void => {
 }
 
 describe('the state/ split', () => {
-  test('a fresh workspace ignores what is ours and nothing else', () => {
+  test('the whole folder stays out of git — none of it belongs in a history', () => {
+    // Briefly narrowed to ignore only `state/`, on the reasoning that a project's own skills
+    // and settings should be able to travel with the repository. The user's answer was that
+    // none of this folder belongs in theirs, and that is the call: the split is about what a
+    // person has to LOOK at, not about what git carries.
     ensurePrivateDir(root)
-    const ignore = readFileSync(priv('.gitignore'), 'utf8')
-    expect(ignore).toContain('state/')
-    expect(ignore).toContain('settings.local.json')
-    // The whole point: a project's own skills and settings can be committed now. The old
-    // body was `*`, which made the "project" scope a scope nothing could ever be shared in.
-    expect(ignore.split('\n')).not.toContain('*')
+    expect(readFileSync(priv('.gitignore'), 'utf8').split('\n')).toContain('*')
   })
 
   test('an existing workspace has its machine state moved, contents intact', () => {
@@ -74,18 +73,14 @@ describe('the state/ split', () => {
     expect(readFileSync(priv('sessions', 's1.jsonl'), 'utf8')).toBe('the conversation')
   })
 
-  test('the old catch-all ignore is replaced, and an edited one is left alone', () => {
+  test('the ignore file is never rewritten by the migration', () => {
+    // Rearranging our own directories is not a licence to edit a file the user may have
+    // changed — and the body it already carries is the body it should carry.
     legacy()
-    writeFileSync(priv('.gitignore'), '# Created by PrivateCode. Everything in here is local state.\n*\n', 'utf8')
+    const edited = '*\n!keep-this\n'
+    writeFileSync(priv('.gitignore'), edited, 'utf8')
     migratePrivateDir(root)
-    expect(readFileSync(priv('.gitignore'), 'utf8')).toContain('state/')
-
-    const edited = mkdtempSync(join(tmpdir(), 'pc-pdir-'))
-    roots.push(edited)
-    mkdirSync(join(edited, PRIVATE_DIR, 'sessions'), { recursive: true })
-    writeFileSync(join(edited, PRIVATE_DIR, '.gitignore'), '*\n!keep-this\n', 'utf8')
-    migratePrivateDir(edited)
-    expect(readFileSync(join(edited, PRIVATE_DIR, '.gitignore'), 'utf8')).toBe('*\n!keep-this\n')
+    expect(readFileSync(priv('.gitignore'), 'utf8')).toBe(edited)
   })
 
   test('a workspace that never used this tool is left completely alone', () => {

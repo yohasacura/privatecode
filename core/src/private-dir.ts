@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
@@ -23,10 +23,11 @@ import { join } from 'node:path'
  * `state/` is one directory precisely so it can be ignored in one glance and one gitignore
  * line. Nothing in it is meant to be read, edited, or reasoned about by a person.
  *
- * That also fixes something the flat layout made impossible. The self-ignore used to be `*`
- * — everything here, forever — so a project's own skills and settings could not be committed
- * even when the whole point of the "project" scope was that they travel with the project.
- * Now only `state/` and the personal overrides are ignored.
+ * The split is about READABILITY, not about git. The self-ignore stays `*`: this directory
+ * is ours end to end, and a tool that lets its files turn up in someone's `git status` — or
+ * worse, in a commit — has made their working tree its problem. The user's own settings and
+ * skills living here are still theirs to read and edit; they simply do not travel with the
+ * repository, which is the behaviour asked for.
  */
 export const PRIVATE_DIR = '.privatecode'
 
@@ -34,25 +35,15 @@ export const PRIVATE_DIR = '.privatecode'
 export const STATE_DIR = 'state'
 
 /**
- * Ignores what is ours and nothing else.
+ * `*` — everything here, including this file.
  *
- * Written once and never rewritten (see `ensurePrivateDir`), so an existing workspace keeps
- * whatever is in its file — including the old `*`. `migratePrivateDir` is what replaces that
- * one specific historical body, and only that one, because a `*` written by us is a rule the
- * user never chose while any edit of theirs is.
+ * The `state/` split is about READABILITY, not about git. It was briefly narrowed to ignore
+ * only `state/`, on the reasoning that a project's own skills and settings should be able to
+ * travel with the repository; the user's answer was that none of this folder belongs in
+ * their history, and that is the call. So the whole directory stays out, and what lives at
+ * the top level is theirs to read and edit on this machine rather than theirs to commit.
  */
-const IGNORE_BODY = [
-  '# Created by PrivateCode.',
-  '# Everything below is local machine state. The rest of this folder — settings, skills,',
-  '# commands — is yours, and is meant to be committed if you want it shared.',
-  `${STATE_DIR}/`,
-  'settings.local.json',
-  '',
-].join('\n')
-
-/** The exact body written by every version before the state/ split. Recognised so it can be
- * replaced during migration; anything else in that file is treated as the user's own. */
-const LEGACY_IGNORE_BODY = '# Created by PrivateCode. Everything in here is local state.\n*\n'
+const IGNORE_BODY = '# Created by PrivateCode. Everything in here is local state.\n*\n'
 
 /**
  * Creates `<root>/.privatecode/<sub>` (and the parent) and makes sure the self-ignore is in
@@ -132,16 +123,8 @@ export function migratePrivateDir(workspaceRoot: string): string[] {
     }
   }
 
-  // Only the body WE wrote. An edited file is the user's, and `*` may be exactly what they
-  // want — but a `*` we put there without asking is what makes their own skills and settings
-  // uncommittable, which is the other half of this split.
-  const ignore = join(base, '.gitignore')
-  try {
-    if (existsSync(ignore) &&
-        readFileSync(ignore, 'utf8').replace(/\r\n/g, '\n') === LEGACY_IGNORE_BODY) {
-      writeFileSync(ignore, IGNORE_BODY, 'utf8')
-    }
-  } catch { /* the move is what mattered */ }
-
+  // The ignore file is deliberately NOT touched here. It already says `*`, which is what it
+  // should say, and rewriting a file the user may have edited is not something a rearrange
+  // of our own directories has any business doing.
   return problems
 }

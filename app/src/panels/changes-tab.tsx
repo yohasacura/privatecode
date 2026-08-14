@@ -177,7 +177,11 @@ export function ChangesTab({
 
   // Grouped by directory with the shared prefix lifted out — see `lib/path-tree.ts` for why
   // one level and not a full tree.
-  const grouped = groupByDirectory(visible, (e) => e.path)
+  // Grouped by `openPath`, the real path on disk — NOT by `path`, which for a move is the
+  // display string `old → new`. Splitting that on its last slash produced a heading of
+  // `src/old.ts → src` and a row of `new.ts`, so a moved file landed in an invented
+  // directory having lost the half that says where it came from.
+  const grouped = groupByDirectory(visible, (e) => e.openPath)
 
   return (
     <div class="changes-tab">
@@ -203,7 +207,9 @@ export function ChangesTab({
               <ChangeRow
                 key={entry.id}
                 entry={entry}
-                name={name}
+                // A move keeps its whole `old → new` label: the file name alone would drop
+                // the only interesting half. Everything else shows its bare name.
+                name={entry.path === entry.openPath ? name : entry.path}
                 onOpenFile={onOpenFile}
                 client={client}
                 onReverted={() => setReverts((n) => n + 1)}
