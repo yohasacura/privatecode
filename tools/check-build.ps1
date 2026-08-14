@@ -47,6 +47,18 @@ if (-not $AppDir) {
   $exe = Get-ChildItem $AppDir -Filter '*.exe' | Where-Object { $_.Name -match 'PrivateCode|^app\.exe$' } | Select-Object -First 1
   if ($exe) { Write-Host "  built      : $($exe.LastWriteTime)" }
 
+  $sqlExe = Join-Path $AppDir 'sidecar\vendor\sql\sql-probe.exe'
+  $sqlDll = Join-Path $AppDir 'sidecar\vendor\sql\Microsoft.Data.SqlClient.SNI.dll'
+  if (-not (Test-Path $sqlExe)) {
+    Write-Host '  database   : not present -- this build cannot reach a database.' -ForegroundColor Yellow
+  } elseif (-not (Test-Path $sqlDll)) {
+    # The failure that stays quiet until connect time and then reads as a network fault:
+    # the helper starts, and every connection attempt dies naming nothing that is wrong.
+    Write-Host '  database   : BROKEN -- the helper is here and its native library is not.' -ForegroundColor Red
+  } else {
+    Write-Host '  database   : present (both files).' -ForegroundColor Green
+  }
+
   $helper = Join-Path $AppDir 'sidecar\vendor\roslyn\roslyn-nav.exe'
   if (-not (Test-Path $helper)) {
     Write-Host '  C# helper  : NOT PRESENT -- csharp_nav cannot work in this copy.' -ForegroundColor Red
