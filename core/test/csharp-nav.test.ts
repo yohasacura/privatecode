@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { csharpNavTool } from '../src/tools/csharp-nav.js'
-import { resolveHelper, toWorkspacePath } from '../src/csharp/nav-process.js'
+import { NavProcess, noteWorkspaceWrite, resolveHelper, toWorkspacePath } from '../src/csharp/nav-process.js'
 import { Workspace } from '../src/workspace.js'
 
 /**
@@ -123,5 +123,34 @@ describe('paths coming back from the helper', () => {
     const out = toWorkspacePath('D:/elsewhere/Other.cs', 'D:/proj/src')
     expect(out).toBe('D:/elsewhere/Other.cs')
     expect(out.startsWith('..')).toBe(false)
+  })
+})
+
+describe('the index after an edit', () => {
+  test('a write to a .cs file drops the cached compilation', async () => {
+    // `ensureLoaded` returns { ok: true, cached: true } whenever the root matches the one it
+    // loaded, and nothing but the helper process dying ever cleared that. So the compilation
+    // was built once per workspace and every answer after the session's FIRST edit described
+    // the code as it had been at load time — with ok:true, which is the same failure this
+    // tool already had once: confidently wrong rather than unavailable.
+    //
+    // It survived the seven sessions that certified the tool because those ran in plan mode,
+    // where no write is possible. It bites in exactly the sessions the tool is for.
+    const nav = new NavProcess(join(root, 'never-spawned.exe'))
+    // Pretend a load succeeded, the way one does.
+    ;(nav as unknown as { loadedRoot: string | null }).loadedRoot = 'D:/proj'
+    expect(await nav.ensureLoaded('D:/proj')).toEqual({ ok: true, cached: true })
+
+    nav.invalidate()
+    // Now it must NOT answer "cached" — the next question has to rebuild. (No process is
+    // running, so the send times out rather than resolving; what matters is that it tried.)
+    expect((nav as unknown as { loadedRoot: string | null }).loadedRoot).toBeNull()
+  })
+
+  test('only C# writes disturb it — a README does not cost a reload', () => {
+    // The reload costs 0.5-12 s depending on the project. Paying it because the model touched
+    // a markdown file would be a tax on every session that also happens to contain C#.
+    expect(() => noteWorkspaceWrite('docs/README.md')).not.toThrow()
+    expect(() => noteWorkspaceWrite('src/Thing.cs')).not.toThrow()
   })
 })

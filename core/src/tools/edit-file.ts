@@ -1,3 +1,4 @@
+import { noteWorkspaceWrite } from '../csharp/nav-process.js'
 import { readFile, stat } from 'node:fs/promises'
 import { applySearchReplace } from '../edit/search-replace.js'
 import { opensAsWorkspaceRoot } from '../workspace.js'
@@ -351,6 +352,9 @@ export const editFileTool: Tool<EditFileArgs> = {
     // repeat the cheap "unchanged"/diff answer is for. Without this mark every repeat looks
     // like a lookup and gets the whole file back. See `ReadMemory.markWritten`.
     ctx.reads?.markWritten(args.path)
+    // And the C# index, which is built once per workspace and otherwise answers every
+    // later question about the code as it was BEFORE this edit — with ok:true.
+    noteWorkspaceWrite(args.path)
 
     return { ok: true, content: `${renderDiff(lfBody, finalText, args.path)}${note}` }
   },

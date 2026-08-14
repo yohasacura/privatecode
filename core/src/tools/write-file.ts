@@ -1,3 +1,4 @@
+import { noteWorkspaceWrite } from '../csharp/nav-process.js'
 import { mkdir, open, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { opensAsWorkspaceRoot } from '../workspace.js'
@@ -219,6 +220,7 @@ export const writeFileTool: Tool<WriteFileArgs> = {
     // Same reason as in `edit-file`: a re-read after this is verification, which is the one
     // repeat the cheap answer is for. See `ReadMemory.markWritten`.
     ctx.reads?.markWritten(args.path)
+    noteWorkspaceWrite(args.path)
     return {
       ok: true,
       content: replaced === null

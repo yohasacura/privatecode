@@ -130,6 +130,11 @@ export class NavProcess {
     return this.send(op, params, ASK_TIMEOUT_MS)
   }
 
+  /** The loaded compilation no longer describes the code. See `noteWorkspaceWrite`. */
+  invalidate(): void {
+    this.loadedRoot = null
+  }
+
   async stop(): Promise<void> {
     const child = this.child
     if (child === undefined) return
@@ -195,6 +200,27 @@ export function resolveHelper(fromEnv: string | undefined, from: string | null):
     if (existsSync(candidate)) return candidate
   }
   return null
+}
+
+/**
+ * Told that a file changed, so the next question is answered about the code as it is now.
+ *
+ * `ensureLoaded` returns `{ ok: true, cached: true }` whenever the root matches the one it
+ * loaded, and nothing but the helper dying ever cleared that. So the compilation was built
+ * once per workspace and every answer after the session's first edit described the code as it
+ * had been at load time — with `ok: true`, which is what makes it the same failure this tool
+ * already had once: confidently wrong rather than unavailable.
+ *
+ * It went unnoticed because the seven sessions that certified the tool ran in PLAN mode, where
+ * no write is possible. It bites in exactly the sessions this is for.
+ *
+ * Dropping the flag rather than reloading here: a reload costs 0.5-12 s depending on the
+ * project, and most writes are never followed by another navigation question. The next `ask`
+ * pays for it, and only if there is one.
+ */
+export function noteWorkspaceWrite(path: string): void {
+  if (!path.toLowerCase().endsWith('.cs')) return
+  current?.invalidate()
 }
 
 export async function stopNavProcess(): Promise<void> {

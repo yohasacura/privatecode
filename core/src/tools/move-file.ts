@@ -1,3 +1,4 @@
+import { noteWorkspaceWrite } from '../csharp/nav-process.js'
 import { mkdir, stat } from 'node:fs/promises'
 import { dirname, sep } from 'node:path'
 import { opensAsWorkspaceRoot } from '../workspace.js'
@@ -150,6 +151,8 @@ export const moveFileTool: Tool<MoveFileArgs> = {
       }
     }
 
+    noteWorkspaceWrite(args.from)
+    noteWorkspaceWrite(args.to)
     return { ok: true, content: `Moved ${args.from} -> ${args.to}` }
   },
 }
