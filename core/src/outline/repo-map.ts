@@ -274,12 +274,36 @@ export function renderFile(file: FileOutline): string {
  * the project" would take a truncated list as complete and conclude a file it cannot see
  * does not exist.
  */
-const MAP_HEADER =
+const MAP_HEADER_HEAD =
   'PROJECT MAP\n' +
   'A snapshot of this workspace\'s structure, taken when the session started. It lists ' +
   'definitions only — not what they do — and it can be out of date, including because of ' +
-  'your own edits. Use it to know where to look; confirm with read_file or symbol_outline ' +
-  'before relying on it.\n'
+  'your own edits. Use it to know where to look; '
+
+const MAP_HEADER_TAIL = 'confirm with read_file or symbol_outline before relying on it.\n'
+
+/**
+ * The one place a nudge toward `csharp_nav` is worth its tokens.
+ *
+ * It rides a header that is already in the prompt, and the C# clause REPLACES the general
+ * one rather than being appended, so a C# workspace pays nothing extra and a workspace with
+ * no .cs files pays nothing at all. That constraint is not fastidiousness: this same header
+ * has named `symbol_outline` since the day it was written, and across 703 recorded tool
+ * calls that tool was chosen exactly zero times. Naming a tool in the prompt has a measured
+ * track record in this project, and the record is that it achieves nothing — so the version
+ * of this idea that spends tokens on every turn of every session was refused, and this is
+ * what was left. If it does not move the numbers either, it should be deleted rather than
+ * grown.
+ */
+const MAP_HEADER_TAIL_CSHARP =
+  'confirm with read_file before relying on it — or, for how the C# in here connects, ask ' +
+  'csharp_nav, which answers who calls what from the compiler rather than from this list.\n'
+
+const mapHeader = (ranked: readonly FileOutline[]): string =>
+  MAP_HEADER_HEAD +
+  (ranked.some((f) => f.path.toLowerCase().endsWith('.cs'))
+    ? MAP_HEADER_TAIL_CSHARP
+    : MAP_HEADER_TAIL)
 
 /** As many whole file blocks as fit. Returns what it spent so a caller splitting one budget
  * across folders can hand the remainder to the next one. */
@@ -306,9 +330,10 @@ function omissionNote(omitted: number): string {
 
 export function renderRepoMap(ranked: readonly FileOutline[], budget = DEFAULT_MAP_BUDGET): string {
   if (ranked.length === 0) return ''
-  const fitted = fitBlocks(ranked, budget - MAP_HEADER.length)
+  const header = mapHeader(ranked)
+  const fitted = fitBlocks(ranked, budget - header.length)
   if (fitted.shown === 0) return ''
-  return `${MAP_HEADER}\n${fitted.text}${omissionNote(ranked.length - fitted.shown)}`
+  return `${header}\n${fitted.text}${omissionNote(ranked.length - fitted.shown)}`
 }
 
 /**
@@ -348,8 +373,10 @@ export function renderMultiRepoMap(
   const present = folders.filter((f) => f.ranked.length > 0)
   if (present.length === 0) return ''
 
-  const heading = `${MAP_HEADER}\nThis workspace is made of ${present.length} folders. Every path below ` +
-    'starts with the folder it is in.\n'
+  // Asked across every folder, not per folder: one C# folder among five is still a workspace
+  // where the question "who calls this" has a better answer than reading.
+  const heading = `${mapHeader(present.flatMap((f) => f.ranked))}\nThis workspace is made of ` +
+    `${present.length} folders. Every path below starts with the folder it is in.\n`
   const weights = present.map((f) => f.ranked.length * (f.access === 'read' ? READ_WEIGHT : 1))
   const total = weights.reduce((a, b) => a + b, 0)
   // The separators are part of the text: one newline after the heading and a blank line

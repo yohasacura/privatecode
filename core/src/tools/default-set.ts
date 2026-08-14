@@ -47,10 +47,14 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   const todos = new TodoStore(opts.workspaceRoot)
   const reads = new ReadMemory()
   const browser = new BrowserManager(opts.browser ?? {})
-  for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
+  // Registration order is the order the schemas reach the model, and `csharp_nav` sat 17th
+  // of 18 -- past every file tool, next to the browser. Moved beside `search_code`, which is
+  // what it competes with: both answer "where is this used", one by text and one by meaning.
+  // Free, and unmeasured: no claim is made here that position is what routes the choice.
+  for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, csharpNavTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
-                   symbolOutlineTool, browserTool, useSkillTool, csharpNavTool, rememberTool]) {
+                   symbolOutlineTool, browserTool, useSkillTool, rememberTool]) {
     registry.register(t)
   }
   return { registry, background, todos, browser, reads }

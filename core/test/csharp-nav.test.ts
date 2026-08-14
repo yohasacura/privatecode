@@ -1,55 +1,76 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { csharpNavTool } from '../src/tools/csharp-nav.js'
-import { ROSLYN_ENV, toWorkspacePath } from '../src/csharp/nav-process.js'
+import { resolveHelper, toWorkspacePath } from '../src/csharp/nav-process.js'
 import { Workspace } from '../src/workspace.js'
 
 /**
- * The C# navigator's edges — the parts that must hold with no binary present.
+ * The C# navigator's edges: where the binary is found, and what is refused before one is
+ * ever spawned.
  *
- * The helper itself is exercised against a real backend by hand (and its answers are what
- * justified building it: `references` on an interface returned the implementing class, the
- * field holding it, the constructor taking it and its DI registration — five files as four
- * lines). What is pinned here is everything that must be true when it is NOT installed,
- * because that is the shipping default: 92 MB is optional, and a missing optional binary
- * must degrade to an explanation rather than a broken session.
+ * Finding it is the half with a bug in its history. The rule was "the env var, or nothing",
+ * the Tauri launcher is the only thing that sets that variable, and so on the CLI and the
+ * ws-bridge the tool was advertised in every schema list and could answer nothing but "not
+ * available in this build". Resolution now takes its inputs as arguments precisely so this
+ * can be checked rather than reasoned about.
+ *
+ * What the helper ANSWERS is pinned separately, against a real C# tree, in
+ * `roslyn-nav.test.ts` — those are the tests that would have caught it reporting no
+ * interfaces for a class that declares one.
  */
 
 let root: string
 const roots: string[] = []
-const saved = process.env[ROSLYN_ENV]
 
+// No saving and restoring of the environment any more: resolution takes what it needs as
+// arguments, so these tests neither read nor write process.env.
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'pc-nav-'))
   roots.push(root)
 })
 afterEach(() => {
-  if (saved === undefined) delete process.env[ROSLYN_ENV]
-  else process.env[ROSLYN_ENV] = saved
   for (const d of roots.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
-describe('without the helper installed', () => {
-  test('it explains itself and names what to use instead', async () => {
-    delete process.env[ROSLYN_ENV]
-    const r = await csharpNavTool.execute(
-      { action: 'definition', symbol: 'IThing' }, { workspace: new Workspace(root) })
-    expect(r.ok).toBe(false)
-    expect(r.content).toContain('not available in this build')
-    // Naming the fallback is the difference between a dead end and a redirect.
-    expect(r.content).toContain('search_code')
+/** Where `nav-process.ts` itself lives — the fallback counts directories up from there, so
+ * handing it this test file's directory would measure the wrong thing. */
+const MODULE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'csharp')
+
+describe('finding the helper', () => {
+  // The rule used to be "the env var or nothing", and the CLI and ws-bridge set no env var
+  // -- so on those paths the tool was advertised in the schema list and every call to it
+  // came back "not available in this build". Resolution takes its inputs as arguments so
+  // this can be checked rather than reasoned about.
+
+  test('the env var wins when it names a file that exists', () => {
+    const real = join(root, 'stand-in.exe')
+    writeFileSync(real, 'not really an exe', 'utf8')
+    expect(resolveHelper(real, join(root, 'nowhere'))).toBe(real)
   })
 
-  test('a path pointing at nothing is the same as no path', async () => {
-    // Set-but-wrong must behave like absent, not like broken: the Rust shell only sets the
-    // variable when the file exists, and this is the other half of that contract.
-    process.env[ROSLYN_ENV] = join(root, 'does-not-exist.exe')
-    const r = await csharpNavTool.execute(
-      { action: 'references', symbol: 'IThing' }, { workspace: new Workspace(root) })
-    expect(r.ok).toBe(false)
-    expect(r.content).toContain('not available in this build')
+  test('no env var falls back to the copy vendored in this checkout', () => {
+    // This is the CLI/ws-bridge hole closed: nothing sets the variable there.
+    const found = resolveHelper(undefined, MODULE_DIR)
+    expect(found).not.toBeNull()
+    expect(found).toContain('roslyn-nav.exe')
+    expect(existsSync(found!)).toBe(true)
+  })
+
+  test('a variable pointing at nothing falls through instead of switching the feature off', () => {
+    // Set-but-wrong is a stale launcher, not an instruction. It used to mean "unavailable".
+    const found = resolveHelper(join(root, 'does-not-exist.exe'), MODULE_DIR)
+    expect(found).not.toBeNull()
+    expect(found).toContain('roslyn-nav.exe')
+  })
+
+  test('neither source is an ordinary null, not a throw', () => {
+    // A checkout without the 98 MB blob is legitimate, and the tool says so in words and
+    // names what to use instead -- see its execute().
+    expect(resolveHelper(undefined, join(root, 'nowhere'))).toBeNull()
+    expect(resolveHelper('   ', join(root, 'nowhere'))).toBeNull()
   })
 })
 

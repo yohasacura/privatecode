@@ -354,10 +354,15 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
   name: 'search_code',
   readOnly: true,
   description:
+    // "The primary way to locate code" claimed the whole territory, including questions it
+    // cannot answer: it matches characters, so it cannot tell a call from a comment or find
+    // a class that inherits an implementation without naming it. Narrowed to what is true.
     'Search the workspace with a regular expression (ripgrep). Returns file:line:text, ' +
-    'ordered by path. This is the primary way to locate code; it is exact and never ' +
-    'stale. Very long lines are truncated, and on a truncated line the text that matched ' +
-    'the pattern may itself have been cut and so may not appear in what is returned.',
+    'ordered by path. This is the primary way to locate code BY TEXT; it is exact and never ' +
+    'stale, but it matches characters rather than symbols — for what a C# name means, ' +
+    'csharp_nav answers from the compiler instead. Very long lines are truncated, and on a ' +
+    'truncated line the text that matched the pattern may itself have been cut and so may ' +
+    'not appear in what is returned.',
   parameters: {
     type: 'object',
     properties: {

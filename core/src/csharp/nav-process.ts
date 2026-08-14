@@ -1,6 +1,7 @@
 import { execa } from 'execa'
 import { existsSync } from 'node:fs'
-import { relative, sep } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /**
  * The vendored Roslyn helper, as a process this side can talk to.
@@ -11,8 +12,10 @@ import { relative, sep } from 'node:path'
  * than the file reading it exists to replace.
  *
  * Located exactly the way ripgrep and the tree-sitter grammars are: an env var set by
- * whatever launched the sidecar, never guessed from here. See `stdio-main.ts` on why the
- * launcher owns that and this does not.
+ * whatever launched the sidecar, falling back to the copy vendored in this checkout when
+ * nothing set one. The env var is how the packaged app points at its own staged copy; the
+ * fallback is what keeps the CLI and the ws-bridge — neither of which sets it — from
+ * advertising a tool they can never serve.
  */
 
 export const ROSLYN_ENV = 'PRIVATECODE_ROSLYN'
@@ -143,10 +146,32 @@ export class NavProcess {
  * it always had. A missing optional binary must never be a broken session.
  */
 export function navProcess(): NavProcess | null {
-  const exe = process.env[ROSLYN_ENV]
-  if (exe === undefined || exe.trim() === '' || !existsSync(exe)) return null
+  const exe = resolveHelper(process.env[ROSLYN_ENV], dirname(fileURLToPath(import.meta.url)))
+  if (exe === null) return null
   if (current === null) current = new NavProcess(exe)
   return current
+}
+
+/**
+ * Where the helper is, given what the environment says and where this module sits.
+ *
+ * Two sources, in order. The env var is how the packaged app points at its own staged copy,
+ * and it wins when it names a file that exists. Otherwise the copy vendored in this checkout,
+ * found relative to this module — which is what the Tauri launcher's variable was doing all
+ * along and the CLI and ws-bridge never did, so those two advertised `csharp_nav` and could
+ * only ever answer "not available in this build". A set-but-wrong variable falls through to
+ * the vendored copy rather than failing: pointing at nothing is a stale launcher, not an
+ * instruction to switch the feature off.
+ *
+ * Takes both inputs rather than reading them, so the rule can be tested rather than inferred.
+ */
+export function resolveHelper(fromEnv: string | undefined, moduleDir: string): string | null {
+  if (fromEnv !== undefined && fromEnv.trim() !== '' && existsSync(fromEnv)) return fromEnv
+  for (const up of ['../../..', '../../../..']) {
+    const candidate = join(moduleDir, up, 'vendor', 'roslyn', 'roslyn-nav.exe')
+    if (existsSync(candidate)) return candidate
+  }
+  return null
 }
 
 export async function stopNavProcess(): Promise<void> {

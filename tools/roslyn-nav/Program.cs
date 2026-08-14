@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Basic.Reference.Assemblies;
 
 namespace RoslynNav;
 
@@ -81,12 +82,12 @@ public static class Program
     /// <summary>
     /// Builds one compilation over every .cs file under <c>root</c>.
     ///
-    /// References are gathered from two places and neither is guaranteed: the runtime this
-    /// helper itself ships with (which supplies the BCL), and any assemblies the target
-    /// project has already built into its own bin folders (which supply its NuGet
-    /// dependencies). A project that has never been built still loads — every question is
-    /// then answered from syntax and from the types it can see, and `status` reports what
-    /// was missing rather than pretending the answers are complete.
+    /// References come from two places. The BCL is carried inside this binary as reference
+    /// assemblies and is always present. The target's NuGet surface comes from whatever it
+    /// has already built into its own bin folders, and is not guaranteed. A project that has
+    /// never been built still loads — every question is then answered from syntax and from
+    /// the types it can see, and the load reports what was missing rather than pretending
+    /// the answers are complete.
     /// </summary>
     private static object Load(int id, JsonElement root)
     {
@@ -126,12 +127,33 @@ public static class Program
         _solution = solution;
         _projectId = projectId;
         _root = path;
+
+        // The check that should have caught the missing BCL, and the reason it is worth
+        // keeping now that the BCL is no longer missing. Every wrong answer this helper has
+        // given came from a compilation that could not resolve `System.Object` — and it
+        // reported `problems: []` while giving them, because the only problem it knew how to
+        // report was the target's own build output being absent. An index that cannot name
+        // the root of the type system must say so rather than answer confidently.
+        var probe = _solution.GetProject(projectId)?.GetCompilationAsync().Result;
+        if (probe?.GetTypeByMetadataName("System.Object") is null)
+        {
+            _loadProblems.Add(
+                "this index could not resolve System.Object, so base types and interfaces " +
+                "are unreliable: `implementations` and the interface list of `members` may " +
+                "come back empty even where the code declares them. `references` and " +
+                "`definition` are unaffected.");
+        }
+
         return new { id, ok = true, files = sources.Count, references = refs.Count, problems = _loadProblems };
     }
 
     private static IEnumerable<string> EnumerateSources(string root)
     {
-        var skip = new[] { "\\bin\\", "\\obj\\", "\\node_modules\\", "\\.git\\", "\\.privatecode\\" };
+        // `.claude\worktrees` holds whole copies of the tree: on one 2423-file project 39% of
+        // what loaded were stale duplicates of files also loaded from their real path, and a
+        // duplicate costs a genuine hit its place in a limited result.
+        var skip = new[] { "\\bin\\", "\\obj\\", "\\node_modules\\", "\\.git\\", "\\.privatecode\\",
+                           "\\.claude\\worktrees\\" };
         foreach (var f in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories))
         {
             var padded = f.Replace('/', '\\');
@@ -158,14 +180,20 @@ public static class Program
             catch { seen.Remove(name); }
         }
 
-        // Ours: shipped beside this exe by the self-contained publish.
-        foreach (var dll in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll"))
+        // Ours: the BCL, as reference assemblies embedded in this binary.
+        //
+        // This used to scan `AppContext.BaseDirectory` for `System.*.dll`, on the reasoning
+        // that a self-contained publish drops the runtime beside the exe. `PublishSingleFile`
+        // does the opposite — it packs the runtime INSIDE the exe — so that directory holds
+        // exactly one file and the loop matched nothing, on every machine, always. A
+        // compilation with no `System.Object` does not fail; it quietly loses the ability to
+        // classify a base-type list, which is how `members PlanItem` reported no interfaces
+        // for `class PlanItem : INotifyPropertyChanged` and `implementations` answered an
+        // empty list with ok:true. Embedded resources cannot be emptied by a publish setting.
+        foreach (var info in Net100.ReferenceInfos.All)
         {
-            var n = Path.GetFileName(dll);
-            if (n.StartsWith("System.", StringComparison.Ordinal) ||
-                n.StartsWith("Microsoft.CSharp", StringComparison.Ordinal) ||
-                n.Equals("netstandard.dll", StringComparison.OrdinalIgnoreCase) ||
-                n.Equals("mscorlib.dll", StringComparison.OrdinalIgnoreCase)) Add(dll);
+            var name = Path.GetFileNameWithoutExtension(info.FileName);
+            if (seen.Add(name)) refs.Add(info.Reference);
         }
 
         // Theirs: the third-party surface, only available if they have built once.
@@ -220,7 +248,56 @@ public static class Program
                 matches.Add(sym);
             }
         }
+        if (matches.Count > 0) return matches;
+
+        // Nothing declared in source under that name. That is not the same as "no such
+        // symbol": `INotifyPropertyChanged`, `IDisposable`, `ICommand` and every other type
+        // worth asking about live in metadata, and answering "0 implementations" for them
+        // was the most confident lie this helper told — on a WPF project, where the answer is
+        // on nearly every class.
+        //
+        // Only types REACHED FROM SOURCE are considered, rather than the whole of the BCL:
+        // it keeps the scan proportional to the project instead of to the framework, and a
+        // type no source file mentions is one nothing in this project can implement anyway.
+        foreach (var candidate in MetadataTypesTouchedBySource(compilation))
+        {
+            if (candidate.Name != simple) continue;
+            var full = candidate.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+            if (!wanted.Contains('.') || full.EndsWith(wanted, StringComparison.Ordinal))
+            {
+                matches.Add(candidate);
+            }
+        }
         return matches;
+    }
+
+    /// <summary>
+    /// Every type from metadata that the source actually touches: the interfaces its types
+    /// implement and the classes they derive from, transitively. Small — tens of entries on a
+    /// real project — and computed per query rather than cached, because a query that reaches
+    /// here has already found nothing and is not on the hot path.
+    /// </summary>
+    private static IEnumerable<INamedTypeSymbol> MetadataTypesTouchedBySource(Compilation compilation)
+    {
+        var seen = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+        foreach (var tree in compilation.SyntaxTrees)
+        {
+            var model = compilation.GetSemanticModel(tree);
+            foreach (var node in tree.GetRoot().DescendantNodes()
+                         .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax>())
+            {
+                if (model.GetDeclaredSymbol(node) is not INamedTypeSymbol declared) continue;
+                foreach (var iface in declared.AllInterfaces)
+                {
+                    if (!iface.Locations.Any(l => l.IsInSource)) seen.Add(iface);
+                }
+                for (var b = declared.BaseType; b is not null; b = b.BaseType)
+                {
+                    if (!b.Locations.Any(l => l.IsInSource)) seen.Add(b);
+                }
+            }
+        }
+        return seen;
     }
 
     private static object Located(ISymbol s)
@@ -231,7 +308,10 @@ public static class Program
         {
             name = s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             kind = s.Kind.ToString(),
-            file = span?.Path,
+            // A symbol resolved from metadata has no source location, and inventing a
+            // `file:0` for it would send the reader to open nothing. Naming the assembly is
+            // the true answer to "where is this" for a type that ships as a binary.
+            file = span?.Path ?? (s.ContainingAssembly is null ? null : $"<{s.ContainingAssembly.Name}>"),
             line = span is null ? 0 : span.Value.StartLinePosition.Line + 1,
             containing = s.ContainingType?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)
                          ?? s.ContainingNamespace?.ToDisplayString(),
@@ -306,25 +386,52 @@ public static class Program
         var (compilation, err) = await Compile();
         if (compilation is null) return new { id, ok = false, error = err };
         var found = await Resolve(compilation, symbol);
-        var rows = new List<object>();
+        var hits = new List<ISymbol>();
         foreach (var sym in found.Take(5))
         {
             if (sym is INamedTypeSymbol type)
             {
-                foreach (var impl in await SymbolFinder.FindImplementationsAsync(type, _solution!))
-                    rows.Add(Located(impl));
-                foreach (var derived in await SymbolFinder.FindDerivedClassesAsync(type, _solution!))
-                    rows.Add(Located(derived));
+                hits.AddRange(await SymbolFinder.FindImplementationsAsync(type, _solution!));
+                hits.AddRange(await SymbolFinder.FindDerivedClassesAsync(type, _solution!));
             }
             else
             {
-                foreach (var impl in await SymbolFinder.FindImplementationsAsync(sym, _solution!))
-                    rows.Add(Located(impl));
-                foreach (var over in await SymbolFinder.FindOverridesAsync(sym, _solution!))
-                    rows.Add(Located(over));
+                hits.AddRange(await SymbolFinder.FindImplementationsAsync(sym, _solution!));
+                hits.AddRange(await SymbolFinder.FindOverridesAsync(sym, _solution!));
             }
         }
-        return new { id, ok = true, results = rows };
+
+        // A project that has been built once is referenced by its OWN bin output, so every
+        // type it declares exists twice in this compilation: as source, and as metadata from
+        // the assembly it compiled to. Both are real symbols and both match, so the raw answer
+        // listed each of this project's four view models twice. Source wins — it is the copy
+        // the reader can open, and it is current, which the compiled twin may not be.
+        var bySource = new Dictionary<string, ISymbol>(StringComparer.Ordinal);
+        foreach (var h in hits)
+        {
+            var key = h.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            var inSource = h.Locations.Any(l => l.IsInSource);
+            if (!bySource.TryGetValue(key, out var kept) || (inSource && !kept.Locations.Any(l => l.IsInSource)))
+            {
+                bySource[key] = h;
+            }
+        }
+
+        // The question is "what in THIS project implements it", so framework types that
+        // happen to implement it too — ObservableCollection, ExpandoObject, DataRowView —
+        // are counted rather than listed. Dropping them silently would be the same mistake
+        // this file has already made once; a reader who wanted them is told they exist.
+        var rows = new List<object>();
+        var external = 0;
+        foreach (var s in bySource.Values)
+        {
+            if (s.Locations.Any(l => l.IsInSource)) rows.Add(Located(s));
+            else external++;
+        }
+        var note = external == 0 ? null
+            : $"{external} more implementations live in referenced assemblies rather than in " +
+              "this workspace, and are not listed.";
+        return new { id, ok = true, results = rows, note };
     }
 
     private static object Members(int id, string symbol)
@@ -346,6 +453,11 @@ public static class Program
             interfaces = type.Interfaces.Select(i => i.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)).ToArray(),
             results = type.GetMembers()
                 .Where(m => !m.IsImplicitlyDeclared && m.DeclaredAccessibility != Accessibility.Private)
+                // Property getters and setters are members of the type in Roslyn's view, and
+                // listing them triples the answer without adding a fact: `get_Name` beside
+                // `Name` tells a reader nothing they did not have. One real type here reported
+                // 51 rows for a surface a person would describe in about twenty.
+                .Where(m => m is not IMethodSymbol { AssociatedSymbol: not null })
                 .Select(m => new
                 {
                     signature = m.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat),

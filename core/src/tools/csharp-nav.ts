@@ -28,11 +28,18 @@ const ACTIONS: readonly CsharpNavArgs['action'][] = ['definition', 'references',
 export const csharpNavTool: Tool<CsharpNavArgs> = {
   name: 'csharp_nav',
   readOnly: true,
+  // Leads with the questions rather than the category, and names Roslyn. The old wording
+  // opened with "answer a semantic question", never used the word, and argued only against
+  // reading files -- so when the user asked for Roslyn by name the model had to reason its
+  // way here from "csharp_nav (likely powered by Roslyn)". Naming the engine costs nothing:
+  // the schema ships every turn regardless of what it says.
   description:
-    'Answer a semantic question about C# code: where a symbol is defined, everything that ' +
-    'references it, what implements or overrides it, or the public members of a type. ' +
-    'Prefer this over reading files to work out how code connects — it is one call instead ' +
-    'of several reads, and it understands types rather than matching text. C# only.',
+    'Answers "who calls this?", "what implements this?", "where is this defined?" and "what ' +
+    'does this type expose?" for C#, from the compiler (Roslyn) rather than from text. ' +
+    'Reach for it before opening a .cs file: one call replaces reading every file that ' +
+    'mentions the name, it finds a class that inherits an implementation without naming it, ' +
+    'and it tells a real use apart from a comment, a string, or a same-named member of ' +
+    'another type. C# only — for other languages use search_code.',
   parameters: {
     type: 'object',
     properties: {

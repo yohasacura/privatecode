@@ -38,6 +38,17 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.14.0" />
+    <!--
+      The base class library, as reference assemblies embedded in the package.
+
+      Not a convenience: a compilation without `System.Object` does not fail, it silently
+      stops being able to classify anything in a base-type list, so `class X : IFoo` loses
+      its interface and `implementations` answers an empty list with ok:true. The first
+      version read `System.*.dll` from beside the exe, which `PublishSingleFile` above makes
+      permanently empty — the two settings contradicted each other and the compilation lost.
+      These survive single-file publishing because they are resources, not files.
+    -->
+    <PackageReference Include="Basic.Reference.Assemblies.Net100" Version="1.8.11" />
   </ItemGroup>
 
 </Project>
