@@ -435,6 +435,19 @@ export class Session {
    * only by then does the session have a subject. A second swap re-focuses from here again.
    */
   private repoMapText: string | undefined
+  /**
+   * Every path this session has touched, ACROSS swaps.
+   *
+   * `touchedPaths` reads the transcript, and after a swap the transcript holds the briefing —
+   * which carries no tool calls — plus a short tail. So the second compaction of a session
+   * saw almost nothing: simulated against the four real swaps in the recorded corpus, the
+   * inventory named 2 paths where the session had touched 38, then 10 against 43, then 22
+   * against 51. The briefing's whole job is to carry "what have I opened" across the gap as
+   * data rather than as something the model remembered to write down, and it was quietly
+   * losing most of it at exactly the moment it mattered most.
+   */
+  private readonly touchedSeen = new Set<string>()
+  private readonly touchedChanged = new Set<string>()
   private schemaText: string | undefined
   /** The project's formatter, when `.privatecode/settings.json` configures one. */
   private readonly formatRunner: FormatRunner | undefined
@@ -906,6 +919,22 @@ export class Session {
     return result
   }
 
+  /**
+   * Everything this session has touched: what the live transcript still shows, plus what
+   * earlier swaps folded away.
+   *
+   * Both halves are needed. The accumulator alone misses the current stretch, and the
+   * transcript alone is what produced an inventory naming 2 paths for a session that had
+   * opened 38.
+   */
+  private allTouchedPaths(): { seen: string[]; changed: string[] } {
+    const here = touchedPaths(this.transcript.messages())
+    return {
+      seen: [...new Set([...this.touchedSeen, ...here.seen])],
+      changed: [...new Set([...this.touchedChanged, ...here.changed])],
+    }
+  }
+
   /** Writes any transcript messages the store has not seen yet. Shared by send() and
    * rewind(), which both append outside a turn's own persistence path. */
   private persistIfPossible(): void {
@@ -1035,6 +1064,21 @@ export class Session {
       if (info.completionTokens !== undefined) {
         this.cumulativeCompletionTokens += info.completionTokens
       }
+      // The transcript is written HERE, per completed step, and not only at the end of the
+      // turn as it was.
+      //
+      // A turn that ran forty steps and was then interrupted — the step ceiling, an Escape,
+      // a crash — left nothing of those forty in the file. Measured on the recorded corpus:
+      // 47 of 668 tool calls exist in the outcome sidecars and in no transcript line, in
+      // three contiguous runs sitting exactly at turn seams. The model had SEEN those
+      // results, so the turn itself was coherent; what was lost was the RECORD, and with it
+      // resume, session search, and every retrospective — including the ones this project
+      // has been drawing conclusions from.
+      //
+      // One short append against a step that takes tens of seconds. `persistIfPossible`
+      // writes only what the store has not seen, so calling it repeatedly costs nothing when
+      // nothing new has arrived, and the file stays append-only either way.
+      this.persistIfPossible()
       host?.onStepDone?.(info)
     }
     // The work log's "Ran" line is built from what the tools ACTUALLY returned, tapped here
@@ -1487,6 +1531,14 @@ export class Session {
       // as a failure rather than as "you do not need this yet".
       const middle = this.compactableTokens()
       if (middle < MIN_COMPACTABLE_TOKENS) {
+        // The same two lines the no-progress guard below already had, and their absence here
+        // cost a full summary generation every time. The trigger reads `latestPromptTokens`;
+        // declining to compact left that number exactly as it was, so the very next check saw
+        // the same fill ratio and fired again — and the background path has no
+        // MIN_COMPACTABLE_TOKENS guard of its own, so it went all the way to generating a
+        // summary of a transcript this branch had just decided was not worth compacting.
+        this.latestPromptTokens = null
+        this.skipNextTrigger = true
         this.opts.onCompaction?.({ state: 'postponed', reason: 'nothing-to-gain' })
         return
       }
@@ -1686,7 +1738,7 @@ export class Session {
     try {
       const rerank = this.opts.rerankRepoMap
       if (rerank !== undefined) {
-        const { seen, changed } = touchedPaths(this.transcript.messages())
+        const { seen, changed } = this.allTouchedPaths()
         // Changed first: a file the session edited is more its subject than one it read once.
         const focus = [...changed, ...seen]
         if (focus.length > 0) {
@@ -1695,6 +1747,12 @@ export class Session {
         }
       }
     } catch { /* the previous map stands */ }
+
+    // Fold what is about to be dropped into the accumulator BEFORE the transcript is
+    // replaced. This is the last moment the outgoing messages exist.
+    const outgoing = touchedPaths(this.transcript.messages())
+    for (const p of outgoing.seen) this.touchedSeen.add(p)
+    for (const p of outgoing.changed) this.touchedChanged.add(p)
 
     const next = new Transcript()
     next.append({
@@ -1729,7 +1787,8 @@ export class Session {
     // caller whose toolset carries no todo store at all.
     let inventory = ''
     try {
-      inventory = continuationInventory(this.transcript.messages(), this.opts.toolset.todos?.list() ?? [])
+      inventory = continuationInventory(
+        this.transcript.messages(), this.opts.toolset.todos?.list() ?? [], this.allTouchedPaths())
     } catch { /* the summary is what matters; the list is a bonus */ }
     next.append({
       role: 'user',

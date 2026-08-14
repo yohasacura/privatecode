@@ -25,8 +25,19 @@ function settings(file: string, body: unknown): void {
 }
 
 describe('configuring it', () => {
-  test('absent by default, because only the project owner can promise the time', () => {
-    expect(loadVerify(root)).toEqual({ verify: null, problems: [] })
+  test('absent by default, and SAYS it is absent', () => {
+    // Only the project owner can promise the time a check takes, so there is no default —
+    // but silence was indistinguishable from the feature working, and across fifteen
+    // recorded sessions neither the mid-turn verification nor the end-of-turn fix rounds
+    // ever ran once. The model built by hand instead: 47 of its 116 shell commands were
+    // `dotnet build`.
+    const { verify, problems } = loadVerify(root)
+    expect(verify).toBeNull()
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('No check is configured')
+    // A notice, not a scolding: it names the file and shows the line to write.
+    expect(problems[0]).toContain('settings.json')
+    expect(problems[0]).toContain('dotnet build')
   })
 
   test('a bare string is the whole configuration', () => {
@@ -59,7 +70,12 @@ describe('configuring it', () => {
 
   test('an unparseable settings file is left to the permission loader to complain about', () => {
     writeFileSync(join(root, '.privatecode', 'settings.json'), '{ not json', 'utf8')
-    expect(loadVerify(root)).toEqual({ verify: null, problems: [] })
+    const { verify, problems } = loadVerify(root)
+    expect(verify).toBeNull()
+    // One notice — that nothing is configured — and NOT a second complaint about the JSON:
+    // the permission loader reports that file, and two messages about one typo is noise.
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('No check is configured')
   })
 })
 

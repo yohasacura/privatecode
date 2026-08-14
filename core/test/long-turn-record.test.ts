@@ -289,3 +289,85 @@ test('a failed marker write does not duplicate the turn in the session file', as
     .map((m) => m.tool_call_id)
   expect(new Set(toolIds).size).toBe(toolIds.length)
 })
+
+test('a step\'s record is on disk before the next step is asked for', async () => {
+  // The transcript used to be written only at the END of a turn, so a turn that ran forty
+  // steps and was then interrupted — the step ceiling, an Escape, a crash — left nothing of
+  // those forty in the file. Measured on the recorded corpus: 47 of 668 tool calls exist in
+  // the outcome sidecars and in no transcript line, in three contiguous runs sitting exactly
+  // at turn seams. The model had SEEN those results, so the turn itself was coherent; what
+  // was lost was the record, and with it resume, session search and every retrospective.
+  //
+  // Asserted from inside the server rather than from a timer: by the time the request for
+  // step N arrives, steps 1..N-1 have completed, so what the file holds at that instant is a
+  // fact rather than a race. A timer-based version of this test passed with the fix REMOVED,
+  // which is the only reason this one is shaped this way.
+  //
+  // The flush lags by exactly one step, and the name of this test says "nearly all" for that
+  // reason. `onStepDone` fires from `runStep`'s finally, before the step's own messages have
+  // been appended to the transcript, so each flush writes the previous step's pair. Measured
+  // here: {1:0, 2:0, 3:2, 4:4} lines mentioning the tool. A turn cut off at step 40 now loses
+  // the last step instead of all forty, which is the whole of the problem this addresses; a
+  // lag of one is not worth a hook in the agent loop to close.
+  const root = mkdtempSync(join(tmpdir(), 'pc-flush-'))
+  roots.push(root)
+  const transcriptPath = (id: string): string =>
+    join(root, '.privatecode', 'state', 'sessions', `${id}.jsonl`)
+
+  let steps = 0
+  const writesVisibleAtStep: Record<number, number> = {}
+  let sessionId = ''
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: 200_000 } }
+    if (req.url === '/health') return { status: 'ok' }
+    steps++
+    if (sessionId !== '') {
+      try {
+        const raw = readFileSync(transcriptPath(sessionId), 'utf8')
+        writesVisibleAtStep[steps] = raw.split('\n').filter((l) => l.includes('write_file')).length
+      } catch {
+        writesVisibleAtStep[steps] = 0
+      }
+    }
+    return {
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: `c${steps}`,
+            type: 'function',
+            function: {
+              name: 'write_file',
+              arguments: JSON.stringify({ path: `f${steps}.txt`, content: `${steps}` }),
+            },
+          }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    }
+  })
+  stop = fake.close
+
+  const session = new Session({
+    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+    toolset: createToolset({}),
+    workspaceRoot: root,
+    mode: 'autopilot',
+    store: new SessionStore(root),
+    // The turn ends the way the real runaway turns ended: cut off, never finished.
+    maxSteps: 4,
+  })
+  sessionId = session.id
+
+  await session.send('keep writing files')
+
+  // At the fourth request, the first three steps must already be recorded. Without the
+  // per-step flush every one of these is 0 and the file appears only when the turn ends.
+  // Two steps' worth of records (an assistant line and a tool line each) were on disk while
+  // the turn was still running. Without the flush every one of these is 0.
+  expect(writesVisibleAtStep[4]).toBeGreaterThanOrEqual(3)
+  expect(writesVisibleAtStep[3]).toBeGreaterThanOrEqual(1)
+  // And the very first request sees nothing, because nothing has happened yet.
+  expect(writesVisibleAtStep[1]).toBe(0)
+})

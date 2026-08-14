@@ -85,3 +85,39 @@ describe('continuationInventory', () => {
     expect(continuationInventory([broken])).toBe('')
   })
 })
+
+describe('what earlier compactions folded away', () => {
+  test('paths carried from before these messages are listed too', () => {
+    // The second swap of a session sees a transcript holding the previous BRIEFING — which
+    // carries no tool calls — plus a short tail. Simulated against the four real swaps in
+    // the recorded corpus, the inventory named 2 paths where the session had touched 38,
+    // then 10 against 43, then 22 against 51. The briefing's whole job is to carry "what
+    // have I opened" across the gap as data rather than as something the model remembered,
+    // and it was losing most of it at the moment it mattered most.
+    const out = continuationInventory(
+      [call('read_file', { path: 'src/now.ts' })],
+      [],
+      { seen: ['src/earlier.ts'], changed: ['src/edited-long-ago.ts'] },
+    )
+    expect(out).toContain('src/now.ts')
+    expect(out).toContain('src/earlier.ts')
+    expect(out).toContain('src/edited-long-ago.ts')
+  })
+
+  test('a path in both halves is listed once', () => {
+    const out = continuationInventory(
+      [call('read_file', { path: 'src/a.ts' })],
+      [],
+      { seen: ['src/a.ts'], changed: [] },
+    )
+    expect(out.match(/src\/a\.ts/g)).toHaveLength(1)
+  })
+
+  test('carrying nothing behaves exactly as before', () => {
+    // The parameter defaults, so every existing caller and every assertion about the old
+    // shape stays meaningful.
+    const messages = [call('read_file', { path: 'src/a.ts' }), call('edit_file', { path: 'src/b.ts' })]
+    expect(continuationInventory(messages, [], { seen: [], changed: [] }))
+      .toBe(continuationInventory(messages))
+  })
+})

@@ -406,8 +406,19 @@ export function continuationInventory(
     status: 'pending' | 'in_progress' | 'completed'
     done_when?: string
   }[] = [],
+  /**
+   * Paths from BEFORE these messages, folded in by the caller.
+   *
+   * The transcript handed here is the one about to be replaced, and after a previous swap
+   * that is a briefing carrying no tool calls plus a short tail — so on a session's second
+   * compaction this function could see almost nothing of what the session had actually
+   * opened. The caller accumulates across swaps and passes what it has.
+   */
+  carried: { seen: readonly string[]; changed: readonly string[] } = { seen: [], changed: [] },
 ): string {
-  const { seen, changed } = touchedPaths(messages)
+  const here = touchedPaths(messages)
+  const seen = [...new Set([...carried.seen, ...here.seen])]
+  const changed = [...new Set([...carried.changed, ...here.changed])]
   // A file that was changed was necessarily worked on; listing it twice says nothing extra.
   const seenOnly = seen.filter((p) => !changed.includes(p))
   const open = todos.filter((t) => t.status !== 'completed')

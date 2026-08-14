@@ -105,5 +105,22 @@ export function loadVerify(workspaceRoot: string): LoadedVerify {
     const found = readOne(path, problems)
     if (found) return { verify: found, problems }
   }
+  // Said out loud, because silence here is indistinguishable from the feature working.
+  //
+  // Mid-turn verification and the end-of-turn fix rounds both hang off this one value, and
+  // across fifteen recorded sessions neither has EVER run — no settings file names a check,
+  // and nothing anywhere said so. What the model did instead is visible in the same corpus:
+  // 47 of its 116 shell commands were `dotnet build` and 41 were `dotnet test`, run by hand,
+  // eleven days of a feature being paid for in tokens because nobody knew it was switched
+  // off. One turn in that corpus made 38 edits across 11 files with no build between them,
+  // and the build afterwards failed and took three rounds to settle.
+  //
+  // A notice rather than an error: a workspace with no build step is perfectly ordinary. It
+  // appears once per session build on the channel the window already renders.
+  problems.push(
+    'No check is configured, so nothing is run after the model edits files. Add one to ' +
+    '.privatecode/settings.json — for example { "verify": { "command": "dotnet build" } } — ' +
+    'and a broken edit is caught in the turn that made it rather than ten edits later.',
+  )
   return { verify: null, problems }
 }

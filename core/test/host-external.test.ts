@@ -183,7 +183,10 @@ test('with nothing configured, status says so instead of failing', async () => {
     // No servers configured means no manager at all, which is absent, not an empty list —
     // the app can tell "none configured" from "all of them failed".
     expect(status.mcpServers).toBeUndefined()
-    expect(problems(transport)).toEqual([])
+    // One notice, and it is about the absent verify command rather than about MCP: a
+    // workspace with no servers is ordinary and says nothing, while a workspace with no
+    // check has a feature silently switched off and now says so.
+    expect(problems(transport).filter((p) => !p.includes('No check is configured'))).toEqual([])
   } finally {
     await host.shutdown()
   }
