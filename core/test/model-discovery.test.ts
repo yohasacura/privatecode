@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import { SessionHost } from '../src/host/host.js'
-import { isHostEvent, type HostOutbound, type HostReply } from '../src/host/protocol.js'
+import { isHostEvent, type HostEvent, type HostOutbound, type HostReply } from '../src/host/protocol.js'
 import { PRIVATE_DIR } from '../src/private-dir.js'
 import { startFakeServer } from './fake-server.js'
 
@@ -92,4 +92,134 @@ test('a model still loading leaves no context length, and says nothing false abo
   const status = replyOf(t, 2)
   expect(status.contextLength).toBeUndefined()
   expect(typeof status.model).toBe('string')
+})
+
+/**
+ * The second half of the same lesson: a value learned from the server once was then believed
+ * forever. The name was fixed by reading it from `/props`; the WINDOW was read from the same
+ * response and cached behind a guard that only re-probed when the first attempt had failed.
+ * So a first success was permanent, and raising `-c` on the server reached nothing.
+ */
+
+/** A host held open across several requests, with props the test can change underneath it. */
+async function liveHost(initial: { modelPath?: string; nCtx?: number } | null) {
+  let props = initial
+  const fake = await startFakeServer((_b, req) => {
+    // A stopped server refuses BOTH, which is what makes the down->up edge observable.
+    // llama.cpp answers /health with 503 until the weights are in, so "loading" and
+    // "not running" look the same from here — as they should.
+    if (req.url === '/health') {
+      if (props === null) throw new Error('loading')
+      return { status: 'ok' }
+    }
+    if (req.url === '/props') {
+      if (props === null) throw new Error('loading')
+      return {
+        ...(props.modelPath !== undefined ? { model_path: props.modelPath } : {}),
+        default_generation_settings: { n_ctx: props.nCtx ?? 32768 },
+      }
+    }
+    return { choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] }
+  })
+  stop = fake.close
+  const messages: HostOutbound[] = []
+  const transport: Captured = { messages, send: (m) => { messages.push(m) } }
+  const h = new SessionHost({ transport })
+  await h.handle({ id: 1, method: 'init', params: { workspaceRoot: root, serverUrl: fake.url } })
+  return {
+    transport,
+    serve: (p: { modelPath?: string; nCtx?: number } | null) => { props = p },
+    newSession: async (id: number) => {
+      await h.handle({ id, method: 'sessions.new', params: {} })
+      return replyOf(transport, id)
+    },
+    status: async (id: number) => {
+      await h.handle({ id, method: 'status', params: {} })
+      return replyOf(transport, id)
+    },
+    close: () => h.shutdown(),
+  }
+}
+
+test('a server restarted with a bigger window is picked up by New session', async () => {
+  // The reported bug, exactly: `-c` raised from 131072 to 262144 on a server behind a
+  // running window, and the app went on showing 131k. Nothing was wrong with the reading --
+  // it simply never asked again.
+  const h = await liveHost({ modelPath: '/m/Qwen3.6-35B-A3B.gguf', nCtx: 131072 })
+  expect(replyOf(h.transport, 1).contextLength).toBe(131072)
+
+  h.serve({ modelPath: '/m/Qwen3.6-80B-A3B.gguf', nCtx: 262144 })
+  const fresh = await h.newSession(2)
+
+  expect(fresh.contextLength).toBe(262144)
+  // And the label moves with it, because the two change together: a window that grew is
+  // nearly always a different file loaded.
+  expect((await h.status(3)).model).toBe('Qwen3.6-80B-A3B')
+  await h.close()
+})
+
+test('a server that goes down does not erase the window it already reported', async () => {
+  // The reason the probe cannot simply overwrite: `/props` failing returns a null length,
+  // and assigning that would turn compaction off for a session whose server is merely
+  // restarting -- trading a stale number for a silently degraded session.
+  const h = await liveHost({ modelPath: '/m/Qwen3.6-35B-A3B.gguf', nCtx: 131072 })
+  h.serve(null)
+  const fresh = await h.newSession(2)
+
+  expect(fresh.contextLength).toBe(131072)
+  expect(fresh.problems.some((p: string) => p.includes('compaction is off'))).toBe(false)
+  await h.close()
+})
+
+test('a server restarted mid-session is picked up without starting a new one', async () => {
+  // The user changes model settings on the fly: stop the server, edit `-c` or point it at a
+  // different GGUF, start it again -- in the middle of a session that is already going. The
+  // status poll is the only thing watching, and it used to report a cached number forever.
+  const h = await liveHost({ modelPath: '/m/Qwen3.6-35B-A3B.gguf', nCtx: 131072 })
+  expect((await h.status(2)).contextLength).toBe(131072)
+
+  h.serve(null)                       // stopped: /props fails and /health is refused
+  expect((await h.status(3)).serverUp).toBe(false)
+  // Down is not a licence to forget: the last known window is still the best answer there is.
+  expect((await h.status(4)).contextLength).toBe(131072)
+
+  h.serve({ modelPath: '/m/Qwen3.6-80B-A3B.gguf', nCtx: 262144 })
+  const back = await h.status(5)
+
+  expect(back.serverUp).toBe(true)
+  expect(back.contextLength).toBe(262144)
+  expect(back.model).toBe('Qwen3.6-80B-A3B')
+  await h.close()
+})
+
+test('the change is said out loud, because it changes how the session behaves', async () => {
+  const h = await liveHost({ modelPath: '/m/small.gguf', nCtx: 131072 })
+  await h.status(2)
+  h.serve(null)
+  await h.status(3)
+  h.serve({ modelPath: '/m/big.gguf', nCtx: 262144 })
+  await h.status(4)
+
+  const notices = h.transport.messages
+    .filter((m): m is HostEvent => isHostEvent(m) && m.event === 'settings.problem')
+    .map((m) => (m.data as { text: string }).text)
+  expect(notices.some((t) => t.includes('262k') && t.includes('was 131k'))).toBe(true)
+  await h.close()
+})
+
+test('a restart that changes nothing says nothing', async () => {
+  // The ordinary case -- the server stopped and came back the same -- must stay silent, or
+  // the notice becomes noise and stops being read.
+  const h = await liveHost({ modelPath: '/m/same.gguf', nCtx: 131072 })
+  await h.status(2)
+  const before = h.transport.messages.length
+  h.serve(null)
+  await h.status(3)
+  h.serve({ modelPath: '/m/same.gguf', nCtx: 131072 })
+  await h.status(4)
+
+  const notices = h.transport.messages.slice(before)
+    .filter((m) => isHostEvent(m) && m.event === 'settings.problem')
+  expect(notices).toEqual([])
+  await h.close()
 })

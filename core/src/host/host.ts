@@ -289,6 +289,10 @@ export class SessionHost {
    * `contextLength` variable). */
   private repoIndex: RepoIndex | undefined
   private contextLength: number | null = null
+  /** Whether the last health check saw the server. `null` until the first one, so the very
+   * first observation is not mistaken for a restart — `init` has already read /props by
+   * then and re-reading it a second later would be pure noise. */
+  private serverWasUp: boolean | null = null
   /** What the server said it is serving, discovered at init. See `FALLBACK_MODEL`. */
   private model: string = FALLBACK_MODEL
 
@@ -572,6 +576,53 @@ export class SessionHost {
    * Never throws. A failure leaves the name at `FALLBACK_MODEL` and the length `null`,
    * which `init` already treats as "compaction off, reported as a problem".
    */
+  /**
+   * Adopt what the server now says about itself, mid-session.
+   *
+   * The user changes model settings on the fly: stop the server, edit `-c` or point it at a
+   * different GGUF, start it again. Everything downstream of that — the window compaction
+   * divides by, the label in the status bar, the name written into request logs — was read
+   * once at startup and then believed, so a 256k server went on being driven as a 131k one.
+   *
+   * Two things make this safe to call from a poll. A probe that did not answer changes
+   * nothing, so a server caught mid-load leaves the last good values in place rather than
+   * replacing them with nulls. And an unchanged answer returns before touching anything, so
+   * the ordinary case — a server restarted with the same settings — is silent.
+   */
+  private async refreshServerProps(): Promise<void> {
+    if (this.serverUrl === undefined) return
+    const probed = await this.probeServer(this.serverUrl)
+    if (probed.contextLength === null) return
+    const grewOrShrank = probed.contextLength !== this.contextLength
+    const renamed = probed.model !== this.model
+    if (!grewOrShrank && !renamed) return
+
+    const previous = this.contextLength
+    this.contextLength = probed.contextLength
+    if (renamed) {
+      this.model = probed.model
+      this.client = new LlamaClient({ baseUrl: this.serverUrl, model: this.model })
+    }
+    // The running session holds its own copy, and compaction is computed from that one. A
+    // session left driving the old number is the actual harm here: too small and it compacts
+    // a window that had room, too large and it overruns the one it has.
+    this.session?.setContextLength(probed.contextLength)
+
+    // Said out loud, because it changes how the session behaves from here on and the only
+    // other sign of it is a number in the status bar that the user would have to be watching
+    // at the right moment. `settings.problem` is the app's notice channel.
+    // Divided by 1000, not 1024, to match the number the status bar shows: a notice
+    // that says 128k beside a bar that says 131k reads as a second, different fact.
+    const window = `${Math.round(probed.contextLength / 1000)}k`
+    this.emit('settings.problem', {
+      text: previous === null
+        ? `the model server answered: ${this.model}, ${window} context. Automatic compaction ` +
+          'is on for this session now.'
+        : `the model server came back with different settings: ${this.model}, ${window} ` +
+          `context (was ${Math.round(previous / 1000)}k). This session now uses the new window.`,
+    })
+  }
+
   private async probeServer(serverUrl: string): Promise<{ contextLength: number | null; model: string }> {
     const probe = new LlamaClient({
       baseUrl: serverUrl, model: FALLBACK_MODEL, requestTimeoutMs: HEALTH_CHECK_TIMEOUT_MS,
@@ -633,9 +684,9 @@ export class SessionHost {
    * to the `InitResult.problems` this returns, stating that automatic compaction is off.
    */
   private async buildSession(resumeId: string | undefined): Promise<InitResult> {
-    const { client, toolset, store, workspaceRoot } = this.requireInitialized()
+    const { toolset, store, workspaceRoot } = this.requireInitialized()
 
-    // Re-probed here, and ONLY when the first attempt came back empty.
+    // Re-probed here, on every session build.
     //
     // The model server takes minutes to load twenty gigabytes off disk, and the window opens
     // in a second. Probing once in `init` meant that opening the app first — the ordinary
@@ -647,11 +698,34 @@ export class SessionHost {
     // `init` therefore misses on every cold start. It re-reads the NAME as well as the
     // length now: getting the window size right while the label still said whatever the
     // last successful probe said is how the app came to show a 35B over an 80B.
-    if (this.contextLength === null && this.serverUrl !== undefined) {
+    //
+    // The guard used to be `this.contextLength === null`, which made the FIRST success
+    // permanent. Restart the server with `-c 262144` behind a running window and the app
+    // kept the 131072 it had learned hours earlier — and New session did not cure it,
+    // because the value was no longer null. That is the same mistake as the stale label,
+    // one line apart: both are properties of a process the user restarts at will, read once
+    // and then believed forever. So the probe is unconditional now.
+    //
+    // What must NOT happen is a failed probe erasing a good value: with the server briefly
+    // down, New session should keep the last known window rather than silently turning
+    // compaction off. Only a probe that actually answered overwrites anything.
+    if (this.serverUrl !== undefined) {
       const probed = await this.probeServer(this.serverUrl)
-      this.contextLength = probed.contextLength
-      this.model = probed.model
+      if (probed.contextLength !== null) {
+        const renamed = probed.model !== this.model
+        this.contextLength = probed.contextLength
+        this.model = probed.model
+        // `init` rebuilds the client when the name changes and this did not, so every
+        // request in a session started after a model swap carried the old name. Harmless to
+        // llama.cpp, which serves whatever it loaded, and misleading in its logs.
+        if (renamed) this.client = new LlamaClient({ baseUrl: this.serverUrl, model: this.model })
+      }
     }
+
+    // Read AFTER the probe, deliberately: a model swap replaces `this.client`, and the
+    // session must be handed the new one rather than whichever was current when this method
+    // was entered.
+    const { client } = this.requireInitialized()
 
     const { layers, problems: settingsProblems } = loadLayers(workspaceRoot)
     // Loaded here, beside the settings layers, for the same reason: the Session is handed
@@ -1561,6 +1635,13 @@ export class SessionHost {
   private async status(): Promise<StatusResult> {
     if (!this.client) return { serverUp: false }
     const serverUp = await this.client.health()
+    // The server is a process the user stops and restarts to change `-c` or to swap the
+    // GGUF, and coming back up is the only moment its properties can differ from what we
+    // hold. So that transition — and only it — re-reads them. Polling /props on every tick
+    // would put a second request on a single-slot server ten times a minute for a value
+    // that changes a few times a day; never re-reading it is the bug this fixes.
+    if (serverUp && this.serverWasUp === false) await this.refreshServerProps()
+    this.serverWasUp = serverUp
     const result: StatusResult = { serverUp, model: this.model }
     if (this.contextLength !== null) result.contextLength = this.contextLength
     if (this.mcp) result.mcpServers = this.mcp.servers()

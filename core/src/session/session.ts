@@ -961,6 +961,26 @@ export class Session {
   }
 
   /**
+   * The window the server actually serves, when it changes under a running session.
+   *
+   * The context length is not a property of this tool: it is whatever `-c` the user last
+   * launched llama.cpp with, and they change it by stopping the server and starting it
+   * again — which can happen at any point in a session that is already going. Everything
+   * that depends on it (`compactionTrigger`, the tail budget, the summary input budget)
+   * reads `opts.compaction.contextLength` at the moment it needs it rather than caching a
+   * derived number, so replacing it here is enough and takes effect on the next check.
+   *
+   * Creating the options when they were absent is deliberate and is the valuable half: a
+   * session that started while the server was still loading has compaction OFF, and this is
+   * how it gets switched on once the server can finally say how big the window is, instead
+   * of the user having to know to start a new session.
+   */
+  setContextLength(contextLength: number): void {
+    if (!Number.isFinite(contextLength) || contextLength <= 0) return
+    this.opts.compaction = { ...this.opts.compaction, contextLength }
+  }
+
+  /**
    * Builds the `AgentEvents` actually handed to `Agent`: the host's own events (if any),
    * composed with -- never replaced by -- an internal tap on `onStepDone` that records
    * `contextUsage()`'s inputs. Every other host handler (onThinking, onToolCall, ...)
