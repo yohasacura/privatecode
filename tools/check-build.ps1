@@ -100,14 +100,23 @@ Section 'What the model actually called'
 $files = Get-ChildItem $sessions -Filter '*.jsonl' | Where-Object { $_.Name -notlike '*.ui.jsonl' }
 if (-not $files) { Write-Host '  No transcripts.' -ForegroundColor Yellow; return }
 
-$counts = @{}
+# Sessions older than the installed build ran a DIFFERENT program -- one whose C# navigator
+# answered type questions wrongly -- so mixing them in dilutes the only number that answers
+# the question. Counted separately rather than dropped: the contrast is itself the evidence.
+$buildTime = if ($exe) { $exe.LastWriteTime } else { [datetime]::MinValue }
+
+$counts = @{}          # this build only
+$countsOld = @{}       # sessions that predate it
 $navFailures = @()
-$firstMoves = @()      # per session: was csharp_nav reached for before the first read_file?
+$firstMoves = @()      # per session on THIS build: csharp_nav before the first read_file?
 $oldest = $null; $newest = $null
+$oldSessions = 0; $newSessions = 0
 
 foreach ($f in $files) {
   if (-not $oldest -or $f.LastWriteTime -lt $oldest) { $oldest = $f.LastWriteTime }
   if (-not $newest -or $f.LastWriteTime -gt $newest) { $newest = $f.LastWriteTime }
+  $onThisBuild = $f.LastWriteTime -ge $buildTime
+  if ($onThisBuild) { $newSessions++ } else { $oldSessions++ }
   $sawNavFirst = $null
   foreach ($line in [System.IO.File]::ReadLines($f.FullName)) {
     if ($line.Length -eq 0) { continue }
@@ -117,10 +126,11 @@ foreach ($f in $files) {
       foreach ($tc in $d.tool_calls) {
         $n = $tc.function.name
         if (-not $n) { continue }
-        $counts[$n] = 1 + [int]$counts[$n]
+        if ($onThisBuild) { $counts[$n] = 1 + [int]$counts[$n] }
+        else { $countsOld[$n] = 1 + [int]$countsOld[$n] }
         # The question that matters is not "did it ever", it is "did it reach for the
         # compiler BEFORE it started opening files".
-        if ($null -eq $sawNavFirst) {
+        if ($onThisBuild -and $null -eq $sawNavFirst) {
           if ($n -eq 'csharp_nav') { $sawNavFirst = $true }
           elseif ($n -eq 'read_file') { $sawNavFirst = $false }
         }
@@ -136,28 +146,52 @@ foreach ($f in $files) {
 }
 
 $total = ($counts.Values | Measure-Object -Sum).Sum
-Write-Host "  $($files.Count) sessions, $total tool calls, $($oldest.ToString('MM-dd')) to $($newest.ToString('MM-dd'))"
+$totalOld = ($countsOld.Values | Measure-Object -Sum).Sum
+Write-Host "  $($files.Count) sessions, $($oldest.ToString('MM-dd')) to $($newest.ToString('MM-dd'))"
+Write-Host "  installed build dates from $($buildTime.ToString('MM-dd HH:mm'))"
 Write-Host ''
-$counts.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object {
-  $bar = '#' * [Math]::Min(40, [Math]::Ceiling($_.Value * 40 / [Math]::Max(1, $total)))
-  '{0,-18} {1,5}  {2}' -f $_.Key, $_.Value, $bar
+
+if ($newSessions -eq 0) {
+  Write-Host '  NO sessions have run on this build yet, so nothing here describes it.' -ForegroundColor Yellow
+  Write-Host "  The $oldSessions older session(s) below ran a version whose C# navigator"
+  Write-Host '  answered type questions wrongly. Use the app for a while, then re-run this.'
+} else {
+  Write-Host "  ON THIS BUILD -- $newSessions session(s), $total tool calls" -ForegroundColor Green
+  $counts.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object {
+    $bar = '#' * [Math]::Min(40, [Math]::Ceiling($_.Value * 40 / [Math]::Max(1, $total)))
+    '  {0,-18} {1,5}  {2}' -f $_.Key, $_.Value, $bar
+  }
+}
+
+if ($totalOld -gt 0) {
+  Write-Host ''
+  Write-Host "  before it -- $oldSessions session(s), $totalOld tool calls (a different program)" -ForegroundColor DarkGray
+  $countsOld.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 6 | ForEach-Object {
+    '  {0,-18} {1,5}' -f $_.Key, $_.Value
+  }
 }
 
 Section 'csharp_nav'
 
 $nav = [int]$counts['csharp_nav']
 $reads = [int]$counts['read_file']
-if ($nav -eq 0) {
-  Write-Host '  Never called.' -ForegroundColor Yellow
+if ($newSessions -eq 0) {
+  Write-Host '  Nothing to say yet -- no session has run on this build.' -ForegroundColor Yellow
+} elseif ($nav -eq 0) {
+  Write-Host "  Never called on this build, against $reads read_file calls." -ForegroundColor Yellow
 } else {
-  Write-Host "  Called $nav times, against $reads read_file calls."
+  Write-Host "  Called $nav times on this build, against $reads read_file calls."
 }
 
 # The metric with a threshold set in advance: reaching for the compiler before opening files.
+# Only sessions on this build count -- the earlier ones were answering to a broken helper.
 $navFirstCount = ($firstMoves | Where-Object { $_.NavFirst }).Count
 if ($firstMoves.Count -gt 0) {
-  Write-Host "  Reached for FIRST (before any read_file) in $navFirstCount of $($firstMoves.Count) sessions."
-  Write-Host '  Bar set before the change, on 5 unprompted C# questions: >=3 of 5 keep, <=1 revert.'
+  Write-Host "  Reached for FIRST (before any read_file) in $navFirstCount of $($firstMoves.Count) sessions on this build."
+  Write-Host '  Bar set in advance: >=3 of 5 keep the nudge, <=1 revert it.'
+  if ($firstMoves.Count -lt 5) {
+    Write-Host "  ($($firstMoves.Count) session(s) is not yet enough to decide.)" -ForegroundColor DarkGray
+  }
 }
 
 if ($navFailures.Count -gt 0) {
