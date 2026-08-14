@@ -264,6 +264,27 @@ const PRE_TURN_HEADROOM = 4_000
  * minutes however long the turn runs. See `Session.checkpointLongTurn`. */
 const MID_TURN_CHECKPOINT_MS = 120_000
 
+/**
+ * How much work must accumulate before the project's check runs again inside a turn.
+ *
+ * Both gates matter and they guard different things. The write count stops a check running
+ * after a one-line edit; the interval stops a burst of edits triggering three builds in a
+ * minute. Five writes is roughly "a coherent piece of work", and four minutes is long enough
+ * that even a slow suite is a small fraction of the turn it is protecting.
+ */
+const MID_TURN_VERIFY_WRITES = 5
+const MID_TURN_VERIFY_MS = 240_000
+
+/**
+ * Where the model is told how full its context is.
+ *
+ * Below 60% there is nothing to act on and the reminder would be noise. 85% is close enough
+ * that the next compaction is likely within a few steps, which is exactly when writing
+ * something down is worth a step. The 80% figure the automatic trigger uses sits between the
+ * last two on purpose: the model gets a warning before the thing happens, not after.
+ */
+const CONTEXT_FILL_MARKS = [0.6, 0.75, 0.85] as const
+
 /** The only tools the work log's "Ran" line is built from — `commandsFrom` drops everything
  * else. Kept beside the capture rather than only inside the formatter, because the point is
  * to not RETAIN what will be discarded. */
@@ -1211,6 +1232,104 @@ export class Session {
    * Never throws, for `recordTurn`'s reason: a failed snapshot must not take the turn down
    * with it.
    */
+  /**
+   * Run the project's own check DURING a long turn, not only when it ends.
+   *
+   * Measured across fifteen real sessions: a turn runs thirty-odd steps, and the check that
+   * would have caught a mistake made at step four ran after step thirty. By then the model
+   * has to reconstruct twenty-six steps of intent to understand the failure — and the
+   * context that would have explained it is the context compaction just replaced.
+   *
+   * Gated the same way the mid-turn checkpoint is, and for the same reason: this is a real
+   * build, not a cheap probe. Some writes must have happened since the last one, and enough
+   * time must have passed. Running it after every edit would turn a twenty-minute turn into
+   * an hour of building.
+   *
+   * Reports and does NOT intervene. The end-of-turn `verifyAndFix` keeps its fix rounds;
+   * this one appends a note and lets the model decide, because interrupting a plan halfway
+   * to demand a fix is how a model loses the thread it was holding. Silence on success is
+   * deliberate too: a passing check that announced itself would spend context to say
+   * nothing happened.
+   *
+   * Never throws — a check that cannot run must not take the turn down.
+   */
+  private async verifyMidTurn(signal?: AbortSignal): Promise<void> {
+    if (this.writeCount - this.writesAtLastVerify < MID_TURN_VERIFY_WRITES) return
+    const now = Date.now()
+    if (now - this.lastVerifyAtMs < MID_TURN_VERIFY_MS) return
+    const jobs = this.verifyJobs()
+    if (jobs.length === 0) return
+    this.writesAtLastVerify = this.writeCount
+    this.lastVerifyAtMs = now
+
+    try {
+      for (const job of jobs) {
+        if (signal?.aborted) return
+        const outcome = await runVerify(job.spec, job.root, signal)
+        this.opts.onVerify?.({
+          command: job.spec.command,
+          ok: outcome.ok,
+          // 1, not 0: this check has exactly one attempt and never retries, and every other
+          // emission counts from 1. A sentinel here would mean something different from the
+          // same field everywhere else for no gain — the app only distinguishes `> 1`.
+          attempt: 1,
+          ...(this.workspace.multi ? { folder: job.folder } : {}),
+          ...(outcome.exitCode !== null ? { exitCode: outcome.exitCode } : {}),
+          ...(outcome.problem !== undefined ? { problem: outcome.problem } : {}),
+        })
+        if (outcome.ok) continue
+        // A command that cannot START is a configuration problem, and telling the model its
+        // change broke the build would send it rewriting working code.
+        if (outcome.problem !== undefined) continue
+        const where = this.workspace.multi ? `In the "${job.folder}" folder: ` : ''
+        this.transcript.append({
+          role: 'user',
+          content:
+            `[Checked while you work — ${where}${verifyFailureMessage(job.spec, outcome)}\n\n` +
+            'This ran automatically after your recent edits, so the cause is probably in ' +
+            'them and is still fresh. Fix it now if it is yours; if it was already broken ' +
+            'before this turn, say so and carry on.]',
+        })
+        return
+      }
+    } catch { /* see the doc comment */ }
+  }
+
+  /**
+   * Tell the model how much of its window is gone, once per threshold it crosses.
+   *
+   * It is the only actor that can do anything about it — write a durable note, close out a
+   * sub-task, stop opening a twentieth file — and until now it had no way to know. The
+   * status bar has shown this to the USER since the beginning; the model was the one party
+   * in the room working blind.
+   *
+   * Once per threshold, never repeated, so a long turn spends at most three lines on this.
+   * Appended rather than put in the system message for the obvious reason: message 0 is
+   * frozen, and a number in it would be a lie within one step.
+   *
+   * Deliberately says what to DO. "You are at 75%" is a fact the model cannot act on; the
+   * two actions that actually preserve work across the compaction it is warning about are
+   * recording what was learned and bringing the plan up to date.
+   */
+  private noteContextFill(): void {
+    const contextLength = this.opts.compaction?.contextLength
+    if (contextLength === undefined || contextLength <= 0) return
+    const ratio = this.fillRatio(contextLength)
+    if (ratio === null) return
+    const crossed = CONTEXT_FILL_MARKS.filter((m) => ratio >= m && !this.fillMarksSeen.has(m))
+    const mark = crossed[crossed.length - 1]
+    if (mark === undefined) return
+    for (const m of crossed) this.fillMarksSeen.add(m)
+    this.transcript.append({
+      role: 'user',
+      content:
+        `[Context is about ${Math.round(mark * 100)}% full. When it fills, the earlier part ` +
+        'of this conversation is replaced by a summary — anything not written down is lost. ' +
+        'Now is the moment to record what you have worked out with `remember`, and to bring ' +
+        '`todo_write` up to date so the plan survives. Then carry on.]',
+    })
+  }
+
   private async checkpointLongTurn(step: number): Promise<void> {
     if (!this.checkpoints) return
     if (this.writeCount === this.writesAtLastCheckpoint) return
@@ -1750,6 +1869,10 @@ export class Session {
   /** `writeCount` as it stood at the last snapshot, and when that was — the two halves of
    * "is there anything new to snapshot, and is it time". See `checkpointLongTurn`. */
   private writesAtLastCheckpoint = 0
+  private writesAtLastVerify = 0
+  private lastVerifyAtMs = 0
+  /** Fill marks already announced, so each is said once per session and never again. */
+  private readonly fillMarksSeen = new Set<number>()
   private lastCheckpointAtMs = 0
   /** Where the current turn began, for the work log's own diff. See `recordTurn`. */
   private turnStartCheckpoint: Checkpoint | null = null
@@ -1901,6 +2024,8 @@ export class Session {
     // reporting a timeout, having been broken by the thing sent to rescue it.
     agentOpts.beforeStep = async (step): Promise<StepPreamble | undefined> => {
       await this.checkpointLongTurn(step)
+      await this.verifyMidTurn(signal)
+      this.noteContextFill()
       const before = this.transcript
       await this.compactIfOverWindow(signal)
       const swapped = this.transcript !== before
