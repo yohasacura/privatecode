@@ -9,9 +9,17 @@ dotnet publish -c Release -o ..\..\vendor\sql
 
 - .NET 10, `win-x64`, self-contained, single file, **not** trimmed.
 - `Microsoft.Data.SqlClient` 6.0.1.
-- Ships as **two** files. `Microsoft.Data.SqlClient.SNI.dll` is a native library and
-  `PublishSingleFile` leaves native libraries beside the exe rather than inside it. Copy both
-  or the process starts and cannot connect to anything.
+- `Microsoft.SqlServer.DacFx` 162.5.57, for deploying a built `.sqlproj`.
+- Ships as **three** files. `PublishSingleFile` leaves native libraries beside the exe rather
+  than inside it, and there are two: `Microsoft.Data.SqlClient.SNI.dll` and, since DacFx
+  arrived, `SqlServerSpatial160.dll`. Copy all of them or the process starts and cannot
+  connect to anything.
+
+  **This list has already changed once**, from one native library to two, the moment a
+  package was added — which is why `bundle.mjs` stages the whole directory rather than a list
+  of names, and why the three places that CHECK the list (`sql-process.ts`, `main.rs`,
+  `bundle.mjs`) all name it explicitly. If a future package adds a third, the staging keeps
+  working and the checks are what tell you.
 
 ## Two settings that are not the same as roslyn-nav's, and why
 
@@ -53,3 +61,20 @@ primary keys, plus routines and foreign keys), `describe` (returns the procedure
 `query`. The guard was checked on four statements — `UPDATE` refused, `SELECT 1; DROP TABLE`
 refused, the word `delete` inside a string literal allowed, and the word `delete` inside a
 comment allowed — and the data was confirmed unchanged afterwards.
+
+## Deploying a `.sqlproj`
+
+`script` and `publish` are one function differing by a boolean, so a dry run cannot drift
+from the thing it describes. Two of DacFx's guards stay on and are not exposed:
+`BlockOnPossibleDataLoss` refuses a deployment that would discard rows, and
+`DropObjectsNotInSource` stays off so a deployment adds and alters but never removes an
+object the project happens not to mention.
+
+Verified against the LocalDB instance above, with a `.sqlproj` built by
+`Microsoft.Build.Sql/2.2.0`: the dry run produced a real script (rebuild of `dbo.Invoice` to
+add a column) and left all six columns as they were; `publish` then applied it, the seventh
+column appeared, and both rows survived the table rebuild with their totals intact.
+
+Note for anyone rebuilding the fixture: `Microsoft.Build.Sql/1.0.0` does not build under
+.NET SDK 10 — it imports a `NuGet.Build.Tasks.Pack` path that has moved — and 2.2.0 needs
+`<DSP>` naming a schema provider explicitly.

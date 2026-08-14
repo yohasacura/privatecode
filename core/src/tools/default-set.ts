@@ -19,6 +19,7 @@ import { browserTool } from './browser.js'
 import { useSkillTool } from './use-skill.js'
 import { csharpNavTool } from './csharp-nav.js'
 import { databaseTool } from './database.js'
+import { sqlDeployTool } from './sql-deploy.js'
 import { rememberTool } from './remember.js'
 import { BrowserManager, type BrowserOptions } from '../browser/manager.js'
 
@@ -53,7 +54,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   // what it competes with: both answer "where is this used", one by text and one by meaning.
   // Free, and unmeasured: no claim is made here that position is what routes the choice.
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, csharpNavTool, databaseTool,
-                   editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
+                   editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool, sqlDeployTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
                    symbolOutlineTool, browserTool, useSkillTool, rememberTool]) {
     registry.register(t)

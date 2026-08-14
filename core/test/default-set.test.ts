@@ -34,3 +34,14 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
      'use_skill'],
   )
 })
+
+test('sql_deploy is deliberately not read-only, so plan mode cannot reach it', () => {
+  // `database` can be allowed once and forgotten because nothing it does can be regretted.
+  // This one changes a live server, and the checkpoint history covers the working tree and
+  // not the database -- no snapshot taken afterwards undoes a dropped column. So it is
+  // gated on every use, and absent from the mode whose whole promise is that it changes
+  // nothing.
+  const registry = buildRegistry()
+  expect(registry.readOnlyNames()).not.toContain('sql_deploy')
+  expect(registry.names()).toContain('sql_deploy')
+})

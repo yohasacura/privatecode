@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { databaseTool, renderRows, renderSchema } from '../src/tools/database.js'
+import { databaseTool } from '../src/tools/database.js'
+import { renderRows, renderSchema } from '../src/sql/render.js'
 import { describeConnection, expandEnv, loadDatabaseSettings } from '../src/sql/settings.js'
 import { resolveHelper } from '../src/sql/sql-process.js'
 import { PRIVATE_DIR } from '../src/private-dir.js'
@@ -142,16 +143,24 @@ describe('finding the helper', () => {
     expect(found).toContain('sql-probe.exe')
   })
 
-  test('an exe without its native sibling is not a usable helper', () => {
-    // `Microsoft.Data.SqlClient.SNI.dll` is left beside the exe by a single-file publish, and
-    // an exe without it starts fine and then cannot connect to anything — a broken install
-    // that presents as a network fault. Refusing here turns it back into a clear answer.
-    const lonely = join(root, 'sql-probe.exe')
-    writeFileSync(lonely, 'not really an exe', 'utf8')
-    expect(resolveHelper(lonely, null)).toBeNull()
+  test('an exe missing ANY of its native siblings is not a usable helper', () => {
+    // A single-file publish leaves native libraries beside the exe, and an exe without them
+    // starts fine and then fails with a message naming nothing that is actually wrong — a
+    // broken install presenting as a network fault. Refusing here turns it back into a clear
+    // answer.
+    //
+    // The list is checked one at a time on purpose. It grew from one entry to two the moment
+    // DacFx was added, and this test failed the instant it did — which is the behaviour
+    // wanted from it, since the alternative is a half-vendored helper shipping quietly.
+    const exe = join(root, 'sql-probe.exe')
+    writeFileSync(exe, 'not really an exe', 'utf8')
+    expect(resolveHelper(exe, null)).toBeNull()
 
     writeFileSync(join(root, 'Microsoft.Data.SqlClient.SNI.dll'), 'nor this', 'utf8')
-    expect(resolveHelper(lonely, null)).toBe(lonely)
+    expect(resolveHelper(exe, null)).toBeNull()
+
+    writeFileSync(join(root, 'SqlServerSpatial160.dll'), 'nor this', 'utf8')
+    expect(resolveHelper(exe, null)).toBe(exe)
   })
 
   test('a caller that cannot locate itself gets null, not a crash', () => {
@@ -175,7 +184,7 @@ describe('rendering what comes back', () => {
       foreignKeys: [{ from: 'dbo.Invoice.CustomerId', to: 'dbo.Customer.CustomerId' }],
       routines: [{ name: 'dbo.vOpen', kind: 'view' }],
     })
-    expect(text).toContain('Crm — 1 tables')
+    expect(text).toContain('Crm — 1 table')
     expect(text).toContain('InvoiceId int (PK, identity, not null)')
     expect(text).toContain('TaxNumber nvarchar(20) (null)')
     expect(text).toContain('dbo.Invoice.CustomerId -> dbo.Customer.CustomerId')
@@ -200,5 +209,40 @@ describe('rendering what comes back', () => {
 
   test('an empty result is not an error', () => {
     expect(renderRows({ columns: ['n'], rows: [] })).toContain('(no rows)')
+  })
+})
+
+describe('the schema block that goes into the prompt', () => {
+  const many = (n: number): Record<string, unknown> => ({
+    database: 'Warehouse',
+    tables: Array.from({ length: n }, (_, i) => ({
+      name: `dbo.Table${i}`,
+      columns: [
+        { name: 'Id', type: 'int', nullable: false, identity: true, pk: true },
+        { name: 'Payload', type: 'nvarchar(400)', nullable: true, identity: false, pk: false },
+      ],
+    })),
+    foreignKeys: [{ from: 'dbo.Table1.Id', to: 'dbo.Table0.Id' }],
+    routines: [{ name: 'dbo.vAll', kind: 'view' }],
+  })
+
+  test('a large schema is cut to the budget and SAYS how much it cut', () => {
+    // A model told "here is the database" would take a truncated list as complete and
+    // conclude a table it cannot see does not exist. The count is what prevents that.
+    const text = renderSchema(many(200), 1_000)
+    expect(text.length).toBeLessThan(2_000)
+    expect(text).toContain('Warehouse — 200 tables')
+    expect(text).toMatch(/\d+ more tables are not listed here/)
+  })
+
+  test('relationships and routines survive the cut, because they are what a map is for', () => {
+    const text = renderSchema(many(200), 1_000)
+    expect(text).toContain('dbo.Table1.Id -> dbo.Table0.Id')
+    expect(text).toContain('dbo.vAll (view)')
+  })
+
+  test('a schema inside the budget says nothing about truncation', () => {
+    const text = renderSchema(many(2))
+    expect(text).not.toContain('not listed here')
   })
 })

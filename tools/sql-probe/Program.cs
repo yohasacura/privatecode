@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Data.SqlClient;
+using Microsoft.SqlServer.Dac;
 
 namespace SqlProbe;
 
@@ -74,6 +75,8 @@ public static class Program
         "schema" => await Schema(id),
         "describe" => await Describe(id, Arg(root, "object")),
         "query" => await Query(id, Arg(root, "sql"), Limit(root)),
+        "script" => Deploy(id, Arg(root, "dacpac"), apply: false),
+        "publish" => Deploy(id, Arg(root, "dacpac"), apply: true),
         "status" => new { id, ok = true, connected = _connectionString.Length > 0, server = _server, database = _database },
         _ => new { id, ok = false, error = $"unknown op \"{op}\"" },
     };
@@ -409,6 +412,88 @@ public static class Program
         }
     }
 
+    /// <summary>
+    /// A built `.sqlproj` — a `.dacpac` — either turned into the script that would bring the
+    /// database up to it, or applied.
+    ///
+    /// The two are one function on purpose. They differ by a single boolean, they must agree
+    /// exactly about what they would do, and a dry run implemented separately from the real
+    /// thing is a dry run that eventually stops describing it.
+    ///
+    /// `BlockOnPossibleDataLoss` stays ON. It is DacFx's own guard, it is the reason a
+    /// schema deployment is survivable at all, and turning it off is the kind of decision a
+    /// person makes at a keyboard with the script in front of them — never a default, and
+    /// never something reached through a tool call.
+    /// </summary>
+    private static object Deploy(int id, string dacpacPath, bool apply)
+    {
+        if (_connectionString.Length == 0) return new { id, ok = false, error = "not connected; call connect first" };
+        if (dacpacPath.Length == 0) return new { id, ok = false, error = "needs the path of a .dacpac" };
+        if (!File.Exists(dacpacPath))
+        {
+            return new
+            {
+                id,
+                ok = false,
+                error = $"no such file: {dacpacPath}. A .dacpac is produced by building the " +
+                        ".sqlproj — run `dotnet build` on it first, and look under bin/.",
+            };
+        }
+
+        try
+        {
+            using var package = DacPackage.Load(dacpacPath);
+            var services = new DacServices(_connectionString);
+            var log = new StringBuilder();
+            services.Message += (_, e) => log.AppendLine(e.Message.Message);
+
+            var options = new DacDeployOptions
+            {
+                BlockOnPossibleDataLoss = true,
+                // A deployment that drops a table nobody asked it to drop is the failure mode
+                // people tell stories about. Additive by default; removals are a decision, and
+                // a decision belongs in the script a person reads.
+                DropObjectsNotInSource = false,
+                CommandTimeout = 300,
+            };
+
+            if (!apply)
+            {
+                var script = services.GenerateDeployScript(package, _database, options);
+                return new
+                {
+                    id,
+                    ok = true,
+                    applied = false,
+                    database = _database,
+                    script,
+                    messages = log.ToString(),
+                };
+            }
+
+            services.Deploy(package, _database, upgradeExisting: true, options);
+            return new
+            {
+                id,
+                ok = true,
+                applied = true,
+                database = _database,
+                messages = log.ToString(),
+            };
+        }
+        catch (DacServicesException e)
+        {
+            // Its inner messages are the ones that say WHICH object could not be deployed;
+            // the outer one is almost always "deployment failed".
+            var detail = e.InnerException is null ? e.Message : $"{e.Message}: {e.InnerException.Message}";
+            return new { id, ok = false, error = detail };
+        }
+        catch (Exception e)
+        {
+            return new { id, ok = false, error = Explain(e) };
+        }
+    }
+
     /// <summary>Null when it looks like a read. A message naming the offending word otherwise.</summary>
     private static string? NotARead(string sql)
     {
@@ -523,3 +608,4 @@ public static class Program
         return e.Message;
     }
 }
+

@@ -151,6 +151,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
         .filter(|dir| {
             dir.join("sql-probe.exe").exists()
                 && dir.join("Microsoft.Data.SqlClient.SNI.dll").exists()
+                && dir.join("SqlServerSpatial160.dll").exists()
         })
         .map(|dir| dir.join("sql-probe.exe"));
 

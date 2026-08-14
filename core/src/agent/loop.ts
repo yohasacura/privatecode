@@ -171,6 +171,8 @@ export interface AgentOptions {
   memory?: string
   /** The project map for the system prompt; see `outline/repo-map.ts`. */
   repoMap?: string
+  /** The database's shape, for the cached prefix. See `PromptOptions.databaseSchema`. */
+  databaseSchema?: string
   /** What earlier sessions learned; see `memory/project-notes.ts`. Frozen into message 0
    * like the rest — a note recorded mid-session lands in the NEXT one. */
   notes?: string
@@ -447,6 +449,7 @@ export class Agent {
           ...(opts.notes !== undefined ? { notes: opts.notes } : {}),
           ...(opts.skills !== undefined ? { skills: opts.skills } : {}),
           ...(opts.repoMap !== undefined ? { repoMap: opts.repoMap } : {}),
+          ...(opts.databaseSchema !== undefined ? { databaseSchema: opts.databaseSchema } : {}),
           ...(opts.context.workspace.multi
             ? {
               folders: opts.context.workspace.mounts.map((m) => ({ name: m.name, access: m.access })),

@@ -23,6 +23,14 @@ export interface PromptOptions {
    */
   repoMap?: string
   /**
+   * The shape of the database this workspace works against, when there is one.
+   *
+   * Beside `repoMap` and after it: the code is what the session is about and the schema is
+   * what it is about it. Both are structure rather than instruction, both are read once into
+   * the cached prefix, and both say in their own header that they can be stale.
+   */
+  databaseSchema?: string
+  /**
    * Which surfaces beyond the built-in fourteen tools are actually registered this session.
    *
    * Passed in rather than assumed, because this prompt is message 0 of an append-only
@@ -177,6 +185,9 @@ export function buildSystemPrompt(opts: PromptOptions): string {
 
   if (opts.skills !== undefined && opts.skills !== '') parts.push('', opts.skills)
   if (opts.repoMap !== undefined && opts.repoMap !== '') parts.push('', opts.repoMap)
+  if (opts.databaseSchema !== undefined && opts.databaseSchema !== '') {
+    parts.push('', opts.databaseSchema)
+  }
   // Memory goes LAST -- see PromptOptions.memory. An absent or empty block leaves this
   // function returning byte-for-byte what it returned before memory existed, which is what
   // keeps every existing assertion about this prompt meaningful.

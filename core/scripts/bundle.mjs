@@ -92,7 +92,11 @@ function verifyManifest() {
   // fault. Naming both here is what makes a half-staged copy fail the build instead.
   if (existsSync(join(repoRoot, 'vendor', 'sql', 'sql-probe.exe'))) {
     manifest.push(join(sidecarDir, 'vendor', 'sql', 'sql-probe.exe'))
+    // Every native library the publish leaves outside the exe. The list grew from one to two
+    // the moment DacFx arrived, which is the whole argument for staging the directory rather
+    // than a list of names -- this is only the check that the staging worked.
     manifest.push(join(sidecarDir, 'vendor', 'sql', 'Microsoft.Data.SqlClient.SNI.dll'))
+    manifest.push(join(sidecarDir, 'vendor', 'sql', 'SqlServerSpatial160.dll'))
   }
   for (const path of manifest) {
     if (!existsSync(path)) throw new Error(`bundle.mjs: staging manifest failed -- missing ${path}`)

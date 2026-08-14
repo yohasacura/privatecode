@@ -1,5 +1,6 @@
 import { sqlProcess } from '../sql/sql-process.js'
 import { describeConnection } from '../sql/settings.js'
+import { renderRows, renderSchema } from '../sql/render.js'
 import type { Tool } from './types.js'
 
 export interface DatabaseArgs {
@@ -144,40 +145,6 @@ export const databaseTool: Tool<DatabaseArgs> = {
   },
 }
 
-interface Column { name: string; type: string; nullable: boolean; identity: boolean; pk: boolean }
-
-/**
- * The schema as something a person would sketch, not as a data dump.
- *
- * One line per column, primary keys and nullability marked inline rather than in columns of
- * their own: a table of ten fields becomes ten short lines instead of a grid that costs three
- * times the tokens to say the same thing.
- */
-export function renderSchema(reply: Record<string, unknown>): string {
-  const tables = Array.isArray(reply['tables']) ? reply['tables'] as { name: string; columns: Column[] }[] : []
-  const routines = Array.isArray(reply['routines']) ? reply['routines'] as { name: string; kind: string }[] : []
-  const links = Array.isArray(reply['foreignKeys']) ? reply['foreignKeys'] as { from: string; to: string }[] : []
-
-  const lines: string[] = [`${String(reply['database'] ?? 'database')} — ${tables.length} tables`]
-  for (const table of tables) {
-    lines.push('', table.name)
-    for (const c of table.columns) {
-      const marks = [c.pk ? 'PK' : '', c.identity ? 'identity' : '', c.nullable ? 'null' : 'not null']
-        .filter((m) => m !== '')
-      lines.push(`  ${c.name} ${c.type}${marks.length > 0 ? ` (${marks.join(', ')})` : ''}`)
-    }
-  }
-  if (links.length > 0) {
-    lines.push('', 'references')
-    for (const l of links) lines.push(`  ${l.from} -> ${l.to}`)
-  }
-  if (routines.length > 0) {
-    lines.push('', 'views and procedures (use describe for the body)')
-    for (const r of routines) lines.push(`  ${r.name} (${r.kind})`)
-  }
-  return lines.join('\n')
-}
-
 function renderDescribe(reply: Record<string, unknown>, asked: string): string {
   if (reply['found'] !== true) return String(reply['note'] ?? `no object named "${asked}"`)
   const definition = typeof reply['definition'] === 'string' ? reply['definition'] : null
@@ -185,30 +152,4 @@ function renderDescribe(reply: Record<string, unknown>, asked: string): string {
   return definition === null
     ? `${head}\n(no stored definition; use schema for its columns)`
     : `${head}\n\n${definition}`
-}
-
-/**
- * Rows as a bordered-free table.
- *
- * Columns are padded to their widest cell so the model reads a grid rather than counting
- * separators — the same reason `git diff` output is left aligned.
- */
-export function renderRows(reply: Record<string, unknown>): string {
-  const columns = Array.isArray(reply['columns']) ? reply['columns'] as string[] : []
-  const rows = Array.isArray(reply['rows']) ? reply['rows'] as string[][] : []
-  if (columns.length === 0) return 'the statement returned no columns'
-  if (rows.length === 0) return `${columns.join(' | ')}\n(no rows)`
-
-  const width = columns.map((c, i) =>
-    Math.max(c.length, ...rows.map((r) => (r[i] ?? '').length)))
-  const line = (cells: readonly string[]): string =>
-    cells.map((c, i) => (c ?? '').padEnd(width[i] ?? 0)).join('  ').trimEnd()
-
-  const out = [line(columns), width.map((w) => '-'.repeat(w)).join('  ')]
-  for (const r of rows) out.push(line(r))
-  const truncated = typeof reply['truncated'] === 'number' ? reply['truncated'] : null
-  if (truncated !== null) {
-    out.push(`(${truncated} more rows not shown — raise limit, or aggregate in the query)`)
-  }
-  return out.join('\n')
 }

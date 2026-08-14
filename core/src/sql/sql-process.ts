@@ -24,9 +24,22 @@ import { fileURLToPath } from 'node:url'
 
 export const SQL_ENV = 'PRIVATECODE_SQL'
 
-/** The native sibling. Its absence is a broken install, not a missing feature, and the
- * difference is worth reporting rather than discovering at connect time. */
-const SNI_DLL = 'Microsoft.Data.SqlClient.SNI.dll'
+/**
+ * The native siblings a single-file publish leaves outside the exe.
+ *
+ * Their absence is a broken install rather than a missing feature, and the difference is
+ * worth reporting here instead of discovering it at connect time — an exe without them starts
+ * cleanly and then fails with a message naming nothing that is actually wrong.
+ *
+ * This list is not a guess and it is not stable: it grew from one entry to two the moment
+ * DacFx was added, which is exactly how a check like this goes quietly out of date. It must
+ * match what `dotnet publish` puts beside the exe — see `vendor/sql/PROVENANCE.md`, and the
+ * whole-directory staging in `bundle.mjs` that is the real protection.
+ */
+const NATIVE_SIBLINGS = [
+  'Microsoft.Data.SqlClient.SNI.dll',
+  'SqlServerSpatial160.dll',
+]
 
 let current: SqlProcess | null = null
 
@@ -194,7 +207,9 @@ export function resolveHelper(fromEnv: string | undefined, from: string | null):
 }
 
 function complete(exePath: string): boolean {
-  return existsSync(exePath) && existsSync(join(dirname(exePath), SNI_DLL))
+  if (!existsSync(exePath)) return false
+  const beside = dirname(exePath)
+  return NATIVE_SIBLINGS.every((dll) => existsSync(join(beside, dll)))
 }
 
 export async function stopSqlProcess(): Promise<void> {

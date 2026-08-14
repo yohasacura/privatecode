@@ -140,6 +140,9 @@ export interface SessionOptions {
   /** The database this workspace works against, when one is configured. Absent — the normal
    * case — leaves the `database` tool answering with where to configure one. */
   database?: DatabaseSettings
+  /** Its shape, ALREADY FETCHED, for the cached prefix. Read by the caller rather than here
+   * because it crosses a network: a session must start whether or not the server answers. */
+  databaseSchema?: string
   /**
    * Re-renders the repository map around the files the session has touched.
    *
@@ -432,6 +435,7 @@ export class Session {
    * only by then does the session have a subject. A second swap re-focuses from here again.
    */
   private repoMapText: string | undefined
+  private schemaText: string | undefined
   /** The project's formatter, when `.privatecode/settings.json` configures one. */
   private readonly formatRunner: FormatRunner | undefined
   /** Built once per Session so a hook's failure counter spans the session, not one turn. */
@@ -471,6 +475,12 @@ export class Session {
     this.skillsText = opts.skills && opts.skills.catalogue !== '' ? opts.skills.catalogue : undefined
     this.notesText = opts.notes !== undefined && opts.notes !== '' ? opts.notes : undefined
     this.repoMapText = opts.repoMap !== undefined && opts.repoMap !== '' ? opts.repoMap : undefined
+    // Carried across a compaction swap unchanged, unlike the map: the map is re-ranked
+    // around what the session turned out to be about, and a schema has no such focus -- it
+    // is the same database it was an hour ago, and re-reading it would cost a round trip to
+    // produce identical text.
+    this.schemaText = opts.databaseSchema !== undefined && opts.databaseSchema !== ''
+      ? opts.databaseSchema : undefined
     this.formatRunner = opts.formatRules && opts.formatRules.length > 0
       ? createFormatRunner(opts.formatRules, this.workspace)
       : undefined
@@ -1701,6 +1711,7 @@ export class Session {
         ...(this.notesText !== undefined ? { notes: this.notesText } : {}),
         ...(this.skillsText !== undefined ? { skills: this.skillsText } : {}),
         ...(this.repoMapText !== undefined ? { repoMap: this.repoMapText } : {}),
+        ...(this.schemaText !== undefined ? { databaseSchema: this.schemaText } : {}),
         ...(this.workspace.multi
           ? { folders: this.workspace.mounts.map((m) => ({ name: m.name, access: m.access })) }
           : {}),
@@ -2030,6 +2041,7 @@ export class Session {
       agentOpts.stepResultBudgetChars = Math.floor(this.opts.compaction.contextLength * TAIL_SHARE * 4)
     }
     if (this.repoMapText !== undefined) agentOpts.repoMap = this.repoMapText
+    if (this.schemaText !== undefined) agentOpts.databaseSchema = this.schemaText
     if (this.opts.engine) {
       // mode intentionally omitted here -- see the constructor's invariant note. Agent
       // resolves opts.permissions.mode instead, which is always meta.mode by now.

@@ -11,6 +11,7 @@ import {
   addRuleToSettings, loadLayers, localSettingsPath, projectSettingsPath, removeRuleFromSettings, userSettingsPath,
 } from '../permissions/settings.js'
 import { loadDatabaseSettings } from '../sql/settings.js'
+import { loadSchemaBlock } from '../sql/schema-block.js'
 import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
@@ -809,7 +810,15 @@ export class SessionHost {
     }
     if (resumeId !== undefined) sessionOpts.resume = resumeId
     if (this.contextLength !== null) sessionOpts.compaction = { contextLength: this.contextLength }
-    if (db.database !== null) sessionOpts.database = db.database
+    if (db.database !== null) {
+      sessionOpts.database = db.database
+      // Awaited, and bounded inside. A schema read is one short round trip and it belongs in
+      // the cached prefix, so it is worth the wait -- but a server that accepts a connection
+      // and then never answers must not hold the window on its welcome screen, which is why
+      // `loadSchemaBlock` carries its own deadline and returns null rather than throwing.
+      const schema = await loadSchemaBlock(db.database)
+      if (schema !== null) sessionOpts.databaseSchema = schema
+    }
 
     // A crash barrier on one turn. `loop.ts` defaults `maxSteps` to Infinity and only the CLI
     // ever set it, so every turn the window has ever run was unbounded — while the loop

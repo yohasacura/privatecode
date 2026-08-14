@@ -41,6 +41,15 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.1" />
+    <!--
+      Deployment of a .dacpac, which is what a built .sqlproj produces.
+
+      DacFx rather than shelling out to SqlPackage: it is the same engine, it is a NuGet
+      package so it travels inside this binary, and it exposes the DIFFERENCE between
+      generating a script and applying one — which is the distinction the whole deploy design
+      rests on. SqlPackage would be a second 120 MB download and a second thing to install.
+    -->
+    <PackageReference Include="Microsoft.SqlServer.DacFx" Version="162.5.57" />
   </ItemGroup>
 
 </Project>

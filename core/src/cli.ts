@@ -9,6 +9,7 @@ import { discoverUnits } from './checkpoints/units.js'
 import { createToolset, READ_ONLY_TOOLS } from './tools/default-set.js'
 import { loadBrowserSettings } from './browser/settings.js'
 import { loadDatabaseSettings } from './sql/settings.js'
+import { loadSchemaBlock } from './sql/schema-block.js'
 import { loadServers } from './mcp/config.js'
 import { McpManager } from './mcp/manager.js'
 import { runUnattended } from './cli/unattended.js'
@@ -285,7 +286,11 @@ async function main() {
     events: renderer.events,
   }
   if (memory.layers.length > 0) sessionOpts.memory = memory
-  if (databaseSettings.database !== null) sessionOpts.database = databaseSettings.database
+  if (databaseSettings.database !== null) {
+    sessionOpts.database = databaseSettings.database
+    const schema = await loadSchemaBlock(databaseSettings.database)
+    if (schema !== null) sessionOpts.databaseSchema = schema
+  }
   if (skills.skills.length > 0) sessionOpts.skills = skills
   if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
   if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
