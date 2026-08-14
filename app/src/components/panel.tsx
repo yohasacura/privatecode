@@ -124,11 +124,14 @@ export function PanelRow({
  * the boundary from the content.
  */
 export function PanelSection({
-  title, count, children,
+  title, count, subtitle, children,
 }: {
   title: string
   /** Rendered beside the title when there is something to count. */
   count?: number
+  /** The path every row below shares, said once instead of on every line. Monospace,
+   * because it is a path and the rows under it are too. */
+  subtitle?: string
   children: ComponentChildren
 }): VNode {
   return (
@@ -136,8 +139,37 @@ export function PanelSection({
       <div class="psection-head">
         <span class="psection-title">{title}</span>
         {count !== undefined && count > 0 && <span class="psection-count">{count}</span>}
+        {subtitle !== undefined && subtitle !== '' && (
+          <span class="psection-sub" title={subtitle}>{subtitle}/</span>
+        )}
       </div>
       {children}
     </section>
+  )
+}
+
+/**
+ * The directory heading inside a grouped list.
+ *
+ * Not a `PanelRow`: a row is something you can open, revert or tick, and this is a label.
+ * Making it a row would put a chevron column and an action column on a line that has
+ * neither, which is the kind of borrowed structure that makes a column look busy without
+ * carrying anything.
+ */
+export function PanelGroupHead({
+  dir, fullDir, meta,
+}: {
+  dir: string
+  fullDir: string
+  meta?: ComponentChildren
+}): VNode | null {
+  // Everything shares one directory, so it is already in the section subtitle; a heading
+  // here would repeat it and separate nothing from nothing.
+  if (dir === '') return null
+  return (
+    <div class="pgroup" title={fullDir}>
+      <span class="pgroup-dir">{dir}</span>
+      {meta !== undefined && <span class="pgroup-meta">{meta}</span>}
+    </div>
   )
 }

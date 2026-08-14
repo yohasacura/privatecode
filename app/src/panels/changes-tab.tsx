@@ -1,10 +1,11 @@
 import { useState } from 'preact/hooks'
-import type { VNode } from 'preact'
+import { Fragment, type VNode } from 'preact'
 import type { ChatItem } from '../lib/state'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
 import { WRITE_TOOLS, presentTool } from '../lib/tools'
 import { Icon } from '../components/icons'
-import { PanelEmpty, PanelRow, PanelSection } from '../components/panel'
+import { PanelEmpty, PanelGroupHead, PanelRow, PanelSection } from '../components/panel'
+import { groupByDirectory } from '../lib/path-tree'
 import { WorkingTree } from './working-tree'
 import type { ProtocolClient } from '../lib/client'
 
@@ -174,6 +175,10 @@ export function ChangesTab({
     removed += stat.removed
   }
 
+  // Grouped by directory with the shared prefix lifted out — see `lib/path-tree.ts` for why
+  // one level and not a full tree.
+  const grouped = groupByDirectory(visible, (e) => e.path)
+
   return (
     <div class="changes-tab">
       <div class="changes-total">
@@ -186,16 +191,26 @@ export function ChangesTab({
           </button>
         )}
       </div>
-      <PanelSection title="This session">
-        {visible.map((entry) => (
-          <ChangeRow
-            key={entry.id}
-            entry={entry}
-            onOpenFile={onOpenFile}
-            client={client}
-            onReverted={() => setReverts((n) => n + 1)}
-            onReviewed={() => markReviewed(entry)}
-          />
+      <PanelSection title="This session" subtitle={grouped.commonPrefix}>
+        {grouped.groups.map((group) => (
+          <Fragment key={group.fullDir}>
+            <PanelGroupHead
+              dir={group.dir}
+              fullDir={group.fullDir}
+              meta={`${group.items.length} file${group.items.length === 1 ? '' : 's'}`}
+            />
+            {group.items.map(({ item: entry, name }) => (
+              <ChangeRow
+                key={entry.id}
+                entry={entry}
+                name={name}
+                onOpenFile={onOpenFile}
+                client={client}
+                onReverted={() => setReverts((n) => n + 1)}
+                onReviewed={() => markReviewed(entry)}
+              />
+            ))}
+          </Fragment>
         ))}
         {visible.length === 0 && hidden.length > 0 && (
           <div class="changes-all-reviewed">Everything here is reviewed.</div>
@@ -209,6 +224,7 @@ export function ChangesTab({
           <ChangeRow
             key={entry.id}
             entry={entry}
+            name={entry.path}
             onOpenFile={onOpenFile}
             client={client}
             onReverted={() => setReverts((n) => n + 1)}
@@ -230,9 +246,12 @@ export function ChangesTab({
  * again.
  */
 function ChangeRow({
-  entry, onOpenFile, client, onReverted, onReviewed,
+  entry, name, onOpenFile, client, onReverted, onReviewed,
 }: {
   entry: ChangeEntry
+  /** What the row shows: the file's own name, since the directory is the heading above it.
+   * The full path stays in the tooltip and in the click-to-open. */
+  name: string
   onOpenFile: (path: string) => void
   client: ProtocolClient
   onReverted: () => void
@@ -261,7 +280,7 @@ function ChangeRow({
       open={open || asking}
       onToggle={() => setOpen((o) => !o)}
       icon={Icon.file()}
-      label={entry.path}
+      label={name}
       mono
       title={entry.path}
       onOpen={() => onOpenFile(entry.openPath)}

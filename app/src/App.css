@@ -1486,6 +1486,43 @@ kbd {
   color: var(--text-faint);
 }
 .psection-count { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+/* The path every row in the section shares, said once. Takes the rest of the line and
+   truncates from the LEFT, because the end of a path is what identifies it. */
+.psection-sub {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: right;
+}
+
+/* A directory heading inside a grouped list. Deliberately lighter than a row: it is a
+   label, not something you can open, revert or tick. */
+.pgroup {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px var(--row-pad) 2px;
+  min-width: 0;
+}
+.pgroup-dir {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.pgroup-meta { flex: none; font-size: 10px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 
 /* files */
 .files-tab { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
-import type { VNode } from 'preact'
+import { Fragment, type VNode } from 'preact'
 import type { GitFileChange, GitRepoView } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { DiffView } from '../lib/diff'
 import { Icon } from '../components/icons'
-import { PanelError, PanelRow, PanelSection } from '../components/panel'
+import { PanelError, PanelGroupHead, PanelRow, PanelSection } from '../components/panel'
+import { groupByDirectory } from '../lib/path-tree'
 
 /**
  * The working tree, under this session's own changes.
@@ -29,10 +30,12 @@ function label(file: GitFileChange): string {
 }
 
 function FileRow({
-  client, file, checked, onToggle,
+  client, file, name, checked, onToggle,
 }: {
   client: ProtocolClient
   file: GitFileChange
+  /** The file's own name; its directory is the heading above it. */
+  name: string
   checked: boolean
   onToggle: () => void
 }): VNode {
@@ -60,7 +63,7 @@ function FileRow({
           title="Include this file in the commit"
         />
       }
-      label={file.path}
+      label={name}
       mono
       title={file.path}
       meta={label(file)}
@@ -125,8 +128,16 @@ function RepoSection({
   }
 
   const branch = repo.branch !== null ? ` · ${repo.branch}` : ''
+  // Grouped by directory with the shared prefix lifted into the heading — see
+  // `lib/path-tree.ts`. A repository's dirty files are exactly the list where the first
+  // sixty characters of every row are identical.
+  const grouped = groupByDirectory(repo.files, (f) => f.path)
   return (
-    <PanelSection title={alone ? `Working tree${branch}` : `${repo.label}${branch}`} count={repo.files.length}>
+    <PanelSection
+      title={alone ? `Working tree${branch}` : `${repo.label}${branch}`}
+      count={repo.files.length}
+      subtitle={grouped.commonPrefix}
+    >
       {repo.problem !== undefined && <div class="history-note">{repo.problem}</div>}
       {error !== null && <PanelError message={error} />}
       {repo.files.length === 0
@@ -155,14 +166,24 @@ function RepoSection({
                 {selected.size} of {repo.files.length} selected
               </span>
             </div>
-            {repo.files.map((file) => (
-              <FileRow
-                key={file.path}
-                client={client}
-                file={file}
-                checked={selected.has(file.path)}
-                onToggle={() => toggle(file.path)}
-              />
+            {grouped.groups.map((group) => (
+              <Fragment key={group.fullDir}>
+                <PanelGroupHead
+                  dir={group.dir}
+                  fullDir={group.fullDir}
+                  meta={`${group.items.filter((i) => selected.has(i.item.path)).length}/${group.items.length}`}
+                />
+                {group.items.map(({ item: file, name }) => (
+                  <FileRow
+                    key={file.path}
+                    client={client}
+                    file={file}
+                    name={name}
+                    checked={selected.has(file.path)}
+                    onToggle={() => toggle(file.path)}
+                  />
+                ))}
+              </Fragment>
             ))}
             <div class="commit-box">
               <input
