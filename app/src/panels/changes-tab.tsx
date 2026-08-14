@@ -226,6 +226,9 @@ export function ChangesTab({
             {showReviewed ? 'Hide' : 'Show'} {hidden.length} reviewed file{hidden.length === 1 ? '' : 's'}
           </button>
         )}
+        {/* The reviewed fold is flat — no directory headings — so the full path is the
+            only unambiguous label here. Deliberately different from the list above, where
+            the heading carries the directory and the row carries the name. */}
         {showReviewed && hidden.map((entry) => (
           <ChangeRow
             key={entry.id}
