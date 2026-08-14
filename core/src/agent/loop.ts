@@ -354,6 +354,37 @@ const CONTINUE_NUDGE =
   'You ran out of room while thinking. Stop deliberating and take the next action now, ' +
   'using one tool call.'
 
+/** How much of a looping ramble to keep: enough to show where it was heading, far too little
+ * to prime the next step with. */
+const LOOP_KEEP_CHARS = 1_500
+
+/** Sentences below this length are punctuation and filler, not evidence of a loop. */
+const LOOP_MIN_SENTENCE = 25
+/** Repetition below this share is ordinary writing — restating a constraint, numbering
+ * steps. Above it, the text is mostly the same thing said again. */
+const LOOP_REPEAT_SHARE = 0.5
+/** Short thinking cannot be a runaway, whatever its shape. */
+const LOOP_MIN_CHARS = 2_000
+
+/**
+ * Whether a stretch of thinking is the same thing over and over.
+ *
+ * Deliberately crude and deliberately conservative: it decides whether to DROP text, so a
+ * false positive costs the model context it might have used. Sentences are compared whole
+ * after normalising whitespace and case — a spiral repeats them verbatim, which is what makes
+ * it visible to the eye and to this.
+ */
+export function looksRepetitive(text: string): boolean {
+  if (text.length < LOOP_MIN_CHARS) return false
+  const sentences = text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim().toLowerCase().replace(/\s+/g, ' '))
+    .filter((s) => s.length >= LOOP_MIN_SENTENCE)
+  if (sentences.length < 6) return false
+  const distinct = new Set(sentences).size
+  return 1 - distinct / sentences.length >= LOOP_REPEAT_SHARE
+}
+
 const TRUNCATED_TWICE =
   'You ran out of room while thinking twice in a row, so that step was abandoned and ' +
   'nothing was done. Do not restate your plan: choose the smallest possible next action ' +
@@ -1100,10 +1131,33 @@ export class Agent {
    * partial call, and an assistant turn carrying a call with no matching tool message is
    * invalid anyway. The continuation re-emits it under tool_choice: 'required'.
    */
+  /**
+   * Carries the abandoned turn back into the prompt — UNLESS it was a loop.
+   *
+   * Carrying it is the right default and was measured as such: thinking that ran out of room
+   * is usually thinking that got somewhere, and throwing it away makes the model re-derive it
+   * from zero at full price.
+   *
+   * A spiral is the opposite case and the same code path. Reported from a real session: the
+   * thinking repeated the same few sentences for the entire 8000-token budget. Appending that
+   * puts eight thousand tokens of the model's own repetition permanently into the transcript,
+   * where every later step reads it — and a model shown that much of its own looping is
+   * likelier to loop again. It explains the shape of the report exactly: compaction did not
+   * help, stopping did not help, and only a new session did, because the transcript was what
+   * carried the fault.
+   *
+   * So repetitive thinking is dropped and only its first stretch is kept, enough that the
+   * model can see where it was going without being handed the loop back.
+   */
   private appendTruncated(m: ChatMessage): void {
     if (!m.content && !m.reasoning_content) return
     const out: ChatMessage = { role: 'assistant', content: m.content ?? null }
-    if (m.reasoning_content) out.reasoning_content = m.reasoning_content
+    if (m.reasoning_content) {
+      out.reasoning_content = looksRepetitive(m.reasoning_content)
+        ? `${m.reasoning_content.slice(0, LOOP_KEEP_CHARS)}\n\n[The rest of this was the same ` +
+          'few sentences repeating, and has been dropped rather than carried forward.]'
+        : m.reasoning_content
+    }
     this.transcript.append(out)
   }
 

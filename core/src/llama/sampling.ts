@@ -19,6 +19,29 @@ export const QWEN_SAMPLING: Sampling = Object.freeze({
   top_p: 0.95,
   top_k: 20,
   min_p: 0,
+  /**
+   * The repetition trap this file already warned about, addressed with the sampler built for
+   * it instead of with temperature alone.
+   *
+   * Reported from a real session: the thinking looped — the same few sentences in batches —
+   * for six to eight thousand tokens, which is the whole per-step budget, so the step ended
+   * having emitted no content and no tool call. Nothing here was sent against that. llama.cpp
+   * defaults `repeat_penalty` to 1.0 and `dry_multiplier` to 0, so the request carried no
+   * repetition control of any kind and the loop had nothing to stop it.
+   *
+   * DRY rather than `repeat_penalty`, because this tool writes code: a token penalty punishes
+   * braces, keywords and an identifier used eight times in one function, which is the output
+   * that matters most here. DRY penalises a repeated SEQUENCE, and a thinking spiral is
+   * exactly a repeated sequence.
+   *
+   * 0.8 multiplier with an allowed length of 4 is llama.cpp's own suggested starting point,
+   * deliberately gentle: the failure to avoid is a sampler that makes the model refuse to
+   * repeat a variable name.
+   */
+  dry_multiplier: 0.8,
+  dry_base: 1.75,
+  dry_allowed_length: 4,
+  dry_penalty_last_n: -1,
 })
 
 /** Below this, the repetition trap has been observed. */
