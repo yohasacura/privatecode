@@ -89,6 +89,19 @@ task has touched, keep the budget small.
 This is the highest-confidence item on the list: proven externally, and the hard part —
 the graph — was built this week for another reason.
 
+> **Shipped, then found broken, then fixed — 2026-08-14.** Two claims in the paragraph above
+> were wrong in the build that shipped. The ranker never used Roslyn at all; it collected
+> definers from depth-0 tree-sitter entries, which in C# is the NAMESPACE, so the graph had
+> **0 usable edges** and PageRank returned its restart vector — the "ranked" map was
+> alphabetical order on every C# repository, verified by comparing its output to a plain sort.
+> Fixed by taking definers to depth 1 (0 edges → 108). `bin`/`obj` were also being walked, so
+> 10 of 40 mapped files were generated `.g.cs`; and files with no grammar were dropped, so
+> `MainWindow.xaml` — the largest file in the workspace and the most-read file in the longest
+> session — had never appeared in any map. Both fixed.
+>
+> Wiring the ranking to Roslyn's *real* reference graph, as this paragraph promised, is still
+> not done. It remains the strongest open item for C#.
+
 ### 2. Stop reading whole files
 
 `read_file` caps at 60 000 characters — **15.6k tokens, 12 % of the window, in one call.**
@@ -96,6 +109,19 @@ Given context rot, that is not merely expensive, it is corrosive. Concretely: ou
 for anything large, ranges by default, and let `csharp_nav` answer structural questions that
 currently cost a read. Measured today: a `references` query returned in 0.3 s what would
 otherwise have been five file reads.
+
+> **The cap is now 24 000, and on this workspace it never fires.** The median whole read is
+> 1 764 characters and the largest `.cs` read whole is 15 250 — 64 % of the limit. Shaping
+> fired 2 times in 151 whole reads, both on `.xaml`, which has no grammar, so both degraded
+> to a head clip. The premise of this item does not hold here: the cost is not one big read,
+> it is **183 small ones in a single session** (≈165k tokens at the median file size, more
+> than the window). The lever is the number of reads, not the size of one.
+>
+> **And the last sentence turned out to be the load-bearing one.** Seven fresh sessions,
+> one structural question each, none naming Roslyn or the tool: **six opened with
+> `csharp_nav`**, the five plan-mode ones made zero `read_file` calls between them, and the
+> two normal-mode ones each read a 20-30 line window of exactly the lines it had pointed at,
+> out of files of 439 and 50 lines. Navigating instead of reading is not a hope any more.
 
 ### 3. Durable project knowledge, with invalidation
 
