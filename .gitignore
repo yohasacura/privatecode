@@ -6,3 +6,9 @@ __pycache__/
 docs/SPIKE-*.json
 tools/roslyn-nav/bin/
 tools/roslyn-nav/obj/
+
+# .NET build output from the vendored helpers. Only the PUBLISHED binary belongs in the
+# repository (under vendor/), and it is copied there deliberately -- bin/ and obj/ are
+# hundreds of intermediate files that change on every build.
+tools/*/bin/
+tools/*/obj/
