@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Agent, type AgentEvents, type StepInfo, type StepStartInfo } from '../../src/agent/loop.js'
+import { ReadMemory } from '../../src/tools/read-memory.js'
 import { TodoStore } from '../../src/interaction.js'
 import { LlamaClient } from '../../src/llama/client.js'
 import { PermissionEngine } from '../../src/permissions/engine.js'
@@ -344,6 +345,7 @@ describe.runIf(enabled)('Plan 3 live acceptance suite', () => {
         background: new BackgroundTasks(),
         todos: new TodoStore(),
         browser: new BrowserManager(),
+        reads: new ReadMemory(),
       }
       const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })
       const compactionEvents: CompactionEvent[] = []

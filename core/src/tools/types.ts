@@ -3,6 +3,7 @@ import type { InteractionPort, TodoStore } from '../interaction.js'
 import type { FormatRunner } from '../format/runner.js'
 import type { BrowserManager } from '../browser/manager.js'
 import type { LoadedSkills } from '../skills/skills.js'
+import type { ReadMemory } from './read-memory.js'
 
 export interface ToolContext {
   workspace: Workspace
@@ -24,6 +25,12 @@ export interface ToolContext {
    * state of a workspace nobody has written one for.
    */
   skills?: LoadedSkills
+  /**
+   * What has already been shown to the model, so a repeat read can answer with what
+   * changed instead of the file again. Absent means every read is a first read, which is
+   * what a one-shot caller and most tests want. See `read-memory.ts`.
+   */
+  reads?: ReadMemory
 }
 
 export interface ToolResult {

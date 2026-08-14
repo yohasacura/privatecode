@@ -2,12 +2,15 @@ import { readFile, stat } from 'node:fs/promises'
 import { fsErrorReason } from './atomic-write.js'
 import { BOM } from './line-endings.js'
 import { outlineFile } from '../outline/tree-sitter.js'
+import { renderDiff } from './edit-file.js'
 import type { Tool } from './types.js'
 
 export interface ReadFileArgs {
   path: string
   start_line?: number
   end_line?: number
+  /** Ask for the text again even though it has already been read. See `execute`. */
+  full?: boolean
 }
 
 /**
@@ -159,13 +162,21 @@ export const readFileTool: Tool<ReadFileArgs> = {
     `${MAX_LINES} lines and ${MAX_CHARS} characters per call. Asking for a LARGE file ` +
     'whole returns its structure — declarations with line numbers — instead of its text, ' +
     'so read it by range: everything read stays in context permanently and crowds out ' +
-    'your own reasoning.',
+    'your own reasoning. Reading a file you have ALREADY read returns what changed since ' +
+    'then, not the file again — pass full: true when you really need the whole text back.',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Workspace-relative path.' },
       start_line: { type: 'integer', description: 'First line to return, 1-based.' },
       end_line: { type: 'integer', description: 'Last line to return, inclusive.' },
+      full: {
+        type: 'boolean',
+        description:
+          'Return the whole text even if you have already read this file. Reading it again ' +
+          'is answered with what CHANGED by default; set this when you need the file itself ' +
+          'back in front of you.',
+      },
     },
     required: ['path'],
   },
@@ -189,6 +200,7 @@ export const readFileTool: Tool<ReadFileArgs> = {
     const args: ReadFileArgs = { path: r.path }
     if (r.start_line !== undefined) args.start_line = r.start_line
     if (r.end_line !== undefined) args.end_line = r.end_line
+    if (r.full === true) args.full = true
     return { ok: true, args }
   },
   async execute(args, ctx) {
@@ -296,9 +308,47 @@ export const readFileTool: Tool<ReadFileArgs> = {
     // An explicit range is NOT intercepted: there the model has said what it wants and is
     // entitled to it. This only catches "give me all of it", which is the request that is
     // almost never what was meant.
-    if (args.start_line === undefined && args.end_line === undefined && text.length > WHOLE_FILE_LIMIT) {
+    const wholeFile = args.start_line === undefined && args.end_line === undefined
+
+    // A second look costs what a second look is worth.
+    //
+    // Measured over every session this tool has run: one 40k-character file was read whole
+    // 31 times in one session — roughly 310k tokens on a 131k window, for one file. The
+    // pattern is read, edit, read, edit: the model checking its own work, which was the only
+    // way it had. So a repeat is answered with what CHANGED, and `full: true` still returns
+    // the text — the model decides, but the cheap answer is the one it gets without asking.
+    //
+    // Only consulted for a WHOLE-file read, and only populated when the real text was
+    // returned (see below): a ranged read showed part of a file, and a large file's read
+    // showed only its shape, so neither can honestly be diffed against later.
+    if (wholeFile && args.full !== true) {
+      const before = ctx.reads?.get(args.path) ?? null
+      if (before !== null) {
+        if (before === text) {
+          return {
+            ok: true,
+            content:
+              `${args.path} is unchanged since you read it earlier in this session — the ` +
+              'text you already have is current. Use read_file with full: true if you need ' +
+              'it in front of you again.',
+          }
+        }
+        ctx.reads?.record(args.path, text)
+        return {
+          ok: true,
+          content:
+            `${args.path} changed since you read it (${total} lines now). What changed:\n` +
+            `${renderDiff(before, text, args.path)}\n\n` +
+            'Use read_file with full: true for the whole file.',
+        }
+      }
+    }
+
+    if (wholeFile && text.length > WHOLE_FILE_LIMIT) {
       return { ok: true, content: await shapeOf(abs, args.path, text, lines, total) }
     }
+    // Recorded only here, where the model is about to be given the actual text.
+    if (wholeFile) ctx.reads?.record(args.path, text)
 
     if (start > total) {
       return {

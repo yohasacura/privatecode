@@ -8,6 +8,7 @@ import { readFileTool } from '../src/tools/read-file.js'
 import { listDirTool } from '../src/tools/list-dir.js'
 import { findFilesTool } from '../src/tools/find-files.js'
 import { editFileTool } from '../src/tools/edit-file.js'
+import { ReadMemory } from '../src/tools/read-memory.js'
 
 let ctx: { workspace: Workspace }
 /** Parent of the workspace root, so a sibling directory exists to try to escape into. */
@@ -559,4 +560,88 @@ test('a small file is untouched by any of this', async () => {
   expect(r.ok).toBe(true)
   expect(r.content).toContain('export const x = 1')
   expect(r.content).not.toMatch(/too large/)
+})
+
+// --- A second look costs what a second look is worth --------------------------------
+
+test('re-reading an unchanged file says so instead of sending it again', async () => {
+  const reads = new ReadMemory()
+  const withMemory = { ...ctx, reads }
+  writeFileSync(join(tempRoot, 'src', 'repeat.ts'), 'export const a = 1\n', 'utf8')
+
+  const first = await readFileTool.execute({ path: 'src/repeat.ts' }, withMemory)
+  expect(first.content).toContain('export const a = 1')
+
+  const second = await readFileTool.execute({ path: 'src/repeat.ts' }, withMemory)
+  expect(second.ok).toBe(true)
+  expect(second.content).toMatch(/unchanged since you read it/)
+  expect(second.content).not.toContain('export const a = 1')
+  expect(second.content).toContain('full: true')
+})
+
+test('re-reading a CHANGED file answers with the diff', async () => {
+  const reads = new ReadMemory()
+  const withMemory = { ...ctx, reads }
+  const p = join(tempRoot, 'src', 'edited.ts')
+  writeFileSync(p, 'export const a = 1\nexport const b = 2\n', 'utf8')
+  await readFileTool.execute({ path: 'src/edited.ts' }, withMemory)
+
+  writeFileSync(p, 'export const a = 1\nexport const b = 99\n', 'utf8')
+  const again = await readFileTool.execute({ path: 'src/edited.ts' }, withMemory)
+  expect(again.content).toMatch(/changed since you read it/)
+  expect(again.content).toContain('+export const b = 99')
+  // The unchanged line is not resent as content — that is the whole saving.
+  expect(again.content).not.toMatch(/^1\texport const a = 1$/m)
+})
+
+test('full: true overrides it — the model still decides', async () => {
+  const reads = new ReadMemory()
+  const withMemory = { ...ctx, reads }
+  writeFileSync(join(tempRoot, 'src', 'again.ts'), 'export const a = 1\n', 'utf8')
+  await readFileTool.execute({ path: 'src/again.ts' }, withMemory)
+
+  const forced = await readFileTool.execute({ path: 'src/again.ts', full: true }, withMemory)
+  expect(forced.content).toContain('export const a = 1')
+  expect(forced.content).not.toMatch(/unchanged since/)
+})
+
+test('a ranged read neither consults nor fills the memory', async () => {
+  // It showed PART of a file. Claiming that as "you have seen this" would make a later diff
+  // describe content the model was never given.
+  const reads = new ReadMemory()
+  const withMemory = { ...ctx, reads }
+  await readFileTool.execute({ path: 'src/a.ts', start_line: 1, end_line: 2 }, withMemory)
+  expect(reads.size()).toBe(0)
+
+  const whole = await readFileTool.execute({ path: 'src/a.ts' }, withMemory)
+  expect(whole.content).toContain('1\tone')
+  expect(whole.content).toContain('5\tfive')
+})
+
+test('a large file answered with its SHAPE is not remembered as read', async () => {
+  // The model was given declarations, not text. A diff against text it never saw would be
+  // a description of something it cannot check.
+  const reads = new ReadMemory()
+  const withMemory = { ...ctx, reads }
+  const body = Array.from({ length: 400 }, (_, i) =>
+    `export function big${i}(): number {\n  // padding padding padding padding\n  return ${i}\n}`).join('\n\n')
+  writeFileSync(join(tempRoot, 'src', 'huge.ts'), body, 'utf8')
+
+  const shaped = await readFileTool.execute({ path: 'src/huge.ts' }, withMemory)
+  expect(shaped.content).toMatch(/too large to put in context whole/)
+  expect(reads.size()).toBe(0)
+})
+
+test('clearing the memory makes everything a first read again', async () => {
+  // What a compaction swap does, and the correctness condition for the whole idea: the text
+  // is genuinely gone from the context, so it has to be sendable again.
+  const reads = new ReadMemory()
+  const withMemory = { ...ctx, reads }
+  writeFileSync(join(tempRoot, 'src', 'cleared.ts'), 'export const a = 1\n', 'utf8')
+  await readFileTool.execute({ path: 'src/cleared.ts' }, withMemory)
+  reads.clear()
+
+  const after = await readFileTool.execute({ path: 'src/cleared.ts' }, withMemory)
+  expect(after.content).toContain('export const a = 1')
+  expect(after.content).not.toMatch(/unchanged since/)
 })

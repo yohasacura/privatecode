@@ -84,7 +84,7 @@ function clipRow(row: string): string {
  * Both texts are LF-normalised by the caller, so the diff describes content only and never
  * shows a change that is purely a line ending.
  */
-function renderDiff(before: string, after: string, path: string): string {
+export function renderDiff(before: string, after: string, path: string): string {
   const head = `--- ${path}\n+++ ${path}`
   const a = toDiffLines(before)
   const b = toDiffLines(after)

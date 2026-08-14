@@ -1628,6 +1628,13 @@ export class Session {
       this.transcript.messages(), keepRecent, tailBudget,
     )
 
+    // Everything the model was shown is gone with the transcript it was shown in. Keeping
+    // the read memory across a swap would make "unchanged since you read it" true and
+    // useless — the text it refers to no longer exists in the context — and would make a
+    // diff a fragment of something the model can no longer see. This one line is the
+    // correctness condition for the whole cheap-repeat-read idea.
+    this.opts.toolset.reads?.clear()
+
     // BEFORE the system message is built, because that is what consumes it: re-order the
     // repository map around what this session turned out to be about. Guarded for the same
     // reason the inventory below is — an enrichment must not be able to cost the swap. A
@@ -1952,6 +1959,7 @@ export class Session {
       // The toolset owns it, so it survives a session switch: closing a page the user is
       // looking at because they clicked Resume would be its own small betrayal.
       browser: this.opts.toolset.browser,
+      reads: this.opts.toolset.reads,
     }
     // Built once per Session, so the circuit breaker inside it counts failures across the
     // whole session rather than resetting every turn.

@@ -1,4 +1,5 @@
 import { ToolRegistry } from './registry.js'
+import { ReadMemory } from './read-memory.js'
 import { readFileTool } from './read-file.js'
 import { listDirTool } from './list-dir.js'
 import { findFilesTool } from './find-files.js'
@@ -25,6 +26,9 @@ export interface Toolset {
   /** Owned by the host: call stopAll() on shutdown so no orphan processes survive. */
   background: BackgroundTasks
   todos: TodoStore
+  /** Owned here so it lives as long as the session and can be cleared at a compaction
+   * swap, which is when everything in it stops being true. */
+  reads: ReadMemory
   /** Owned by the host in the same way: call close() on shutdown. Lazy — constructing it
    * starts no browser, so a session that never opens a page never pays for one. */
   browser: BrowserManager
@@ -41,6 +45,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   const registry = new ToolRegistry()
   const background = new BackgroundTasks()
   const todos = new TodoStore(opts.workspaceRoot)
+  const reads = new ReadMemory()
   const browser = new BrowserManager(opts.browser ?? {})
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
@@ -48,7 +53,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
                    symbolOutlineTool, browserTool, useSkillTool, csharpNavTool, rememberTool]) {
     registry.register(t)
   }
-  return { registry, background, todos, browser }
+  return { registry, background, todos, browser, reads }
 }
 
 /** Back-compat for existing callers/tests that only need the registry. */
