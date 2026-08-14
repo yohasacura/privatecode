@@ -10,6 +10,7 @@ import { PermissionEngine } from '../permissions/engine.js'
 import {
   addRuleToSettings, loadLayers, localSettingsPath, projectSettingsPath, removeRuleFromSettings, userSettingsPath,
 } from '../permissions/settings.js'
+import { loadDatabaseSettings } from '../sql/settings.js'
 import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
@@ -748,6 +749,9 @@ export class SessionHost {
     // note whose files moved since it was written is dropped here, not carried forward.
     const notes = loadProjectNotes(workspaceRoot)
     const formatting = loadFormatRules(workspaceRoot)
+    // Read per session build like the settings layers beside it, so a connection string
+    // edited while the window is open arrives with the next New session.
+    const db = loadDatabaseSettings(workspaceRoot)
     const hooking = loadHooks(workspaceRoot)
     const verifying = loadVerify(workspaceRoot)
     // What this combination of folders is FOR: the mode it opens in and the check each
@@ -805,6 +809,7 @@ export class SessionHost {
     }
     if (resumeId !== undefined) sessionOpts.resume = resumeId
     if (this.contextLength !== null) sessionOpts.compaction = { contextLength: this.contextLength }
+    if (db.database !== null) sessionOpts.database = db.database
 
     // A crash barrier on one turn. `loop.ts` defaults `maxSteps` to Infinity and only the CLI
     // ever set it, so every turn the window has ever run was unbounded — while the loop
@@ -832,6 +837,7 @@ export class SessionHost {
     const problems = [
       ...engine.problems, ...memory.problems, ...skills.problems, ...notes.problems,
       ...formatting.problems,
+      ...db.problems,
       ...hooking.problems,
       ...verifying.problems,
       ...this.externalProblems,

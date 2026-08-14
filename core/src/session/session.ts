@@ -14,6 +14,7 @@ import { recordToolOutcome } from '../host/replay.js'
 import { DecisionQueue, queueingPort } from './decisions.js'
 import type { Mount } from '../mounts.js'
 import type { LoadedMemory } from '../memory/project-memory.js'
+import type { DatabaseSettings } from '../sql/settings.js'
 import type { LoadedSkills } from '../skills/skills.js'
 import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
@@ -136,6 +137,9 @@ export interface SessionOptions {
    * it describes — see `memory/project-notes.ts`. */
   notes?: string
   skills?: LoadedSkills
+  /** The database this workspace works against, when one is configured. Absent — the normal
+   * case — leaves the `database` tool answering with where to configure one. */
+  database?: DatabaseSettings
   /**
    * Re-renders the repository map around the files the session has touched.
    *
@@ -1994,6 +1998,9 @@ export class Session {
     // Built once per Session, so the circuit breaker inside it counts failures across the
     // whole session rather than resetting every turn.
     if (this.formatRunner) context.format = this.formatRunner
+    // The connection string, not a connection: the helper opens one on first use, so a
+    // workspace whose server is asleep still starts a session and only pays when asked.
+    if (this.opts.database) context.database = this.opts.database
     // The LIST, not the catalogue text: `use_skill` resolves a name to a folder and reads
     // the body from disk itself.
     if (this.opts.skills && this.opts.skills.skills.length > 0) context.skills = this.opts.skills

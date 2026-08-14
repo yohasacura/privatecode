@@ -40,13 +40,20 @@ const repoRoot = join(coreRoot, '..')
 const distDir = join(coreRoot, 'dist')
 const sidecarDir = join(distDir, 'sidecar')
 
-/** Copies `files` (or, when null, every `.wasm` file present) from `vendor/<name>` in the
- * repo root into `dist/sidecar/vendor/<name>`. */
+/**
+ * Copies `files` — or, when null, everything in the directory that is not documentation —
+ * from `vendor/<name>` in the repo root into `dist/sidecar/vendor/<name>`.
+ *
+ * The null case used to mean "every .wasm file", which was the tree-sitter case written as
+ * though it were the general one. It is the same set for tree-sitter and the wrong set for a
+ * helper whose runtime dependency is a `.dll`: a named list is how one of a pair gets left
+ * behind, and a `.wasm` filter is how BOTH do, loudly, by staging nothing at all.
+ */
 function stageVendor(name, files) {
   const src = join(repoRoot, 'vendor', name)
   const dst = join(sidecarDir, 'vendor', name)
   mkdirSync(dst, { recursive: true })
-  const names = files ?? readdirSync(src).filter((f) => f.endsWith('.wasm'))
+  const names = files ?? readdirSync(src).filter((f) => !f.toLowerCase().endsWith('.md'))
   if (names.length === 0) {
     throw new Error(`bundle.mjs: no files found to stage from ${src}`)
   }
@@ -78,6 +85,14 @@ function verifyManifest() {
   // its absence must not fail the bundle -- but a staged copy that is empty must.
   if (existsSync(join(repoRoot, 'vendor', 'roslyn', 'roslyn-nav.exe'))) {
     manifest.push(join(sidecarDir, 'vendor', 'roslyn', 'roslyn-nav.exe'))
+  }
+  // Optional the same way, and checked as a PAIR. The SQL helper's native SNI library is
+  // left beside the exe by a single-file publish, and an exe staged without it starts fine
+  // and then cannot connect to anything -- a broken install that presents as a network
+  // fault. Naming both here is what makes a half-staged copy fail the build instead.
+  if (existsSync(join(repoRoot, 'vendor', 'sql', 'sql-probe.exe'))) {
+    manifest.push(join(sidecarDir, 'vendor', 'sql', 'sql-probe.exe'))
+    manifest.push(join(sidecarDir, 'vendor', 'sql', 'Microsoft.Data.SqlClient.SNI.dll'))
   }
   for (const path of manifest) {
     if (!existsSync(path)) throw new Error(`bundle.mjs: staging manifest failed -- missing ${path}`)
@@ -111,6 +126,11 @@ async function main() {
   // on a machine that never touches C# it is 92 MB of nothing.
   if (existsSync(join(repoRoot, 'vendor', 'roslyn', 'roslyn-nav.exe'))) {
     stageVendor('roslyn', ['roslyn-nav.exe'])
+  }
+  // Whole directory rather than a named list: the helper is an exe plus a native library,
+  // and a per-file copy is exactly how one of them gets left behind.
+  if (existsSync(join(repoRoot, 'vendor', 'sql', 'sql-probe.exe'))) {
+    stageVendor('sql', null)
   }
   // The vendored Node runtime (Task 9) rides at the sidecar root, next to agent.cjs,
   // so the release shell's launch line is simply `sidecar/node.exe sidecar/agent.cjs`.

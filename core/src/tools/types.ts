@@ -4,6 +4,7 @@ import type { FormatRunner } from '../format/runner.js'
 import type { BrowserManager } from '../browser/manager.js'
 import type { LoadedSkills } from '../skills/skills.js'
 import type { ReadMemory } from './read-memory.js'
+import type { DatabaseSettings } from '../sql/settings.js'
 
 export interface ToolContext {
   workspace: Workspace
@@ -12,6 +13,15 @@ export interface ToolContext {
   todos?: TodoStore
   /** The browser, when this host provides one. Lazy: holding it starts nothing. */
   browser?: BrowserManager
+  /**
+   * The database this workspace works against, when one is configured.
+   *
+   * Absent is the ordinary state — most workspaces have no database — and the tool says
+   * so plainly, naming the file to write, rather than failing. The connection string is
+   * carried rather than the open connection: the helper owns the connection, and it is
+   * opened on first use so a workspace whose server is down still starts a session.
+   */
+  database?: DatabaseSettings
   /** The project's formatter, when one is configured. Absent means "no formatting", which
    * is the normal case. See `format/runner.ts` for why this runs inside the write tools
    * rather than as an after-tool hook. */

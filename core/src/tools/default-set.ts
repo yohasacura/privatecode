@@ -18,6 +18,7 @@ import { symbolOutlineTool } from './symbol-outline.js'
 import { browserTool } from './browser.js'
 import { useSkillTool } from './use-skill.js'
 import { csharpNavTool } from './csharp-nav.js'
+import { databaseTool } from './database.js'
 import { rememberTool } from './remember.js'
 import { BrowserManager, type BrowserOptions } from '../browser/manager.js'
 
@@ -51,7 +52,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   // of 18 -- past every file tool, next to the browser. Moved beside `search_code`, which is
   // what it competes with: both answer "where is this used", one by text and one by meaning.
   // Free, and unmeasured: no claim is made here that position is what routes the choice.
-  for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, csharpNavTool,
+  for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, csharpNavTool, databaseTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
                    symbolOutlineTool, browserTool, useSkillTool, rememberTool]) {

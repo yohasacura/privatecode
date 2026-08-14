@@ -20,6 +20,12 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
      // reason as use_skill: understanding how the code connects is most of what planning
      // is, and it is the one tool that answers that without reading files.
      'csharp_nav',
+     // Reads a database and cannot change one: the helper behind it has no operation that
+     // writes, `query` refuses a writing statement, and what survives runs in a transaction
+     // that is always rolled back. In plan mode for the same reason as csharp_nav — a plan
+     // written against what the code claims the schema is, rather than what it is, is the
+     // plan that fails at the first migration.
+     'database',
      'find_files', 'git_status', 'list_dir', 'read_file', 'search_code',
      'symbol_outline', 'todo_write',
      // Reads a file the user wrote and returns its text; it runs nothing. Read-only is

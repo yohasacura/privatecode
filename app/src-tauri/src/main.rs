@@ -141,6 +141,19 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
         .map(|vendor| vendor.join("roslyn").join("roslyn-nav.exe"))
         .filter(|p| p.exists());
 
+    // Optional in the same way, and with one extra condition: the SQL helper is two files.
+    // `Microsoft.Data.SqlClient.SNI.dll` is a native library that a single-file publish
+    // leaves beside the exe, and an exe without it starts and then cannot connect to
+    // anything — a failure that reads as a network problem and is not one. Both or neither.
+    let sql_exe = wasm_dir
+        .parent()
+        .map(|vendor| vendor.join("sql"))
+        .filter(|dir| {
+            dir.join("sql-probe.exe").exists()
+                && dir.join("Microsoft.Data.SqlClient.SNI.dll").exists()
+        })
+        .map(|dir| dir.join("sql-probe.exe"));
+
     let mut cmd = Command::new(&node_exe);
     cmd.arg(&agent_cjs)
         .env("PRIVATECODE_RG", &rg_exe)
@@ -150,6 +163,9 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
         .stderr(Stdio::piped());
     if let Some(path) = &roslyn_exe {
         cmd.env("PRIVATECODE_ROSLYN", path);
+    }
+    if let Some(path) = &sql_exe {
+        cmd.env("PRIVATECODE_SQL", path);
     }
 
     #[cfg(windows)]

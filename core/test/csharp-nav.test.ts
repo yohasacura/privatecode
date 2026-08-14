@@ -66,6 +66,18 @@ describe('finding the helper', () => {
     expect(found).toContain('roslyn-nav.exe')
   })
 
+  test('a caller that cannot locate itself gets null, not a crash', () => {
+    // The shipped sidecar is bundled to CommonJS, where `import.meta` compiles to `{}` and
+    // `fileURLToPath(import.meta.url)` THROWS. The caller passes null there, and this must be
+    // an ordinary "use the env var" rather than an exception -- passing the directory as an
+    // eager argument is what broke `navProcess()` in the packaged app while the CLI and every
+    // test, both real ES modules, carried on passing.
+    const real = join(root, 'stand-in.exe')
+    writeFileSync(real, 'not really an exe', 'utf8')
+    expect(resolveHelper(real, null)).toBe(real)
+    expect(resolveHelper(undefined, null)).toBeNull()
+  })
+
   test('neither source is an ordinary null, not a throw', () => {
     // A checkout without the 98 MB blob is legitimate, and the tool says so in words and
     // names what to use instead -- see its execute().

@@ -8,6 +8,7 @@ import { loadMounts } from './mounts.js'
 import { discoverUnits } from './checkpoints/units.js'
 import { createToolset, READ_ONLY_TOOLS } from './tools/default-set.js'
 import { loadBrowserSettings } from './browser/settings.js'
+import { loadDatabaseSettings } from './sql/settings.js'
 import { loadServers } from './mcp/config.js'
 import { McpManager } from './mcp/manager.js'
 import { runUnattended } from './cli/unattended.js'
@@ -179,6 +180,12 @@ async function main() {
   const client = new LlamaClient({ baseUrl: server, model: MODEL })
   const browserSettings = loadBrowserSettings(values.workspace)
   for (const p of browserSettings.problems) console.error(`settings: ${p}`)
+  // Read here as well as in the host: the CLI builds its own session, and a setting wired
+  // into only one of the two entry points is a feature that works in the window and does
+  // nothing in the terminal -- which is precisely the shape of the bug that left `csharp_nav`
+  // advertised and unusable on this path for a day.
+  const databaseSettings = loadDatabaseSettings(values.workspace)
+  for (const p of databaseSettings.problems) console.error(`settings: ${p}`)
   const toolset = createToolset({ browser: browserSettings.options })
 
   // The CLI gets the same MCP servers the app does. Two products that quietly differ in
@@ -278,6 +285,7 @@ async function main() {
     events: renderer.events,
   }
   if (memory.layers.length > 0) sessionOpts.memory = memory
+  if (databaseSettings.database !== null) sessionOpts.database = databaseSettings.database
   if (skills.skills.length > 0) sessionOpts.skills = skills
   if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
   if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks

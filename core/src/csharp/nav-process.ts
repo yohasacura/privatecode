@@ -146,10 +146,30 @@ export class NavProcess {
  * it always had. A missing optional binary must never be a broken session.
  */
 export function navProcess(): NavProcess | null {
-  const exe = resolveHelper(process.env[ROSLYN_ENV], dirname(fileURLToPath(import.meta.url)))
+  const exe = resolveHelper(process.env[ROSLYN_ENV], moduleDir())
   if (exe === null) return null
   if (current === null) current = new NavProcess(exe)
   return current
+}
+
+/**
+ * This module's directory, or null in the shipped build.
+ *
+ * The sidecar is bundled to CommonJS, where esbuild compiles `import.meta` to `{}` — so
+ * `import.meta.url` is `undefined` and `fileURLToPath` on it THROWS. `search-code.ts` and
+ * `tree-sitter.ts` do the same thing safely only because they check their environment
+ * variable first and return before touching `import.meta`; passing the directory as an
+ * eagerly-evaluated argument removed exactly that protection, and `navProcess()` threw on
+ * every call in the packaged app — while the CLI and every test, which are real ES modules,
+ * went on passing. Found by reading the bundler's own warning rather than by anything failing.
+ *
+ * Null rather than an error: in the packaged build the launcher sets the variable, so there
+ * is nothing to fall back to and nothing has gone wrong.
+ */
+function moduleDir(): string | null {
+  const url = import.meta.url as string | undefined
+  if (typeof url !== 'string' || url === '') return null
+  return dirname(fileURLToPath(url))
 }
 
 /**
@@ -165,10 +185,13 @@ export function navProcess(): NavProcess | null {
  *
  * Takes both inputs rather than reading them, so the rule can be tested rather than inferred.
  */
-export function resolveHelper(fromEnv: string | undefined, moduleDir: string): string | null {
+export function resolveHelper(fromEnv: string | undefined, from: string | null): string | null {
   if (fromEnv !== undefined && fromEnv.trim() !== '' && existsSync(fromEnv)) return fromEnv
+  // Null means the caller could not work out where it lives — a CommonJS bundle — and the
+  // env var is then the only answer there is.
+  if (from === null) return null
   for (const up of ['../../..', '../../../..']) {
-    const candidate = join(moduleDir, up, 'vendor', 'roslyn', 'roslyn-nav.exe')
+    const candidate = join(from, up, 'vendor', 'roslyn', 'roslyn-nav.exe')
     if (existsSync(candidate)) return candidate
   }
   return null
