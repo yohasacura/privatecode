@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The database half of a workspace, as a helper process beside the app.
+
+    Why a separate binary rather than a Node driver: the pure-JS drivers speak TDS over TCP
+    only, and a local SQL Server is very often reached another way — `(localdb)\MSSQLLocalDB`
+    is named pipes, and a domain machine usually wants integrated authentication. Both are
+    ordinary for `Microsoft.Data.SqlClient` and out of reach for tedious. The same choice as
+    `roslyn-nav`, for the same reason, and the shape is deliberately identical.
+
+    Why self-contained: the work laptop is not going to install anything. This publishes with
+    its own runtime so the only thing that travels is a file.
+
+    What it deliberately CANNOT do: change anything. There is no `exec` operation. A write to
+    a database has no undo — the checkpoint store snapshots the working tree, and a database
+    is not in it — so that capability is worth designing separately rather than slipping in
+    beside a read.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>sql-probe</AssemblyName>
+    <RootNamespace>SqlProbe</RootNamespace>
+    <!-- OFF, unlike roslyn-nav: `Microsoft.Data.SqlClient` refuses to open a connection under
+         invariant globalization ("Globalization Invariant Mode is not supported") — it needs
+         real collation data to talk to a server. Costs ICU in the published file; the
+         alternative is a helper that cannot connect to anything. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- Trimming off for the same reason as roslyn-nav: the data provider resolves a great
+         deal by reflection, and a trimmed build fails on the machine with no SDK to debug
+         it with. -->
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.1" />
+  </ItemGroup>
+
+</Project>
