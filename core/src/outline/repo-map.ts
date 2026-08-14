@@ -49,12 +49,20 @@ export interface FileOutline {
 const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g
 const CONTAINER_KINDS = new Set(['class', 'interface', 'struct', 'record', 'enum', 'namespace'])
 
+/**
+ * Extensions listed on the map by NAME, with no outline: there is no grammar for them, but
+ * their absence is a hole the model cannot see around. Their identifiers still count toward
+ * the reference graph, which is how a `.xaml` view links itself to its view-model.
+ */
+const NAMED_ONLY = new Set(['.xaml', '.axaml', '.razor', '.cshtml', '.sql', '.sqlproj', '.csproj'])
+
 /** Parses every supported source file in the workspace. Unreadable and unparseable files are
  * skipped: a map missing one file is useful, a map that failed to build is not. */
 export async function indexWorkspace(root: string, maxFiles = MAX_FILES): Promise<FileOutline[]> {
   const supported = new Set(SUPPORTED_EXTENSIONS)
-  const candidates = (await walkFiles(root))
-    .filter((p) => supported.has(extname(p).toLowerCase()))
+  const all = await walkFiles(root)
+  const candidates = all
+    .filter((p) => supported.has(extname(p).toLowerCase()) || NAMED_ONLY.has(extname(p).toLowerCase()))
     .slice(0, maxFiles)
 
   const out: FileOutline[] = []
@@ -63,6 +71,15 @@ export async function indexWorkspace(root: string, maxFiles = MAX_FILES): Promis
     try {
       if ((await stat(abs)).size > MAX_FILE_BYTES) continue
       const source = await readFile(abs, 'utf8')
+      // No grammar, but the file still belongs on the map. A WPF window's markup is where
+      // half the program lives and its code-behind means little without it — and
+      // `MainWindow.xaml` was the largest file in the workspace and the most-read file in the
+      // longest session, while never once appearing in the map. Its identifiers still join
+      // the reference graph, so the markup is what links a view to its view-model.
+      if (NAMED_ONLY.has(extname(path).toLowerCase())) {
+        out.push({ path, entries: [], identifiers: new Set(source.match(IDENTIFIER) ?? []) })
+        continue
+      }
       const result = await outlineFile(abs, source)
       if ('unsupported' in result || result.length === 0) continue
       out.push({ path, entries: result, identifiers: new Set(source.match(IDENTIFIER) ?? []) })
@@ -155,7 +172,13 @@ export function rankByReferences(
   const definers = new Map<string, number[]>()
   files.forEach((file, i) => {
     for (const entry of file.entries) {
-      if (entry.depth !== 0 || entry.kind === '...') continue
+      // Depth 0 alone was a TypeScript assumption that silently emptied the graph on C#. In
+      // C# the depth-0 entry is the NAMESPACE and the type sits at depth 1, so the definer
+      // set was 40 namespaces sharing one name, the graph had no usable edges, PageRank
+      // returned its restart vector unchanged, and the tie-break below sorted by path: the
+      // "transitively ranked" map was alphabetical order on every C# repository. Measured on
+      // the user's workspace before and after — 0 edges, then 108.
+      if (entry.depth > 1 || entry.kind === '...') continue
       if ((spread.get(entry.name) ?? 1) >= vocabularyAt) continue
       const list = definers.get(entry.name)
       if (list === undefined) definers.set(entry.name, [i])

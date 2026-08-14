@@ -13,7 +13,11 @@ import { join } from 'node:path'
 
 /** Directories never walked. The same list `list_dir` and `find_files` refuse to enumerate,
  * for the same reason: nobody is looking for a file inside `node_modules` by name. */
-const SKIP = new Set(['.git', 'node_modules', '.privatecode', 'dist', 'build', 'target', '.next', '.venv', '__pycache__'])
+// `bin` and `obj` are .NET build output, and they are not merely noise here: 10 of the 40
+// files in one C# workspace's map were generated `obj/**/*.g.cs`, so a quarter of what the
+// model was told the project consists of was machine-written and about to be overwritten.
+const SKIP = new Set(['.git', 'node_modules', '.privatecode', 'dist', 'build', 'target',
+  '.next', '.venv', '__pycache__', 'bin', 'obj'])
 
 /** A ceiling on the walk, not on the answer. A repository with 200k files must not freeze
  * the window on every keystroke; stopping early gives a worse ranking, never a hang. */

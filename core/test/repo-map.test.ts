@@ -246,3 +246,66 @@ describe('ranking is transitive, and can be focused', () => {
       .toEqual(rankByReferences(files).map((r) => r.path))
   })
 })
+
+describe('a language whose types are not at the top level', () => {
+  test('C# ranks by references rather than falling back to alphabetical order', async () => {
+    // The defect: definers were collected from depth 0 only, which is a TypeScript
+    // assumption. In C# the depth-0 entry is the NAMESPACE and the type sits under it, so
+    // every file "defined" the same one or two namespace names, the graph had no usable
+    // edges, PageRank returned its restart vector unchanged, and the tie-break sorted by
+    // path. The shipped "transitively ranked" map was alphabetical order on every C#
+    // repository. Measured on a real 40-file workspace: 0 edges before, 108 after.
+    write('src/Zeta/Interfaces.cs', [
+      'namespace App.Services;',
+      'public interface IPlanner { void Build(); }',
+      'public interface ILogger { void Info(string m); }',
+    ].join('\n'))
+    // Three files that all lean on the interfaces, and are alphabetically FIRST -- so a
+    // ranking that merely sorted paths would put them on top and the interfaces last.
+    for (const name of ['Alpha', 'Beta', 'Gamma']) {
+      write(`src/${name}.cs`, [
+        'namespace App;',
+        `public sealed class ${name}`,
+        '{',
+        '    private readonly IPlanner _planner;',
+        '    private readonly ILogger _logger;',
+        `    public ${name}(IPlanner p, ILogger l) { _planner = p; _logger = l; }`,
+        '}',
+      ].join('\n'))
+    }
+
+    const ranked = rankByReferences(await indexWorkspace(root))
+    expect(ranked.length).toBeGreaterThan(3)
+    expect(ranked[0]?.path).toBe('src/Zeta/Interfaces.cs')
+    // And it is genuinely not the alphabetical answer.
+    expect(ranked.map((f) => f.path)).not.toEqual([...ranked.map((f) => f.path)].sort())
+  })
+
+  test('.NET build output is not part of the project', async () => {
+    // 10 of the 40 files in one workspace's map were generated `obj/**/*.g.cs`: a quarter of
+    // what the model was told the project consists of was machine-written.
+    write('src/App.cs', 'namespace App;\npublic class App { }\n')
+    write('src/obj/Debug/App.g.cs', 'namespace App;\npublic partial class App { }\n')
+    write('src/bin/Release/Leftover.cs', 'namespace App;\npublic class Leftover { }\n')
+
+    const paths = (await indexWorkspace(root)).map((f) => f.path)
+    expect(paths).toContain('src/App.cs')
+    expect(paths.some((p) => p.includes('obj/') || p.includes('bin/'))).toBe(false)
+  })
+
+  test('markup with no grammar is listed by name rather than left out', async () => {
+    // `MainWindow.xaml` was the largest file in the workspace and the most-read file in the
+    // longest recorded session, and it never once appeared in the map -- so the model was
+    // told a WPF project consists of its code-behind. Its identifiers still join the graph.
+    write('src/MainWindow.xaml', '<Window x:Class="App.MainWindow"><Grid/></Window>')
+    write('src/MainWindow.xaml.cs', 'namespace App;\npublic partial class MainWindow { }\n')
+
+    const files = await indexWorkspace(root)
+    const xaml = files.find((f) => f.path === 'src/MainWindow.xaml')
+    expect(xaml).toBeDefined()
+    expect(xaml?.entries).toEqual([])
+    expect(xaml?.identifiers.has('MainWindow')).toBe(true)
+    // Named, and honestly: a path with nothing under it claims no definitions.
+    expect(renderFile(xaml!).trim()).toBe('src/MainWindow.xaml')
+  })
+})
