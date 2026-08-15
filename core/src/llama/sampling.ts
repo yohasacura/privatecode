@@ -20,28 +20,40 @@ export const QWEN_SAMPLING: Sampling = Object.freeze({
   top_k: 20,
   min_p: 0,
   /**
-   * The repetition trap this file already warned about, addressed with the sampler built for
-   * it instead of with temperature alone.
+   * DRY is OFF, and stays off. It was switched on here for one day and measured out again.
    *
-   * Reported from a real session: the thinking looped — the same few sentences in batches —
-   * for six to eight thousand tokens, which is the whole per-step budget, so the step ended
-   * having emitted no content and no tool call. Nothing here was sent against that. llama.cpp
-   * defaults `repeat_penalty` to 1.0 and `dry_multiplier` to 0, so the request carried no
-   * repetition control of any kind and the loop had nothing to stop it.
+   * The reasoning for adding it was sound and the measurement refuted it. A user hit a
+   * thinking spiral — the same few sentences for the whole 8000-token step budget — and this
+   * client was sending no repetition control at all, which the server confirmed
+   * (`repeat_penalty: 1.0`, `dry_multiplier: 0`). DRY looked right precisely because it
+   * penalises a repeated SEQUENCE rather than a repeated token, which is what a code-writing
+   * tool needs.
    *
-   * DRY rather than `repeat_penalty`, because this tool writes code: a token penalty punishes
-   * braces, keywords and an identifier used eight times in one function, which is the output
-   * that matters most here. DRY penalises a repeated SEQUENCE, and a thinking spiral is
-   * exactly a repeated sequence.
+   * What it actually did, measured against this model on the machine it runs on:
    *
-   * 0.8 multiplier with an allowed length of 4 is llama.cpp's own suggested starting point,
-   * deliberately gentle: the failure to avoid is a sampler that makes the model refuse to
-   * repeat a variable name.
+   *   settings                          five file paths, listed three times
+   *   dry off                           15 of 15 names verbatim
+   *   0.8 / allowed 4 / whole context    0 of 15   — `.cs` became `.css`, `ProcessCleaner`
+   *                                                 became `ProcessCleanser`, `FileLogger`
+   *                                                 became `FilerLogger`, `Services` became
+   *                                                 `Servic`
+   *   0.8 / allowed 8 / last 256        15 of 15
+   *   0.4 / allowed 12 / last 256       15 of 15
+   *
+   * And against an actual loop — "write this sentence forty times" — every one of those
+   * settings produced the sentence 37 times verbatim, byte-identical output, including the
+   * aggressive one and including multiplier 1.5.
+   *
+   * So the penalty bites where the model HAS a plausible alternative — an identifier it can
+   * spell slightly differently — and loses to the instruction where it does not. That is the
+   * exact inverse of what a coding agent needs: it corrupts the names that must be exact and
+   * does nothing about the degenerate repetition it was added for.
+   *
+   * The spiral is addressed where it was actually caused instead: `appendTruncated` in
+   * `agent/loop.ts` no longer carries a looping ramble back into the transcript, which is
+   * what made the fault survive compaction and stopping, and left starting a new session as
+   * the only cure.
    */
-  dry_multiplier: 0.8,
-  dry_base: 1.75,
-  dry_allowed_length: 4,
-  dry_penalty_last_n: -1,
 })
 
 /** Below this, the repetition trap has been observed. */

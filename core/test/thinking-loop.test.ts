@@ -50,24 +50,3 @@ describe('recognising a spiral', () => {
     expect(looksRepetitive('Let me look at the file.')).toBe(false)
   })
 })
-
-describe('what the request now carries against repetition', () => {
-  test('DRY is on, because nothing was', () => {
-    // llama.cpp defaults `repeat_penalty` to 1.0 and `dry_multiplier` to 0, and this client
-    // sent neither — so every request went out with no repetition control at all.
-    expect(QWEN_SAMPLING.dry_multiplier).toBeGreaterThan(0)
-    expect(QWEN_SAMPLING.dry_penalty_last_n).toBe(-1)
-  })
-
-  test('it allows a run long enough that ordinary code is untouched', () => {
-    // The failure to avoid is a sampler that will not repeat a variable name. DRY penalises
-    // a repeated SEQUENCE, and this is the length below which it says nothing at all.
-    expect(QWEN_SAMPLING.dry_allowed_length).toBeGreaterThanOrEqual(3)
-  })
-
-  test('temperature is untouched — the spiral is not fixed by lowering it', () => {
-    // Measured previously on this model: at 0.1 the thinking is bimodal and half the hard
-    // steps never emit a tool call. Temperature was the wrong lever and stays where it is.
-    expect(QWEN_SAMPLING.temperature).toBe(0.6)
-  })
-})

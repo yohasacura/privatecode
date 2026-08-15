@@ -57,23 +57,6 @@ export interface Sampling {
   top_p: number
   top_k: number
   min_p: number
-  /**
-   * DRY — "don't repeat yourself" — the sampler that penalises a repeated SEQUENCE rather
-   * than a repeated token. Zero disables it, which is llama.cpp's default and was this
-   * client's behaviour: nothing at all was sent against repetition.
-   *
-   * A sequence penalty and not `repeat_penalty` on purpose. Code repeats tokens constantly
-   * and legitimately — braces, `const`, the same identifier eight times in a function — and
-   * penalising those degrades exactly the output this tool exists to produce. What must be
-   * penalised is saying the same PHRASE again, which is what a thinking spiral is.
-   */
-  dry_multiplier: number
-  dry_base: number
-  /** How long a repeated run may be before the penalty starts. Below this, repetition is
-   * ordinary language and ordinary code. */
-  dry_allowed_length: number
-  /** How far back the sampler looks. -1 means the whole context. */
-  dry_penalty_last_n: number
 }
 
 export interface Timings {

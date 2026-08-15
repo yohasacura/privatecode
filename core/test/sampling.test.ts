@@ -7,18 +7,18 @@ test('the four values Qwen documents are exactly what Qwen documents', () => {
     .toEqual({ temperature: 0.6, top_p: 0.95, top_k: 20, min_p: 0 })
 })
 
-test('and DRY is on top of them, because the request carried nothing against repetition', () => {
-  // Qwen's published profile says nothing about repetition control, and llama.cpp defaults
-  // both `repeat_penalty` and `dry_multiplier` to off — so every request this client sent
-  // had none. A user hit the consequence: thinking that repeated the same few sentences for
-  // the whole 8000-token step budget, ending with no content and no tool call.
+test('DRY stays off — it was tried for a day and measured out again', () => {
+  // The reasoning for adding it was sound and the measurement refuted it. Against this model:
+  // five file paths listed three times survived 15 of 15 with DRY off, and 0 of 15 at
+  // multiplier 0.8 with the whole-context window — `.cs` became `.css`, `ProcessCleaner`
+  // became `ProcessCleanser`, `Services` became `Servic`. And against a real loop ("write
+  // this sentence forty times") every setting tried, up to multiplier 1.5, produced the
+  // sentence 37 times verbatim with byte-identical output.
   //
-  // Asserted separately from the block above so the documented four stay pinned to the
-  // documentation, and this stays pinned to the reason it was added.
-  expect(QWEN_SAMPLING.dry_multiplier).toBe(0.8)
-  expect(QWEN_SAMPLING.dry_base).toBe(1.75)
-  expect(QWEN_SAMPLING.dry_allowed_length).toBe(4)
-  expect(QWEN_SAMPLING.dry_penalty_last_n).toBe(-1)
+  // So it bites where the model has a plausible alternative — an identifier it can spell
+  // slightly differently — and loses to the instruction where it does not. The exact inverse
+  // of what a coding agent needs. The spiral is handled in `appendTruncated` instead.
+  expect(Object.keys(QWEN_SAMPLING).sort()).toEqual(['min_p', 'temperature', 'top_k', 'top_p'])
 })
 
 test('the default profile passes the guard', () => {
