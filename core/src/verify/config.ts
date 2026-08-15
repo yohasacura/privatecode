@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { localSettingsPath, projectSettingsPath, userSettingsPath } from '../permissions/settings.js'
+import { localSettingsPath, projectSettingsPath, userSettingsPath, settingsText } from '../permissions/settings.js'
 
 /**
  * The command that says whether the workspace still works, read from the same three settings
@@ -50,7 +50,7 @@ function readOne(path: string, problems: string[]): VerifySpec | null {
 
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(settingsText(raw))
   } catch {
     // The permission loader already reports an unparseable settings file; saying it twice
     // in two different voices is noise.

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { localSettingsPath, projectSettingsPath, userSettingsPath } from '../permissions/settings.js'
+import { localSettingsPath, projectSettingsPath, userSettingsPath, settingsText } from '../permissions/settings.js'
 
 /**
  * The database this workspace works against, from the same three files everything else is
@@ -80,7 +80,7 @@ function readLayer(
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(settingsText(raw))
   } catch {
     return null // the permission loader already reports this file as unparseable
   }

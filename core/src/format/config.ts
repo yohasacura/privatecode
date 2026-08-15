@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { globToRegExp } from '../permissions/rules.js'
-import { localSettingsPath, projectSettingsPath, userSettingsPath } from '../permissions/settings.js'
+import { localSettingsPath, projectSettingsPath, userSettingsPath, settingsText } from '../permissions/settings.js'
 
 /**
  * Formatter rules, read from the same three settings files the permission layers come from.
@@ -43,7 +43,7 @@ function readRules(path: string, problems: string[]): FormatRule[] {
 
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(settingsText(raw))
   } catch {
     // The permission loader already reports this file as unparseable; saying it twice in
     // two different voices is noise.

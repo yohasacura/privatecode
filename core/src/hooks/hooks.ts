@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { execa } from 'execa'
 import { parseRule, ruleMatches, type ParsedRule } from '../permissions/rules.js'
-import { localSettingsPath, projectSettingsPath, userSettingsPath } from '../permissions/settings.js'
+import { localSettingsPath, projectSettingsPath, userSettingsPath, settingsText } from '../permissions/settings.js'
 import type { PermissionKey, ToolResult } from '../tools/types.js'
 import type { Workspace } from '../workspace.js'
 
@@ -62,7 +62,7 @@ function readHooks(path: string, problems: string[]): HookSpec[] {
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(settingsText(raw))
   } catch {
     return [] // the permission loader already reports this file as unparseable
   }

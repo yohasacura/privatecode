@@ -34,6 +34,23 @@ function scopeLabel(scope: SettingsLayer['scope']): string {
 }
 
 /**
+ * A settings file's text, ready for `JSON.parse`.
+ *
+ * The only thing it does is drop a leading byte-order mark, and that is enough to matter:
+ * `JSON.parse` on a string beginning with U+FEFF THROWS, and this ships on Windows, where
+ * writing UTF-8 with a BOM is the default in PowerShell's `Out-File -Encoding utf8` and in
+ * several editors. Every one of the six loaders that read these files parsed the raw string,
+ * so a `settings.json` saved that way was silently ignored in full — permissions, the project
+ * check, the database, the browser, hooks and formatting all at once.
+ *
+ * Found by writing one from PowerShell during a measurement and watching the feature under
+ * test simply not happen. The file looked perfect in every editor that opened it.
+ */
+export function settingsText(raw: string): string {
+  return raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
+}
+
+/**
  * `%APPDATA%\PrivateCode\settings.json`. Falls back to `<home>\AppData\Roaming` if
  * `APPDATA` is unset (not expected on a normal Windows session, but cheap to guard).
  */
@@ -101,7 +118,7 @@ function loadLayerFile(scope: SettingsLayer['scope'], path: string, problems: st
 
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(settingsText(raw))
   } catch (e) {
     problems.push(`malformed JSON in ${scopeLabel(scope)} (${path}): ${(e as Error).message}`)
     return emptyPermissions()
@@ -227,7 +244,7 @@ function editRules(
     const raw = readFileSync(filePath, 'utf8')
     let candidate: unknown
     try {
-      candidate = JSON.parse(raw)
+      candidate = JSON.parse(settingsText(raw))
     } catch (e) {
       throw new Error(
         `${filePath} exists but is not valid JSON (${(e as Error).message}); fix or delete it — refusing to overwrite`,

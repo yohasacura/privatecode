@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { localSettingsPath, projectSettingsPath, userSettingsPath } from '../permissions/settings.js'
+import { localSettingsPath, projectSettingsPath, userSettingsPath, settingsText } from '../permissions/settings.js'
 import type { BrowserOptions } from './manager.js'
 
 /**
@@ -36,7 +36,7 @@ function readLayer(path: string, scope: string, problems: string[]): BrowserOpti
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(settingsText(raw))
   } catch {
     return {} // the permission loader already reports this file as unparseable
   }
