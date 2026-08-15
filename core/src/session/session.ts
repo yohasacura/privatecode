@@ -1858,7 +1858,13 @@ export class Session {
     let inventory = ''
     try {
       inventory = continuationInventory(
-        this.transcript.messages(), this.opts.toolset.todos?.list() ?? [], this.allTouchedPaths())
+        this.transcript.messages(), this.opts.toolset.todos?.list() ?? [], this.allTouchedPaths(),
+        // The root, so the briefing can carry the CONTENTS of the files this session changed
+        // and not only their names. Measured on the longest recorded session: 9 of the 10
+        // reads within eight steps of a swap were re-reads of paths the inventory had just
+        // listed — the model being told what it had worked on and then having to go and look
+        // at it again.
+        this.workspace.root)
     } catch { /* the summary is what matters; the list is a bonus */ }
     next.append({
       role: 'user',

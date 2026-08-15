@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ChatRequest } from '../llama/types.js'
 
@@ -399,6 +401,47 @@ export function touchedPaths(messages: readonly ChatMessage[]): { seen: string[]
   return { seen, changed }
 }
 
+
+/**
+ * How many characters of changed-file contents a briefing may carry.
+ *
+ * ~2k tokens against a tail budget measured in tens of thousands. Small on purpose: this is
+ * the one part of the briefing that grows with the work done, and a swap that carried thirty
+ * files would have freed nothing.
+ */
+const DEFAULT_BODY_BUDGET = 8_000
+
+/** A file too big to be worth carrying whole. Its name is still in the list above. */
+const MAX_CARRIED_FILE = 4_000
+
+/**
+ * The current contents of as many of `paths` as fit, newest change first.
+ *
+ * Read from DISK rather than recovered from the transcript, deliberately: what matters after
+ * a swap is what the file says now, and the transcript holds a diff of what it said then.
+ * Anything unreadable is skipped in silence — its name is still listed above, so the model
+ * knows it exists, and a briefing must never fail because a file was deleted.
+ */
+function readBodies(paths: readonly string[], root: string | undefined, budget: number): string {
+  if (root === undefined) return ''
+  const blocks: string[] = []
+  let spent = 0
+  for (const rel of [...paths].reverse()) {
+    let text: string
+    try {
+      text = readFileSync(join(root, rel), 'utf8')
+    } catch {
+      continue
+    }
+    if (text.length > MAX_CARRIED_FILE) continue
+    const block = `--- ${rel}\n${text}`
+    if (spent + block.length > budget) break
+    blocks.push(block)
+    spent += block.length
+  }
+  return blocks.join('\n\n')
+}
+
 export function continuationInventory(
   messages: readonly ChatMessage[],
   todos: readonly {
@@ -415,6 +458,10 @@ export function continuationInventory(
    * opened. The caller accumulates across swaps and passes what it has.
    */
   carried: { seen: readonly string[]; changed: readonly string[] } = { seen: [], changed: [] },
+  /** Workspace root, so the bodies of changed files can be read. Absent means names only —
+   * which is what every caller that has no filesystem (the tests) wants. */
+  root?: string,
+  bodyBudget: number = DEFAULT_BODY_BUDGET,
 ): string {
   const here = touchedPaths(messages)
   const seen = [...new Set([...carried.seen, ...here.seen])]
@@ -434,6 +481,26 @@ export function continuationInventory(
   }
   if (changed.length > 0) {
     parts.push('Files you changed in this session:', listOf(changed))
+    // And their CONTENTS, for the few that fit.
+    //
+    // Naming a file the model itself edited and then withholding what it now contains is the
+    // one case where the inventory creates the re-read it exists to prevent: measured on the
+    // longest recorded session, 9 of the 10 reads within eight steps of a swap were re-reads
+    // of paths already named right here. `seen` files are correctly left as names — the model
+    // looked at them once and may never need them again — but a file it CHANGED is the file
+    // it is in the middle of working on.
+    //
+    // Most recently changed first, and only while the budget holds: this is the one part of
+    // the briefing that can grow without bound, and a swap that carried thirty files would be
+    // a swap that freed nothing.
+    const bodies = readBodies(changed, root, bodyBudget)
+    if (bodies !== '') {
+      parts.push(
+        'The current contents of the ones you changed most recently, so you do not have to ' +
+        'read them again:',
+        bodies,
+      )
+    }
   }
   if (open.length > 0) {
     parts.push(

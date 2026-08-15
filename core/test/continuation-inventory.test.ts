@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { continuationInventory } from '../src/session/compaction.js'
 import type { ChatMessage } from '../src/llama/types.js'
@@ -119,5 +122,74 @@ describe('what earlier compactions folded away', () => {
     const messages = [call('read_file', { path: 'src/a.ts' }), call('edit_file', { path: 'src/b.ts' })]
     expect(continuationInventory(messages, [], { seen: [], changed: [] }))
       .toBe(continuationInventory(messages))
+  })
+})
+
+describe('carrying the contents of what was changed', () => {
+  test('a changed file arrives with its current text, not just its name', () => {
+    // Naming a file the model itself edited and then withholding what it now contains is the
+    // one case where the inventory creates the re-read it exists to prevent. Measured on the
+    // longest recorded session: 9 of the 10 reads within eight steps of a swap were re-reads
+    // of paths already named right there.
+    const root = mkdtempSync(join(tmpdir(), 'pc-inv-'))
+    try {
+      writeFileSync(join(root, 'a.ts'), 'export const answer = 42\n', 'utf8')
+      const out = continuationInventory(
+        [call('edit_file', { path: 'a.ts' })], [], { seen: [], changed: [] }, root)
+      expect(out).toContain('a.ts')
+      expect(out).toContain('export const answer = 42')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('a file merely READ is named and not carried', () => {
+    // It was looked at once and may never be needed again. The budget belongs to the files
+    // the model is in the middle of working on.
+    const root = mkdtempSync(join(tmpdir(), 'pc-inv-'))
+    try {
+      writeFileSync(join(root, 'big.ts'), 'export const untouched = 1\n', 'utf8')
+      const out = continuationInventory(
+        [call('read_file', { path: 'big.ts' })], [], { seen: [], changed: [] }, root)
+      expect(out).toContain('big.ts')
+      expect(out).not.toContain('export const untouched')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('the budget holds, and the newest change wins the space', () => {
+    // This is the one part of a briefing that grows with the work done. A swap that carried
+    // thirty files would be a swap that freed nothing.
+    const root = mkdtempSync(join(tmpdir(), 'pc-inv-'))
+    try {
+      for (let i = 0; i < 12; i++) {
+        writeFileSync(join(root, `f${i}.ts`), `// file ${i}\n${'x'.repeat(3_000)}\n`, 'utf8')
+      }
+      const messages = Array.from({ length: 12 }, (_, i) => call('edit_file', { path: `f${i}.ts` }))
+      const out = continuationInventory(messages, [], { seen: [], changed: [] }, root, 8_000)
+      expect(out.length).toBeLessThan(20_000)
+      // The last file edited is the one being worked on.
+      expect(out).toContain('// file 11')
+      expect(out).not.toContain('// file 0\n')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('no root means names only, and a deleted file is skipped in silence', () => {
+    // Every caller without a filesystem — the tests, and anything reasoning about a
+    // transcript alone — keeps exactly the old behaviour. And a briefing must never fail
+    // because a file was removed since it was edited.
+    const namesOnly = continuationInventory([call('edit_file', { path: 'gone.ts' })])
+    expect(namesOnly).toContain('gone.ts')
+    const root = mkdtempSync(join(tmpdir(), 'pc-inv-'))
+    try {
+      const out = continuationInventory(
+        [call('edit_file', { path: 'gone.ts' })], [], { seen: [], changed: [] }, root)
+      expect(out).toContain('gone.ts')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
