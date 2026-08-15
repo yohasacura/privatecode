@@ -140,76 +140,104 @@ test('the model is told when its context is filling, once per threshold', async 
   expect(distinct.size).toBeLessThanOrEqual(3)
 })
 
-test('a passing check SAYS it passed, once, and not after every edit', async () => {
-  // The silence was deliberate and was the load-bearing mistake. The old comment argued that
-  // "a passing check that announced itself would spend context to say nothing happened" — but
-  // a model with no channel telling it the build is green has exactly one way to find out,
-  // and it spends a whole step on it. Measured: 95 of 621 recorded tool calls, 15% of
-  // everything the model did, were it running `dotnet build`/`dotnet test` on itself, with a
-  // median of ONE of its own writes between checks. The five-write gate fired strictly less
-  // often than the habit it was meant to displace.
-  let call = 0
-  const fake = await startFakeServer((_b, req) => {
-    if (req.url === '/props') return { default_generation_settings: { n_ctx: 8000 } }
-    if (req.url === '/health') return { status: 'ok' }
-    call++
-    return call <= 6 ? write(call) : done
-  })
-  stop = fake.close
-
-  const session = new Session({
-    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
-    toolset: createToolset({}),
-    workspaceRoot: root,
-    mode: 'autopilot',
-    engine: new PermissionEngine({ layers: [], mode: 'autopilot', workspaceRoot: root }),
-    verify: { command: 'cmd /c exit 0', timeoutMs: 30_000, source: 'test' },
-  })
-  await session.send('write some files')
-
-  const notes = session.messages()
-    .filter((m) => m.role === 'user' && typeof m.content === 'string')
-    .map((m) => m.content as string)
-    .filter((c) => c.includes('cmd /c exit 0'))
-
-  // It said so — that is the whole change.
-  expect(notes.length).toBeGreaterThan(0)
-  expect(notes[0]).toContain('ok')
-  // And exactly once across six writes: the state never changed, so there was nothing more
-  // to report. Repeating "still fine" after each of forty edits is the noise the old silence
-  // was avoiding, and this keeps the answer without it.
-  expect(notes).toHaveLength(1)
+/** A step that reads instead of writing — the boundary that ends a run of edits. */
+const readStep = (n: number) => ({
+  choices: [{
+    message: {
+      role: 'assistant',
+      tool_calls: [{
+        id: `r${n}`, type: 'function',
+        function: { name: 'list_dir', arguments: JSON.stringify({ path: '.' }) },
+      }],
+    },
+    finish_reason: 'tool_calls',
+  }],
+  usage: { prompt_tokens: 100, completion_tokens: 5 },
 })
 
-test('the same failure twice is reported as unchanged rather than repeated in full', async () => {
-  // The middle of a twelve-write refactor is legitimately red. Re-reading the same errors
-  // twelve times costs more context than the errors are worth.
-  let call = 0
+/**
+ * Only the notes the MID-TURN check writes, told apart from the end-of-turn fixer's rounds by
+ * their wording. The distinction is the whole point of these tests: the fixer running after a
+ * turn has ended is not an interruption of anything.
+ */
+const midTurnNotes = (session: Session): string[] =>
+  session.messages()
+    .filter((m) => m.role === 'user' && typeof m.content === 'string')
+    .map((m) => m.content as string)
+    .filter((c) => c.startsWith('[Checked while you work')
+      || /^\[.*: ok, [\d.]+s\]$/.test(c)
+      || c.includes('still failing, same errors'))
+
+async function run(
+  script: (call: number) => unknown, command: string,
+): Promise<Session> {
   const fake = await startFakeServer((_b, req) => {
     if (req.url === '/props') return { default_generation_settings: { n_ctx: 8000 } }
     if (req.url === '/health') return { status: 'ok' }
-    call++
-    return call <= 6 ? write(call) : done
+    return script(0)
   })
   stop = fake.close
-
   const session = new Session({
     client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
     toolset: createToolset({}),
     workspaceRoot: root,
     mode: 'autopilot',
     engine: new PermissionEngine({ layers: [], mode: 'autopilot', workspaceRoot: root }),
-    verify: { command: 'cmd /c exit 1', timeoutMs: 30_000, source: 'test' },
+    verify: { command, timeoutMs: 30_000, source: 'test' },
   })
-  await session.send('write some files')
+  await session.send('do the work')
+  return session
+}
 
-  const notes = session.messages()
-    .filter((m) => m.role === 'user' && typeof m.content === 'string')
-    .map((m) => m.content as string)
-    .filter((c) => c.includes('cmd /c exit 1'))
+test('a run of edits is never interrupted, however red the project is halfway through', async () => {
+  // The objection this exists to answer: a change worth making often spans several files, and
+  // between the first edit and the last the project does not compile because the work is half
+  // done. Renaming an interface breaks every file that mentions it until the final one is
+  // saved. Showing that error list on the second edit of six invites the model to "fix" work
+  // that is simply unfinished — worse than not checking at all.
+  //
+  // Asserted by POSITION, not by count. A note after the turn's last write is the end-of-turn
+  // check or its fix rounds doing their job; the thing that must not happen is one arriving
+  // while the edit is still in progress.
+  let call = 0
+  const session = await run(() => { call++; return call <= 6 ? write(call) : done }, 'cmd /c exit 1')
 
-  const full = notes.filter((n) => n.includes('Checked while you work'))
-  const brief = notes.filter((n) => n.includes('still failing, same errors'))
-  expect(full).toHaveLength(1)
-  expect(brief.length).toBeGreaterThan(0)
+  const messages = session.messages()
+  const lastWrite = messages.map((m, i) => ({ m, i }))
+    .filter(({ m }) => (m.tool_calls ?? []).some((c) => c.function.name === 'write_file'))
+    .map(({ i }) => i)
+    .pop()
+  expect(lastWrite).toBeDefined()
+
+  const interrupted = messages
+    .map((m, i) => ({ m, i }))
+    .filter(({ m, i }) => i < lastWrite!
+      && m.role === 'user' && typeof m.content === 'string'
+      && (m.content.startsWith('[Checked while you work') || m.content.includes('still failing')))
+  expect(interrupted).toHaveLength(0)
+})
+
+test('the check fires the moment the model does something other than write', async () => {
+  // A step that reads is the model saying the edit is as done as it is going to get. That is
+  // the boundary worth checking on, and it costs at most one step of delay.
+  let call = 0
+  const session = await run(() => {
+    call++
+    if (call <= 2) return write(call)
+    if (call === 3) return readStep(1)
+    return done
+  }, 'cmd /c exit 0')
+
+  const notes = midTurnNotes(session)
+  expect(notes).toHaveLength(1)
+  expect(notes[0]).toContain('ok')
+})
+
+test('a very long run of edits is checked anyway, so a mistake is not carried twenty files', async () => {
+  // The other half. A rename touching twenty files must not go unchecked for twenty steps:
+  // the whole value of the check is that it fires near the mistake.
+  let call = 0
+  const session = await run(() => { call++; return call <= 12 ? write(call) : done }, 'cmd /c exit 1')
+
+  expect(midTurnNotes(session).length).toBeGreaterThan(0)
 })

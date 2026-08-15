@@ -287,6 +287,15 @@ const MID_TURN_CHECKPOINT_MS = 120_000
  */
 const MID_TURN_VERIFY_MS = 240_000
 
+/**
+ * How many unchecked writes may pile up before the check runs anyway, mid-edit.
+ *
+ * A multi-file change should not be interrupted, but a rename touching twenty files must not
+ * go unchecked for twenty steps either — the value of the check is that it fires near the
+ * mistake. Eight is roughly "a large but coherent edit".
+ */
+const VERIFY_BURST_CAP = 8
+
 /** Past this, a check cannot run per write without dominating the turn it protects. */
 const SLOW_VERIFY_SECONDS = 8
 
@@ -1374,6 +1383,27 @@ export class Session {
    */
   private async verifyMidTurn(signal?: AbortSignal): Promise<void> {
     if (this.writeCount === this.writesAtLastVerify) return
+
+    // Not after every write — after a RUN of writes ends.
+    //
+    // A change worth making often spans several files, and between the first edit and the
+    // last the project does not compile because the work is half done, not because anything
+    // is wrong. Renaming an interface breaks every file that mentions it until the final one
+    // is saved. Showing the model that list of errors on the second edit of six invites it to
+    // "fix" work that is simply unfinished, which is worse than not checking at all.
+    //
+    // The boundary that means something is the model doing something ELSE: a read, a command,
+    // an answer. A step that wrote is a step still in the middle of the change; the first step
+    // that does not is the moment the change is as done as it is going to get. This costs at
+    // most one step of delay against checking eagerly, and buys not interrupting a multi-file
+    // edit halfway through.
+    //
+    // The cap is the other half. A rename touching twenty files would otherwise go unchecked
+    // for twenty steps, and the whole point is catching a mistake near where it was made.
+    const writesInLastStep = this.writeCount - this.writeCountAtStepStart
+    this.writeCountAtStepStart = this.writeCount
+    const pending = this.writeCount - this.writesAtLastVerify
+    if (writesInLastStep > 0 && pending < VERIFY_BURST_CAP) return
     // The back-off, and the only remaining time gate. A project whose check takes half a
     // minute cannot afford one per write, and the honest way to discover that is to have
     // measured it rather than to have guessed a constant.
@@ -2057,6 +2087,9 @@ export class Session {
    * "is there anything new to snapshot, and is it time". See `checkpointLongTurn`. */
   private writesAtLastCheckpoint = 0
   private writesAtLastVerify = 0
+  /** Writes seen when the previous step began, so a run of consecutive editing steps can be
+   * told from a step that moved on to something else. See `verifyMidTurn`. */
+  private writeCountAtStepStart = 0
   /** What the last mid-turn check said, so an unchanged answer is reported as unchanged
    * rather than repeated in full. 'ok' or a clipped failure fingerprint. */
   private lastVerifyFingerprint: string | null = null
