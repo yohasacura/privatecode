@@ -279,8 +279,16 @@ const MID_TURN_CHECKPOINT_MS = 120_000
  * minute. Five writes is roughly "a coherent piece of work", and four minutes is long enough
  * that even a slow suite is a small fraction of the turn it is protecting.
  */
-const MID_TURN_VERIFY_WRITES = 5
+/**
+ * The interval a check falls back to once it has proved slow. Not a gate on a fast one: a
+ * 1.07 s incremental build after each write is cheaper than the step the model would spend
+ * running it itself, and `MID_TURN_VERIFY_WRITES` — five writes — fired less often than the
+ * model's own median of one, so it could never displace the habit.
+ */
 const MID_TURN_VERIFY_MS = 240_000
+
+/** Past this, a check cannot run per write without dominating the turn it protects. */
+const SLOW_VERIFY_SECONDS = 8
 
 /**
  * Where the model is told how full its context is.
@@ -660,6 +668,16 @@ export class Session {
     result: TurnResult, writesThisTurn: number, signal?: AbortSignal,
   ): Promise<TurnResult> {
     if (writesThisTurn === 0 || result.stoppedBecause !== 'done') return result
+
+    // Nothing has been written since the mid-turn check last ran, and it passed. Running the
+    // same command again over the same bytes would ask a question that has already been
+    // answered — and now that the mid-turn check fires at every write boundary, that is the
+    // ORDINARY case rather than a rare coincidence: a turn with one edit would otherwise
+    // build twice. A failing last check still falls through, because the fix rounds below
+    // are the part that acts on it.
+    if (this.writesAtLastVerify === this.writeCount && this.lastVerifyFingerprint === 'ok') {
+      return result
+    }
 
     // Only the folders this turn actually wrote to, each with its own command. Running every
     // folder's suite after a one-line edit in one of them turns a thirty-second turn into
@@ -1328,32 +1346,59 @@ export class Session {
    * has to reconstruct twenty-six steps of intent to understand the failure — and the
    * context that would have explained it is the context compaction just replaced.
    *
-   * Gated the same way the mid-turn checkpoint is, and for the same reason: this is a real
-   * build, not a cheap probe. Some writes must have happened since the last one, and enough
-   * time must have passed. Running it after every edit would turn a twenty-minute turn into
-   * an hour of building.
+   * Runs at every write boundary, and SAYS SO WHEN IT PASSES. Both were the other way round,
+   * and the corpus says both were wrong.
    *
-   * Reports and does NOT intervene. The end-of-turn `verifyAndFix` keeps its fix rounds;
-   * this one appends a note and lets the model decide, because interrupting a plan halfway
-   * to demand a fix is how a model loses the thread it was holding. Silence on success is
-   * deliberate too: a passing check that announced itself would spend context to say
-   * nothing happened.
+   * The gate was five writes AND four minutes, on the reasoning that a real build is
+   * expensive. Measured against what the model actually does: 95 of 621 recorded tool calls
+   * — 15% of everything it did — were the model running `dotnet build` or `dotnet test` on
+   * itself, and the median number of its own writes between those checks is ONE. The gate
+   * fired strictly less often than the model already checked, so it could never displace the
+   * habit it was built to make unnecessary. A warm incremental build on the user's project
+   * measures 1.07 s against a step that averages 26 s.
+   *
+   * And the silence was the load-bearing part. The old comment argued that "a passing check
+   * that announced itself would spend context to say nothing happened" — but a model with no
+   * channel telling it the build is green has exactly one way to find out, and it spends a
+   * whole step on it. Six tokens of `(build ok, 1.1s)` is the cheapest possible answer to a
+   * question it was going to ask anyway.
+   *
+   * Three things keep it from becoming noise. An unchanged failure is reported as unchanged
+   * rather than repeated, so the middle of a twelve-write refactor — legitimately red — costs
+   * a line rather than the whole error list each time. A check that turns out to be slow
+   * backs itself off and says once that it has. And it still reports rather than intervenes:
+   * the end-of-turn `verifyAndFix` keeps its fix rounds, because interrupting a plan halfway
+   * to demand a fix is how a model loses the thread it was holding.
    *
    * Never throws — a check that cannot run must not take the turn down.
    */
   private async verifyMidTurn(signal?: AbortSignal): Promise<void> {
-    if (this.writeCount - this.writesAtLastVerify < MID_TURN_VERIFY_WRITES) return
-    const now = Date.now()
-    if (now - this.lastVerifyAtMs < MID_TURN_VERIFY_MS) return
+    if (this.writeCount === this.writesAtLastVerify) return
+    // The back-off, and the only remaining time gate. A project whose check takes half a
+    // minute cannot afford one per write, and the honest way to discover that is to have
+    // measured it rather than to have guessed a constant.
+    if (this.verifySlow && Date.now() - this.lastVerifyAtMs < MID_TURN_VERIFY_MS) return
     const jobs = this.verifyJobs()
     if (jobs.length === 0) return
     this.writesAtLastVerify = this.writeCount
-    this.lastVerifyAtMs = now
+    this.lastVerifyAtMs = Date.now()
 
     try {
       for (const job of jobs) {
         if (signal?.aborted) return
+        const startedAt = Date.now()
         const outcome = await runVerify(job.spec, job.root, signal)
+        const seconds = (Date.now() - startedAt) / 1000
+        if (seconds > SLOW_VERIFY_SECONDS && !this.verifySlow) {
+          this.verifySlow = true
+          this.transcript.append({
+            role: 'user',
+            content:
+              `[The check "${job.spec.command}" took ${seconds.toFixed(0)}s, so it will no ` +
+              'longer run after every edit — at most once every few minutes. Run it yourself ' +
+              'when you want to know sooner.]',
+          })
+        }
         this.opts.onVerify?.({
           command: job.spec.command,
           ok: outcome.ok,
@@ -1365,11 +1410,36 @@ export class Session {
           ...(outcome.exitCode !== null ? { exitCode: outcome.exitCode } : {}),
           ...(outcome.problem !== undefined ? { problem: outcome.problem } : {}),
         })
-        if (outcome.ok) continue
+        const where = this.workspace.multi ? `In the "${job.folder}" folder: ` : ''
+        if (outcome.ok) {
+          // The six tokens that are the whole point. Said only when the state CHANGED —
+          // repeating "still fine" after every one of forty edits is the noise the old
+          // silence was trying to avoid, and this keeps the answer without it.
+          if (this.lastVerifyFingerprint !== 'ok') {
+            this.lastVerifyFingerprint = 'ok'
+            this.transcript.append({
+              role: 'user',
+              content: `[${where}${job.spec.command}: ok, ${seconds.toFixed(1)}s]`,
+            })
+          }
+          continue
+        }
         // A command that cannot START is a configuration problem, and telling the model its
         // change broke the build would send it rewriting working code.
         if (outcome.problem !== undefined) continue
-        const where = this.workspace.multi ? `In the "${job.folder}" folder: ` : ''
+
+        // Failing the same way as last time is not news. The middle of a refactor is
+        // legitimately red for a dozen edits, and re-reading the same errors twelve times
+        // costs more context than the errors are worth.
+        const fingerprint = `fail:${job.folder ?? ''}:${outcome.output.slice(0, 800)}`
+        if (fingerprint === this.lastVerifyFingerprint) {
+          this.transcript.append({
+            role: 'user',
+            content: `[${where}${job.spec.command}: still failing, same errors as before.]`,
+          })
+          return
+        }
+        this.lastVerifyFingerprint = fingerprint
         this.transcript.append({
           role: 'user',
           content:
@@ -1981,6 +2051,11 @@ export class Session {
    * "is there anything new to snapshot, and is it time". See `checkpointLongTurn`. */
   private writesAtLastCheckpoint = 0
   private writesAtLastVerify = 0
+  /** What the last mid-turn check said, so an unchanged answer is reported as unchanged
+   * rather than repeated in full. 'ok' or a clipped failure fingerprint. */
+  private lastVerifyFingerprint: string | null = null
+  /** Set the first time a check is measured slow; from then on it is time-gated again. */
+  private verifySlow = false
   private lastVerifyAtMs = 0
   /** Fill marks already announced, so each is said once per session and never again. */
   private readonly fillMarksSeen = new Set<number>()

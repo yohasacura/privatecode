@@ -139,3 +139,77 @@ test('the model is told when its context is filling, once per threshold', async 
   // Never the same threshold twice.
   expect(distinct.size).toBeLessThanOrEqual(3)
 })
+
+test('a passing check SAYS it passed, once, and not after every edit', async () => {
+  // The silence was deliberate and was the load-bearing mistake. The old comment argued that
+  // "a passing check that announced itself would spend context to say nothing happened" — but
+  // a model with no channel telling it the build is green has exactly one way to find out,
+  // and it spends a whole step on it. Measured: 95 of 621 recorded tool calls, 15% of
+  // everything the model did, were it running `dotnet build`/`dotnet test` on itself, with a
+  // median of ONE of its own writes between checks. The five-write gate fired strictly less
+  // often than the habit it was meant to displace.
+  let call = 0
+  const fake = await startFakeServer((_b, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: 8000 } }
+    if (req.url === '/health') return { status: 'ok' }
+    call++
+    return call <= 6 ? write(call) : done
+  })
+  stop = fake.close
+
+  const session = new Session({
+    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+    toolset: createToolset({}),
+    workspaceRoot: root,
+    mode: 'autopilot',
+    engine: new PermissionEngine({ layers: [], mode: 'autopilot', workspaceRoot: root }),
+    verify: { command: 'cmd /c exit 0', timeoutMs: 30_000, source: 'test' },
+  })
+  await session.send('write some files')
+
+  const notes = session.messages()
+    .filter((m) => m.role === 'user' && typeof m.content === 'string')
+    .map((m) => m.content as string)
+    .filter((c) => c.includes('cmd /c exit 0'))
+
+  // It said so — that is the whole change.
+  expect(notes.length).toBeGreaterThan(0)
+  expect(notes[0]).toContain('ok')
+  // And exactly once across six writes: the state never changed, so there was nothing more
+  // to report. Repeating "still fine" after each of forty edits is the noise the old silence
+  // was avoiding, and this keeps the answer without it.
+  expect(notes).toHaveLength(1)
+})
+
+test('the same failure twice is reported as unchanged rather than repeated in full', async () => {
+  // The middle of a twelve-write refactor is legitimately red. Re-reading the same errors
+  // twelve times costs more context than the errors are worth.
+  let call = 0
+  const fake = await startFakeServer((_b, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: 8000 } }
+    if (req.url === '/health') return { status: 'ok' }
+    call++
+    return call <= 6 ? write(call) : done
+  })
+  stop = fake.close
+
+  const session = new Session({
+    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+    toolset: createToolset({}),
+    workspaceRoot: root,
+    mode: 'autopilot',
+    engine: new PermissionEngine({ layers: [], mode: 'autopilot', workspaceRoot: root }),
+    verify: { command: 'cmd /c exit 1', timeoutMs: 30_000, source: 'test' },
+  })
+  await session.send('write some files')
+
+  const notes = session.messages()
+    .filter((m) => m.role === 'user' && typeof m.content === 'string')
+    .map((m) => m.content as string)
+    .filter((c) => c.includes('cmd /c exit 1'))
+
+  const full = notes.filter((n) => n.includes('Checked while you work'))
+  const brief = notes.filter((n) => n.includes('still failing, same errors'))
+  expect(full).toHaveLength(1)
+  expect(brief.length).toBeGreaterThan(0)
+})
