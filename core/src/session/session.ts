@@ -34,9 +34,10 @@ import {
   continuationInventory, generateCompaction, selectCompactionTail, touchedPaths,
 } from './compaction.js'
 import {
-  DIFF_REVIEW_MIN_CHARS, acceptanceFailureMessage, checkAcceptance, distillContract,
+  DIFF_REVIEW_MIN_CHARS, acceptanceFailureMessage, checkAcceptance, clipTodoText,
+  decomposeTodos, distillContract,
   expandDraft, improveDraft, looksLikeTask, renderCheckedState, renderContract, reviewDiff,
-  reviewFailureMessage, type DraftSuggestions,
+  reviewFailureMessage, type AcceptanceReport, type DraftSuggestions, type TaskContract,
   saysFinished,
 } from './contract.js'
 import { SessionStore, type CompactionMarker, type SessionMeta } from './store.js'
@@ -349,6 +350,10 @@ const MID_TURN_VERIFY_MS = 240_000
  * mistake. Eight is roughly "a large but coherent edit".
  */
 const VERIFY_BURST_CAP = 8
+
+/** Writes since the plan was last touched before an upkeep note fires. Three is a real
+ * stretch of work, not a single edit — the note must stay rare enough to be read. */
+const UPKEEP_WRITES = 3
 
 /** Past this, a check cannot run per write without dominating the turn it protects. */
 const SLOW_VERIFY_SECONDS = 8
@@ -877,6 +882,9 @@ export class Session {
       // "where the task actually STANDS" into message 0, not only what done would mean.
       contract.checkedState = renderCheckedState(contract, report)
       this.opts.store?.saveMeta(this.meta)
+      // The checkboxes the audit just earned: scaffolded items are criteria verbatim,
+      // so what the audit affirmed the plan shows as done without asking the model.
+      this.syncTodosWithAudit(contract, report)
       this.opts.onAcceptance?.({ met: report.met, unmet: report.unmet.length, round, kind: 'criteria' })
       if (report.unmet.length === 0) { clean = true; break }
       const fixer = this.buildAgent(signal)
@@ -1601,6 +1609,9 @@ export class Session {
       // then never reached the transcript describes work the model was never asked for,
       // and left in place it would gate every later turn against a phantom task.
       const contractBefore = this.meta.contract
+      // For the same rollback: a plan seeded for a message that never reached the
+      // transcript describes work that was never asked for.
+      const todosBefore = this.opts.toolset.todos?.list()
       let turnText = userText
       if ((sendOpts?.distill ?? looksLikeTask(text)) && looksLikeTask(text)) {
         const contract = await distillContract(
@@ -1609,6 +1620,9 @@ export class Session {
         if (contract !== null) {
           this.meta.contract = contract
           this.opts.store?.saveMeta(this.meta)
+          // The plan appears WITH the contract, every time — not when the model feels
+          // like calling todo_write (measured: it almost never does unprompted).
+          await this.seedTodos(contract, signal)
           // Folded INTO the user message, not appended beside it: two adjacent user
           // messages deviate from the chat template (the setMode note records the same
           // rule), and the note explicitly describes "the request that follows".
@@ -1694,6 +1708,14 @@ export class Session {
           if (contractBefore === undefined) delete this.meta.contract
           else this.meta.contract = contractBefore
           this.opts.store?.saveMeta(this.meta)
+        }
+        // The seeded plan rides the same rollback: left in place it would gate later
+        // turns (plan focus, upkeep) against a task the model was never given.
+        const todoStore = this.opts.toolset.todos
+        if (todoStore !== undefined && todosBefore !== undefined &&
+            todoStore.list() !== todosBefore) {
+          todoStore.set([...todosBefore])
+          this.opts.interaction?.todosChanged?.(todoStore.list())
         }
         result = { ...result, delivered: false }
       }
@@ -1955,6 +1977,98 @@ export class Session {
         (current.done_when !== undefined ? ` (done when: ${current.done_when})` : '') +
         `. Open items: ${open}. Finish this one before touching the next.]`,
     })
+  }
+
+  /**
+   * The plan appears WITH the contract — piece one of the todo discipline. The model
+   * works measurably better with a plan in front of it, and calling todo_write on its
+   * own is exactly the kind of ask that measured 0/703 from the system prompt — so the
+   * harness writes the first draft itself. For a small task the criteria ARE the plan
+   * (checkable by construction, zero extra requests); a big one — many criteria, or
+   * agreed seams between files — earns one forced decomposition call whose schema
+   * requires a done_when per step. An existing plan with open items is NEVER clobbered:
+   * a follow-up task inside one session continues the plan the model is holding.
+   */
+  private async seedTodos(contract: TaskContract, signal?: AbortSignal): Promise<void> {
+    const store = this.opts.toolset.todos
+    if (store === undefined) return
+    if (store.list().some((t) => t.status !== 'completed')) return
+    if (!Array.isArray(contract.criteria) || contract.criteria.length === 0) return
+    const big = contract.criteria.length >= 4 || contract.interfaces !== undefined
+    if (big) {
+      const planned = await decomposeTodos(
+        this.opts.client, this.transcript.messages(), contract, signal,
+      )
+      if (planned !== null) {
+        store.set(planned)
+        this.opts.interaction?.todosChanged?.(store.list())
+        this.syncUpkeepMarkers()
+        return
+      }
+    }
+    store.set(contract.criteria.map((c) => ({ text: clipTodoText(c), status: 'pending' as const })))
+    this.opts.interaction?.todosChanged?.(store.list())
+    this.syncUpkeepMarkers()
+  }
+
+  /**
+   * Piece three, harness half: the audit already decided which criteria hold, and a
+   * scaffolded item IS a criterion verbatim — so its checkbox is the audit's to tick,
+   * not the model's to remember. Decomposed and model-written items are untouched:
+   * their texts match no criterion.
+   */
+  private syncTodosWithAudit(contract: TaskContract, report: AcceptanceReport): void {
+    const store = this.opts.toolset.todos
+    if (store === undefined) return
+    const met = new Set(
+      (Array.isArray(contract.criteria) ? contract.criteria : [])
+        .filter((c) => !report.unmet.some((u) => u.criterion === c))
+        .map((c) => clipTodoText(c)),
+    )
+    if (met.size === 0) return
+    let changed = false
+    const next = store.list().map((t) => {
+      if (t.status === 'completed' || !met.has(t.text)) return { ...t }
+      changed = true
+      return { ...t, status: 'completed' as const }
+    })
+    if (!changed) return
+    store.set(next)
+    this.opts.interaction?.todosChanged?.(store.list())
+  }
+
+  /**
+   * Piece three, injection half: a stretch of writes with the plan untouched gets one
+   * explicit order to bring it up to date. Watching the store VERSION, not content — the
+   * model re-affirming the same list still counts as having tended it — and re-arming
+   * only after either another such stretch or a real update, so this can never become
+   * the every-step nag the model learns to skim.
+   */
+  private injectPlanUpkeep(): void {
+    const store = this.opts.toolset.todos
+    if (store === undefined) return
+    if (this.meta.contract === undefined || this.meta.contract.satisfied === true) return
+    if (store.list().filter((t) => t.status !== 'completed').length < 2) return
+    if (store.version !== this.lastTodoVersion) {
+      this.syncUpkeepMarkers()
+      return
+    }
+    const writes = this.writeCount - this.writesAtLastUpkeep
+    if (writes < UPKEEP_WRITES) return
+    this.writesAtLastUpkeep = this.writeCount
+    this.transcript.append({
+      role: 'user',
+      content:
+        `[Plan upkeep: ${writes} files written since the plan was last updated. Call ` +
+        'todo_write NOW — mark finished steps completed, add steps this work uncovered. ' +
+        'The plan is what survives compaction; a stale plan is lost work.]',
+    })
+  }
+
+  /** Re-arm both upkeep watermarks to "now": after seeding, and after any todo_write. */
+  private syncUpkeepMarkers(): void {
+    this.lastTodoVersion = this.opts.toolset.todos?.version ?? 0
+    this.writesAtLastUpkeep = this.writeCount
   }
 
   private async checkpointLongTurn(step: number): Promise<void> {
@@ -2634,6 +2748,10 @@ export class Session {
   /** Identity of the last plan-focus note injected, so the frame is re-pointed only when
    * the in-progress item actually changes. See `injectPlanFocus`. */
   private lastPlanFocus: string | null = null
+  /** Upkeep watermarks — the todo-store version and the write count at the last moment
+   * the plan was known fresh. See `injectPlanUpkeep`/`syncUpkeepMarkers`. */
+  private lastTodoVersion = 0
+  private writesAtLastUpkeep = 0
   /** Where THIS turn's messages start in the CURRENT transcript object — remapped at every
    * compaction swap, which is what a captured local index cannot do. */
   private turnStartIndex = 0
@@ -2804,6 +2922,7 @@ export class Session {
       await this.checkpointLongTurn(step)
       await this.verifyMidTurn(signal)
       this.injectPlanFocus()
+      this.injectPlanUpkeep()
       this.noteContextFill()
       const before = this.transcript
       await this.compactIfOverWindow(signal)

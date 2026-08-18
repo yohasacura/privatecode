@@ -963,6 +963,16 @@ export class SessionHost {
     }
     for (const p of problems) this.emit('settings.problem', { text: p })
 
+    // The plan panel after a restart: the store reloaded state/plan.json, but the only
+    // `todos` emit lived inside todo_write — so a resumed session showed an empty Plan
+    // card over a live plan until the model happened to touch it. Deferred past this
+    // reply on purpose: the app resets its state when the init/resume result lands, and
+    // an event sent before it would be wiped with everything else.
+    const planItems = this.toolset?.todos.list() ?? []
+    if (planItems.length > 0) {
+      setImmediate(() => this.emit('todos', { items: planItems.map((t) => ({ ...t })) }))
+    }
+
     return {
       sessionId: session.id,
       mode: session.mode,

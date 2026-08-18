@@ -1,3 +1,4 @@
+import type { TodoItem } from '../interaction.js'
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ToolSchema } from '../llama/types.js'
 
@@ -420,6 +421,126 @@ export async function improveDraft(
     const call = result.message.tool_calls?.[0]
     if (!call || call.function.name !== 'suggest_improvements') return null
     return parseSuggestions(call.function.arguments)
+  } catch {
+    return null
+  }
+}
+
+/** The tool text/`done_when` cap `todo_write` enforces; planned items obey the same one
+ * so a harness-written plan is indistinguishable from a model-written one. */
+const TODO_TEXT_CAP = 200
+
+export function clipTodoText(text: string): string {
+  const t = text.trim()
+  return t.length <= TODO_TEXT_CAP ? t : `${t.slice(0, TODO_TEXT_CAP - 1)}…`
+}
+
+/** The decomposer behind the seeded plan: for a task big enough that criteria alone are
+ * a poor path (many criteria, or agreed seams between files), one forced call turns the
+ * contract into ordered implementation steps — each with its own checkable done_when.
+ * The schema is the discipline: `required` fields are what "write it in detail" means
+ * when asking nicely has a measured hit rate of 0/703. */
+const PLAN_TOOL: ToolSchema = {
+  type: 'function',
+  function: {
+    name: 'plan_todos',
+    description: 'Break the task into ordered implementation steps. Never begin the work.',
+    parameters: {
+      type: 'object',
+      required: ['items'],
+      properties: {
+        items: {
+          type: 'array',
+          description: '2-12 steps, in execution order, IN THE LANGUAGE OF THE TASK.',
+          items: {
+            type: 'object',
+            required: ['title', 'done_when'],
+            properties: {
+              title: {
+                type: 'string',
+                description: 'One implementation step, imperative, specific to THIS task.',
+              },
+              done_when: {
+                type: 'string',
+                description: 'How this step is known to be done — answerable by looking ' +
+                  'at a file or running a command.',
+              },
+              files: {
+                type: 'array', items: { type: 'string' },
+                description: 'The files this step touches, when the contract names them.',
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+}
+
+/** Tolerant like the parsers above. Fewer than 2 usable steps is not a plan. */
+export function parsePlannedTodos(argsJson: string): TodoItem[] | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(argsJson)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const raw = (parsed as Record<string, unknown>)['items']
+  if (!Array.isArray(raw)) return null
+  const items: TodoItem[] = []
+  for (const entry of raw.slice(0, 12)) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const o = entry as Record<string, unknown>
+    if (typeof o['title'] !== 'string' || o['title'].trim() === '') continue
+    if (typeof o['done_when'] !== 'string' || o['done_when'].trim() === '') continue
+    const files = Array.isArray(o['files'])
+      ? o['files'].filter((f): f is string => typeof f === 'string' && f.trim() !== '')
+      : []
+    const suffix = files.length > 0 ? ` [${files.join(', ')}]` : ''
+    items.push({
+      text: clipTodoText(`${o['title'].trim()}${suffix}`),
+      status: 'pending',
+      done_when: clipTodoText(o['done_when']),
+    })
+  }
+  return items.length >= 2 ? items : null
+}
+
+/**
+ * One forced call over the shared transcript prefix, exactly like the distiller it runs
+ * beside. The contract says what "done" means; this says the path — and it exists
+ * because a model that works well WITH a plan writes one on its own almost never
+ * (measured 0/703 for a system-prompt ask). Null degrades to the criteria scaffold.
+ */
+export async function decomposeTodos(
+  client: LlamaClient,
+  transcript: readonly ChatMessage[],
+  contract: TaskContract,
+  signal?: AbortSignal,
+): Promise<TodoItem[] | null> {
+  const messages: ChatMessage[] = [
+    ...distillContext(transcript),
+    {
+      role: 'user',
+      content:
+        `[${renderContract(contract)}]\n\n` +
+        '[Before any work starts: call plan_todos with the ordered implementation steps ' +
+        'for the contract above — each step with its own checkable done_when, and the ' +
+        'files it touches where the contract names them. Steps are the PATH; the ' +
+        'contract criteria stay the definition of done. Write the steps in the language ' +
+        'of the task: русская задача планируется по-русски. Do not begin the work.]',
+    },
+  ]
+  try {
+    const result = await client.chat({
+      messages, tools: [PLAN_TOOL], toolChoice: 'required',
+      maxTokens: DISTILL_MAX_TOKENS, disableThinking: true,
+      ...(signal ? { signal } : {}),
+    })
+    const call = result.message.tool_calls?.[0]
+    if (!call || call.function.name !== 'plan_todos') return null
+    return parsePlannedTodos(call.function.arguments)
   } catch {
     return null
   }

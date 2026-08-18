@@ -857,3 +857,146 @@ test('the arguments of a tool call are streamed as they are generated', async ()
   const calls = eventsNamed(transport, 'tool.call').map((e) => e.data as { name: string; args: string })
   expect(calls).toEqual([{ name: 'read_file', args: '{"path":"note.txt"}' }])
 })
+
+// ---------------------------------------------------------------------------------------
+// The todo discipline: the plan appears WITH the contract, not when the model volunteers
+// (a system-prompt ask measured 0/703). Small tasks scaffold from the criteria for free;
+// big ones earn one forced decomposition; a stretch of writes with the plan untouched
+// earns an explicit upkeep order.
+// ---------------------------------------------------------------------------------------
+
+const TASK_TEXT =
+  'Добавь в src/greet.js функцию greetMany, которая принимает массив имён и возвращает ' +
+  'массив приветствий. Каждый элемент должен проходить ту же валидацию, что и в greet. ' +
+  'Добавь tests/greet.test.js с тестами на оба случая и обнови экспорты модуля. Все ' +
+  'тесты должны проходить, ничего не ломай.'
+
+function forcedCall(name: string, args: unknown) {
+  return {
+    choices: [{
+      message: {
+        role: 'assistant', content: null,
+        tool_calls: [{ id: 'f1', type: 'function', function: { name, arguments: JSON.stringify(args) } }],
+      },
+      finish_reason: 'tool_calls',
+    }],
+    usage: { prompt_tokens: 400, completion_tokens: 50 },
+  }
+}
+
+test('a small task-shaped send seeds the plan from the contract criteria, for free', async () => {
+  let sawPlanTodos = false
+  const fake = await makeServer((body, streaming) => {
+    if (streaming) return textSSE('Первый шаг сделан, продолжу.')
+    const tool = (body.tools ?? [])[0]?.function?.name
+    if (tool === 'plan_todos') sawPlanTodos = true
+    if (tool === 'set_contract') {
+      return forcedCall('set_contract', {
+        goal: 'greetMany существует и покрыта',
+        criteria: ['функция greetMany добавлена', 'тесты в tests/greet.test.js проходят'],
+        constraints: [],
+      })
+    }
+    return new RawResponse(500, `unexpected non-streaming call: ${tool}`, 'text/plain')
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+
+  await host.handle({ id: 2, method: 'send', params: { text: TASK_TEXT } })
+  resultOf(transport, 2)
+
+  // Two criteria is a small task: the criteria ARE the plan, no model request spent.
+  expect(sawPlanTodos).toBe(false)
+  const todoEvents = eventsNamed(transport, 'todos')
+  expect(todoEvents.length).toBeGreaterThan(0)
+  const items = (todoEvents[0]!.data as { items: { text: string; status: string }[] }).items
+  expect(items.map((i) => i.text)).toEqual([
+    'функция greetMany добавлена', 'тесты в tests/greet.test.js проходят',
+  ])
+  expect(items.every((i) => i.status === 'pending')).toBe(true)
+  // Persisted where the plan lives, so it survives a restart.
+  const plan = JSON.parse(readFileSync(join(root, '.privatecode', 'state', 'plan.json'), 'utf8'))
+  expect(plan).toHaveLength(2)
+})
+
+test('a big task earns one forced decomposition, and its steps become the plan', async () => {
+  const fake = await makeServer((body, streaming) => {
+    if (streaming) return textSSE('Начал, продолжу дальше.')
+    const tool = (body.tools ?? [])[0]?.function?.name
+    if (tool === 'set_contract') {
+      return forcedCall('set_contract', {
+        goal: 'вся фича собрана',
+        criteria: ['критерий 1', 'критерий 2', 'критерий 3', 'критерий 4', 'критерий 5'],
+        constraints: [],
+        interfaces: 'src/a.js экспортирует f; src/b.js импортирует f',
+      })
+    }
+    if (tool === 'plan_todos') {
+      return forcedCall('plan_todos', {
+        items: [
+          { title: 'Добавить f в a.js', done_when: 'f экспортируется', files: ['src/a.js'] },
+          { title: 'Подключить f в b.js', done_when: 'b.js импортирует f', files: ['src/b.js'] },
+          { title: 'Прогнать тесты', done_when: 'exit 0' },
+        ],
+      })
+    }
+    return new RawResponse(500, `unexpected non-streaming call: ${tool}`, 'text/plain')
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+
+  await host.handle({ id: 2, method: 'send', params: { text: TASK_TEXT } })
+  resultOf(transport, 2)
+
+  const items = (eventsNamed(transport, 'todos')[0]!.data as {
+    items: { text: string; status: string; done_when?: string }[]
+  }).items
+  // The decomposed steps, files folded into the text, each with its own done_when — not
+  // the raw criteria: the plan is the PATH, the contract stays the definition of done.
+  expect(items.map((i) => i.text)).toEqual([
+    'Добавить f в a.js [src/a.js]', 'Подключить f в b.js [src/b.js]', 'Прогнать тесты',
+  ])
+  expect(items.every((i) => i.done_when !== undefined && i.done_when !== '')).toBe(true)
+})
+
+test('a stretch of writes with the plan untouched earns one upkeep order', async () => {
+  let streamedCalls = 0
+  const fake = await makeServer((body, streaming) => {
+    if (!streaming) {
+      const tool = (body.tools ?? [])[0]?.function?.name
+      if (tool === 'set_contract') {
+        return forcedCall('set_contract', {
+          goal: 'все файлы обновлены',
+          criteria: ['a.txt записан', 'b.txt записан'],
+          constraints: [],
+        })
+      }
+      return new RawResponse(500, `unexpected non-streaming call: ${tool}`, 'text/plain')
+    }
+    streamedCalls++
+    // Four writes back to back, the plan never touched, then a non-final close.
+    if (streamedCalls <= 4) {
+      return toolCallSSE('write_file', JSON.stringify({
+        path: `file-${streamedCalls}.txt`, content: 'x',
+      }))
+    }
+    return textSSE('Записал файлы, продолжу позже.')
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+  // Autopilot, so the four writes run without approval round-trips.
+  await host.handle({ id: 2, method: 'setMode', params: { mode: 'autopilot' } })
+
+  await host.handle({ id: 3, method: 'send', params: { text: TASK_TEXT } })
+  resultOf(transport, 3)
+
+  // Some later step's request must carry the injected upkeep order — the note lands in
+  // the transcript the model reads, which is the only place an instruction can work.
+  const sawUpkeep = fake.requests.some((r) =>
+    Array.isArray(r.body?.messages) && (r.body.messages as { role: string; content?: string }[])
+      .some((m) => m.role === 'user' && typeof m.content === 'string' && m.content.includes('[Plan upkeep:')))
+  expect(sawUpkeep).toBe(true)
+})

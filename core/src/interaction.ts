@@ -75,6 +75,10 @@ export interface InteractionPort {
  */
 export class TodoStore {
   private items: readonly TodoItem[] = []
+  /** Bumped on every set(). What the plan-upkeep injection watches: "has the plan been
+   * touched since the last stretch of writes" is a version comparison, not a content
+   * diff — the model rewriting the same list still counts as having tended it. */
+  private versionCounter = 0
   /** Absent for a store with no workspace — the CLI's one-shot mode and every test that
    * does not care. Then this behaves exactly as it did before it could persist at all. */
   private readonly root: string | undefined
@@ -92,6 +96,7 @@ export class TodoStore {
 
   set(items: TodoItem[]): void {
     this.items = Object.freeze(items.map((i) => ({ ...i })))
+    this.versionCounter++
     if (this.root === undefined) return
     try {
       ensureStateDir(this.root)
@@ -100,4 +105,6 @@ export class TodoStore {
   }
 
   list(): readonly TodoItem[] { return this.items }
+
+  get version(): number { return this.versionCounter }
 }
