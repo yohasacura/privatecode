@@ -1,0 +1,9 @@
+{"depth":4000,"probe":0,"needle":"telemetry-sink","hit":true,"ms":12606,"promptTokens":5247,"answer":"telemetry-sink"}
+{"depth":4000,"probe":1,"needle":"quota-warden","hit":true,"ms":12522,"promptTokens":5221,"answer":"quota-warden"}
+{"depth":4000,"probe":2,"needle":"drift-anchor","hit":true,"ms":12547,"promptTokens":5247,"answer":"drift-anchor"}
+{"depth":16000,"probe":0,"needle":"telemetry-sink","hit":true,"ms":50117,"promptTokens":20691,"answer":"telemetry-sink"}
+{"depth":16000,"probe":1,"needle":"quota-warden","hit":true,"ms":51631,"promptTokens":20689,"answer":"quota-warden"}
+{"depth":16000,"probe":2,"needle":"drift-anchor","hit":true,"ms":55303,"promptTokens":20727,"answer":"drift-anchor"}
+{"depth":32000,"probe":0,"needle":"telemetry-sink","hit":true,"ms":110859,"promptTokens":41291,"answer":"telemetry-sink"}
+{"depth":32000,"probe":1,"needle":"quota-warden","hit":true,"ms":110489,"promptTokens":41300,"answer":"quota-warden"}
+{"depth":32000,"probe":2,"needle":"drift-anchor","hit":true,"ms":112853,"promptTokens":41301,"answer":"drift-anchor"}
