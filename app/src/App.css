@@ -167,6 +167,81 @@ kbd {
 .btn-danger { color: var(--red); }
 .btn-danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); }
 
+/* A multi-select option the user has picked (ask_user's multi_select card): held-down
+ * rather than primary, because several can be on at once and none of them is the action. */
+.btn-toggled { background: var(--bg-hover); border-color: var(--accent); }
+
+/* The Changes tab's directory rows: the Files tree's own language (chevron, folder icon,
+ * indent), full-width inside the panel column, with the recursive file count kept to the
+ * right so a collapsed row still says what it is hiding. */
+.changes-tree-dir { width: 100%; }
+.changes-tree-meta { margin-left: auto; color: var(--text-dim); font-size: 11px; }
+
+/* The prompt linter: quiet chips naming what a task-shaped draft is missing, with the
+ * model-powered Improve action at the end of the same line — the free half and the paid
+ * half of one feature, in one place. */
+.prompt-hints {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  padding: 4px 10px 0;
+}
+.prompt-hint {
+  color: var(--text-dim); font-size: 11px;
+  border: 1px solid var(--border); border-radius: 9px; padding: 1px 8px;
+}
+.prompt-hint-improve {
+  margin-left: auto; font-size: 11px; color: var(--accent);
+  background: none; border: none; cursor: pointer; padding: 1px 4px;
+}
+.prompt-hint-improve:hover:not(:disabled) { text-decoration: underline; }
+.prompt-hint-improve:disabled { opacity: 0.6; cursor: default; }
+
+/* A running command's live output: a small terminal viewport pinned to the tail. Fixed
+ * height on purpose — the card must not grow with the log, the log scrolls inside it. */
+.tool-live {
+  margin: 4px 10px 8px; padding: 6px 8px; max-height: 180px; overflow-y: auto;
+  background: var(--bg-deep, #101014); border: 1px solid var(--border); border-radius: 6px;
+  font-size: 11px; line-height: 1.4; white-space: pre-wrap; word-break: break-all;
+  color: var(--text-dim);
+}
+
+/* The unified Workspace tab: the workspace's identity and management at the top, one tree
+ * below it wearing the session's changes as badges. */
+.workspace-tab { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.workspace-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px;
+}
+.workspace-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-meta { color: var(--text-dim); font-size: 11px; }
+.workspace-manage { padding: 4px 10px; border-bottom: 1px solid var(--border); }
+.workspace-views { display: flex; gap: 4px; padding: 2px 10px 6px; }
+.ws-view {
+  font-size: 11.5px; padding: 2px 10px; border-radius: 10px; cursor: pointer;
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+}
+.ws-view-active { border-color: var(--accent); color: var(--text); }
+
+/* The session's fingerprints on the tree: a diff shape on a changed file, a count of
+ * changed files on a folder — visible even while the folder is collapsed. */
+.tree-change-count {
+  margin-left: auto; font-size: 10px; color: var(--accent);
+  border: 1px solid var(--accent-line); border-radius: 8px; padding: 0 5px;
+}
+.tree-change-stat { margin-left: auto; font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+.tree-change-failed { color: var(--red); }
+
+/* The improver's suggestion chips: toggleable additions BELOW the draft — on travels with
+ * the send, off stays behind, a question opens its little answer box. Same row the lint
+ * chips live in, because they are the same feature at two stages of knowledge. */
+.prompt-suggest {
+  font-size: 11px; border-radius: 9px; padding: 1px 8px; cursor: pointer;
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.prompt-suggest-on { border-color: var(--accent); color: var(--text); }
+.prompt-question { border-style: dashed; }
+.prompt-question-wrap { display: inline-flex; gap: 4px; align-items: center; max-width: 100%; }
+.prompt-question-input { width: 180px; }
+
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -505,8 +580,12 @@ kbd {
 .row-error .notice-title { color: var(--red); }
 
 .row-stopped .row-gutter { color: var(--yellow); }
-.notice-title { font-size: 12.5px; color: var(--text); }
-.notice-detail { margin-top: 2px; font-size: 12px; color: var(--text-faint); }
+/* word-break like every other text surface in the transcript: these rows carry raw error
+   messages and approval rules — an ENOENT with an unbroken node_modules path, an
+   `always: Bash(npm run …:*)` rule — and one such token wider than the read column gave
+   the WHOLE conversation a horizontal scrollbar. */
+.notice-title { font-size: 12.5px; color: var(--text); word-break: break-word; }
+.notice-detail { margin-top: 2px; font-size: 12px; color: var(--text-faint); word-break: break-word; }
 
 .row-record {
   font-size: 12px;
@@ -516,6 +595,7 @@ kbd {
 .row-record .row-gutter { padding-top: 1px; }
 .record-allow .row-gutter { color: var(--green); }
 .record-deny .row-gutter { color: var(--red); }
+.record-text { word-break: break-word; }
 .record-text em { font-style: normal; opacity: 0.8; }
 
 .row-waiting {
@@ -1047,12 +1127,25 @@ kbd {
 .problem-icon { display: flex; color: var(--yellow); padding-top: 2px; }
 .problem-list { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; word-break: break-word; }
 
+/* What a Put back actually did, spoken on the row — success used to be silent and the row
+   unchanged, indistinguishable from nothing having happened. */
+.revert-outcome {
+  padding: 6px 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+
 .composer {
   flex: none;
   padding: 10px 28px 14px;
   background: linear-gradient(to bottom, transparent, var(--bg) 22px);
 }
 .composer > * { max-width: var(--read); margin-left: auto; margin-right: auto; }
+
+/* Positioned wrapper the run-config popover anchors to — OUTSIDE the shell's clip box.
+   Anchored inside the shell it was cut to the sliver poking above the composer bar. */
+.composer-anchor { position: relative; }
 
 /* One surface: the field and every control that acts on it live inside the same border. */
 .composer-shell {
@@ -1528,23 +1621,41 @@ kbd {
 .files-tab { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .files-tree { flex: 1; min-height: 0; overflow: auto; padding: 6px 0; }
 .tree-panel { font-size: 12.5px; }
+/* Buttons now (keyboard reachability), so the button chrome is reset explicitly and the
+   focus ring is the visible kind the rest of the app uses. */
 .tree-row {
   display: flex;
   align-items: center;
   gap: 5px;
+  width: 100%;
   padding: 2px 8px 2px 0;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   color: var(--text-dim);
   white-space: nowrap;
 }
 .tree-row:hover { background: var(--bg-raised); color: var(--text); }
+.tree-row:focus-visible { outline: 1px solid var(--accent-line); outline-offset: -1px; }
 .tree-chevron { display: flex; flex: none; width: 16px; color: var(--text-faint); }
 .tree-icon { display: flex; color: var(--text-faint); }
 .tree-dir .tree-icon { color: var(--blue); opacity: 0.75; }
 .tree-file .tree-icon { color: var(--text-faint); }
 .tree-name { overflow: hidden; text-overflow: ellipsis; }
 .tree-loading, .tree-error { padding: 3px 8px; font-size: 11.5px; color: var(--text-faint); }
-.tree-error { color: var(--red); cursor: pointer; }
+.tree-error {
+  display: block;
+  width: 100%;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: var(--red);
+  cursor: pointer;
+}
+.tree-error:focus-visible { outline: 1px solid var(--accent-line); outline-offset: -1px; }
 
 /* An overlay, not a second half. Splitting the column gave a three-entry tree 40% of the
    height and the file you wanted to read the rest -- with no line numbers, no wrapping and
@@ -1699,14 +1810,32 @@ kbd {
 .dot-up { background: var(--green); }
 .dot-down { background: var(--red); }
 .dot-unknown { background: var(--text-faint); }
-.status-model { font-family: var(--mono); }
+/* The model name is a llama.cpp FILE name — long, no spaces, unable to wrap — and the bar
+   has no overflow story without these: with every segment present (~1000px) the trailing
+   'offline' badge and the 5-second compaction flash were pushed off the shell's clipped
+   edge in a half-screen window. The full name lives in the tooltip; the flash shrinks
+   last so fixed-width readings keep their place. Same failure the titlebar documents. */
+.status-model {
+  font-family: var(--mono);
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .status-mode { font-family: var(--mono); }
 .status-context { display: flex; align-items: center; gap: 6px; font-family: var(--mono); }
 .ctx-bar { width: 54px; height: 3px; border-radius: 2px; background: var(--bg-active); overflow: hidden; }
 .ctx-fill { display: block; height: 100%; background: var(--blue); }
 .ctx-high { background: var(--yellow); }
 .status-item { font-family: var(--mono); }
-.status-flash { color: var(--accent); }
+.status-flash {
+  color: var(--accent);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .status-spacer { flex: 1; }
 .status-private { display: flex; align-items: center; gap: 5px; }
 .status-private .icon { width: 11px; height: 11px; }
@@ -1803,6 +1932,12 @@ kbd {
 .md h4 { font-size: 13.5px; color: var(--text-dim); }
 .md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
 .md li { margin: 3px 0; }
+/* GFM task items: the tokenizer strips [x]/[ ] into item.task/checked, so the glyph is
+   re-added at render — and the marker dot is dropped, since the box IS the marker. The
+   item's text arrives wrapped in a block <p>, so the glyph FLOATS: inline, it sat alone on
+   its own line above the text; floated, the paragraph's first line wraps beside it. */
+.md li.md-task { list-style: none; margin-left: -18px; }
+.md .md-check { float: left; margin-right: 6px; color: var(--text-dim); }
 .md blockquote {
   margin: 0 0 10px;
   padding: 2px 0 2px 12px;

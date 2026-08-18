@@ -34,6 +34,20 @@ describe('execute', () => {
     expect(r.content).toContain('hello')
   }, 30_000)
 
+  // PowerShell 5.1 folds anything outside the OEM codepage to `?` when stdout is
+  // redirected; the UTF-8 prelude in powershell.ts is what keeps these two green.
+  it('keeps Cyrillic intact in PowerShell output', async () => {
+    const r = await run({ command: "Write-Output 'привет, мир'" })
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('привет, мир')
+  }, 30_000)
+
+  it('keeps Cyrillic intact when a native child prints it', async () => {
+    const r = await run({ command: 'node -e "console.log(\'кириллица работает\')"' })
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('кириллица работает')
+  }, 30_000)
+
   it('reports a non-zero exit as ok:false with the output kept', async () => {
     const r = await run({ command: 'Write-Output boom; exit 3' })
     expect(r.ok).toBe(false)

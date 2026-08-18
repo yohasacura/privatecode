@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, extname, join, relative, sep } from 'node:path'
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AgentEvents } from '../agent/loop.js'
 import { HEALTH_CHECK_TIMEOUT_MS } from '../cli/render.js'
 import type { ApprovalDecision, InteractionPort } from '../interaction.js'
 import { LlamaClient, LlamaRequestError } from '../llama/client.js'
+import { looksLikeTask } from '../session/contract.js'
 import { PermissionEngine } from '../permissions/engine.js'
 import {
-  addRuleToSettings, loadLayers, localSettingsPath, projectSettingsPath, removeRuleFromSettings, userSettingsPath,
+  addRuleToSettings, loadLayers, localSettingsPath, projectSettingsPath, removeRuleFromSettings,
+  settingsText, userSettingsPath,
 } from '../permissions/settings.js'
 import { loadDatabaseSettings } from '../sql/settings.js'
 import { loadSchemaBlock } from '../sql/schema-block.js'
@@ -100,6 +102,8 @@ import type {
   SessionsSearchResult,
   WorkspaceFolderView,
   WorkspaceGetResult,
+  PromptImproveParams,
+  PromptImproveResult,
   WorkspaceSetParams,
   WorkspaceSetResult,
   SetModeParams,
@@ -113,7 +117,8 @@ import { loadUiConfig, saveUiConfig } from './ui-config.js'
 import { replayEntries, toolOutcomes } from './replay.js'
 import { rankFiles, walkFiles } from './file-search.js'
 import { attachFiles } from './attachments.js'
-import { indexRepo, renderIndex, type RepoIndex } from '../outline/repo-map.js'
+import { indexRepo, renderIndex, type ReferenceEdges, type RepoIndex } from '../outline/repo-map.js'
+import { harvestReferenceEdges } from '../csharp/reference-edges.js'
 import { gitCommit, gitDiff, suggestCommitMessage } from './git.js'
 import { describeFolder, discoverRepos, repoRootFor, toRepoPaths } from './repos.js'
 import { searchSessions } from './session-search.js'
@@ -257,6 +262,10 @@ type PendingInteraction =
  *   refused with an error reply and resolves nothing at all; a genuine reply can therefore
  *   never be replayed to authorize a second action.
  */
+/** An init phase slower than this names itself in the problems strip: a workspace that
+ * takes a minute to open is undebuggable after the fact without knowing which minute. */
+const PHASE_SLOW_MS = 2_000
+
 export class SessionHost {
   private readonly transport: HostTransport
 
@@ -299,6 +308,10 @@ export class SessionHost {
    * session switch, matching the REPL's own probe-once-at-startup behavior (`repl.ts`'s
    * `contextLength` variable). */
   private repoIndex: RepoIndex | undefined
+  /** Compiler-confirmed file->file reference edges, harvested in the background after the
+   * index is built and read by the swap-time rerank. Undefined until (and unless) the
+   * harvest lands; the rerank treats that as "rank textually, as always". */
+  private referenceEdges: ReferenceEdges | undefined
   private contextLength: number | null = null
   /** Whether the last health check saw the server. `null` until the first one, so the very
    * first observation is not mistaken for a restart — `init` has already read /props by
@@ -424,6 +437,7 @@ export class SessionHost {
       case 'fs.find': return this.fsFind(params as FsFindParams)
       case 'workspace.get': return this.workspaceGet()
       case 'workspace.set': return this.workspaceSet(params as WorkspaceSetParams)
+      case 'prompt.improve': return this.promptImprove(params as PromptImproveParams)
       case 'git.status': return this.gitStatusFor()
       case 'git.diff': return this.gitDiffFor(params as GitDiffParams)
       case 'git.commit': return this.gitCommitFor(params as GitCommitParams)
@@ -475,6 +489,17 @@ export class SessionHost {
    * -- and every field below is rebuilt from scratch, not reused.
    */
   async init(params: InitParams): Promise<InitResult> {
+    // Phase timings, permanently: a workspace that takes a minute to open (watched live on
+    // the real project) is undebuggable after the fact without them. Anything slower than
+    // PHASE_SLOW_MS lands in the problems strip the window already renders, named, so the
+    // slow phase identifies itself on the machine where it is slow.
+    const phases: [string, number][] = []
+    let phaseStarted = Date.now()
+    const phase = (name: string): void => {
+      const took = Date.now() - phaseStarted
+      if (took >= PHASE_SLOW_MS) phases.push([name, took])
+      phaseStarted = Date.now()
+    }
     // Same teardown as switchSession, plus the old toolset's background tasks: init
     // replaces the toolset object below, and an orphaned dev server would otherwise run
     // until app exit (the polish review's Minor 6).
@@ -485,6 +510,7 @@ export class SessionHost {
     // Everything the OLD workspace owned, including its MCP servers and its browser: init
     // replaces the toolset below, and an orphan would otherwise run until app exit.
     await this.stopExternal()
+    phase('teardown')
 
     this.workspaceRoot = params.workspaceRoot
     // BEFORE anything opens a session store or a checkpoint store: this renames directories,
@@ -506,7 +532,9 @@ export class SessionHost {
     this.toolset = createToolset({ browser: browserSettings.options, workspaceRoot: params.workspaceRoot })
     this.store = new SessionStore(params.workspaceRoot)
     this.serverUrl = params.serverUrl
+    phase('settings')
     const probed = await this.probeServer(params.serverUrl)
+    phase('server probe')
     this.contextLength = probed.contextLength
     this.model = probed.model
     // Built with the name we had a moment ago; rebuilt now that the server has told us. The
@@ -518,6 +546,7 @@ export class SessionHost {
       ...browserSettings.problems,
       ...await this.connectMcpServers(params.workspaceRoot),
     ]
+    phase('mcp servers')
     // Built here, once per workspace, and awaited: it belongs in the system message, which
     // is message 0 of an append-only transcript, so there is no later moment to add it to.
     // A workspace it cannot index yields '' and the session runs exactly as it did before
@@ -527,12 +556,40 @@ export class SessionHost {
     // without touching the disk again.
     this.repoIndex = await indexRepo(loaded.mounts)
     this.repoMap = renderIndex(this.repoIndex)
+    phase('repo index')
+    // Fire-and-forget: compiler-confirmed reference edges for the swap-time rerank. The
+    // helper question is async and the rerank callback is not, so the edges are gathered
+    // here in the background and read whenever the next swap happens to come — a swap that
+    // arrives first simply ranks textually, which is the map this feature grew out of.
+    // Cleared before the kick so a workspace switch can never rerank against the previous
+    // workspace's edges while its own harvest is still running.
+    this.referenceEdges = undefined
+    if (loaded.mounts.length === 1) {
+      const index = this.repoIndex
+      void harvestReferenceEdges(loaded.mounts[0]!.root, index).then((edges) => {
+        // Only if the workspace has not moved on under the harvest.
+        if (edges !== null && this.repoIndex === index) this.referenceEdges = edges
+      }).catch(() => { /* an enrichment; the textual ranking stands */ })
+    }
     // A disk scan, so it happens here rather than in the Session constructor. Per workspace,
     // like the map and the MCP servers: cloning a repository into the project mid-session is
     // not something a session switch should have to notice.
     this.units = await discoverUnits(loaded.mounts, params.workspaceRoot)
+    phase('unit discovery')
 
-    return this.buildSession(this.sessionToOpen(params))
+    const result = await this.buildSession(this.sessionToOpen(params))
+    phase('session load')
+    if (phases.length > 0) {
+      const detail = phases.map(([name, ms]) => `${name} ${(ms / 1000).toFixed(1)}s`).join(', ')
+      // Rides the RESULT, not a settings.problem event: the app resets its problems list
+      // when the init reply lands and re-delivers only `result.problems`, so an event
+      // emitted before the reply is wiped before anyone can read it (App.tsx documents the
+      // same wipe for every other init-time problem).
+      result.problems.push(`Workspace открывался медленно: ${detail}. Это диагностика, не ошибка.`)
+      process.stderr.write(`host: slow init phases: ${detail}
+`)
+    }
+    return result
   }
 
   /**
@@ -761,6 +818,24 @@ export class SessionHost {
     const engine = new PermissionEngine({
       layers, mode: profile.mode ?? 'normal', workspaceRoot, problems: settingsProblems,
     })
+    // The project's own checks may be run BY THE MODEL too, and they routinely are: watched
+    // live, every write-verify cycle began with the model asking to run the exact command
+    // the app was about to run for free — an approval card per cycle, for a command the
+    // settings file already declares trustworthy enough to run unprompted. Granted at the
+    // session-allow tier (the same one an approval's "Always for this session" uses), which
+    // widens nothing: the string comes from a file the model cannot write, exact-match only
+    // (`commandMatches` — `node run-checks.js && rm` is a different command), deny and ask
+    // rules are consulted before session allows, and the grant dies with the session.
+    const verifyCommands = new Set<string>()
+    if (verifying.verify) verifyCommands.add(verifying.verify.command)
+    for (const spec of Object.values(profile.verify)) verifyCommands.add(spec.command)
+    for (const command of verifyCommands) {
+      // A literal trailing `:*` would be READ as a prefix marker by `commandMatches` — the
+      // one shape where this grant would exceed the exact command — so such a command
+      // simply keeps its approval card.
+      if (command.trimEnd().endsWith(':*')) continue
+      engine.addSessionRule(`run_command(${command})`)
+    }
 
     const sessionOpts: SessionOptions = {
       // Measured at ~220 ms per turn against a 30-60 s turn, so on by default: 'put back
@@ -796,7 +871,10 @@ export class SessionHost {
     // moment is the session's.
     if (this.repoIndex !== undefined) {
       const index = this.repoIndex
-      sessionOpts.rerankRepoMap = (focus) => renderIndex(index, undefined, focus)
+      // `this.referenceEdges` is read at CALL time, not closure time: the harvest finishes
+      // minutes before the first swap needs it, and a swap that outruns it gets the map
+      // exactly as it was before edges existed.
+      sessionOpts.rerankRepoMap = (focus) => renderIndex(index, undefined, focus, this.referenceEdges)
     }
     if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
     if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
@@ -808,8 +886,25 @@ export class SessionHost {
     if (verifying.verify || Object.keys(profile.verify).length > 0) {
       sessionOpts.onVerify = (info) => this.emit('verify', info)
     }
+    // The acceptance gate rides the verify channel the window already renders: it is the
+    // same kind of fact ("a check ran after your work, here is what it said") and a gate
+    // that runs invisibly cannot be trusted or tuned — a silent pass and a silently
+    // broken gate would look identical.
+    sessionOpts.onAcceptance = (info) => this.emit('verify', {
+      command: info.kind === 'review'
+        ? `independent diff review: ${info.unmet === 0 ? 'no findings' : `${info.unmet} finding${info.unmet === 1 ? '' : 's'}`}`
+        : `contract check: ${info.met} met, ${info.unmet} unmet`,
+      ok: info.unmet === 0,
+      attempt: info.round,
+    })
     if (resumeId !== undefined) sessionOpts.resume = resumeId
-    if (this.contextLength !== null) sessionOpts.compaction = { contextLength: this.contextLength }
+    if (this.contextLength !== null) {
+      const triggerTokens = loadTriggerTokens(workspaceRoot)
+      sessionOpts.compaction = {
+        contextLength: this.contextLength,
+        ...(triggerTokens !== undefined ? { triggerTokens } : {}),
+      }
+    }
     if (db.database !== null) {
       sessionOpts.database = db.database
       // Awaited, and bounded inside. A schema read is one short round trip and it belongs in
@@ -986,11 +1081,17 @@ export class SessionHost {
       // channel the app already renders rather than being swallowed.
       const attached = await attachFiles(workspace, params.attach ?? [], expanded?.text ?? params.text)
       for (const note of attached.notes) this.emit('settings.problem', { text: note })
-      const running = session.send(attached.text, this.currentAbort.signal)
+      // The distill decision is made on what the user TYPED: attachments fold whole files
+      // into the text, and "what does this do? @src/foo.ts" is not a task however many
+      // kilobytes ride along with it.
+      const running = session.send(attached.text, this.currentAbort.signal, {
+        distill: looksLikeTask(params.text),
+      })
       this.currentTurn = running
       const result = await running
       const turn: TurnSummary = {
         steps: result.steps, finalText: result.finalText, stoppedBecause: result.stoppedBecause,
+        ...(result.delivered === false ? { delivered: false } : {}),
       }
       this.emit('turn.done', turn)
       return { turn }
@@ -1099,12 +1200,19 @@ export class SessionHost {
    * conditionally, unlike `render.ts`'s TTY-gated streaming), which is also what keeps
    * `Agent.chat()` on the streaming `chatStream()` path for every host-driven turn (see
    * `loop.ts`'s `chat()`: streaming is opt-in purely on whether those two callbacks are
-   * present at all). `onThinking`/`onContinuation` have no wire-event counterpart in the
-   * protocol (only the streamed deltas do) and are left unwired.
+   * present at all). `onThinking` has no wire-event counterpart in the protocol (only the
+   * streamed deltas do) and is left unwired.
    */
   private buildAgentEvents(): AgentEvents {
     return {
-      onStepStart: (info) => this.emit('step.start', { step: info.step, timeoutMs: info.timeoutMs }),
+      onStepStart: (info) => this.emit('step.start', {
+        step: info.step, timeoutMs: info.timeoutMs, firstTokenTimeoutMs: info.firstTokenTimeoutMs,
+      }),
+      onToolOutput: (name, text) => this.emit('tool.output', { name, text }),
+      onContinuation: (step, firstTokenTimeoutMs) => this.emit('step.continuation', {
+        step, ...(firstTokenTimeoutMs !== undefined ? { firstTokenTimeoutMs } : {}),
+      }),
+      onStepRetry: () => this.emit('step.retry', {}),
       onStepDone: (info) => this.emit('step.done', {
         step: info.step,
         seconds: info.seconds,
@@ -1203,6 +1311,27 @@ export class SessionHost {
    * derived from it, and a half-updated workspace is the shape in which a write lands
    * somewhere nobody expected. The session is preserved by resuming the current one.
    */
+  /**
+   * The composer's Improve button. Holds the same `sending` slot a turn does: the preview
+   * is a real model request against the single slot, and a send racing it would interleave
+   * two prompts — the composer already queues a send refused with this exact message.
+   */
+  private async promptImprove(params: PromptImproveParams): Promise<PromptImproveResult> {
+    const session = this.requireSession()
+    if (typeof params?.text !== 'string' || params.text.trim() === '') {
+      throw new Error('prompt.improve needs the draft text')
+    }
+    if (this.sending) throw new Error('a turn is already running in this session')
+    this.sending = true
+    this.currentAbort = new AbortController()
+    try {
+      return { suggestions: await session.previewSuggestions(params.text, this.currentAbort.signal) }
+    } finally {
+      this.sending = false
+      this.currentAbort = undefined
+    }
+  }
+
   private async workspaceSet(params: WorkspaceSetParams): Promise<WorkspaceSetResult> {
     const { workspaceRoot } = this.requireInitialized()
     const existing = this.workspaceFile
@@ -1210,7 +1339,11 @@ export class SessionHost {
       version: 1,
       ...(params.name !== undefined && params.name.trim() !== '' ? { name: params.name.trim() } : {}),
       folders: params.folders.map((f) => ({
-        path: storedPath(workspaceRoot, f.path),
+        // A RELATIVE typed path means relative to the workspace root — the only sane
+        // reading. `resolve()` alone read it against the process CWD, so the dev bridge
+        // stored `../crm-live` as `..\..\PrivateCode\crm-live` and the mount died on
+        // the next open with "no longer at" naming a directory nobody ever typed.
+        path: storedPath(workspaceRoot, isAbsolute(f.path) ? f.path : resolve(workspaceRoot, f.path)),
         ...(f.name !== undefined && f.name.trim() !== '' ? { name: f.name.trim() } : {}),
         access: f.access,
       })),
@@ -1292,6 +1425,12 @@ export class SessionHost {
     const abs = workspace.resolve(params.path ?? '')
     const dirents = await readdir(abs, { withFileTypes: true })
     const entries: FsTreeEntry[] = dirents
+      // The app's own state and git's object store are internal, not project files: a
+      // mount that once ran PrivateCode standalone showed its `.privatecode/` — session
+      // transcripts included — as ordinary browsable folders in the tree. Only these two;
+      // `node_modules` and build output stay visible, because a user's tree is a browser,
+      // not the model's picker (`file-search.ts` SKIP governs that one).
+      .filter((d) => !(d.isDirectory() && (d.name === '.privatecode' || d.name === '.git')))
       .map((d) => ({ name: d.name, dir: d.isDirectory() }))
       .sort((a, b) => a.name.localeCompare(b.name))
     return { entries }
@@ -1794,6 +1933,7 @@ function toDecisionInfo(entry: {
   suggestedRules?: string[]
   question?: string
   options?: string[]
+  multiSelect?: boolean
 }): DecisionInfo {
   return {
     kind: entry.kind,
@@ -1804,6 +1944,39 @@ function toDecisionInfo(entry: {
     ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
     ...(entry.suggestedRules !== undefined ? { suggestedRules: entry.suggestedRules } : {}),
     ...(entry.question !== undefined ? { question: entry.question } : {}),
+    ...(entry.multiSelect === true ? { multiSelect: true } : {}),
     ...(entry.options !== undefined ? { options: entry.options } : {}),
   }
+}
+
+/**
+ * settings.json's `"compaction": { "triggerTokens": N }` — the absolute rot threshold the
+ * context-rot probe calibrates (`spike/context-rot-probe.mjs`). Most specific file wins,
+ * exactly like the verify command; absent or malformed means undefined, which is the
+ * ratio-only behaviour every workspace had before the knob existed.
+ */
+function loadTriggerTokens(workspaceRoot: string): number | undefined {
+  for (const path of [
+    localSettingsPath(workspaceRoot), projectSettingsPath(workspaceRoot), userSettingsPath(),
+  ]) {
+    try {
+      const parsed = JSON.parse(settingsText(readFileSync(path, 'utf8'))) as {
+        compaction?: { triggerTokens?: unknown }
+      }
+      // Floor BEFORE the bound: a ratio-style value like 0.8 would floor to 0 after
+      // passing `v > 0`, and a 0 threshold makes every send trigger a compaction.
+      const v = parsed.compaction?.triggerTokens
+      if (typeof v === 'number' && Number.isFinite(v) && Math.floor(v) >= 1) return Math.floor(v)
+    } catch { /* absent file, or malformed — the permission loader already reports that */ }
+  }
+  // Watched live at 179k context: llama.cpp's prompt-state stash refused the slot state
+  // ("prompt state size 9397.605 MiB exceeds cache size limit 8192.000 MiB, skipping"),
+  // so the first divergent-tail request (the distiller) evicted the whole prefix and the
+  // next turn re-prefilled ~187k tokens for nine minutes into the step deadline. The
+  // hybrid DeltaNet state cannot be rewound, so past the stash limit EVERY side request
+  // (distill, gate, review) costs a full re-prefill. State measures ~0.052 MiB/token,
+  // the server's default --cache-ram is 8192 MiB → the cliff sits at ~157k tokens.
+  // Compacting at 140k keeps the whole session on the working side of it, with margin
+  // for mid-turn growth; settings.json `compaction.triggerTokens` still overrides.
+  return 140_000
 }

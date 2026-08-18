@@ -5,6 +5,7 @@ import {
   type ConnectionState, type ProtocolClient,
 } from './lib/client'
 import { useChatSession } from './lib/use-chat-session'
+import { notify } from './lib/notify'
 import { baseName } from './lib/format'
 import { conversationAsMarkdown } from './lib/export'
 import { MIN_CONTEXT, MIN_RAIL, fitColumns } from './lib/layout'
@@ -209,6 +210,12 @@ export default function App() {
       for (const text of init.problems) dispatch({ type: 'settings-problem', text })
       // Remember what worked; the next launch auto-connects with exactly this.
       c.call('config.set', { serverUrl, recentWorkspace: workspace }).catch(() => {})
+      // Seed the parked-decision count for THE case the queue exists for: questions parked
+      // by last night's run, app reopened this morning. Boot lands here, not in
+      // onSessionSwitched, and the host only announces changes.
+      c.call('decisions.list', {})
+        .then((r) => dispatch({ type: 'decisions.changed', pending: r.decisions.length }))
+        .catch(() => { /* the next decisions.changed event corrects it */ })
       setPhase({ kind: 'ready', workspace })
       setSessionsKey((k) => k + 1)
     } catch (e) {
@@ -256,6 +263,16 @@ export default function App() {
   useEffect(() => {
     if (connState !== 'closed') return
     setPhase((current) => (current.kind === 'unreachable' ? current : { kind: 'unreachable', reason: 'the agent process stopped', stderr: [] }))
+    // The one walk-away ending that never announced itself: every other terminal event
+    // notifies (turn done, run ended, question parked), but the agent DYING at 2am during
+    // an overnight run was silent — hours of expected work quietly not happening, found
+    // only by coming back to the dead screen. `notify` already declines while focused.
+    void notify(
+      'PrivateCode stopped',
+      chatState.run !== null
+        ? 'The agent process died during an unattended run.'
+        : 'The agent process died.',
+    )
     void sidecarStderr().then((stderr) => {
       if (stderr.length > 0) {
         setPhase((current) => (current.kind === 'unreachable' ? { ...current, stderr } : current))
@@ -271,12 +288,21 @@ export default function App() {
     wasRunning.current = chatState.turnRunning
   }, [chatState.turnRunning])
 
+  // A ref, so the handler can see the CURRENT settings state from its []-deps closure:
+  // Ctrl+K under an open Settings dialog opened the palette invisibly BENEATH the settings
+  // overlay (both are .modal-overlay; Settings mounts later and paints on top) and its
+  // autofocused input silently stole every subsequent keystroke from the settings form.
+  const settingsOpenRef = useRef(settingsOpen)
+  settingsOpenRef.current = settingsOpen
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       if (!e.ctrlKey || e.altKey) return
       if (e.key === 'b' || e.key === 'B') { e.preventDefault(); setRailOpen((v) => !v) }
       if (e.key === 'j' || e.key === 'J') { e.preventDefault(); setContextOpen((v) => !v) }
-      if (e.key === 'k' || e.key === 'K') { e.preventDefault(); setPaletteOpen((v) => !v) }
+      if ((e.key === 'k' || e.key === 'K') && !settingsOpenRef.current) {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -300,7 +326,10 @@ export default function App() {
       .then((r) => dispatch({
         type: 'viewing-started', sessionId: r.sessionId, title: r.title, entries: r.items,
       }))
-      .catch((e: Error) => dispatch({ type: 'send-failed', message: e.message }))
+      // A note, never send-failed: reading happens WHILE a turn streams (that is the
+      // feature), and send-failed would flip the composer to Send mid-stream and drop the
+      // real turn.done at the turnRunning guard.
+      .catch((e: Error) => dispatch({ type: 'error-note', message: e.message }))
   }
 
   /** Become the session being read. Called from the composer, on send, and nowhere else. */
@@ -320,6 +349,13 @@ export default function App() {
     if (info.items.length > 0) dispatch({ type: 'transcript-restored', entries: info.items })
     for (const text of info.problems) dispatch({ type: 'settings-problem', text })
     setPreviewPath(null)
+    // Re-seed the parked-decision count: 'session-switched' resets it to zero, and the
+    // host only announces CHANGES — so questions parked by last night's run were invisible
+    // the next morning until some unrelated park or resolve happened to fire the event.
+    // The queue is file-backed per workspace; opening the app is exactly when it matters.
+    client?.call('decisions.list', {})
+      .then((r) => dispatch({ type: 'decisions.changed', pending: r.decisions.length }))
+      .catch(() => { /* the next decisions.changed event corrects it */ })
   }
 
   // Stable by construction, and it has to be: `TranscriptRow` is memoised on its props, so
@@ -343,7 +379,7 @@ export default function App() {
             title: r.title, problems: r.problems, items: r.items,
             contextUsed: r.contextUsed,
           }))
-          .catch((e: Error) => dispatch({ type: 'send-failed', message: e.message }))
+          .catch((e: Error) => dispatch({ type: 'error-note', message: e.message }))
         return
       case 'file':
         openFileFromTranscript(action.path)
@@ -351,7 +387,7 @@ export default function App() {
       case 'mode':
         dispatch({ type: 'mode-changed', mode: action.mode })
         c.call('setMode', { mode: action.mode })
-          .catch((e: Error) => dispatch({ type: 'send-failed', message: e.message }))
+          .catch((e: Error) => dispatch({ type: 'error-note', message: e.message }))
         return
       case 'command':
         if (action.id === 'settings') { setSettingsOpen(true); return }
@@ -369,7 +405,7 @@ export default function App() {
             title: r.title, problems: r.problems, items: r.items,
             contextUsed: r.contextUsed,
           }))
-          .catch((e: Error) => dispatch({ type: 'send-failed', message: e.message }))
+          .catch((e: Error) => dispatch({ type: 'error-note', message: e.message }))
     }
   }
 
@@ -490,6 +526,10 @@ export default function App() {
                     onOpenFile={setPreviewPath}
                     hasSession={chatState.session !== null}
                     workspaceRoot={workspaceRoot}
+                    workspaceName={workspaceLabel.name || baseName(workspaceRoot)}
+                    folderCount={workspaceLabel.folders}
+                    isDevBridge={isDevBridge}
+                    onReopenWorkspace={() => { if (client) void connect(client, workspaceRoot, serverInput.trim() || DEFAULT_SERVER_URL) }}
                     sessionKey={chatState.session?.sessionId ?? ''}
                   />
                 </aside>

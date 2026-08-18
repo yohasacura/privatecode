@@ -92,7 +92,14 @@ function renderBlock(t: Token, key: string): ComponentChildren {
     case 'list': {
       const list = t as Tokens.List
       const items = list.items.map((item, i) => (
-        <li key={`${key}-li${i}`}>{renderTokens(item.tokens, `${key}-li${i}`)}</li>
+        <li key={`${key}-li${i}`} class={item.task ? 'md-task' : undefined}>
+          {/* The GFM tokenizer strips `[x]`/`[ ]` from the text and records it as
+              item.task/item.checked — dropped here, a model-written checklist (the shape
+              models emit for every plan) rendered as indistinguishable plain bullets, its
+              done/not-done state invisible. */}
+          {item.task && <span class="md-check" aria-hidden="true">{item.checked ? '☑' : '☐'} </span>}
+          {renderTokens(item.tokens, `${key}-li${i}`)}
+        </li>
       ))
       return list.ordered
         ? <ol key={key} start={typeof list.start === 'number' ? list.start : undefined}>{items}</ol>

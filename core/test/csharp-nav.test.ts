@@ -154,3 +154,16 @@ describe('the index after an edit', () => {
     expect(() => noteWorkspaceWrite('src/Thing.cs')).not.toThrow()
   })
 })
+
+describe('after stop', () => {
+  test('a stopped helper refuses to answer instead of respawning as an orphan', async () => {
+    // The background edge harvest keeps its own reference across a workspace switch. When
+    // `stopNavProcess()` has already dropped this instance, its next question used to see
+    // child === undefined and spawn a fresh exe that no shutdown path could ever reach —
+    // one resident .NET process per switch-during-harvest. Stopped must mean stopped.
+    const nav = new NavProcess(join(root, 'never-spawned.exe'))
+    await nav.stop()
+    await expect(nav.ask('references', { symbol: 'X' })).rejects.toThrow(/was stopped/)
+    expect((nav as unknown as { child: unknown }).child).toBeUndefined()
+  })
+})

@@ -22,13 +22,44 @@ import type { VNode } from 'preact'
 
 export interface DiffStat { added: number; removed: number }
 
+/**
+ * Which lines are the `--- path` / `+++ path` FILE HEADER, told apart from content by
+ * structure rather than by prefix.
+ *
+ * Three shapes reach this module and only two of them have headers: the tools' own diffs
+ * (`--- p` / `+++ p` at lines 0-1), raw `git diff` (the pair sits after `diff --git` /
+ * `index` lines, i.e. NOT at a fixed index), and the approval card's search→replace
+ * rendering (no headers at all). Prefix matching swallowed real changes — a deleted
+ * `-- SQL comment` renders as `--- SQL comment` — and a fixed index broke the git shape.
+ * What separates a header from any of those collisions is the STRUCTURE: a `--- ` line,
+ * immediately followed by a `+++ ` line, immediately followed by an `@@` hunk marker — or
+ * by one of `renderDiff`'s parenthesised no-change notes, the one tool output whose header
+ * has no hunk. Content cannot fake the third line: an added line starting `@@` or `(`
+ * renders as `+@@` / `+(`, and a git context line carries its leading space.
+ */
+function headerLines(lines: string[]): Set<number> {
+  const header = new Set<number>()
+  for (let i = 0; i + 2 < lines.length; i++) {
+    if (!lines[i]!.startsWith('--- ') || !lines[i + 1]!.startsWith('+++ ')) continue
+    const third = lines[i + 2]!
+    if (third.startsWith('@@') || third.startsWith('(')) {
+      header.add(i)
+      header.add(i + 1)
+    }
+  }
+  return header
+}
+
 export function diffStat(content: string): DiffStat {
   let added = 0
   let removed = 0
-  for (const line of content.split('\n')) {
-    if (line.startsWith('+') && !line.startsWith('+++')) added++
-    else if (line.startsWith('-') && !line.startsWith('---')) removed++
-  }
+  const lines = content.split('\n')
+  const header = headerLines(lines)
+  lines.forEach((line, i) => {
+    if (header.has(i)) return
+    if (line.startsWith('+')) added++
+    else if (line.startsWith('-')) removed++
+  })
   return { added, removed }
 }
 
@@ -37,18 +68,23 @@ type Row =
   | { kind: 'del'; text: string; oldNo: number }
   | { kind: 'ctx'; text: string; oldNo: number; newNo: number }
   | { kind: 'meta'; text: string }
+  /** A structurally-identified file-header line (`headerLines`) — never rendered. Its own
+   * kind, because text-matching meta rows against `---`/`+++` is exactly the prefix
+   * confusion this file exists to avoid. */
+  | { kind: 'header'; text: string }
 
 /** Splits the tool's output into numbered rows. `@@ line N @@` seeds both counters; without
  * such a header the gutters are simply absent (rows come back as `meta`/`add`/`del` with
  * no numbers to show). */
 function toRows(content: string): { rows: Row[]; numbered: boolean } {
   const lines = content.split('\n')
+  const header = headerLines(lines)
   let oldNo = 0
   let newNo = 0
   let numbered = false
   const rows: Row[] = []
 
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     const hunk = /^@@ line (\d+) @@/.exec(line)
     if (hunk) {
       // Consumed, not rendered: it only says where the change starts, which the line
@@ -58,8 +94,9 @@ function toRows(content: string): { rows: Row[]; numbered: boolean } {
       numbered = true
       continue
     }
-    if (line.startsWith('---') || line.startsWith('+++')) {
-      rows.push({ kind: 'meta', text: line })
+    // Structural, not prefix-anywhere and not positional — see `headerLines`.
+    if (header.has(i)) {
+      rows.push({ kind: 'header', text: line })
       continue
     }
     if (line.startsWith('-')) {
@@ -89,7 +126,7 @@ export function DiffView({ content, dense = false }: { content: string; dense?: 
   // message, which is a large part of what exhausted the renderer's memory.
   const { rows, numbered } = useMemo(() => toRows(content), [content])
   // Header lines carry no information the card's own title doesn't already show.
-  const body = rows.filter((r) => !(r.kind === 'meta' && (r.text.startsWith('---') || r.text.startsWith('+++'))))
+  const body = rows.filter((r) => r.kind !== 'header')
   const overflows = body.length > COLLAPSE_AFTER
   const shown = overflows && !expanded ? body.slice(0, COLLAPSE_AFTER) : body
 
@@ -99,8 +136,8 @@ export function DiffView({ content, dense = false }: { content: string; dense?: 
         <div key={i} class={`diff-row diff-${row.kind}`}>
           {numbered && (
             <>
-              <span class="diff-no">{row.kind === 'add' ? '' : row.kind === 'meta' ? '' : row.oldNo}</span>
-              <span class="diff-no">{row.kind === 'del' ? '' : row.kind === 'meta' ? '' : row.newNo}</span>
+              <span class="diff-no">{row.kind === 'del' || row.kind === 'ctx' ? row.oldNo : ''}</span>
+              <span class="diff-no">{row.kind === 'add' || row.kind === 'ctx' ? row.newNo : ''}</span>
             </>
           )}
           <span class="diff-sign">{row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '}</span>

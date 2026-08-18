@@ -3,8 +3,8 @@ import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatItem } from '../lib/state'
 import { Icon } from '../components/icons'
-import { ChangesTab, collectChanges } from './changes-tab'
-import { FilesTab } from './files-tab'
+import { collectChanges } from './changes-tab'
+import { WorkspaceTab } from './workspace-tab'
 import { HistoryTab } from './history-tab'
 import { TerminalTab } from './terminal-tab'
 import { useJobs } from '../lib/use-jobs'
@@ -28,10 +28,11 @@ import { useJobs } from '../lib/use-jobs'
  * before it started.
  */
 
-export type ContextTab = 'changes' | 'history' | 'files' | 'terminal'
+export type ContextTab = 'workspace' | 'history' | 'terminal'
 
 export function ContextPanel({
-  client, items, openPath, onOpenFile, hasSession, workspaceRoot, sessionKey,
+  client, items, openPath, onOpenFile, hasSession, workspaceRoot, workspaceName,
+  folderCount, isDevBridge, onReopenWorkspace, sessionKey,
 }: {
   client: ProtocolClient
   items: ChatItem[]
@@ -40,11 +41,16 @@ export function ContextPanel({
   hasSession: boolean
   /** Which workspace these paths belong to; see `TreePanel`. */
   workspaceRoot: string
+  workspaceName: string
+  folderCount: number
+  isDevBridge: boolean
+  /** Re-opens the workspace after its folder set was edited inline. */
+  onReopenWorkspace: () => void
   /** The live session's id. Keys the Changes tab, so its reviewed-state — a per-session
    * judgement — resets when the session does instead of leaking across. */
   sessionKey: string
 }): VNode {
-  const [tab, setTab] = useState<ContextTab>('changes')
+  const [tab, setTab] = useState<ContextTab>('workspace')
   // Polled at the panel level so the Terminal badge is live on every tab, not only its own.
   const { jobs } = useJobs(client, hasSession, 2000)
   const runningJobs = jobs.filter((j) => j.running).length
@@ -61,9 +67,8 @@ export function ContextPanel({
   )
 
   const tabs: { id: ContextTab; label: string; icon: () => VNode; badge?: number }[] = [
-    { id: 'changes', label: 'Changes', icon: Icon.diff, badge: changes.length },
+    { id: 'workspace', label: 'Workspace', icon: Icon.files, badge: changes.length },
     { id: 'history', label: 'History', icon: Icon.history },
-    { id: 'files', label: 'Files', icon: Icon.files },
     { id: 'terminal', label: 'Terminal', icon: Icon.terminal, badge: runningJobs },
   ]
 
@@ -87,25 +92,23 @@ export function ContextPanel({
       </div>
 
       <div class="tab-body">
-        {tab === 'changes' && (
-          <ChangesTab
-          key={sessionKey}
+        {tab === 'workspace' && (
+          <WorkspaceTab
+            client={client}
+            items={items}
             changes={changes}
-            onOpenFile={(p) => { onOpenFile(p); setTab('files') }}
-            client={client}
-            reloadKey={resolvedTools}
-          />
-        )}
-        {tab === 'history' && <HistoryTab client={client} reloadKey={resolvedTools} />}
-        {tab === 'files' && (
-          <FilesTab
-            client={client}
-            toolItems={items}
             openPath={openPath}
             onOpenFile={onOpenFile}
             workspaceRoot={workspaceRoot}
+            workspaceName={workspaceName}
+            folderCount={folderCount}
+            reloadKey={resolvedTools}
+            isDevBridge={isDevBridge}
+            onReopenWorkspace={onReopenWorkspace}
+            sessionKey={sessionKey}
           />
         )}
+        {tab === 'history' && <HistoryTab client={client} reloadKey={resolvedTools} />}
         {tab === 'terminal' && (
           <TerminalTab client={client} items={items} active={tab === 'terminal'} canRun={hasSession} />
         )}

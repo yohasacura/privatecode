@@ -58,18 +58,29 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
      */
     let thinkingBuffer = ''
     let textBuffer = ''
+    let toolOutputBuffer = ''
     /** Per call index, because parallel calls interleave in one stream and concatenating
      * them into one buffer would splice two JSON documents together. */
     const argsBuffer = new Map<number, string>()
     let frame: number | null = null
+    /** rAF does not tick in a hidden window (minimised app, background WebView) — found
+     * live when a running command's output never rendered on an unfocused pane. The
+     * timeout is the backstop that keeps dispatches flowing there; whichever fires first
+     * cancels the other. 100ms: imperceptible when visible, cheap when not. */
+    let backstop: ReturnType<typeof setTimeout> | null = null
+    function schedule(): void {
+      frame ??= requestAnimationFrame(flush)
+      backstop ??= setTimeout(flush, 100)
+    }
 
     function flush(): void {
-      frame = null
+      if (frame !== null) { cancelAnimationFrame(frame); frame = null }
+      if (backstop !== null) { clearTimeout(backstop); backstop = null }
       // Anything at all having streamed is proof the step is alive, which is exactly what
       // the core's deadline measures — it re-arms on every delta (`Agent.stepClock`). Sent
       // once per frame rather than per delta: the countdown only needs to know the step is
       // not silent, and the three buffers below are the same frame's worth of evidence.
-      if (thinkingBuffer !== '' || textBuffer !== '' || argsBuffer.size > 0) {
+      if (thinkingBuffer !== '' || textBuffer !== '' || toolOutputBuffer !== '' || argsBuffer.size > 0) {
         dispatch({ type: 'step.alive', atMs: Date.now() })
       }
       if (thinkingBuffer !== '') {
@@ -81,6 +92,11 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         const text = textBuffer
         textBuffer = ''
         dispatch({ type: 'text.delta', text, atMs: Date.now() })
+      }
+      if (toolOutputBuffer !== '') {
+        const text = toolOutputBuffer
+        toolOutputBuffer = ''
+        dispatch({ type: 'tool.output', text })
       }
       if (argsBuffer.size > 0) {
         // Drained into a list first: dispatching while iterating the map would let a delta
@@ -94,12 +110,12 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
     function buffer(into: 'thinking' | 'text', text: string): void {
       if (into === 'thinking') thinkingBuffer += text
       else textBuffer += text
-      frame ??= requestAnimationFrame(flush)
+      schedule()
     }
 
     function bufferArgs(index: number, args: string): void {
       argsBuffer.set(index, (argsBuffer.get(index) ?? '') + args)
-      frame ??= requestAnimationFrame(flush)
+      schedule()
     }
 
     /**
@@ -110,10 +126,6 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
      * stutter this fixes.
      */
     function emit(action: ChatAction): void {
-      if (frame !== null) {
-        cancelAnimationFrame(frame)
-        frame = null
-      }
       flush()
       dispatch(action)
     }
@@ -126,9 +138,29 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         // reported the length of the last fix rather than of the work — or, if the fixer
         // finished quickly, said nothing at all.
         if (d.step === 1 && turnStartedAtMs === 0) turnStartedAtMs = Date.now()
-        dispatch({ type: 'step.start', step: d.step, timeoutMs: d.timeoutMs, startedAtMs: Date.now() })
+        dispatch({
+          type: 'step.start', step: d.step, timeoutMs: d.timeoutMs, startedAtMs: Date.now(),
+          ...(d.firstTokenTimeoutMs !== undefined ? { firstTokenTimeoutMs: d.firstTokenTimeoutMs } : {}),
+        })
       }),
+      // Through `emit`, not a bare dispatch — the ordering IS the feature. A continuation
+      // fires right after the last streamed delta, which is still sitting in the buffer
+      // with an animation frame pending; dispatched around the buffer, that frame's flush
+      // landed a `step.alive` AFTER this action and knocked `waitingFirstToken` back to
+      // false, so the countdown judged the continuation's minutes-long re-prefill against
+      // the flat between-token budget — the exact false alarm this event exists to stop.
+      client.on('step.continuation', (d) => emit({
+        type: 'step.continuation', atMs: Date.now(),
+        ...(d.firstTokenTimeoutMs !== undefined ? { firstTokenTimeoutMs: d.firstTokenTimeoutMs } : {}),
+      })),
+      // Also through `emit`, and here the buffer holds the DEAD attempt's last deltas:
+      // flushing first attaches them to the cards this action removes, so the retry's
+      // fresh stream opens clean ones instead of appending to a corpse.
+      client.on('step.retry', () => emit({ type: 'step.retry', atMs: Date.now() })),
       client.on('thinking.delta', (d) => buffer('thinking', d.text)),
+      // A running command's stdout, coalesced per frame like every other stream: a `dir /s`
+      // can emit hundreds of chunks a second, and each dispatch is a re-render.
+      client.on('tool.output', (d) => { toolOutputBuffer += d.text; schedule() }),
       // `atMs` is the wall clock at which this event arrived; the reducer uses it only to
       // stamp the end of the reasoning block each of these closes (see state.ts).
       client.on('text.delta', (d) => buffer('text', d.text)),
@@ -158,7 +190,10 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         ...(d.draftAcceptance !== undefined ? { draftAcceptance: d.draftAcceptance } : {}),
       })),
       client.on('turn.done', (d) => {
-        emit({ type: 'turn.done', stoppedBecause: d.stoppedBecause, atMs: Date.now() })
+        emit({
+          type: 'turn.done', stoppedBecause: d.stoppedBecause, atMs: Date.now(),
+          ...(d.delivered === false ? { delivered: false as const } : {}),
+        })
         // A turn ending became a walk-away event, and nothing said so.
         //
         // Only an unattended RUN ever announced itself, because a turn was capped at forty
@@ -184,7 +219,10 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         void notify('PrivateCode needs a decision', d.summary)
       }),
       client.on('question.request', (d) => {
-        dispatch({ type: 'question.request', requestId: d.requestId, question: d.question, options: d.options })
+        dispatch({
+          type: 'question.request', requestId: d.requestId, question: d.question, options: d.options,
+          ...(d.multiSelect === true ? { multiSelect: true as const } : {}),
+        })
         void notify('PrivateCode has a question', d.question)
       }),
       client.on('todos', (d) => emit({ type: 'todos', items: d.items })),
@@ -213,6 +251,10 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         emit({ type: 'run.turn', turn: d.turn })
       }),
       client.on('run.ended', (d) => {
+        // The run's clock must not leak into the next manual turn: left set, the first
+        // follow-up after an overnight run notified "The turn ran for 9h" about a
+        // ten-second reply.
+        turnStartedAtMs = 0
         dispatch({ type: 'run.ended', stoppedBecause: d.stoppedBecause, detail: d.detail, turns: d.turns })
         void notify(
           `Run ended: ${d.stoppedBecause}`,
@@ -237,8 +279,10 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
     ]
     return () => {
       // A frame scheduled against a subscription that is going away would dispatch into a
-      // session this hook has already left.
+      // session this hook has already left. The backstop is armed in the same places the
+      // frame is, and leaking it means the same stale dispatch up to 100ms later.
       if (frame !== null) cancelAnimationFrame(frame)
+      if (backstop !== null) clearTimeout(backstop)
       for (const u of unsubs) u()
     }
   }, [client])

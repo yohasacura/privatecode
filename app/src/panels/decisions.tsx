@@ -49,8 +49,18 @@ function OneDecision({
   const [rule, setRule] = useState(rules[0] ?? '')
   const [layer, setLayer] = useState<'session' | 'local' | 'project' | 'user'>('local')
   const [answer, setAnswer] = useState('')
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
 
   if (decision.kind === 'question') {
+    const multi = decision.multiSelect === true
+    const options = decision.options ?? []
+    // Same shape as the live card: single-select answers on click, multi-select toggles
+    // into `picked` and resolves through one button, options kept in the model's order.
+    const combined = (): string => {
+      const parts = options.filter((o) => picked.has(o))
+      if (answer.trim() !== '') parts.push(answer.trim())
+      return parts.join('; ')
+    }
     return (
       <div class="decision">
         <div class="decision-head">
@@ -58,22 +68,44 @@ function OneDecision({
           <span class="decision-title">{decision.question}</span>
         </div>
         <div class="decision-actions">
-          {(decision.options ?? []).map((option) => (
-            <button key={option} class="btn" onClick={() => onResolve({ id: decision.id, answer: option })}>
-              {option}
+          {options.map((option) => (
+            <button
+              key={option}
+              class={multi && picked.has(option) ? 'btn btn-toggled' : 'btn'}
+              aria-pressed={multi ? picked.has(option) : undefined}
+              onClick={() => {
+                if (!multi) { onResolve({ id: decision.id, answer: option }); return }
+                setPicked((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(option)) next.delete(option)
+                  else next.add(option)
+                  return next
+                })
+              }}
+            >
+              {multi ? `${picked.has(option) ? '☑' : '☐'} ${option}` : option}
             </button>
           ))}
           <input
             class="input"
             value={answer}
             onInput={(e) => setAnswer(e.currentTarget.value)}
-            placeholder="or type an answer"
+            placeholder={multi ? 'add your own answer (optional)' : 'or type an answer'}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && answer.trim() !== '') {
-                onResolve({ id: decision.id, answer: answer.trim() })
-              }
+              if (e.key !== 'Enter') return
+              const full = multi ? combined() : answer.trim()
+              if (full !== '') onResolve({ id: decision.id, answer: full })
             }}
           />
+          {multi && (
+            <button
+              class="btn btn-primary"
+              disabled={combined() === ''}
+              onClick={() => onResolve({ id: decision.id, answer: combined() })}
+            >
+              Answer
+            </button>
+          )}
         </div>
       </div>
     )

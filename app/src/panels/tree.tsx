@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { ProtocolClient } from '../lib/client'
+import type { ChangeDecor } from '../lib/path-tree'
 import type { ChatItem } from '../lib/state'
 import { Icon } from '../components/icons'
 
@@ -61,7 +62,7 @@ export function affectedDirectories(name: string, argsJson: string): string[] {
 }
 
 export function TreePanel({
-  client, toolItems, onOpenFile, workspaceRoot,
+  client, toolItems, onOpenFile, workspaceRoot, decor,
 }: {
   client: ProtocolClient
   toolItems: ChatItem[]
@@ -77,6 +78,9 @@ export function TreePanel({
    * in the new one. Clicking one would have asked the host for a path outside the jail.
    */
   workspaceRoot: string
+  /** Session-change overlay for the unified Workspace view: badges on changed files and
+   * change counts on the directories that contain them. Absent = the plain Files tree. */
+  decor: ChangeDecor | undefined
 }) {
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']))
@@ -124,7 +128,16 @@ export function TreePanel({
       processedToolIds.current.add(item.id)
       if (!item.result.ok) continue
       for (const dir of affectedDirectories(item.name, item.args)) {
-        if (dirsRef.current[dir] !== undefined) loadDir(dir)
+        // Walk UP to the nearest directory the tree has actually loaded. The affected dir
+        // is the file's immediate parent — for a write into a freshly created folder that
+        // parent was never loaded, the event was dropped, and the new folder stayed
+        // invisible until a remount. The loaded ANCESTOR's contents did change (it gained
+        // the folder), so that is the one to re-fetch.
+        let target: string | undefined = dir
+        while (target !== undefined && dirsRef.current[target] === undefined) {
+          target = target === '' ? undefined : (target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : '')
+        }
+        if (target !== undefined) loadDir(target)
       }
     }
   }, [toolItems])
@@ -146,14 +159,14 @@ export function TreePanel({
     <div class="tree-panel">
       <DirChildren
         path="" dirs={dirs} expanded={expanded} onToggle={toggle} onOpenFile={onOpenFile}
-        onRetry={loadDir} depth={0}
+        onRetry={loadDir} depth={0} decor={decor}
       />
     </div>
   )
 }
 
 function DirChildren({
-  path, dirs, expanded, onToggle, onOpenFile, onRetry, depth,
+  path, dirs, expanded, onToggle, onOpenFile, onRetry, depth, decor,
 }: {
   path: string
   dirs: Record<string, DirState>
@@ -168,19 +181,20 @@ function DirChildren({
    * more special case wired to session lifecycle. */
   onRetry: (path: string) => void
   depth: number
+  decor: ChangeDecor | undefined
 }) {
   const state = dirs[path]
   if (!state) return null
   if (state.error) {
     return (
-      <div
+      <button
         class="tree-error"
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
         onClick={() => onRetry(path)}
         title="click to retry"
       >
         ⚠ {state.error} (click to retry)
-      </div>
+      </button>
     )
   }
   if (state.entries === null) {
@@ -194,22 +208,38 @@ function DirChildren({
         const isExpanded = expanded.has(childPath)
         return (
           <div key={childPath}>
-            <div
+            {/* A button, not a div with onClick: bare divs cannot take focus, so the whole
+                tree was unreachable by keyboard — not one directory could be expanded, not
+                one file opened, without a mouse. A button gets Tab, Enter and Space for
+                free, and aria-expanded tells a screen reader which rows unfold. */}
+            <button
               class={`tree-row ${entry.dir ? 'tree-dir' : 'tree-file'}`}
               style={{ paddingLeft: `${depth * 12 + 6}px` }}
               onClick={() => (entry.dir ? onToggle(childPath) : onOpenFile(childPath))}
               title={childPath}
+              aria-expanded={entry.dir ? isExpanded : undefined}
             >
               <span class="tree-chevron">
                 {entry.dir ? (isExpanded ? Icon.chevronDown() : Icon.chevronRight()) : null}
               </span>
               <span class="tree-icon">{entry.dir ? Icon.folder() : Icon.file()}</span>
               <span class="tree-name">{entry.name}</span>
-            </div>
+              {/* The session's fingerprints, right on the tree: a changed file carries its
+                  diff shape, a folder carries how many changed files hide under it. */}
+              {entry.dir && decor !== undefined && (decor.dirs.get(childPath) ?? 0) > 0 && (
+                <span class="tree-change-count">{decor.dirs.get(childPath)}</span>
+              )}
+              {!entry.dir && decor?.files.has(childPath) && (
+                <span class={decor.files.get(childPath)!.lastFailed ? 'tree-change-stat tree-change-failed' : 'tree-change-stat'}>
+                  {decor.files.get(childPath)!.revisions > 1 ? `${decor.files.get(childPath)!.revisions}× ` : ''}
+                  +{decor.files.get(childPath)!.added} −{decor.files.get(childPath)!.removed}
+                </span>
+              )}
+            </button>
             {entry.dir && isExpanded && (
               <DirChildren
                 path={childPath} dirs={dirs} expanded={expanded} onToggle={onToggle}
-                onOpenFile={onOpenFile} onRetry={onRetry} depth={depth + 1}
+                onOpenFile={onOpenFile} onRetry={onRetry} depth={depth + 1} decor={decor}
               />
             )}
           </div>

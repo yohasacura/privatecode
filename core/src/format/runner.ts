@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { execa } from 'execa'
 import { ruleFor, type FormatRule } from './config.js'
+import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import type { Workspace } from '../workspace.js'
 
 /**
@@ -60,8 +61,8 @@ export function createFormatRunner(rules: FormatRule[], workspace: Workspace): F
 
       try {
         const result = await execa(
-          'powershell.exe',
-          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
+          POWERSHELL_EXE,
+          powershellArgs(command),
           {
             cwd: workspace.root,
             timeout: TIMEOUT_MS,

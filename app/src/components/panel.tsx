@@ -147,29 +147,3 @@ export function PanelSection({
     </section>
   )
 }
-
-/**
- * The directory heading inside a grouped list.
- *
- * Not a `PanelRow`: a row is something you can open, revert or tick, and this is a label.
- * Making it a row would put a chevron column and an action column on a line that has
- * neither, which is the kind of borrowed structure that makes a column look busy without
- * carrying anything.
- */
-export function PanelGroupHead({
-  dir, fullDir, meta,
-}: {
-  dir: string
-  fullDir: string
-  meta?: ComponentChildren
-}): VNode | null {
-  // Everything shares one directory, so it is already in the section subtitle; a heading
-  // here would repeat it and separate nothing from nothing.
-  if (dir === '') return null
-  return (
-    <div class="pgroup" title={fullDir}>
-      <span class="pgroup-dir">{dir}</span>
-      {meta !== undefined && <span class="pgroup-meta">{meta}</span>}
-    </div>
-  )
-}

@@ -163,7 +163,29 @@ function parseNumberOrText(raw: string, optionCount: number): ParsedAnswer {
 async function askUser(rl: ReadlineLike, q: UserQuestion): Promise<string> {
   rl.write(`\n${q.question}\n`)
   q.options.forEach((o, i) => rl.write(`  [${i + 1}] ${o}\n`))
-  const prompt = 'Answer (number or free text): '
+  const prompt = q.multiSelect === true
+    ? 'Answer (numbers like 1,3, or free text): '
+    : 'Answer (number or free text): '
+
+  // Multi-select: a comma list of numbers becomes those options joined "; " — the same
+  // one-string answer shape every other port produces. Anything that is not a pure
+  // number list falls through to the single-answer parse below, so free text and single
+  // numbers keep working unchanged.
+  if (q.multiSelect === true) {
+    const raw = (await rl.question(prompt)).trim()
+    if (/^\d+(\s*,\s*\d+)+$/.test(raw)) {
+      const chosen = [...new Set(raw.split(',').map((n) => Number(n.trim())))]
+        .filter((n) => n >= 1 && n <= q.options.length)
+        .sort((a, b) => a - b)
+        .map((n) => q.options[n - 1]!)
+      if (chosen.length > 0) return chosen.join('; ')
+    }
+    const parsed = parseNumberOrText(raw, q.options.length)
+    if (parsed.kind === 'option') return q.options[parsed.index]!
+    if (parsed.kind === 'text') return parsed.text
+    rl.write(`Enter numbers from 1 to ${q.options.length} (comma-separated), or type your own answer: `)
+    return (await rl.question(prompt)).trim()
+  }
 
   const first = parseNumberOrText(await rl.question(prompt), q.options.length)
   if (first.kind === 'option') return q.options[first.index]!

@@ -30,9 +30,15 @@ import type { ToolContext } from '../tools/types.js'
 import { Transcript } from '../transcript/transcript.js'
 import { Workspace } from '../workspace.js'
 import {
-  COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, continuationInventory, generateCompaction,
-  selectCompactionTail, touchedPaths,
+  COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, approxTokensOf, collapseSupersededReads,
+  continuationInventory, generateCompaction, selectCompactionTail, touchedPaths,
 } from './compaction.js'
+import {
+  DIFF_REVIEW_MIN_CHARS, acceptanceFailureMessage, checkAcceptance, distillContract,
+  improveDraft, looksLikeTask, renderCheckedState, renderContract, reviewDiff,
+  reviewFailureMessage, type DraftSuggestions,
+  saysFinished,
+} from './contract.js'
 import { SessionStore, type CompactionMarker, type SessionMeta } from './store.js'
 
 /** Task 9: background auto-compaction. Omitting this entirely from `SessionOptions`
@@ -43,6 +49,16 @@ export interface CompactionOptions {
   contextLength: number
   /** Fraction of `contextLength` that trips the background trigger. Default 0.8. */
   triggerRatio?: number
+  /**
+   * ABSOLUTE token count that trips the background trigger, whichever of the two fires
+   * first. The ratio scales with the window, and at 262k that means compacting near 210k
+   * — several multiples past where every published long-context measurement (including
+   * the Qwen family) shows accuracy already collapsed. This is the knob the context-rot
+   * probe (`spike/context-rot-probe.mjs`) exists to calibrate: measure the knee, set this
+   * to it via settings.json `"compaction": { "triggerTokens": N }`. Absent = ratio only,
+   * yesterday's behaviour.
+   */
+  triggerTokens?: number
   /** How many of the old transcript's trailing messages a swap keeps verbatim (subject
    * to the clean-boundary walk -- see `selectCompactionTail`). Default 6. */
   keepRecent?: number
@@ -186,6 +202,11 @@ export interface SessionOptions {
     command: string; ok: boolean; attempt: number; folder?: string
     exitCode?: number; problem?: string
   }): void
+  /** Fired once per acceptance-gate check on a contract-bearing turn, so a front end can
+   * show that the seconds it costs bought something — the same visibility rule onVerify
+   * follows. `unmet > 0` means a fix round follows. `kind: 'review'` is the fresh-context
+   * diff review, where `unmet` counts the issues it raised. */
+  onAcceptance?(info: { met: number; unmet: number; round: number; kind: 'criteria' | 'review' }): void
   /**
    * Snapshot the workspace after every turn that changed it, and record what changed in
    * a work log. Absent means neither happens, which is what every caller that predates
@@ -250,6 +271,39 @@ const SUMMARY_MAX_INPUT_TOKENS = 40_000
 const TAIL_SHARE = 0.2
 
 /**
+ * Ceiling on the kept-verbatim tail in TOKENS, independent of the window.
+ *
+ * `TAIL_SHARE` was measured against a 131k window, where a fifth is ~26k. The share scales
+ * with the window but the reason for a tail does not: it exists so the model keeps its
+ * immediate working set across a swap, and a working set is a couple of files and the last
+ * exchange at any window size — not a fifth of 262k. Watched live at 262k: one turn whose
+ * two search results totalled ~40k tokens sat entirely inside the 52k share, the middle
+ * fell under `MIN_COMPACTABLE_TOKENS`, and `/compact` answered "nothing to compact yet" to
+ * a 55k conversation — the exact situation compaction exists for, unreachable on exactly
+ * the windows where compaction matters most. 24k keeps the measured 131k behaviour almost
+ * unchanged and stops the tail growing with the window.
+ *
+ * Also the budget when no window size is known at all (`forceCompact` with compaction
+ * never configured): unbounded was the previous behaviour there, and it had the same hole.
+ */
+const TAIL_TOKEN_CAP = 24_000
+
+/**
+ * The tail allowance for a given window: the share, capped absolutely.
+ *
+ * One function on purpose, used by the tail selector, the nothing-to-gain gate AND the
+ * per-step result budget. The step budget and the tail budget being the same number is a
+ * load-bearing invariant (see the comment beside `stepResultBudgetChars`): a step that fits
+ * the tail can always be compacted AROUND; the cap shrinking the tail while the step budget
+ * still allowed a share-sized batch quietly re-opened the gap at big windows.
+ */
+function tailBudgetTokens(contextLength: number | undefined): number {
+  return contextLength === undefined
+    ? TAIL_TOKEN_CAP
+    : Math.min(Math.floor(contextLength * TAIL_SHARE), TAIL_TOKEN_CAP)
+}
+
+/**
  * Below this much replaceable conversation, a summary cannot be smaller than what it
  * replaces: the briefing alone is budgeted at 3000 tokens (compaction.ts's MAX_TOKENS),
  * plus the acknowledgement and the instruction. Twice that is the point where the trade
@@ -298,6 +352,23 @@ const VERIFY_BURST_CAP = 8
 
 /** Past this, a check cannot run per write without dominating the turn it protects. */
 const SLOW_VERIFY_SECONDS = 8
+
+/**
+ * How many times the acceptance gate may hand unmet contract criteria back before letting
+ * the turn end anyway. Two: the first round closes forgotten work, the second closes what
+ * the first round's work missed — and a model that has not met a criterion after two
+ * directed attempts is not going to meet it by being asked a third time; the transcript
+ * honestly says what is still open.
+ */
+const MAX_ACCEPTANCE_ROUNDS = 2
+
+/**
+ * The escalated retry's sampling: temperature up from the frozen 0.6, everything else
+ * unchanged. High enough that a genuinely different approach is reachable, low enough to
+ * stay far from the gibberish zone — and well above `assertSafeSampling`'s floor, which
+ * guards the OTHER direction (the measured thinking runaway lives at low temperatures).
+ */
+const ESCALATION_SAMPLING = { temperature: 0.85, top_p: 0.95, top_k: 20, min_p: 0 }
 
 /**
  * Where the model is told how full its context is.
@@ -538,7 +609,22 @@ export class Session {
 
       this.id = meta.id
       this.meta = meta
-      this.transcript = transcript
+      // Superseded read bodies are dropped at RESUME as well as at swaps: the reason the
+      // collapse is scoped to cache-rebuilding moments is that a mid-session rewrite would
+      // invalidate the server's prefix cache — and at construction the cache is cold by
+      // definition (`promptCacheCold` starts true), so this moment is free. On a fat
+      // resumed session the stale read bodies were ~30% of the first prefill, paid in
+      // full before the first token and again in rot for the rest of the session.
+      const collapsed = collapseSupersededReads([...transcript.messages()])
+      if (collapsed.some((m, i) => m !== transcript.messages()[i])) {
+        // Message COUNT is unchanged (collapse replaces bodies, never removes rows), so
+        // the persistence cursor below stays correct; the disk record keeps every byte.
+        const rebuilt = new Transcript()
+        for (const m of collapsed) rebuilt.append(m)
+        this.transcript = rebuilt
+      } else {
+        this.transcript = transcript
+      }
       this.loadedCompaction = compaction
       this.persistedCount = transcript.count()
       this.titled = meta.title !== ''
@@ -658,6 +744,40 @@ export class Session {
   }
 
   /**
+   * A successful `run_command` of the project's own verify command counts as the check.
+   *
+   * Watched live: the model habitually self-checks — every write cycle ended with it
+   * running exactly the configured command, after which the write-boundary check ran the
+   * SAME command over the SAME bytes and the end-of-turn pass could add a third. The model
+   * saw the output; the question is answered. Recording it here lets `verifyMidTurn` (which
+   * skips when no write followed the last check) and `verifyAndFix`'s already-green skip
+   * treat the model's run as the boundary run.
+   *
+   * Success only, and only in a single-folder workspace: a failing run must leave the
+   * fingerprint alone so the end-of-turn fix rounds still fire, and with per-folder
+   * commands one root-level run does not answer for the other folders. The comparison is
+   * `commandMatches`' own normalization (trim, collapse whitespace, lowercase), and a call
+   * that names a `cwd` is running the command somewhere the configured check does not.
+   */
+  private noteModelRanVerify(name: string, argsJson: string | undefined): void {
+    const command = this.opts.verify?.command
+    if (name !== 'run_command' || command === undefined) return
+    if (this.opts.verifyFolders !== undefined && Object.keys(this.opts.verifyFolders).length > 0) return
+    let args: { command?: unknown; cwd?: unknown }
+    try {
+      args = JSON.parse(argsJson ?? '{}') as { command?: unknown; cwd?: unknown }
+    } catch {
+      return
+    }
+    if (typeof args.command !== 'string') return
+    if (typeof args.cwd === 'string' && args.cwd !== '' && args.cwd !== '.') return
+    const norm = (c: string): string => c.trim().replace(/\s+/g, ' ').toLowerCase()
+    if (norm(args.command) !== norm(command)) return
+    this.writesAtLastVerify = this.writeCount
+    this.lastVerifyFingerprint = 'ok'
+  }
+
+  /**
    * Runs the project's own check after a turn that changed something, and hands a failure
    * back to the model before the turn is allowed to end.
    *
@@ -674,9 +794,15 @@ export class Session {
    * the model rewriting working code.
    */
   private async verifyAndFix(
-    result: TurnResult, writesThisTurn: number, signal?: AbortSignal,
+    result: TurnResult, writesThisTurn: number, turnStartIndex: number, signal?: AbortSignal,
   ): Promise<TurnResult> {
-    if (writesThisTurn === 0 || result.stoppedBecause !== 'done') return result
+    if (result.stoppedBecause !== 'done') return result
+    // A turn that wrote nothing cannot have broken the build — but it CAN be the turn
+    // that claims the task finished. Found by the first giant unattended probe: turn 1
+    // did all the work, turn 3 said "задача полностью завершена" with zero writes, and
+    // the writes guard silently skipped the contract gate on exactly the turn whose
+    // claim it exists to audit. The gate carries its own saysFinished/satisfied guards.
+    if (writesThisTurn === 0) return await this.acceptanceGate(result, turnStartIndex, signal)
 
     // Nothing has been written since the mid-turn check last ran, and it passed. Running the
     // same command again over the same bytes would ask a question that has already been
@@ -684,15 +810,18 @@ export class Session {
     // ORDINARY case rather than a rare coincidence: a turn with one edit would otherwise
     // build twice. A failing last check still falls through, because the fix rounds below
     // are the part that acts on it.
+    //
+    // Skips the BUILD, not the CONTRACT: found live, on the very first turn where the
+    // model self-ran the check — the dedup returned here and the acceptance gate below
+    // never ran at all. A green build answers "does it compile", never "is the task met".
     if (this.writesAtLastVerify === this.writeCount && this.lastVerifyFingerprint === 'ok') {
-      return result
+      return await this.acceptanceGate(result, turnStartIndex, signal)
     }
 
     // Only the folders this turn actually wrote to, each with its own command. Running every
     // folder's suite after a one-line edit in one of them turns a thirty-second turn into
     // three minutes, and the folders that were not touched cannot have been broken.
     const jobs = this.verifyJobs()
-    if (jobs.length === 0) return result
 
     let current = result
     for (const job of jobs) {
@@ -701,7 +830,154 @@ export class Session {
       // one would bury the failure the model was just handed.
       if (current.stoppedBecause !== 'done') return current
     }
+    // The contract gate runs AFTER the build gate: green code that misses a criterion is
+    // a different failure from red code, and handing the model both at once buries one.
+    return await this.acceptanceGate(current, turnStartIndex, signal)
+  }
+
+  /**
+   * The other half of "done": the build passing says the code works, this says the TASK is
+   * met. Same fixer mechanics as `verifyOne`; the check itself is a forced structured
+   * generation over the live transcript (contract.ts), so it costs one generation and only
+   * on turns that wrote something under a distilled contract — the exact turns where the
+   * measured failure ("finished with conviction, criteria plainly unmet") lives.
+   */
+  private async acceptanceGate(
+    result: TurnResult, turnStartIndex: number, signal?: AbortSignal,
+  ): Promise<TurnResult> {
+    const contract = this.meta.contract
+    // A SATISFIED contract has retired: the follow-up turns after a finished task must
+    // not keep paying an audit (and a cache displacement) for criteria already met.
+    if (contract === undefined || contract.satisfied === true) return result
+    if (result.stoppedBecause !== 'done') return result
+    // The audit runs when the model CLAIMS the task is over, not on every intermediate
+    // done-turn of a long task: each check displaces the server cache (minutes of
+    // re-prefill on a fat session), and an intermediate turn's work is audited anyway by
+    // whichever later turn finally claims completion. A finished task whose closing prose
+    // never matches simply keeps its contract un-retired — the next task-shaped request
+    // replaces it, and nothing was silently skipped that a later turn would not cover.
+    if (!saysFinished(result.finalText)) return result
+    let current = result
+    let clean = false
+    const writesAtGateStart = this.writeCount
+    for (let round = 1; round <= MAX_ACCEPTANCE_ROUNDS; round++) {
+      if (signal?.aborted) return current
+      // The check's prompt diverges from the conversation (different tool list), so the
+      // server's cache is displaced exactly as a compaction generation displaces it —
+      // flagged so the next request buys its cold prefill honestly.
+      this.compactionDisplacedCache = true
+      this.promptCacheCold = true
+      const report = await checkAcceptance(
+        this.opts.client, this.transcript.messages(), contract, signal,
+      )
+      // A check that could not run must not block the turn; the build gate already ran.
+      if (report === null) return current
+      this.lastUnmetCount = report.unmet.length
+      // The audit's verdict becomes part of the contract itself: every later swap promotes
+      // "where the task actually STANDS" into message 0, not only what done would mean.
+      contract.checkedState = renderCheckedState(contract, report)
+      this.opts.store?.saveMeta(this.meta)
+      this.opts.onAcceptance?.({ met: report.met, unmet: report.unmet.length, round, kind: 'criteria' })
+      if (report.unmet.length === 0) { clean = true; break }
+      const fixer = this.buildAgent(signal)
+      const fixed = await fixer.runTurn(acceptanceFailureMessage(report))
+      current = { ...fixed, steps: current.steps + fixed.steps }
+      if (current.stoppedBecause !== 'done') return current
+    }
+    // A fixer that wrote may have left the build red — the end-of-turn verify already
+    // reported green BEFORE the fixer existed, and 'done' over a broken build is the
+    // exact lie this whole gate exists to prevent.
+    if (this.writeCount !== writesAtGateStart) {
+      for (const job of this.verifyJobs()) {
+        current = await this.verifyOne(job, current, signal)
+        if (current.stoppedBecause !== 'done') return current
+      }
+    }
+    current = await this.freshReview(contract, current, turnStartIndex, signal)
+    if (clean && current.stoppedBecause === 'done' && this.lastUnmetCount === 0) {
+      contract.satisfied = true
+      this.opts.store?.saveMeta(this.meta)
+    }
     return current
+  }
+
+  /**
+   * The independent read: the same model reviews this turn's DIFF in a context that never
+   * saw the work being made — no transcript, no reasoning, no belief. Runs once, after the
+   * contract gate is satisfied, only when the turn produced enough diff for an independent
+   * reader to see something the in-context check cannot (`DIFF_REVIEW_MIN_CHARS`). One fix
+   * round on findings, no re-review: the transcript then honestly carries both the
+   * reviewer's claims and what the fixer did about them.
+   *
+   * The request's prompt shares nothing with the conversation, so it displaces the
+   * server's cache — flagged exactly the way a compaction generation is, and worth the
+   * same price for the same reason: it happens at a turn boundary, once.
+   */
+  private async freshReview(
+    contract: NonNullable<SessionMeta['contract']>,
+    result: TurnResult,
+    turnStartIndex: number,
+    signal?: AbortSignal,
+  ): Promise<TurnResult> {
+    if (signal?.aborted || result.stoppedBecause !== 'done') return result
+    const diff = this.turnDiffText(turnStartIndex)
+    if (diff.length < DIFF_REVIEW_MIN_CHARS) return result
+    this.compactionDisplacedCache = true
+    this.promptCacheCold = true
+    const issues = await reviewDiff(this.opts.client, contract, diff, signal)
+    if (issues !== null) {
+      this.lastUnmetCount = Math.max(this.lastUnmetCount, issues.length)
+      this.opts.onAcceptance?.({ met: 0, unmet: issues.length, round: 1, kind: 'review' })
+    }
+    if (issues === null || issues.length === 0) return result
+    const writesBeforeFix = this.writeCount
+    const fixer = this.buildAgent(signal)
+    const fixed = await fixer.runTurn(reviewFailureMessage(issues))
+    let current: TurnResult = { ...fixed, steps: result.steps + fixed.steps }
+    // Same honesty rule as the acceptance fixers: writes after the last verify must not
+    // end a turn unverified.
+    if (this.writeCount !== writesBeforeFix && current.stoppedBecause === 'done') {
+      for (const job of this.verifyJobs()) {
+        current = await this.verifyOne(job, current, signal)
+        if (current.stoppedBecause !== 'done') break
+      }
+    }
+    return current
+  }
+
+  /**
+   * Every diff this turn's WRITES produced, in order.
+   *
+   * Two sources, both from the turn's slice of the transcript: edit-family tool RESULTS
+   * that begin with the diff header (`startsWith`, never `includes` — a read_file result
+   * can EMBED a change-notice diff for edits this turn did not make, and reviewing those
+   * judged someone else's changes), and `write_file` CALL arguments — a created file's
+   * result line carries no diff at all, and a turn of pure creation is the biggest change
+   * a review can look at.
+   */
+  private turnDiffText(turnStartIndex: number): string {
+    const parts: string[] = []
+    for (const m of this.transcript.messages().slice(turnStartIndex)) {
+      if (m.role === 'tool' && typeof m.content === 'string' && m.content.startsWith('--- ')) {
+        parts.push(m.content)
+        continue
+      }
+      for (const call of m.tool_calls ?? []) {
+        if (call.function.name !== 'write_file') continue
+        try {
+          const args = JSON.parse(call.function.arguments) as { path?: unknown; content?: unknown }
+          if (typeof args.path === 'string' && typeof args.content === 'string') {
+            // Generous, and ANNOUNCED when it clips: silently truncated input is the one
+            // failure nobody can trace afterwards. The window affords whole files.
+            const body = args.content.length > 24_000
+              ? `${args.content.slice(0, 24_000)}\n[... file clipped for review]`
+              : args.content
+            parts.push(`+++ ${args.path} (created this turn)\n${body}`)
+          }
+        } catch { /* malformed arguments never reached the workspace either */ }
+      }
+    }
+    return parts.join('\n\n')
   }
 
   /** The verify commands that apply to what this turn wrote, in mount order. */
@@ -755,6 +1031,39 @@ export class Session {
       // transcript says so, which is the honest end state.
       if (current.stoppedBecause !== 'done') return current
     }
+
+    // ESCALATION, once, after the in-place rounds are spent: same-approach repair has now
+    // failed repeatedly, and a third identical ask converges on the same patch. The retry
+    // changes TWO things the rounds could not — the framing (stop repairing the previous
+    // attempt, choose a different approach) and the sampling (temperature up, so a
+    // different approach is actually reachable off the identical cached prefix; sampling
+    // curves are steepest in the first extra draws). One escalated turn, then one honest
+    // final check; a workspace still red after that ends the turn red, said plainly.
+    if (signal?.aborted) return current
+    const still = await runVerify(job.spec, job.root, signal)
+    this.opts.onVerify?.({
+      command: job.spec.command, ok: still.ok, attempt: MAX_VERIFY_ROUNDS + 1,
+      ...(this.workspace.multi ? { folder: job.folder } : {}),
+      ...(still.exitCode !== null ? { exitCode: still.exitCode } : {}),
+      ...(still.problem !== undefined ? { problem: still.problem } : {}),
+    })
+    if (still.ok || still.problem !== undefined) return current
+    const escalated = this.buildAgent(signal, ESCALATION_SAMPLING)
+    const where = this.workspace.multi ? `In the "${job.folder}" folder: ` : ''
+    const retried = await escalated.runTurn(
+      `${where}[${MAX_VERIFY_ROUNDS} repair attempts left the check failing. STOP repairing ` +
+      'the previous attempt — re-read the failing code from the file, pick a DIFFERENT ' +
+      `approach, and implement that instead.]\n${verifyFailureMessage(job.spec, still)}`,
+    )
+    current = { ...retried, steps: current.steps + retried.steps }
+    if (current.stoppedBecause !== 'done' || signal?.aborted) return current
+    const final = await runVerify(job.spec, job.root, signal)
+    this.opts.onVerify?.({
+      command: job.spec.command, ok: final.ok, attempt: MAX_VERIFY_ROUNDS + 2,
+      ...(this.workspace.multi ? { folder: job.folder } : {}),
+      ...(final.exitCode !== null ? { exitCode: final.exitCode } : {}),
+      ...(final.problem !== undefined ? { problem: final.problem } : {}),
+    })
     return current
   }
 
@@ -788,6 +1097,12 @@ export class Session {
    */
   noteRunEnded(detail: string): void {
     this.workLog?.appendRunEnd(new Date(), this.turnNumber, detail)
+  }
+
+  /** How many contract criteria (or review findings) the last gate left standing — the
+   * unattended runner reads it so a run cannot end 'done' on a turn the gate knows failed. */
+  lastAcceptanceUnmet(): number {
+    return this.lastUnmetCount
   }
 
   /**
@@ -830,24 +1145,45 @@ export class Session {
   }
 
   /**
-   * How much a compaction could actually free: the messages a briefing would replace.
+   * The tail a swap would keep, computed the one way both askers must share.
    *
-   * Everything except the system message and the tail that would be kept verbatim — which is
-   * exactly what `applyCompactionSwap` would drop.
+   * The budget is the window share capped absolutely (`TAIL_TOKEN_CAP` explains why), and it
+   * lives here so the gate (`compactableTokens`) and the swap (`applyCompactionSwap`) can
+   * never disagree about what stays — the gate declining a swap that would in fact have
+   * freed half the window is exactly what a drifted second copy produced.
+   */
+  private compactionTailNow(): ReturnType<typeof selectCompactionTail> {
+    const keepRecent = this.opts.compaction?.keepRecent ?? 6
+    const { tail, droppedMessages } = selectCompactionTail(
+      this.transcript.messages(), keepRecent, tailBudgetTokens(this.opts.compaction?.contextLength),
+    )
+    // Superseded read bodies are dropped HERE, inside the one shared helper, so the
+    // nothing-to-gain gate and the swap see the same collapsed sizes.
+    return { tail: collapseSupersededReads([...tail]), droppedMessages }
+  }
+
+  /**
+   * How much a compaction could actually free: everything that will not survive the swap
+   * verbatim.
+   *
+   * That is the summarised MIDDLE plus what clipping the kept tail's oversized messages
+   * frees — so it is computed as "all of it minus the tail as it would actually be kept",
+   * with the clipping applied. The first version counted only the middle, and a session
+   * whose bulk sat in two huge tool results INSIDE the tail read as "nothing to gain" at
+   * 55k tokens: the gate refused precisely the compaction that would have freed the most.
    */
   private compactableTokens(): number {
     const messages = this.transcript.messages()
-    const keepRecent = this.opts.compaction?.keepRecent ?? 6
-    const tailBudget = this.opts.compaction?.contextLength === undefined
-      ? 0
-      : Math.floor(this.opts.compaction.contextLength * TAIL_SHARE)
-    const { tail } = selectCompactionTail(messages, keepRecent, tailBudget)
+    const { tail } = this.compactionTailNow()
     const floor = messages.length > 0 && messages[0]!.role === 'system' ? 1 : 0
-    const middle = messages.slice(floor, messages.length - tail.length)
-    return middle.reduce(
-      (sum, m) => sum + Math.ceil(((m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0)) / 4),
-      0,
-    )
+    // `approxTokensOf`, not a local formula: it counts `tool_calls` arguments, and a
+    // write-heavy stretch is whole files in `arguments` with `content: null`. A local
+    // content-only count here once read such a stretch as "nothing to compact" while the
+    // no-progress guard (Transcript.approxTokens) counted it fully — the gate and the
+    // guard disagreeing about the same bytes.
+    const total = messages.slice(floor).reduce((sum, m) => sum + approxTokensOf(m), 0)
+    const kept = tail.reduce((sum, m) => sum + approxTokensOf(m), 0)
+    return Math.max(0, total - kept)
   }
 
   /** The checkpoints taken in this workspace, newest first. Empty when not a long run. */
@@ -1154,6 +1490,7 @@ export class Session {
           // and jailed the path, and the transcript is not a place to re-derive it from.
           this.notePathWritten(this.lastToolArgs.get(name))
         } else if (COMMAND_TOOLS.has(name)) this.commandCount += 1
+        this.noteModelRanVerify(name, this.lastToolArgs.get(name))
       }
       host?.onToolResult?.(name, result as never, callId)
     }
@@ -1179,7 +1516,15 @@ export class Session {
    * separate "was there a swap" branch needed), and the trigger check that may START the
    * next background generation runs last, after this turn's own persistence.
    */
-  async send(text: string, signal?: AbortSignal): Promise<TurnResult> {
+  async send(
+    text: string, signal?: AbortSignal, sendOpts?: {
+      /** Whether this text is a user-authored task worth distilling a contract from.
+       * Callers that KNOW (the host sees the raw typed text before attachments inflate
+       * it; the unattended runner knows a nudge from the task) say so; absent falls back
+       * to the text heuristic. */
+      distill?: boolean
+    },
+  ): Promise<TurnResult> {
     if (this.sending) {
       throw new Error('a turn is already running in this session')
     }
@@ -1235,17 +1580,53 @@ export class Session {
       this.turnStartCheckpoint = this.lastCheckpoint
 
       const agent = this.buildAgent(signal)
+      // The task contract, distilled before a task-shaped request runs — see contract.ts
+      // for the whole design. AFTER buildAgent, so a fresh session already has its system
+      // message (the distiller reads the transcript, and the note must never land above
+      // message 0); appended to the tail, which never disturbs the prompt cache; promoted
+      // into the system prompt at every compaction swap.
+      //
+      // EVERY task-shaped message re-distills and REPLACES: a session outlives its first
+      // task, and a second big request judged against the first request's criteria is a
+      // gate enforcing yesterday's goal. Short follow-ups ("и подправь отступы") are not
+      // task-shaped, so a running task's contract survives them. A failed or refused
+      // distillation costs nothing: the task runs exactly as every task ran before
+      // contracts existed.
+      // Only when the CALLER says this is a user-authored task (the host filters out
+      // attachment-inflated texts, the unattended runner marks its own nudges): every
+      // continuation nudge is ≥80 chars of multi-sentence prose, and the heuristic alone
+      // re-distilled — and REPLACED — the real contract from a nudge, once per turn, all
+      // night. Undefined means "decide from the text", which is what the CLI and tests get.
+      // For the undelivered-abort rollback below: a contract distilled for a message that
+      // then never reached the transcript describes work the model was never asked for,
+      // and left in place it would gate every later turn against a phantom task.
+      const contractBefore = this.meta.contract
+      let turnText = userText
+      if ((sendOpts?.distill ?? looksLikeTask(text)) && looksLikeTask(text)) {
+        const contract = await distillContract(
+          this.opts.client, this.transcript.messages(), userText, signal,
+        )
+        if (contract !== null) {
+          this.meta.contract = contract
+          this.opts.store?.saveMeta(this.meta)
+          // Folded INTO the user message, not appended beside it: two adjacent user
+          // messages deviate from the chat template (the setMode note records the same
+          // rule), and the note explicitly describes "the request that follows".
+          turnText = `[${renderContract(contract)}]\n\n${userText}`
+        }
+      }
       // Captured AFTER buildAgent() (which may append the system prompt on a fresh
       // transcript) and BEFORE runTurn(), so a length comparison after the call tells us,
       // directly, whether the user message actually reached the transcript.
       const beforeCount = this.transcript.messages().length
+      this.turnStartIndex = beforeCount
       // `writeCount` is cumulative across the session (the unattended idle check needs it
       // that way), so "did THIS turn change anything" is a difference, not a value.
       const writesBefore = this.writeCount
       this.writtenMounts.clear()
       let result: TurnResult
       try {
-        result = await agent.runTurn(userText)
+        result = await agent.runTurn(turnText)
       } catch (e) {
         // The server's own refusal is the only reliable signal that the prompt did not fit:
         // every estimate this process can make is a guess, and the one it was making came in
@@ -1280,7 +1661,10 @@ export class Session {
           )
         }
       }
-      result = await this.verifyAndFix(result, this.writeCount - writesBefore, signal)
+      // `this.turnStartIndex`, not `beforeCount`: a mid-turn compaction swap replaces the
+      // transcript object and remaps the field to the new object's coordinates, while the
+      // captured local would silently index past the end of a ten-message transcript.
+      result = await this.verifyAndFix(result, this.writeCount - writesBefore, this.turnStartIndex, signal)
 
       // Restore the note only when the user message itself never reached the transcript --
       // checked directly against the transcript rather than via `result.steps`, which counts
@@ -1292,12 +1676,29 @@ export class Session {
       // it: once already sitting in the transcript on the aborted turn's user message, once
       // again on the next one. Only runTurn's very first check -- signal already aborted
       // before the user message is appended at all -- truly leaves the transcript untouched.
-      if (result.stoppedBecause === 'aborted' && note !== undefined &&
-          this.transcript.messages().length === beforeCount) {
+      const undelivered = result.stoppedBecause === 'aborted' &&
+        this.transcript.messages().length === beforeCount
+      if (undelivered && note !== undefined) {
         this.pendingModeNote = note
       }
+      if (undelivered) {
+        // The message never reached the transcript, so everything derived from it rolls
+        // back with it: the contract (or the next turns are gated on a phantom task) and
+        // the title claim below (or an empty session is named after words the model never
+        // saw — watched live: Esc during distillation left "Stopped by you… continues
+        // from here" over a transcript holding only the system message, and an F5 later
+        // the row was gone while the title still quoted it). The result carries
+        // `delivered: false` so the front end can un-render its optimistic row and give
+        // the text back to the composer instead of promising a continuation.
+        if (this.meta.contract !== contractBefore) {
+          if (contractBefore === undefined) delete this.meta.contract
+          else this.meta.contract = contractBefore
+          this.opts.store?.saveMeta(this.meta)
+        }
+        result = { ...result, delivered: false }
+      }
 
-      if (!this.titled) {
+      if (!this.titled && !undelivered) {
         this.meta.title = titleFrom(text)
         this.titled = true
       }
@@ -1518,6 +1919,44 @@ export class Session {
     })
   }
 
+  /**
+   * Narrows the frame to the plan item in progress, by APPEND and only on change.
+   *
+   * On a long multi-item turn the plan sits in one `todo_write` result far up the
+   * transcript; small models do measurably better when the current item is IN FRONT of
+   * them rather than forty steps behind. The harness does the pointing — the one lesson
+   * this project has measured over and over is that asking the model to keep referring
+   * back does nothing, while putting the information in front of it works.
+   *
+   * Injected only when the in-progress item CHANGED since the last injection (the exact
+   * dedup rule the verify success note follows): a note repeated every step is noise the
+   * model learns to skim past, and skimming is the failure this exists to prevent.
+   */
+  private injectPlanFocus(): void {
+    // Only while an ACTIVE contract task runs: the todo store is per workspace and
+    // outlives tasks, and a new small request re-pointed at the previous task's stale
+    // plan read as an instruction to resume it.
+    if (this.meta.contract === undefined || this.meta.contract.satisfied === true) return
+    const todos = this.opts.toolset.todos?.list() ?? []
+    if (todos.length < 2) return // a one-item plan IS its own focus
+    const current = todos.find((t) => t.status === 'in_progress') ?? todos.find((t) => t.status === 'pending')
+    if (current === undefined) return
+    const open = todos.filter((t) => t.status !== 'completed').length
+    // Keyed on the ITEM alone: keying on the open-count too re-announced an unchanged
+    // item every time any other item completed.
+    const key = current.text
+    if (key === this.lastPlanFocus) return
+    this.lastPlanFocus = key
+    const position = todos.indexOf(current) + 1
+    this.transcript.append({
+      role: 'user',
+      content:
+        `[Plan focus — item ${position} of ${todos.length}: ${current.text}` +
+        (current.done_when !== undefined ? ` (done when: ${current.done_when})` : '') +
+        `. Open items: ${open}. Finish this one before touching the next.]`,
+    })
+  }
+
   private async checkpointLongTurn(step: number): Promise<void> {
     if (!this.checkpoints) return
     if (this.writeCount === this.writesAtLastCheckpoint) return
@@ -1598,6 +2037,17 @@ export class Session {
    * `'ready'` + `'applied'`, or `'failed'`), so a host's existing renderer needs no special
    * case for the manual path.
    */
+  /**
+   * The composer's suggestion chips: the DRAFT, run through the improver with the same
+   * transcript context a send would carry, so a continuation draft is understood against
+   * the session. A preview and nothing more: the session's own contract, meta and
+   * transcript are untouched, because the draft may never be sent. Null when the model
+   * declines or suggests nothing — the caller keeps its quiet lint chips, never an error.
+   */
+  async previewSuggestions(text: string, signal?: AbortSignal): Promise<DraftSuggestions | null> {
+    return improveDraft(this.opts.client, this.transcript.messages(), text, signal)
+  }
+
   async forceCompact(signal?: AbortSignal): Promise<void> {
     if (this.sending) {
       throw new Error('a turn is already running in this session')
@@ -1813,23 +2263,25 @@ export class Session {
    * `forceCompact`'s caller re-entering `send()` later) only ever writes what the NEW
    * transcript gains from here on.
    */
-  private applyCompactionSwap(summary: string): boolean {
-    const keepRecent = this.opts.compaction?.keepRecent ?? 6
-    // The kept tail is capped by SIZE as well as by count. Six messages carrying whole
-    // files left 111.7k of a 131.1k window in place — a compaction that bought one turn.
-    const tailBudget = this.opts.compaction?.contextLength === undefined
-      ? 0
-      : Math.floor(this.opts.compaction.contextLength * TAIL_SHARE)
-    const { tail, droppedMessages } = selectCompactionTail(
-      this.transcript.messages(), keepRecent, tailBudget,
-    )
-
-    // Everything the model was shown is gone with the transcript it was shown in. Keeping
-    // the read memory across a swap would make "unchanged since you read it" true and
-    // useless — the text it refers to no longer exists in the context — and would make a
-    // diff a fragment of something the model can no longer see. This one line is the
-    // correctness condition for the whole cheap-repeat-read idea.
-    this.opts.toolset.reads?.clear()
+  /**
+   * The post-swap transcript, built without swapping — shared by the swap itself and by
+   * the background PREWARM, which feeds this exact prompt to the idle server so the next
+   * turn starts warm. The slot save/restore spike (2026-08-16) closed the other road:
+   * llama.cpp saves and restores this model's 341MB state in ~250ms, but the restored
+   * slot does not re-arm prefix matching — the hybrid DeltaNet state cannot be resumed —
+   * so re-prefilling through the ordinary cache is the only warmth there is, and this
+   * builder is what makes it possible to pay for it while nobody is waiting.
+   *
+   * The side effects here (repo-map re-rank, touched-path fold) are idempotent on
+   * purpose: the prewarm runs this before the swap runs it again, and both must agree.
+   */
+  private buildSwapTranscript(summary: string): {
+    next: Transcript; droppedMessages: number; keptMessages: number
+  } {
+    // The kept tail is capped by SIZE as well as by count — six messages carrying whole
+    // files left 111.7k of a 131.1k window in place, a compaction that bought one turn.
+    // Shared with the gate so the two cannot disagree; see `compactionTailNow`.
+    const { tail, droppedMessages } = this.compactionTailNow()
 
     // BEFORE the system message is built, because that is what consumes it: re-order the
     // repository map around what this session turned out to be about. Guarded for the same
@@ -1870,6 +2322,11 @@ export class Session {
         ...(this.skillsText !== undefined ? { skills: this.skillsText } : {}),
         ...(this.repoMapText !== undefined ? { repoMap: this.repoMapText } : {}),
         ...(this.schemaText !== undefined ? { databaseSchema: this.schemaText } : {}),
+        // The contract's promotion — the tail note that announced it is usually in the
+        // summarised middle by now, and this is what makes losing it impossible. A
+        // satisfied contract is history, not standing orders, and stays out.
+        ...(this.meta.contract !== undefined && this.meta.contract.satisfied !== true
+          ? { contract: renderContract(this.meta.contract) } : {}),
         ...(this.workspace.multi
           ? { folders: this.workspace.mounts.map((m) => ({ name: m.name, access: m.access })) }
           : {}),
@@ -1908,6 +2365,18 @@ export class Session {
       next.append({ role: 'assistant', content: COMPACTION_ACK_TEXT })
     }
     for (const m of tail) next.append(m)
+    return { next, droppedMessages, keptMessages: tail.length }
+  }
+
+  private applyCompactionSwap(summary: string): boolean {
+    // Everything the model was shown is gone with the transcript it was shown in. Keeping
+    // the read memory across a swap would make "unchanged since you read it" true and
+    // useless — the text it refers to no longer exists in the context — and would make a
+    // diff a fragment of something the model can no longer see. This one line is the
+    // correctness condition for the whole cheap-repeat-read idea.
+    this.opts.toolset.reads?.clear()
+
+    const { next, droppedMessages, keptMessages } = this.buildSwapTranscript(summary)
 
     const oldApproxTokens = this.transcript.approxTokens()
     if (next.approxTokens() >= oldApproxTokens * NO_PROGRESS_RATIO) {
@@ -1982,6 +2451,12 @@ export class Session {
     // against the just-shrunk transcript and re-trigger a pointless compaction of the
     // transcript this very call just produced.
     this.latestPromptTokens = null
+    // The swap dropped whatever plan-focus note was in the middle; the next boundary
+    // re-points the frame against the fresh transcript.
+    this.lastPlanFocus = null
+    // The turn's messages now live in the kept tail of a much shorter object. Right after
+    // system + briefing (+ack) is the honest start: everything after it IS recent work.
+    this.turnStartIndex = Math.min(this.turnStartIndex, Math.min(3, next.messages().length))
     this.opts.onCompaction?.({
       state: 'applied',
       droppedMessages,
@@ -1989,7 +2464,7 @@ export class Session {
         beforeTokens: oldApproxTokens,
         afterTokens: next.approxTokens(),
         summary,
-        keptMessages: tail.length,
+        keptMessages,
       },
     })
     return true
@@ -2019,7 +2494,12 @@ export class Session {
 
     const ratio = this.fillRatio(cfg.contextLength)
     const triggerRatio = cfg.triggerRatio ?? 0.8
-    if (ratio === null || ratio < triggerRatio) return
+    // Whichever fires first: the window share, or the absolute rot threshold the probe
+    // calibrated. `fillRatio` is server-truth-based; the absolute check reads the same
+    // truth back in tokens.
+    const overTokens = cfg.triggerTokens !== undefined && ratio !== null &&
+      ratio * cfg.contextLength >= cfg.triggerTokens
+    if (ratio === null || (ratio < triggerRatio && !overTokens)) return
 
     const controller = new AbortController()
     const messages = this.transcript.messages()
@@ -2053,6 +2533,26 @@ export class Session {
         signal,
       )
       this.pendingSummary = result.summary
+      // PREWARM, while the slot is idle and the summary waits for its swap: feed the
+      // post-swap prompt to the server as a one-token request, so the next turn's first
+      // step re-prefills nothing instead of the measured ~43k/98s that once killed a
+      // session on its step timeout. Inside the in-flight window on purpose — a send()
+      // arriving now aborts this exactly like it aborts the summary generation. A failed
+      // or aborted prewarm costs nothing: the ready summary swaps in either way, merely
+      // cold, which is yesterday's status quo.
+      try {
+        const { next } = this.buildSwapTranscript(result.summary)
+        await this.opts.client.chat({
+          messages: [...next.messages()],
+          // The SAME tool list the real steps send: the rendered tool schemas are part of
+          // the prompt, so a prewarm without them warms a prompt no step will ever send.
+          tools: this.opts.toolset.registry.schemas(),
+          maxTokens: 1, disableThinking: true, signal,
+        })
+        // The server cache now holds the post-swap prefix — the next step is warm.
+        this.compactionDisplacedCache = false
+        this.promptCacheCold = false
+      } catch { /* warmth is a bonus, never a requirement */ }
       this.compactionInFlight = undefined
       this.opts.onCompaction?.({ state: 'ready' })
     } catch {
@@ -2093,6 +2593,15 @@ export class Session {
   /** What the last mid-turn check said, so an unchanged answer is reported as unchanged
    * rather than repeated in full. 'ok' or a clipped failure fingerprint. */
   private lastVerifyFingerprint: string | null = null
+  /** Identity of the last plan-focus note injected, so the frame is re-pointed only when
+   * the in-progress item actually changes. See `injectPlanFocus`. */
+  private lastPlanFocus: string | null = null
+  /** Where THIS turn's messages start in the CURRENT transcript object — remapped at every
+   * compaction swap, which is what a captured local index cannot do. */
+  private turnStartIndex = 0
+  /** How many contract criteria the last acceptance check left unmet, for the unattended
+   * runner's honesty: a run must not end 'done' on a turn the gate knows failed. */
+  private lastUnmetCount = 0
   /** Set the first time a check is measured slow; from then on it is time-gated again. */
   private verifySlow = false
   private lastVerifyAtMs = 0
@@ -2170,7 +2679,7 @@ export class Session {
     })
   }
 
-  private buildAgent(signal?: AbortSignal): Agent {
+  private buildAgent(signal?: AbortSignal, sampling?: import('../llama/types.js').Sampling): Agent {
     const context: ToolContext = {
       workspace: this.workspace,
       todos: this.opts.toolset.todos,
@@ -2211,8 +2720,9 @@ export class Session {
     // the moment one may exceed it, a step can bury the whole window and no compaction
     // can dig it out. Watched happen at 131,072: twelve batched reads, HTTP 400.
     if (this.opts.compaction !== undefined) {
-      agentOpts.stepResultBudgetChars = Math.floor(this.opts.compaction.contextLength * TAIL_SHARE * 4)
+      agentOpts.stepResultBudgetChars = tailBudgetTokens(this.opts.compaction.contextLength) * 4
     }
+    if (sampling !== undefined) agentOpts.sampling = sampling
     if (this.repoMapText !== undefined) agentOpts.repoMap = this.repoMapText
     if (this.schemaText !== undefined) agentOpts.databaseSchema = this.schemaText
     if (this.opts.engine) {
@@ -2255,6 +2765,7 @@ export class Session {
     agentOpts.beforeStep = async (step): Promise<StepPreamble | undefined> => {
       await this.checkpointLongTurn(step)
       await this.verifyMidTurn(signal)
+      this.injectPlanFocus()
       this.noteContextFill()
       const before = this.transcript
       await this.compactIfOverWindow(signal)

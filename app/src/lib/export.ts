@@ -11,14 +11,24 @@ import type { ChatItem } from './state'
  */
 export function conversationAsMarkdown(items: ChatItem[], title: string): string {
   const lines: string[] = [`# ${title || 'PrivateCode session'}`, '']
+  // Structural spacing, never a regex over the finished document: the old
+  // `replace(/\n{3,}/g, '\n\n')` rewrote blank runs INSIDE message content too — a Python
+  // snippet with the idiomatic two blank lines between defs came out altered, which is
+  // the one thing an export must never do to code. `blank()` separates BLOCKS; content is
+  // pushed verbatim and stays verbatim.
+  const blank = (): void => {
+    if (lines[lines.length - 1] !== '') lines.push('')
+  }
   for (const item of items) {
     switch (item.kind) {
       case 'user':
-        lines.push('## You', '', item.text, '')
+        blank()
+        lines.push('## You', '', item.text)
         break
       case 'assistant':
-        lines.push('## PrivateCode', '', item.text, '')
-        if (item.interrupted) lines.push('*(stopped by you)*', '')
+        blank()
+        lines.push('## PrivateCode', '', item.text)
+        if (item.interrupted) { blank(); lines.push('*(stopped by you)*') }
         break
       case 'tool': {
         const outcome = item.result === undefined
@@ -26,6 +36,8 @@ export function conversationAsMarkdown(items: ChatItem[], title: string): string
           : item.result.ok
           ? item.result.preview
           : `failed: ${item.result.preview}`
+        // A list after prose needs its separating blank line; consecutive bullets do not.
+        if (!(lines[lines.length - 1] ?? '').startsWith('- ')) blank()
         lines.push(`- \`${item.name}\` — ${outcome}`)
         break
       }
@@ -39,11 +51,13 @@ export function conversationAsMarkdown(items: ChatItem[], title: string): string
         lines.push(`- verify \`${item.command}\` — ${item.ok ? 'passed' : item.detail}`)
         break
       case 'stopped':
-        lines.push('', `*(turn stopped: ${item.reason})*`, '')
+        blank()
+        lines.push(`*(turn stopped: ${item.reason})*`)
         break
       case 'compaction-record':
         if (item.state === 'applied') {
-          lines.push('', '*(earlier conversation compacted into a briefing here)*', '')
+          blank()
+          lines.push('*(earlier conversation compacted into a briefing here)*')
         }
         break
       // Reasoning, approvals bookkeeping, errors: written for this window, not for a reader
@@ -52,6 +66,5 @@ export function conversationAsMarkdown(items: ChatItem[], title: string): string
         break
     }
   }
-  // Tool bullets accumulate without a blank line; ensure the document ends cleanly.
-  return `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`
+  return `${lines.join('\n').trimEnd()}\n`
 }

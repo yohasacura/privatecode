@@ -15,9 +15,12 @@ export function formatTokenCount(n: number): string {
 export function formatDuration(ms: number): string {
   const s = ms / 1000
   if (s < 1) return `${s.toFixed(1)}s`
-  if (s < 60) return `${Math.round(s)}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${String(Math.round(s % 60)).padStart(2, '0')}s`
+  if (s < 59.5) return `${Math.round(s)}s`
+  // Split AFTER rounding to whole seconds: rounding the remainder on its own turned
+  // 119.6s into "1m 60s" on a live step — floor(1.99)=1 minute next to round(59.6)=60.
+  const whole = Math.round(s)
+  const m = Math.floor(whole / 60)
+  if (m < 60) return `${m}m ${String(whole % 60).padStart(2, '0')}s`
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
 }
 

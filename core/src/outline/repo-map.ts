@@ -46,6 +46,26 @@ export interface FileOutline {
   identifiers: Set<string>
 }
 
+/**
+ * Semantic reference edges, from a compiler rather than from text: `from` (workspace-relative
+ * path) uses symbols that `to` defines, `weight` = how many reference sites. Same direction
+ * as the textual graph in `rankByReferences` — A -> B means "A depends on B" — so the two
+ * merge by addition. Harvested asynchronously (see csharp/reference-edges.ts) and consumed
+ * synchronously at swap time; paths that are not in the index are ignored, so a stale
+ * harvest degrades to the textual ranking instead of corrupting it.
+ */
+export type ReferenceEdges = ReadonlyMap<string, ReadonlyMap<string, number>>
+
+/**
+ * What one compiler-confirmed reference site is worth against textual mentions.
+ *
+ * A real edge usually coexists with a textual one (the name literally appears), so semantic
+ * weight is a confirmation bonus, not a replacement. 2 lets ground truth win ties without
+ * letting a partially-harvested graph (only the top files are queried) drown the textual
+ * signal that still covers the whole repository.
+ */
+const SEMANTIC_EDGE_WEIGHT = 2
+
 const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g
 const CONTAINER_KINDS = new Set(['class', 'interface', 'struct', 'record', 'enum', 'namespace'])
 
@@ -158,6 +178,7 @@ const FOCUS_SHARE = 0.7
  */
 export function rankByReferences(
   files: readonly FileOutline[], focus: readonly string[] = [],
+  semanticEdges?: ReferenceEdges,
 ): FileOutline[] {
   // identifier -> how many files contain it at all.
   const spread = new Map<string, number>()
@@ -198,6 +219,22 @@ export function rankByReferences(
       }
     }
   })
+
+  // Compiler-confirmed edges join the same graph, weighted up. Path-keyed because the
+  // harvest outlives no particular ranking call; anything the index does not know is
+  // silently dropped — a renamed or deleted file must not crash a swap.
+  if (semanticEdges !== undefined) {
+    const indexOf = new Map(files.map((f, i) => [f.path, i]))
+    for (const [from, tos] of semanticEdges) {
+      const i = indexOf.get(from)
+      if (i === undefined) continue
+      for (const [to, weight] of tos) {
+        const j = indexOf.get(to)
+        if (j === undefined || j === i || !(weight > 0)) continue
+        out[i]!.set(j, (out[i]!.get(j) ?? 0) + weight * SEMANTIC_EDGE_WEIGHT)
+      }
+    }
+  }
 
   const n = files.length
   if (n === 0) return []
@@ -513,12 +550,17 @@ export async function indexRepo(workspace: string | readonly Mount[]): Promise<R
  */
 export function renderIndex(
   index: RepoIndex, budget = DEFAULT_MAP_BUDGET, focus: readonly string[] = [],
+  semanticEdges?: ReferenceEdges,
 ): string {
   try {
     if (index.folders.length === 0) return ''
     if (index.folders.length === 1 && index.folders[0]!.name === null) {
-      return renderRepoMap(rankByReferences(index.folders[0]!.files, focus), budget)
+      return renderRepoMap(rankByReferences(index.folders[0]!.files, focus, semanticEdges), budget)
     }
+    // Semantic edges stop here on purpose: the harvest runs against one workspace root and
+    // its paths are root-relative, while multi-mount files carry `name/` prefixes. Wiring
+    // them through would attribute every edge to the wrong folder or to none — the textual
+    // ranking, which reads the prefixed paths themselves, stays correct either way.
     // Ranked per folder, not across the whole workspace: the reference-count damping in
     // rankByReferences is calibrated against how many files it is looking at, and pooling a
     // 40-file project with a 900-file one silently retunes it for both.

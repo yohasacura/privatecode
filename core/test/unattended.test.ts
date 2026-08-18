@@ -23,8 +23,11 @@ interface FakeTurn {
 function fakeSession(script: FakeTurn[], opts: {
   todos?: TodoItem[]
   pending?: unknown[]
+  /** How big the fake conversation reads to the between-turn refresh. */
+  approxTokens?: number
 } = {}) {
   let writes = 0
+  let compactions = 0
   const sent: string[] = []
   const runEnds: string[] = []
   let i = 0
@@ -45,8 +48,12 @@ function fakeSession(script: FakeTurn[], opts: {
     todos: () => opts.todos ?? [],
     pendingDecisions: () => opts.pending ?? [],
     noteRunEnded: (detail: string) => { runEnds.push(detail) },
+    // The between-turn refresh reads the size and may compact; a fake conversation is
+    // always small, so the refresh correctly never fires unless a test raises the size.
+    contextUsage: () => ({ promptTokens: null, approxTokens: opts.approxTokens ?? 0 }),
+    forceCompact: async () => { compactions += 1 },
   } as unknown as Session
-  return { session, sent, runEnds }
+  return { session, sent, runEnds, compactions: () => compactions }
 }
 
 const run = (session: Session, extra: Partial<Parameters<typeof runUnattended>[0]> = {}) =>
@@ -169,6 +176,22 @@ describe('what drives the next turn', () => {
     expect(sent[1]).not.toContain('read the spec')
   })
 
+  test('a heavy conversation is refreshed between turns; a light one never is', async () => {
+    // Each turn of a long run should start from the distilled briefing, not drag one
+    // ever-heavier context across the night — but only once there is weight to shed.
+    const heavy = fakeSession([{ worked: true }], { approxTokens: 60_000 })
+    await run(heavy.session, { maxTurns: 3 })
+    expect(heavy.compactions()).toBeGreaterThan(0)
+
+    const light = fakeSession([{ worked: true }], { approxTokens: 5_000 })
+    await run(light.session, { maxTurns: 3 })
+    expect(light.compactions()).toBe(0)
+
+    const off = fakeSession([{ worked: true }], { approxTokens: 60_000 })
+    await run(off.session, { maxTurns: 3, refreshContext: false })
+    expect(off.compactions()).toBe(0)
+  })
+
   test('with no todos at all it asks plainly rather than inventing a plan', () => {
     expect(nudgeFor([])).toMatch(/Continue with the task/)
     expect(nudgeFor([])).toMatch(/say so\s+plainly and stop/)
@@ -194,15 +217,55 @@ describe('saysFinished', () => {
       'Once this is complete I will run the tests.',
       'That would complete the task.',
       'I have not finished yet.',
+      // Negated finish phrases — the finish words are all present, the meaning is not.
+      'Not all done yet.',
+      'Not everything is done yet, one test is still red.',
+      'All done? No — the build is broken.',
     ]) {
       expect(saysFinished(text), text).toBe(false)
     }
   })
 
-  test('looks at the end of a long reply, not the middle', () => {
+  test('understands a Russian finish — the language the model actually answers in', () => {
+    // Watched live: a finished Russian task burned two idle turns because only English
+    // phrasings matched, and the run ended 'idle' instead of 'done'.
+    for (const text of ['Всё готово.', 'Задача полностью выполнена, все тесты проходят.', 'Работа завершена.']) {
+      expect(saysFinished(text), text).toBe(true)
+    }
+    // Bare «Готово.» — watched live too: `\b` is ASCII-only in JS, so the old \bготово
+    // branch never matched ANY Cyrillic text and the acceptance gate silently skipped.
+    expect(saysFinished('Готово.')).toBe(true)
+    expect(saysFinished('Готово!')).toBe(true)
+    // Hedged idiom forms — the veto must reach the «всё готово» idiom too, and stay
+    // sentence-local so the hedge cannot be dodged by a following clean sentence.
+    expect(saysFinished('Почти всё готово, остался деплой.')).toBe(false)
+    expect(saysFinished('Ещё не всё готово. Продолжаю работу.')).toBe(false)
+    // Declined attributes between «задача» and the verb — the exact live reply that
+    // slipped a fixed-word-order pattern: finishes must survive real morphology.
+    expect(
+      saysFinished(
+        'Задача починки отчёта полностью завершена: баг `Math.round` устранён, все 25 тестов проходят.',
+      ),
+    ).toBe(true)
+    expect(saysFinished('Работа над отчётом закончена, всё сходится.')).toBe(true)
+    // A hedged finish is not a finish: ending the run here would cut real work short,
+    // which is strictly worse than the idle turns a missed finish costs.
+    expect(saysFinished('Задача выполнена наполовину, продолжаю.')).toBe(false)
+    expect(saysFinished('Задача выполнена, но остались тесты.')).toBe(false)
+    expect(saysFinished('Почти готово.')).toBe(false)
+    expect(saysFinished('Не готово.')).toBe(false)
+    expect(saysFinished('Полуготово.')).toBe(false)
+  })
+
+  test('looks at the head and tail of a long reply, not the middle', () => {
     const long = `${'analysis. '.repeat(200)}All done.`
     expect(saysFinished(long)).toBe(true)
-    const buried = `All done. ${'more work. '.repeat(200)}`
+    // The model's live sign-off style is the verdict FIRST, then a long report — a
+    // tail-only window missed exactly this and the gate never ran on a finished bugfix.
+    const verdictFirst = `Готово.\n\n**Причина бага:** ${'подробности исправления. '.repeat(60)}`
+    expect(saysFinished(verdictFirst)).toBe(true)
+    // Mid-message mentions stay invisible: that is where quoted text and narration live.
+    const buried = `${'analysis. '.repeat(60)}All done. ${'more work. '.repeat(60)}`
     expect(saysFinished(buried)).toBe(false)
   })
 })

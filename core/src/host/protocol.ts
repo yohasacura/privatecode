@@ -62,6 +62,11 @@ export interface TurnSummary {
   /** The model's closing prose, or a one-line statement of why the turn stopped. */
   finalText: string
   stoppedBecause: StoppedBecause
+  /** False only when the turn aborted before the user message reached the transcript
+   * (Esc during contract distillation). The front end must roll back its optimistic
+   * message row and return the text to the composer: nothing "continues from here",
+   * because the model never received the message. Absent on every delivered turn. */
+  delivered?: boolean
 }
 
 // ---------------------------------------------------------------------------------------
@@ -429,6 +434,7 @@ export interface HostMethodMap {
   'sessions.search': { params: SessionsSearchParams; result: SessionsSearchResult }
   'workspace.get': { params: WorkspaceGetParams; result: WorkspaceGetResult }
   'workspace.set': { params: WorkspaceSetParams; result: WorkspaceSetResult }
+  'prompt.improve': { params: PromptImproveParams; result: PromptImproveResult }
   compact: { params: CompactParams; result: CompactResult }
   'approval.reply': { params: ApprovalReplyParams; result: ApprovalReplyResult }
   'question.reply': { params: QuestionReplyParams; result: QuestionReplyResult }
@@ -468,7 +474,23 @@ export type HostMethodName = keyof HostMethodMap
 // Events: one data interface per event, named `<Event>Event`.
 // ---------------------------------------------------------------------------------------
 
-export interface StepStartEvent { step: number; timeoutMs: number }
+export interface StepStartEvent {
+  step: number
+  timeoutMs: number
+  /** Prefill-inclusive budget for the wait before this step's first token — see
+   * `StepStartInfo.firstTokenTimeoutMs`. A countdown should use this until something
+   * streams, and `timeoutMs` after. Optional so an older replayed payload stays valid. */
+  firstTokenTimeoutMs?: number
+}
+/** A forced continuation is starting inside the step: the silence that follows is prefill
+ * of the carried-back reasoning, budgeted at `firstTokenTimeoutMs` — the countdown must
+ * count against it, not the flat between-token budget. */
+export interface StepContinuationEvent { step: number; firstTokenTimeoutMs?: number }
+/** The server died mid-call, came back healthy, and the SAME request is being re-sent.
+ * The dead attempt's partial deltas are superseded — the retry re-streams from the start —
+ * so a renderer must discard its open reasoning/writing cards, or the fresh stream appends
+ * onto the dead partials and the step reads as one spliced generation. */
+export type StepRetryEvent = Record<string, never>
 export interface StepDoneEvent {
   step: number
   seconds: number
@@ -556,6 +578,10 @@ export interface ApprovalRequestEvent extends ApprovalRequest { requestId: strin
  * `question.reply`. */
 export interface QuestionRequestEvent extends UserQuestion { requestId: string }
 
+/** A running tool's live output chunk (run_command's stdout/stderr as it arrives).
+ * Display-only: the tool.result that follows carries the complete record. */
+export interface ToolOutputEvent { name: string; text: string }
+
 export interface TodosEvent { items: TodoItem[] }
 
 /**
@@ -600,6 +626,8 @@ export type TurnDoneEvent = TurnSummary
  */
 export interface HostEventMap {
   'step.start': StepStartEvent
+  'step.continuation': StepContinuationEvent
+  'step.retry': StepRetryEvent
   'step.done': StepDoneEvent
   'thinking.delta': ThinkingDeltaEvent
   'text.delta': TextDeltaEvent
@@ -610,6 +638,7 @@ export interface HostEventMap {
   verify: VerifyEvent
   'approval.request': ApprovalRequestEvent
   'question.request': QuestionRequestEvent
+  'tool.output': ToolOutputEvent
   todos: TodosEvent
   compaction: CompactionEvent
   'settings.problem': SettingsProblemEvent
@@ -668,6 +697,15 @@ export interface DecisionInfo {
   /** question only */
   question?: string
   options?: string[]
+  multiSelect?: boolean
+}
+
+export interface PromptImproveParams { text: string }
+/** What the improver suggests ADDING to the draft — the user's own words are never
+ * rewritten. Null when the model declined or suggested nothing: the composer keeps its
+ * quiet lint chips, never shows an error. */
+export interface PromptImproveResult {
+  suggestions: { criteria: string[]; constraints: string[]; questions: string[] } | null
 }
 
 export type DecisionsListParams = Empty

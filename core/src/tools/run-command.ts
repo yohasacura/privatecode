@@ -1,5 +1,7 @@
 import { stat } from 'node:fs/promises'
+import { StringDecoder } from 'node:string_decoder'
 import { execa } from 'execa'
+import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import { countLines, headLines, overflowNotice, spillToLog } from './output-log.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
 
@@ -105,9 +107,9 @@ export const runCommandTool: Tool<RunCommandArgs> = {
     const started = performance.now()
     // reject: false — a non-zero exit is a result, not an exception. windowsHide keeps
     // PowerShell from flashing a console window once this runs under a UI shell.
-    const result = await execa(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', args.command],
+    const child = execa(
+      POWERSHELL_EXE,
+      powershellArgs(args.command),
       {
         cwd,
         timeout: timeoutS * 1000,
@@ -118,6 +120,22 @@ export const runCommandTool: Tool<RunCommandArgs> = {
         ...(ctx.signal ? { cancelSignal: ctx.signal } : {}),
       },
     )
+    // The same bytes the buffered result will contain, forwarded as they appear: a long
+    // command used to be a frozen card until exit, and "is it working or wedged" was
+    // unanswerable from the window. Streaming changes nothing about the result below.
+    if (ctx.onLiveOutput) {
+      // Not chunk.toString(): a chunk boundary can land mid-codepoint, and a split
+      // multi-byte character would reach the live view as mojibake. The decoder holds the
+      // partial bytes until the rest arrives.
+      const decoder = new StringDecoder('utf8')
+      child.all?.on('data', (chunk: Buffer | string) => {
+        try {
+          const text = typeof chunk === 'string' ? chunk : decoder.write(chunk)
+          if (text !== '') ctx.onLiveOutput?.(text)
+        } catch { /* display-only */ }
+      })
+    }
+    const result = await child
     const seconds = ((performance.now() - started) / 1000).toFixed(1)
     const raw = (result.all ?? '').trim()
     // What a person sees. Still bounded -- a runaway build log must not be able to grow

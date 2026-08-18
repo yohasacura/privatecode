@@ -180,6 +180,16 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, message: string)
  * testable without a DOM `location`). */
 export function wsUrlFromSearch(search: string): string | undefined {
   const url = new URLSearchParams(search).get('ws')
+  // Dev-bridge resilience: the browser pane and plain reloads routinely re-open this
+  // origin WITHOUT the query string, and a dev session that dies to a lost `?ws=` is a
+  // dev session lost mid-experiment. The last bridge URL is kept per-tab and reused when
+  // the query is missing; a new `?ws=` always wins and replaces it. Session-scoped on
+  // purpose — a stale token must not outlive the tab that used it. No effect on the
+  // packaged app, which never passes `?ws=` at all.
+  try {
+    if (url !== null) sessionStorage.setItem('pc.devBridgeWs', url)
+    else return sessionStorage.getItem('pc.devBridgeWs') ?? undefined
+  } catch { /* storage can be unavailable; the query string still works */ }
   return url ?? undefined
 }
 

@@ -1,99 +1,107 @@
 /**
- * Paths, grouped the way a person reads them.
+ * Paths, as the real nested tree the Changes tab and the Working tree render.
  *
- * A change list is a list of paths, and rendered flat in a 420px column that is what it
- * looks like:
+ * A change list is a list of paths, and rendered flat in a 420px column the eye has to
+ * walk 60 characters of identical prefix per row to find the one readable word. The tree
+ * removes the repetition the way file explorers do, and the "six levels of indentation
+ * with one child each" objection is answered the same way they answer it: a directory
+ * whose only content is one subdirectory is COMPRESSED into its child (`src/models` is
+ * one row, not two), so depth on screen is only ever spent where the tree branches.
  *
- *   src/small-crm-backend/SmallCrm.Application/Accounting/Handlers/CreateActHandler.cs
- *   src/small-crm-backend/SmallCrm.Application/Accounting/Handlers/VoidActHandler.cs
- *   src/small-crm-backend/SmallCrm.Domain/Invoicing/Invoice.cs
- *
- * Three lines, one readable word each, and the eye has to walk 60 characters of identical
- * prefix to find it. Grouped, the same three lines carry the same information in a shape
- * that can be scanned:
- *
- *   SmallCrm.Application/Accounting/Handlers
- *     CreateActHandler.cs
- *     VoidActHandler.cs
- *   SmallCrm.Domain/Invoicing
- *     Invoice.cs
- *
- * ONE level of grouping, deliberately, not a full nested tree. A tree of these paths is
- * six levels of indentation with one child each — the shape is honest and the reading is
- * worse, and the panel is 420px wide. What actually costs the reader is the repetition,
- * and that is what the common prefix and the directory heading remove.
+ * (An earlier one-level `groupByDirectory` lived here and is gone: both of its callers
+ * render the tree now, and a grouping nobody renders is a shape waiting to drift.)
  */
 
-export interface PathGroup<T> {
-  /** The directory, with the common prefix removed. `''` for files at the shared root. */
-  dir: string
-  /** The full directory path, for a tooltip — the short one can be ambiguous. */
+export interface PathTreeNode<T> {
+  /** One segment, or a compressed single-child chain rendered as one row: `src/models`. */
+  name: string
+  /** The full directory path this node stands for (the DEEP end of a compressed chain) —
+   * stable across renders, so it is the collapse-state key and the tooltip. */
   fullDir: string
-  items: { item: T; name: string }[]
+  /** Subdirectories, sorted by name so they do not jump between renders. */
+  dirs: PathTreeNode<T>[]
+  /** Files directly here, in the CALLER's order — a change list is newest-first. */
+  files: { item: T; name: string }[]
+  /** Files here and in every subdirectory, for the "N files" meta on a collapsed row. */
+  totalFiles: number
 }
 
-export interface GroupedPaths<T> {
-  groups: PathGroup<T>[]
-  /** What every path started with, removed from the headings and shown once above them. */
-  commonPrefix: string
+/** What the unified Workspace tree overlays on the plain FS listing: per changed FILE its
+ * diff shape, per DIRECTORY how many changed files live anywhere under it — so a collapsed
+ * folder still says the session touched things inside. */
+export interface ChangeDecor {
+  files: Map<string, { added: number; removed: number; revisions: number; lastFailed: boolean }>
+  dirs: Map<string, number>
 }
 
-const dirOf = (path: string): string => {
-  const at = path.lastIndexOf('/')
-  return at === -1 ? '' : path.slice(0, at)
-}
-const nameOf = (path: string): string => {
-  const at = path.lastIndexOf('/')
-  return at === -1 ? path : path.slice(at + 1)
-}
-
-/** The longest run of whole leading SEGMENTS every path shares. Segment-wise, not
- * character-wise: `src/app` and `src/apple` share `src`, not `src/app`. */
-export function commonPrefixOf(paths: readonly string[]): string {
-  if (paths.length === 0) return ''
-  const split = paths.map((p) => dirOf(p).split('/').filter((s) => s !== ''))
-  const first = split[0]
-  if (first === undefined) return ''
-  let take = first.length
-  for (const parts of split) {
-    let i = 0
-    while (i < take && i < parts.length && parts[i] === first[i]) i++
-    take = i
-    if (take === 0) break
+export function decorateChanges(
+  changes: readonly { openPath: string; revisions: number; lastFailed?: boolean; stat: { added: number; removed: number } | null }[],
+): ChangeDecor {
+  const files = new Map<string, { added: number; removed: number; revisions: number; lastFailed: boolean }>()
+  const dirs = new Map<string, number>()
+  for (const c of changes) {
+    files.set(c.openPath, {
+      added: c.stat?.added ?? 0,
+      removed: c.stat?.removed ?? 0,
+      revisions: c.revisions,
+      lastFailed: c.lastFailed === true,
+    })
+    const segments = c.openPath.split('/').slice(0, -1)
+    let dir = ''
+    for (const segment of segments) {
+      dir = dir === '' ? segment : `${dir}/${segment}`
+      dirs.set(dir, (dirs.get(dir) ?? 0) + 1)
+    }
   }
-  return first.slice(0, take).join('/')
+  return { files, dirs }
 }
 
-/**
- * Groups by directory, in path order, with the shared prefix lifted out.
- *
- * Order is the caller's within a group — a change list is newest-first and must stay that
- * way — while the groups themselves are sorted, because a directory that jumps around
- * between renders is harder to use than one that does not.
- *
- * A single group is not a grouping: when everything is in one directory there is nothing to
- * separate, so the whole path becomes the prefix and the rows are bare names under it.
- */
-export function groupByDirectory<T>(
+/** The nested tree of `items` by path, single-child chains compressed. The returned node
+ * is the invisible root: render its `dirs` and `files`, never the node itself. */
+export function buildPathTree<T>(
   items: readonly T[], pathOf: (item: T) => string,
-): GroupedPaths<T> {
-  const paths = items.map(pathOf)
-  const commonPrefix = commonPrefixOf(paths)
-  const cut = commonPrefix === '' ? 0 : commonPrefix.length + 1
+): PathTreeNode<T> {
+  interface Raw { name: string; fullDir: string; dirs: Map<string, Raw>; files: { item: T; name: string }[] }
+  const root: Raw = { name: '', fullDir: '', dirs: new Map(), files: [] }
 
-  const byDir = new Map<string, PathGroup<T>>()
   for (const item of items) {
     const full = pathOf(item)
-    const fullDir = dirOf(full)
-    const dir = fullDir.slice(cut)
-    const group = byDir.get(dir)
-    const entry = { item, name: nameOf(full) }
-    if (group === undefined) byDir.set(dir, { dir, fullDir, items: [entry] })
-    else group.items.push(entry)
+    const segments = full.split('/').filter((s) => s !== '')
+    const name = segments.pop() ?? full
+    let node = root
+    for (const segment of segments) {
+      const fullDir = node.fullDir === '' ? segment : `${node.fullDir}/${segment}`
+      let next = node.dirs.get(segment)
+      if (next === undefined) {
+        next = { name: segment, fullDir, dirs: new Map(), files: [] }
+        node.dirs.set(segment, next)
+      }
+      node = next
+    }
+    node.files.push({ item, name })
   }
 
+  const finish = (raw: Raw): PathTreeNode<T> => {
+    // Chain compression: while this directory holds nothing but one subdirectory, fold
+    // the child into it — the row reads `a/b/c`, the identity is the deep end's.
+    let name = raw.name
+    let cursor = raw
+    while (cursor.files.length === 0 && cursor.dirs.size === 1) {
+      const child = [...cursor.dirs.values()][0]!
+      name = `${name}/${child.name}`
+      cursor = child
+    }
+    const dirs = [...cursor.dirs.values()].map(finish).sort((a, b) => a.name.localeCompare(b.name))
+    const totalFiles = cursor.files.length + dirs.reduce((n, d) => n + d.totalFiles, 0)
+    return { name, fullDir: cursor.fullDir, dirs, files: cursor.files, totalFiles }
+  }
+
+  const dirs = [...root.dirs.values()].map(finish).sort((a, b) => a.name.localeCompare(b.name))
   return {
-    commonPrefix,
-    groups: [...byDir.values()].sort((a, b) => a.dir.localeCompare(b.dir)),
+    name: '',
+    fullDir: '',
+    dirs,
+    files: root.files,
+    totalFiles: root.files.length + dirs.reduce((n, d) => n + d.totalFiles, 0),
   }
 }

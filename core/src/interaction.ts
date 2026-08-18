@@ -32,6 +32,11 @@ export interface UserQuestion {
   question: string
   /** 2–4 options. The host always also accepts free text. */
   options: string[]
+  /** True when the options are not mutually exclusive and several may be picked together.
+   * The answer is still one string — selections joined with "; " — so nothing downstream
+   * of `askUser` changes shape. Absent means single choice, which every question that
+   * predates the flag already was. */
+  multiSelect?: boolean
 }
 
 export interface TodoItem {

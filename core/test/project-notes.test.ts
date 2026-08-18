@@ -92,10 +92,11 @@ describe('what cannot be stored', () => {
     if (!v.ok) expect(v.error).toContain('at least one')
   })
 
-  test('an essay is refused; a note is a fact, not a document', () => {
-    const r = addProjectNote(root, 'x'.repeat(500), ['src/act.ts'])
+  test('a novel is refused; a rich write-up is not', () => {
+    // Raised from 400 live: the model kept losing genuinely important long findings.
+    const r = addProjectNote(root, 'x'.repeat(21_000), ['src/act.ts'])
     expect(r.ok).toBe(false)
-    expect(r.problem).toContain('under 400 characters')
+    expect(r.problem).toContain('under 20000 characters')
   })
 })
 
@@ -137,5 +138,50 @@ describe('end to end through the tool', () => {
     const loaded = loadProjectNotes(root)
     expect(loaded.text).toBe('')
     expect(loaded.problems).toEqual([])
+  })
+})
+
+describe('long notes', () => {
+  test('a multi-line write-up with markdown headings survives the round trip', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-notes-'))
+    try {
+      mkdirSync(join(root, '.privatecode'), { recursive: true })
+      writeFileSync(join(root, 'a.ts'), 'x', 'utf8')
+      const text = [
+        'Карта подсистемы компакта:', '',
+        '## Триггеры', '1. ratio', '2. triggerTokens (140k default)', '',
+        '## Своп', 'buildSwapTranscript is shared with the prewarm.',
+      ].join('\n')
+      const added = addProjectNote(root, text, ['a.ts'])
+      expect(added.ok).toBe(true)
+      const loaded = loadProjectNotes(root)
+      expect(loaded.fresh).toHaveLength(1)
+      // The reserved `^## ` is neutralised with a leading space; nothing after it is lost.
+      expect(loaded.fresh[0]!.text).toContain(' ## Триггеры')
+      expect(loaded.fresh[0]!.text).toContain('buildSwapTranscript is shared')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  test('a long note renders as an indented block, not one flattened line', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-notes-'))
+    try {
+      mkdirSync(join(root, '.privatecode'), { recursive: true })
+      writeFileSync(join(root, 'a.ts'), 'x', 'utf8')
+      const long = `Первая строка.\n${'Подробность про архитектуру. '.repeat(12)}\nПоследняя строка.`
+      expect(addProjectNote(root, long, ['a.ts']).ok).toBe(true)
+      const block = loadProjectNotes(root).text
+      expect(block).toContain('- [a.ts]\n  Первая строка.')
+      expect(block).toContain('\n  Последняя строка.')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  test('the cap now admits a real write-up and still refuses a novel', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-notes-'))
+    try {
+      mkdirSync(join(root, '.privatecode'), { recursive: true })
+      writeFileSync(join(root, 'a.ts'), 'x', 'utf8')
+      expect(addProjectNote(root, 'x'.repeat(19_000), ['a.ts']).ok).toBe(true)
+      expect(loadProjectNotes(root).text).toContain('x'.repeat(19_000))
+    } finally { rmSync(root, { recursive: true, force: true }) }
   })
 })

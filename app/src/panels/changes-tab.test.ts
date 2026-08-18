@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatItem } from '../lib/state'
 import { collectChanges, splitReviewed, type ChangeEntry } from './changes-tab'
-import { groupByDirectory } from '../lib/path-tree'
+import { buildPathTree } from '../lib/path-tree'
 
 function tool(id: number, name: string, args: string, content = 'diff body', ok = true): ChatItem {
   return { kind: 'tool', id, name, args, startedAtMs: id, result: { ok, preview: 'p', content, display: content } }
@@ -141,11 +141,43 @@ describe('a call that never ran is not a change', () => {
     }
     expect(collectChanges([failed]).map((c) => c.path)).toEqual(['b.ts'])
   })
+
+  it('a later failed write does not erase the successful change it follows', () => {
+    // The file WAS changed this session — the failed edit changed nothing on disk. Replacing
+    // wholesale took the real diff, the +/- total and Put back off the row; the row keeps
+    // the successful state, advances its id (so a reviewed fold honestly resurfaces), and
+    // carries the failure as a flag.
+    const okWrite = {
+      kind: 'tool' as const, id: 1, name: 'write_file', startedAtMs: 1,
+      args: JSON.stringify({ path: 'a.ts', content: 'good' }),
+      result: { ok: true, preview: 'p', content: '--- a.ts\n+++ a.ts\n+good', display: 'ok' },
+    }
+    const failedEdit = {
+      kind: 'tool' as const, id: 4, name: 'edit_file', startedAtMs: 4,
+      args: JSON.stringify({ path: 'a.ts' }),
+      result: { ok: false, preview: 'p', content: 'no match for the search text', display: 'no match' },
+    }
+    const [entry] = collectChanges([okWrite, failedEdit])
+    expect(entry).toMatchObject({ id: 4, ok: true, lastFailed: true, revisions: 2 })
+    expect(entry!.content).toContain('+good')
+  })
+
+  it('a move restores BOTH of its paths, not just where the file landed', () => {
+    // Restoring only the destination deleted the file outright: absent there at the
+    // baseline (removed) while the source was never recreated.
+    const move = {
+      kind: 'tool' as const, id: 2, name: 'move_file', startedAtMs: 2,
+      args: JSON.stringify({ from: 'src/old.ts', to: 'src/new.ts' }),
+      result: { ok: true, preview: 'p', content: 'moved', display: 'moved' },
+    }
+    expect(collectChanges([move])[0]!.restorePaths).toEqual(['src/old.ts', 'src/new.ts'])
+  })
 })
 
 describe('reviewed changes fold away, honestly', () => {
   const entry = (id: number, path: string): import('./changes-tab').ChangeEntry => ({
     id, tool: 'edit_file', path, ok: true, content: 'diff', revisions: 1, openPath: path,
+    restorePaths: [path],
   })
 
   it('hides an entry at or below its watermark, and resurfaces a newer write', () => {
@@ -175,15 +207,16 @@ describe('grouping the change list', () => {
     // by it split on the last slash of the second half: heading `src/old.ts → src`, row
     // `new.ts`, and the half that says where the file came from simply gone.
     const entries: ChangeEntry[] = [
-      { id: 2, tool: 'move_file', path: 'src/old.ts → src/lib/new.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/new.ts' },
-      { id: 1, tool: 'write_file', path: 'src/lib/other.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/other.ts' },
+      { id: 2, tool: 'move_file', path: 'src/old.ts → src/lib/new.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/new.ts', restorePaths: ['src/old.ts', 'src/lib/new.ts'] },
+      { id: 1, tool: 'write_file', path: 'src/lib/other.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/other.ts', restorePaths: ['src/lib/other.ts'] },
     ]
-    const { groups, commonPrefix } = groupByDirectory(entries, (e) => e.openPath)
-    expect(commonPrefix).toBe('src/lib')
-    expect(groups).toHaveLength(1)
-    expect(groups[0]!.items.map((i) => i.item.id)).toEqual([2, 1])
-    // The row for the move is labelled from `path`, not from the grouped file name.
-    const move = groups[0]!.items[0]!
+    const tree = buildPathTree(entries, (e) => e.openPath)
+    // One compressed chain: everything lives under src/lib, one row for the whole prefix.
+    expect(tree.dirs.map((d) => d.name)).toEqual(['src/lib'])
+    const lib = tree.dirs[0]!
+    expect(lib.files.map((f) => f.item.id)).toEqual([2, 1])
+    // The row for the move is labelled from `path`, not from the tree's file name.
+    const move = lib.files[0]!
     expect(move.name).toBe('new.ts')
     expect(move.item.path).toBe('src/old.ts → src/lib/new.ts')
   })

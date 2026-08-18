@@ -38,8 +38,11 @@ describe('the queue file', () => {
 
   test('a resolved entry leaves the pending list but stays in the record', () => {
     const q = new DecisionQueue(root)
-    q.add({ kind: 'question', id: 'd2', at: 'now', sessionId: 's1', question: 'which db?', options: ['a', 'b'] })
+    q.add({ kind: 'question', id: 'd2', at: 'now', sessionId: 's1', question: 'which db?', options: ['a', 'b'], multiSelect: true })
     expect(q.pending()).toHaveLength(1)
+    // The picker shape survives the park: the morning queue renders the same multi-select
+    // card the live one would have.
+    expect((q.pending()[0] as { multiSelect?: boolean }).multiSelect).toBe(true)
     q.resolve({ id: 'd2', answer: 'a' })
     expect(q.pending()).toHaveLength(0)
     // Append-only: the answer is added, the question is not erased.

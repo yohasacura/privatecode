@@ -54,7 +54,11 @@ export function ApprovalCard({
 }): VNode | null {
   const [showAlways, setShowAlways] = useState(false)
   const [selectedRule, setSelectedRule] = useState(approval.suggestedRules[0] ?? '')
-  const [layer, setLayer] = useState<RememberLayer>('session')
+  // 'local', matching the parked DecisionsCard's default: the button says ALWAYS, and a
+  // rule that silently died with the session made tomorrow's run stop on the very approval
+  // the user believed they had answered for good. The select still offers 'session' for
+  // someone who genuinely wants a one-session grant.
+  const [layer, setLayer] = useState<RememberLayer>('local')
   const [denyComment, setDenyComment] = useState('')
   const [answered, setAnswered] = useState(false)
 
@@ -143,12 +147,32 @@ export function QuestionCard({
 }): VNode | null {
   const [freeText, setFreeText] = useState('')
   const [answered, setAnswered] = useState(false)
+  // Multi-select only. A Set, keyed by option text (options are validated distinct).
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
+  const multi = question.multiSelect === true
 
   function reply(answer: string): void {
     if (answered || answer.trim() === '') return
     setAnswered(true)
     onAnswered(answer)
     client.call('question.reply', { requestId: question.requestId, answer }).catch(() => { /* see ApprovalCard */ })
+  }
+
+  /** The combined multi-select answer: picked options in their ORIGINAL order (the model
+   * wrote them in a deliberate order; click order is noise), free text appended last. */
+  function combined(): string {
+    const parts = question.options.filter((o) => picked.has(o))
+    if (freeText.trim() !== '') parts.push(freeText.trim())
+    return parts.join('; ')
+  }
+
+  function toggle(option: string): void {
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(option)) next.delete(option)
+      else next.add(option)
+      return next
+    })
   }
 
   if (answered) return null
@@ -159,13 +183,22 @@ export function QuestionCard({
         <span class="card-icon">{Icon.chat()}</span>
         <span class="card-title">{question.question}</span>
       </div>
-      <div class="card-note">Paused, waiting for you.</div>
+      <div class="card-note">{multi ? 'Paused, waiting for you. Pick any that apply.' : 'Paused, waiting for you.'}</div>
       {question.options.length > 0 && (
         <div class="question-options">
           {/* The host always accepts free text too (interaction.ts's `UserQuestion`) --
-              these are shortcuts for the likely answers, not the only way to reply. */}
+              these are shortcuts for the likely answers, not the only way to reply.
+              Single-select answers on click; multi-select toggles and answers via the
+              one button below, because "which several" is not known until they say so. */}
           {question.options.map((option) => (
-            <button key={option} class="btn" onClick={() => reply(option)}>{option}</button>
+            <button
+              key={option}
+              class={multi && picked.has(option) ? 'btn btn-toggled' : 'btn'}
+              aria-pressed={multi ? picked.has(option) : undefined}
+              onClick={() => { if (multi) toggle(option); else reply(option) }}
+            >
+              {multi ? `${picked.has(option) ? '☑' : '☐'} ${option}` : option}
+            </button>
           ))}
         </div>
       )}
@@ -174,10 +207,14 @@ export function QuestionCard({
           class="input"
           value={freeText}
           onInput={(e) => setFreeText(e.currentTarget.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') reply(freeText) }}
-          placeholder="or answer in your own words"
+          onKeyDown={(e) => { if (e.key === 'Enter') reply(multi ? combined() : freeText) }}
+          placeholder={multi ? 'add your own answer (optional)' : 'or answer in your own words'}
         />
-        <button class="btn btn-primary" onClick={() => reply(freeText)} disabled={freeText.trim() === ''}>
+        <button
+          class="btn btn-primary"
+          onClick={() => reply(multi ? combined() : freeText)}
+          disabled={multi ? combined() === '' : freeText.trim() === ''}
+        >
           Answer
         </button>
       </div>

@@ -9,6 +9,13 @@ import type { DatabaseSettings } from '../sql/settings.js'
 export interface ToolContext {
   workspace: Workspace
   signal?: AbortSignal
+  /**
+   * Live output, for tools that produce it over time — run_command's stdout/stderr as it
+   * arrives. Display-only: the final ToolResult is still the complete, authoritative
+   * record; these chunks exist so a two-minute build is a scrolling log instead of a
+   * frozen spinner. Absent for hosts that render nothing (tests, one-shot CLI).
+   */
+  onLiveOutput?: (text: string) => void
   interaction?: InteractionPort
   todos?: TodoStore
   /** The browser, when this host provides one. Lazy: holding it starts nothing. */

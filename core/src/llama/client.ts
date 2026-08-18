@@ -67,6 +67,51 @@ export class LlamaClient {
     this.timeoutMs = opts.requestTimeoutMs ?? 600_000
   }
 
+  /**
+   * Polls `/health` until the server answers ok, for at most `budgetMs`; true the moment
+   * it does, false when the budget runs out or the signal aborts first.
+   *
+   * Exists for exactly one caller: the agent loop's single step retry after a request
+   * died under it. Watched live ("stream read error (TypeError: terminated)" mid-thinking):
+   * the llama process dies silently on a VRAM spike, the watchdog relaunches it, and the
+   * model reload takes ~20-30 s — a turn that can outwait that keeps its session instead
+   * of ending on an error the server has already recovered from.
+   */
+  async waitHealthy(budgetMs: number, signal?: AbortSignal): Promise<boolean> {
+    const until = Date.now() + budgetMs
+    for (;;) {
+      if (signal?.aborted) return false
+      try {
+        const res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(3_000) })
+        if (res.ok) return true
+      } catch { /* not up yet — the relaunch is still loading the model */ }
+      if (Date.now() >= until) return false
+      await new Promise((r) => setTimeout(r, 2_000))
+    }
+  }
+
+  /**
+   * The single slot's prompt-processing state, or null when `/slots` is unavailable.
+   *
+   * For the step clock's prefill extension only. The clock's char-counter predicts prefill
+   * from what THIS process appended — it cannot see a server-side cache eviction (watched
+   * live at 179k: the state outgrew --cache-ram, one divergent request evicted the prefix,
+   * and the next turn re-prefilled ~187k tokens into a deadline sized for a few hundred).
+   * `n_prompt_tokens_processed` is the server's own progress report on exactly that work.
+   */
+  async slotPrefillProgress(): Promise<{ processing: boolean; processed: number } | null> {
+    try {
+      const res = await fetch(`${this.baseUrl}/slots`, { signal: AbortSignal.timeout(3_000) })
+      if (!res.ok) return null
+      const arr = await res.json() as { is_processing?: boolean; n_prompt_tokens_processed?: number }[]
+      const slot = Array.isArray(arr) ? arr[0] : undefined
+      if (slot === undefined) return null
+      return { processing: slot.is_processing === true, processed: slot.n_prompt_tokens_processed ?? 0 }
+    } catch {
+      return null
+    }
+  }
+
   async chat(req: ChatRequest): Promise<ChatResult> {
     const sampling = req.sampling ?? QWEN_SAMPLING
     assertSafeSampling(sampling)

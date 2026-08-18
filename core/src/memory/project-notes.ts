@@ -26,12 +26,20 @@ import { PRIVATE_DIR } from '../private-dir.js'
 
 export const NOTES_FILE = 'project-notes.md'
 
-/** Permanent prompt cost, like the other message-0 blocks. ~750 tokens. */
-const NOTES_BUDGET = 3_000
+/** Permanent prompt cost, like the other message-0 blocks. ~10k tokens at worst — sized
+ * to fit a couple of full-length notes plus the usual short ones, per the project's own
+ * caps rule: watched live, the model kept losing genuinely important long write-ups to a
+ * 400-char cap, and a note that cannot be recorded is a session re-deriving it tomorrow. */
+const NOTES_BUDGET = 40_000
 /** Past this the file is not a set of notes, it is a wiki nobody reads. Oldest go first. */
 const MAX_NOTES = 60
-/** A note is a paragraph, not a document. */
-const MAX_NOTE_CHARS = 400
+/** Long enough for a real write-up (a subsystem map, a measured law with its numbers);
+ * the refusal message still nudges toward the fact itself. */
+const MAX_NOTE_CHARS = 20_000
+/** Past this a note renders as an indented block instead of one bullet line: flattening a
+ * page of structured prose into a single line destroys exactly the structure that made it
+ * worth recording. */
+const LONG_NOTE_CHARS = 200
 /** Evidence beyond this is not evidence, it is a directory listing. */
 const MAX_FILES_PER_NOTE = 6
 
@@ -167,7 +175,13 @@ function frame(fresh: readonly ProjectNote[], staleCount: number): string {
   let shown = 0
   // Newest first: the most recent understanding is the most likely to still be true.
   for (const note of [...fresh].reverse()) {
-    const line = `- ${note.text.replace(/\n+/g, ' ')} [${note.evidence.map((e) => e.path).join(', ')}]`
+    const files = note.evidence.map((e) => e.path).join(', ')
+    // A short note is a bullet; a long one keeps its own lines, indented under its files —
+    // flattening a page of structured prose destroys exactly the structure that made it
+    // worth recording at 20k instead of 400.
+    const line = note.text.length <= LONG_NOTE_CHARS
+      ? `- ${note.text.replace(/\n+/g, ' ')} [${files}]`
+      : `- [${files}]\n${note.text.split('\n').map((l) => `  ${l}`).join('\n')}`
     if (used + line.length > NOTES_BUDGET) break
     parts.push(line)
     used += line.length
@@ -194,7 +208,10 @@ export interface AddResult { ok: boolean; problem?: string; note?: ProjectNote }
 export function addProjectNote(
   workspaceRoot: string, text: string, files: readonly string[],
 ): AddResult {
-  const body = text.trim()
+  // A leading space neutralises the one sequence the file format reserves (`^## ` starts
+  // the next note's block) while staying invisible in markdown. Long notes legitimately
+  // contain headings; silently losing everything after one is not an option.
+  const body = text.trim().replace(/^(#{1,6} )/gm, ' $1')
   if (body === '') return { ok: false, problem: 'a note needs some text' }
   if (body.length > MAX_NOTE_CHARS) {
     return { ok: false, problem: `a note must be under ${MAX_NOTE_CHARS} characters; this one is ${body.length}. Keep it to the fact itself.` }

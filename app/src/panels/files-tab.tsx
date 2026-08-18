@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
+import type { ChangeDecor } from '../lib/path-tree'
 import type { ChatItem } from '../lib/state'
 import { highlight } from '../lib/highlight'
 import { Icon } from '../components/icons'
@@ -74,7 +75,7 @@ function PathLabel({ path }: { path: string }): VNode {
 }
 
 export function FilesTab({
-  client, toolItems, openPath, onOpenFile, workspaceRoot,
+  client, toolItems, openPath, onOpenFile, workspaceRoot, decor,
 }: {
   client: ProtocolClient
   toolItems: ChatItem[]
@@ -82,6 +83,8 @@ export function FilesTab({
   onOpenFile: (path: string | null) => void
   /** Passed through to `TreePanel`, which uses it as its reset signal. */
   workspaceRoot: string
+  /** Session-change badges for the unified Workspace view; absent = plain Files. */
+  decor?: ChangeDecor
 }): VNode {
   const [preview, setPreview] = useState<Preview | null>(null)
   const [wrap, setWrap] = useState(false)
@@ -110,13 +113,28 @@ export function FilesTab({
 
   // Escape closes the file, not the app's other Escape-bound things: this listener only
   // exists while a preview is open, so a bare Escape still stops a turn the rest of the time.
+  //
+  // CAPTURE phase, and that is the whole protection: the composer's abort listener is a
+  // bubble-phase listener on this same window, and stopPropagation between two same-phase
+  // listeners on one EventTarget does nothing — registered later, this handler ran second,
+  // and Esc on a preview closed it AND silently aborted the running turn. A capture
+  // listener runs before window's bubble phase, and its stopPropagation ends the walk
+  // before the abort handler is reached. One Esc, one action: close the file; the next
+  // Esc, with no preview open, stops the turn as before.
   useEffect(() => {
     if (preview === null) return
     function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') { e.stopPropagation(); onOpenFile(null) }
+      if (e.key !== 'Escape') return
+      // A capture listener runs before EVERY other Escape owner, so it must yield to
+      // anything more immediate than a side-panel preview: an open dialog (settings,
+      // palette), a composer picker, or the run card — each of those closes itself, and
+      // consuming their Esc here closed a hidden preview instead.
+      if (document.querySelector('.modal-overlay, .command-picker, .run-config') !== null) return
+      e.stopPropagation()
+      onOpenFile(null)
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [preview, onOpenFile])
 
   return (
@@ -127,6 +145,7 @@ export function FilesTab({
           toolItems={toolItems}
           onOpenFile={onOpenFile}
           workspaceRoot={workspaceRoot}
+          decor={decor}
         />
       </div>
 

@@ -12,6 +12,10 @@ export interface SessionMeta {
   updatedAt: string // ISO
   workspaceRoot: string
   mode: AgentMode
+  /** The distilled task contract, when this session carries a complex task — see
+   * `session/contract.ts`. In the meta rather than the transcript because it must survive
+   * every compaction swap verbatim and be re-promotable into each rebuilt system prompt. */
+  contract?: import('./contract.js').TaskContract
 }
 
 /** One compaction swap's audit-trail marker line -- see the class doc comment below. */
@@ -138,6 +142,19 @@ export class SessionStore {
     if (typeof obj.updatedAt !== 'string') return 'updatedAt'
     if (typeof obj.workspaceRoot !== 'string') return 'workspaceRoot'
     if (typeof obj.mode !== 'string') return 'mode'
+    // A malformed contract is DROPPED, not fatal: it reaches `renderContract` inside the
+    // compaction swap and `checkAcceptance`'s prompt build, where a bad shape from a
+    // hand-edited file would throw after the turn's work was already done. The session is
+    // fine without it — it simply runs the way every session ran before contracts.
+    if (obj.contract !== undefined) {
+      const c = obj.contract as Partial<SessionMeta['contract'] & object>
+      if (typeof c !== 'object' || c === null ||
+          typeof c.goal !== 'string' || !Array.isArray(c.criteria) ||
+          !c.criteria.every((x: unknown) => typeof x === 'string') ||
+          !Array.isArray(c.constraints)) {
+        delete (obj as { contract?: unknown }).contract
+      }
+    }
     return ''
   }
 

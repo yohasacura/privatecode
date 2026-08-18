@@ -73,6 +73,9 @@ export type ChatItem =
      * Terminal tab, which interleaves the agent's commands with the user's own. `0` when
      * the caller had no clock (a test). */
     startedAtMs: number
+    /** Live output while the tool RUNS (run_command's stdout/stderr so far), tail-capped —
+     * display only. Dropped when the result arrives: the result is the complete record. */
+    live?: string
     result?: {
       ok: boolean
       preview: string
@@ -145,6 +148,9 @@ export interface PendingQuestion {
   requestId: string
   question: string
   options: string[]
+  /** Several options may be picked together; the card renders toggles and one Answer
+   * button instead of send-on-click. The reply is still one string. */
+  multiSelect?: boolean
 }
 
 export interface StepTiming {
@@ -152,6 +158,22 @@ export interface StepTiming {
   /** How long the step may go SILENT before the core abandons it — not a budget for the
    * whole step. See `Agent.stepClock` in the core. */
   timeoutMs: number
+  /** The larger budget for the wait before this step's FIRST token: `timeoutMs` plus the
+   * core's prefill allowance for what the last step appended. The countdown must use this
+   * until something streams — counted against `timeoutMs` alone it reached zero and sat at
+   * "0s to timeout" for half a minute while a step prefilling two ~20k-token search results
+   * was perfectly healthy. Absent only for an older core that does not send it. */
+  firstTokenTimeoutMs?: number
+  /** Whether the step is in a silent-prefill stretch — from `step.start` (or a forced
+   * continuation, which re-prefills the carried-back reasoning) until the first delta.
+   * This, not an anchor comparison, decides which budget the countdown counts against. */
+  waitingFirstToken: boolean
+  /** `items.length` at the moment the current model CALL began (the step's start, moved
+   * forward by a forced continuation). Everything past this mark is that call's own
+   * stream — and on a server-death retry it is exactly what the re-sent call supersedes,
+   * closed or not: a thinking block closed by a streamed tool-call name is still the dead
+   * attempt's. Optional: a restored transcript builds no mark, and replay never retries. */
+  itemsAtCallStart?: number
   /**
    * When the step began. Set once, on `step.start`, and never moved.
    *
@@ -184,8 +206,8 @@ export interface LastStepStats {
    * one -- Task 8's status bar's "MTP %". */
   draftAcceptance: number | undefined
   /** The prompt count is the transcript's own estimate, not the server's measurement --
-   * true for a resumed session until its first step lands. The status bar says so rather
-   * than presenting an estimate as a reading. */
+   * true for a resumed session, and for a just-applied compaction swap, until the next
+   * step lands. The status bar says so rather than presenting an estimate as a reading. */
   estimated?: boolean
 }
 
@@ -221,6 +243,10 @@ export interface ChatState {
   items: ChatItem[]
   turnRunning: boolean
   currentStep: StepTiming | null
+  /** The text of a message the host reported as never delivered (turn.done with
+   * delivered:false — Esc during contract distillation). The composer drains it back
+   * into the input box and dispatches `draft-restored`; null the rest of the time. */
+  restoreDraft: string | null
   lastStepDone: LastStepStats | null
   /** Null means the view IS the live session. */
   viewing: ViewedSession | null
@@ -283,9 +309,14 @@ export interface ChatState {
   lastCompaction: { state: CompactionState; droppedMessages: number | undefined; seq: number } | null
 }
 
+/** How much of a running command's output the live pane keeps. A viewport, not a record:
+ * enough to read what a build is doing right now, small enough that a firehose `dir /s`
+ * cannot bloat the state on every frame. */
+const LIVE_OUTPUT_TAIL_CHARS = 16_000
+
 export function initialChatState(): ChatState {
   return {
-    items: [], turnRunning: false, currentStep: null, lastStepDone: null, viewing: null, nextId: 1,
+    items: [], turnRunning: false, currentStep: null, restoreDraft: null, lastStepDone: null, viewing: null, nextId: 1,
     pendingApproval: null, pendingQuestion: null, todos: [], session: null, lastCompaction: null,
     problems: [], pendingDecisions: 0, run: null, lastRun: null,
   }
@@ -306,7 +337,13 @@ export type ChatAction =
    * run's turns emit no `turn.done`, and the composer wedges on Stop forever. */
   | { type: 'send-rolled-back' }
   | { type: 'turn-started' }
-  | { type: 'step.start'; step: number; timeoutMs: number; startedAtMs: number }
+  | { type: 'step.start'; step: number; timeoutMs: number; startedAtMs: number; firstTokenTimeoutMs?: number }
+  /** A forced continuation began inside the step: silence is prefill again, against a fresh
+   * first-token budget. */
+  | { type: 'step.continuation'; firstTokenTimeoutMs?: number; atMs: number }
+  /** The server died mid-call and the same request is being re-sent: the dead attempt's
+   * partial cards are superseded and must go, or the retry streams onto them. */
+  | { type: 'step.retry'; atMs: number }
   /** Something streamed, so the step is alive: restarts the silence countdown. Dispatched
    * once per animation frame by whichever buffer had content, mirroring the core's
    * `clock.touch()` on every delta. */
@@ -324,8 +361,21 @@ export type ChatAction =
   | { type: 'tool.call'; name: string; args: string; atMs?: number }
   | { type: 'tool.result'; name: string; ok: boolean; content: string; display?: string }
   | { type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number; promptTokens?: number; draftAcceptance?: number; atMs?: number }
-  | { type: 'turn.done'; stoppedBecause: StoppedBecause; atMs?: number }
+  | { type: 'turn.done'; stoppedBecause: StoppedBecause; atMs?: number; delivered?: false }
+  | { type: 'draft-restored' }
+  | { type: 'tool.output'; text: string }
   | { type: 'send-failed'; message: string; atMs?: number }
+  /**
+   * An error worth a transcript row that says NOTHING about the turn.
+   *
+   * `send-failed` is specifically "the optimistic send did not happen": it rolls the turn
+   * state back. It was also being dispatched as a generic toast — a mode-switch failure, a
+   * session file that would not read, a mistyped slash command — and fired mid-turn it
+   * flipped Stop to Send while the host streamed on, dropped the real `turn.done` at the
+   * `turnRunning` guard, and left thinking rows pulsing forever. An error NOTE appends the
+   * row and touches nothing else.
+   */
+  | { type: 'error-note'; message: string }
   /** Dispatched after every successful `init`/`sessions.new`/`sessions.resume` call --
    * every one of those is either this app run's first session or a deliberate switch to a
    * different one, so this always resets the whole transcript/turn/pending-card/todos
@@ -368,7 +418,7 @@ export type ChatAction =
    * requestId is already refused): once this reducer has cleared `pendingApproval`, a
    * second click on a since-unmounted/disabled card has nothing left to dispatch against. */
   | { type: 'approval.answered'; decision: ApprovalDecision }
-  | { type: 'question.request'; requestId: string; question: string; options: string[] }
+  | { type: 'question.request'; requestId: string; question: string; options: string[]; multiSelect?: boolean }
   | { type: 'question.answered'; answer: string }
   | { type: 'todos'; items: TodoItem[] }
   | { type: 'verify'; command: string; ok: boolean; attempt: number; exitCode?: number; problem?: string }
@@ -537,14 +587,65 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           timeoutMs: action.timeoutMs,
           startedAtMs: action.startedAtMs,
           aliveAtMs: action.startedAtMs,
+          waitingFirstToken: true,
+          itemsAtCallStart: state.items.length,
+          ...(action.firstTokenTimeoutMs !== undefined
+            ? { firstTokenTimeoutMs: action.firstTokenTimeoutMs } : {}),
         },
       }
+
+    case 'step.continuation':
+      if (state.currentStep === null) return state
+      return {
+        ...state,
+        currentStep: {
+          ...state.currentStep,
+          // A fresh silent-prefill stretch starts NOW: the anchor moves so the countdown
+          // measures this wait, and the budget is the continuation's own.
+          aliveAtMs: action.atMs,
+          waitingFirstToken: true,
+          // The continuation is its own model call: a retry inside it supersedes only
+          // what the continuation itself streamed, not the truncated segment before it.
+          itemsAtCallStart: state.items.length,
+          ...(action.firstTokenTimeoutMs !== undefined
+            ? { firstTokenTimeoutMs: action.firstTokenTimeoutMs } : {}),
+        },
+      }
+
+    case 'step.retry': {
+      // REMOVED, not closed: the retry re-sends the identical request and re-streams the
+      // same generation from the start, so a kept partial would show the same reasoning
+      // twice — and a half-written tool card would take the retry's deltas at the same
+      // callIndex and carry spliced JSON. Everything past the call-start mark is the dead
+      // attempt's stream, INCLUDING a thinking block a streamed tool-call name already
+      // closed. The on-disk transcript is untouched (the dead attempt was never appended);
+      // this is purely the live view.
+      const mark = state.currentStep?.itemsAtCallStart
+      const items = mark !== undefined && mark <= state.items.length
+        ? state.items.slice(0, mark)
+        : state.items
+      return {
+        ...state,
+        items,
+        // The wait that follows is the relaunched server's cold prefill: re-arm the
+        // first-token countdown exactly as a continuation does. The original
+        // firstTokenTimeoutMs is kept by the spread — the step's own budget still applies.
+        ...(state.currentStep !== null
+          ? { currentStep: { ...state.currentStep, aliveAtMs: action.atMs, waitingFirstToken: true } }
+          : {}),
+      }
+    }
 
     case 'step.alive':
       // Only while a step is running. Between steps — a tool executing, an approval open —
       // `currentStep` is null and there is no countdown to restart.
       if (state.currentStep === null) return state
-      return { ...state, currentStep: { ...state.currentStep, aliveAtMs: action.atMs } }
+      // Something streamed, so the silent-prefill stretch (if any) is over: from here the
+      // countdown measures gaps between tokens against the flat budget.
+      return {
+        ...state,
+        currentStep: { ...state.currentStep, aliveAtMs: action.atMs, waitingFirstToken: false },
+      }
 
     case 'thinking.delta': {
       const open = openThinking(state.items)
@@ -610,7 +711,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           next = {
             ...next,
             items: closeThinking(next.items, undefined),
-            currentStep: { step: entry.step, timeoutMs: 0, startedAtMs: 0, aliveAtMs: 0 },
+            currentStep: { step: entry.step, timeoutMs: 0, startedAtMs: 0, aliveAtMs: 0, waitingFirstToken: false },
           }
         }
         next = reduceChat(next, restoreAction(entry))
@@ -714,8 +815,11 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'tool.result': {
       const pending = pendingTool(state.items)
       if (!pending) return state // a result with no matching pending call is a no-op, not a crash
+      // `live` is dropped, deliberately: it was the view of the run in progress, and the
+      // result below is the same bytes as their complete, authoritative record.
+      const { live: _live, ...withoutLive } = pending
       const updated: ChatItem = {
-        ...pending,
+        ...withoutLive,
         result: {
           ok: action.ok,
           preview: preview(action.content),
@@ -744,6 +848,12 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           tokensPerSecond: action.tokensPerSecond ?? state.lastStepDone?.tokensPerSecond,
           promptTokens: action.promptTokens ?? state.lastStepDone?.promptTokens,
           draftAcceptance: action.draftAcceptance ?? state.lastStepDone?.draftAcceptance,
+          // The flag travels with the number it describes: when a step reports no count of
+          // its own (aborted, timed out) and the carried-over count was an estimate, it is
+          // STILL an estimate — dropping the flag here presented a compaction's or a restore's
+          // guess as a server reading. A real count arriving clears it by construction.
+          ...(action.promptTokens === undefined && state.lastStepDone?.estimated === true
+            ? { estimated: true } : {}),
         },
       }
 
@@ -755,6 +865,23 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       // legitimate turn.done follows the `turn-started` the composer dispatches
       // synchronously before its `send` call, so `turnRunning` is the exact discriminator.
       if (!state.turnRunning) return state
+      // A turn the host says was never delivered (Esc during contract distillation): the
+      // user message is not in any transcript, so nothing may claim it happened. The
+      // optimistic row is removed — not marked "stopped", which reads as "kept" — and its
+      // text goes back to the composer through `restoreDraft`. Watched live: the old
+      // banner promised "continues from here" over a message the model never received,
+      // and the next "продолжай" would have continued from nothing.
+      if (action.delivered === false) {
+        const lastUser = state.items.map((i) => i.kind).lastIndexOf('user')
+        const row = lastUser === -1 ? null : state.items[lastUser]!
+        return {
+          ...state,
+          items: lastUser === -1 ? state.items : state.items.filter((_, i) => i !== lastUser),
+          turnRunning: false, currentStep: null,
+          restoreDraft: row !== null && 'text' in row ? (row as { text: string }).text : null,
+          pendingApproval: null, pendingQuestion: null,
+        }
+      }
       // An aborted turn's partial assistant text (if any) is marked `interrupted` so the
       // UI can show the "[interrupted]" marker next to it. Reasoning is closed first:
       // interrupting mid-thought is exactly the case that used to leave a pulsing row.
@@ -781,6 +908,13 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       const items = closeWritingCalls(closeThinking(state.items, action.atMs))
       const item: ChatItem = { kind: 'error', id: state.nextId, message: action.message }
       return { ...state, items: [...items, item], turnRunning: false, currentStep: null, nextId: state.nextId + 1 }
+    }
+
+    case 'error-note': {
+      // The row and nothing else — see the action's doc comment for why this must not
+      // touch turnRunning/currentStep or close writing cards.
+      const item: ChatItem = { kind: 'error', id: state.nextId, message: action.message }
+      return { ...state, items: [...state.items, item], nextId: state.nextId + 1 }
     }
 
     case 'approval.request':
@@ -812,7 +946,10 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'question.request':
       return {
         ...state,
-        pendingQuestion: { requestId: action.requestId, question: action.question, options: action.options },
+        pendingQuestion: {
+          requestId: action.requestId, question: action.question, options: action.options,
+          ...(action.multiSelect === true ? { multiSelect: true } : {}),
+        },
       }
 
     case 'question.answered': {
@@ -859,13 +996,49 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         ...state,
         run: null,
         lastRun: { turns: action.turns, stoppedBecause: action.stoppedBecause, detail: action.detail },
+        // The host denies every pending interaction when a run ends (`denyAllPending`), so a
+        // card left from mid-run is answering a question that no longer exists: it sat on
+        // screen saying "Paused, waiting for you" forever, and clicking Allow appended a
+        // permanent "allowed" record for a tool that never ran.
+        pendingApproval: null,
+        pendingQuestion: null,
       }
 
     case 'run-dismissed':
       return { ...state, lastRun: null }
 
-    case 'send-rolled-back':
-      return { ...state, turnRunning: false, currentStep: null }
+    case 'draft-restored':
+      return { ...state, restoreDraft: null }
+
+    case 'tool.output': {
+      // Live console output attaches to the RUNNING call — the last tool item without a
+      // result. Tail-capped: this is a viewport onto a stream, not the record of it (the
+      // tool result carries the record, with its own honest clipping rules).
+      const running = pendingTool(state.items)
+      if (!running) return state
+      const joined = (running.live ?? '') + action.text
+      const live = joined.length > LIVE_OUTPUT_TAIL_CHARS
+        ? `…${joined.slice(-LIVE_OUTPUT_TAIL_CHARS)}`
+        : joined
+      return {
+        ...state,
+        items: state.items.map((i) => (i.id === running.id ? { ...running, live } : i)),
+      }
+    }
+
+    case 'send-rolled-back': {
+      // Undo BOTH halves of the optimism: the flag and the message row. The refused send
+      // is re-queued by the composer, so leaving the row in place rendered the same text
+      // twice once the queue drained. The last user item is the optimistic one — a refusal
+      // means a run holds the slot, and a run never appends user messages.
+      const lastUser = state.items.map((i) => i.kind).lastIndexOf('user')
+      return {
+        ...state,
+        turnRunning: false,
+        currentStep: null,
+        items: lastUser === -1 ? state.items : state.items.filter((_, i) => i !== lastUser),
+      }
+    }
 
     case 'todos':
       return { ...state, todos: action.items }
@@ -935,6 +1108,23 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         lastCompaction: {
           state: action.state, droppedMessages: action.droppedMessages, seq: (state.lastCompaction?.seq ?? 0) + 1,
         },
+        // The context meter reads `lastStepDone.promptTokens`, and the next server-measured
+        // count is a whole generation away: it rides the first `step.done` of the NEXT turn.
+        // So the meter kept showing the pre-compaction number long after the row here said
+        // "compacted" — reported from the running app as the bar only moving "some time into
+        // the next message". The applied event carries the new transcript's own estimate, so
+        // seed the meter from it the way `session-switched` seeds a restored session:
+        // flagged as an estimate until a real measurement replaces it.
+        ...(action.state === 'applied' && action.detail !== undefined ? {
+          lastStepDone: {
+            step: state.lastStepDone?.step ?? 0,
+            seconds: state.lastStepDone?.seconds ?? 0,
+            tokensPerSecond: state.lastStepDone?.tokensPerSecond,
+            promptTokens: action.detail.afterTokens,
+            draftAcceptance: state.lastStepDone?.draftAcceptance,
+            estimated: true,
+          },
+        } : {}),
       }
 
       // ONE row per compaction, live from the moment it starts, updated in place to whatever

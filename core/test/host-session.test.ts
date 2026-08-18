@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import { SessionHost } from '../src/host/host.js'
 import {
   isHostEvent,
@@ -284,6 +284,90 @@ test('send while a turn is already running is refused, and does not disturb the 
   })
 })
 
+test('prompt.improve returns the draft suggestions, and touches nothing', async () => {
+  // The Improve button is a PREVIEW of the distiller: same request a send would make,
+  // rendered back as prompt text — and the session's meta must stay exactly as it was,
+  // because the draft may never be sent.
+  const fake = await makeServer((body: any) => {
+    // The distill request is non-streaming with a forced tool; anything else here fails loudly.
+    if (body.tool_choice !== 'required') return new RawResponse(500, 'unexpected request', 'text/plain')
+    return {
+      choices: [{
+        finish_reason: 'tool_calls',
+        message: {
+          role: 'assistant', content: null,
+          tool_calls: [{
+            id: 'c1', type: 'function',
+            function: {
+              name: 'suggest_improvements',
+              arguments: JSON.stringify({
+                criteria: ['tests/greet.test.js проходит', 'экспорт обновлён'],
+                constraints: ['не менять greet()'],
+                questions: ['Какие файлы затронуть?'],
+              }),
+            },
+          }],
+        },
+      }],
+      usage: { completion_tokens: 60 },
+    }
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+
+  await host.handle({ id: 2, method: 'prompt.improve', params: { text: 'Добавь функцию greetMany, тесты должны проходить.' } })
+  const result = resultOf<{ suggestions: { criteria: string[]; constraints: string[]; questions: string[] } | null }>(transport, 2)
+  expect(result.suggestions).toEqual({
+    criteria: ['tests/greet.test.js проходит', 'экспорт обновлён'],
+    constraints: ['не менять greet()'],
+    questions: ['Какие файлы затронуть?'],
+  })
+
+  // Preview only, and stronger than "no contract in the meta": a fresh session persists
+  // nothing until a real send, and the preview must not change that — no state directory
+  // at all is exactly "touched nothing".
+  expect(existsSync(join(root, '.privatecode', 'state', 'sessions'))).toBe(false)
+})
+
+test('abort during contract distillation rolls the whole message back: delivered:false, no title, no contract', async () => {
+  // Watched live: Esc two seconds into a task-shaped send. The distiller was the request
+  // in flight, so the user message had not reached the transcript — yet the UI kept the
+  // row under "continues from here", the session was titled after the phantom message,
+  // and an F5 later the row vanished. The host must say the message was never delivered.
+  const fake = await makeServer(() => hang())
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+
+  // Task-shaped (>220 chars of prose), so the host asks for a distillation — which hangs.
+  const task = 'Добавь в src/greet.js функцию greetMany, которая принимает массив имён и ' +
+    'возвращает массив приветствий. Каждый элемент должен проходить ту же валидацию, что и ' +
+    'в greet. Добавь tests/greet.test.js с тестами на оба случая и обнови экспорты модуля. ' +
+    'Все тесты должны проходить, ничего не ломай.'
+  const sendPromise = host.handle({ id: 2, method: 'send', params: { text: task } })
+  // The distill request is the FIRST chat call; wait until it is actually in flight so
+  // the abort lands mid-distillation rather than before send() started.
+  // Generous: under a full parallel suite the first chat POST can take seconds to appear,
+  // and a premature timeout here fails the test for slowness, not for wrongness.
+  await vi.waitFor(() => {
+    if (!fake.requests.some((r: any) => r.body?.messages)) throw new Error('distill not started')
+  }, { timeout: 15_000, interval: 25 })
+  await host.handle({ id: 3, method: 'abort', params: {} })
+  await sendPromise
+
+  const sendReply = reply(transport, 2)
+  expect(sendReply && 'result' in sendReply && sendReply.result).toMatchObject({
+    turn: { stoppedBecause: 'aborted', delivered: false },
+  })
+  // Nothing derived from the undelivered message may survive it.
+  const metaFile = readdirSync(join(root, '.privatecode', 'state', 'sessions'))
+    .find((f) => f.endsWith('.meta.json'))!
+  const meta = JSON.parse(readFileSync(join(root, '.privatecode', 'state', 'sessions', metaFile), 'utf8'))
+  expect(meta.contract).toBeUndefined()
+  expect(meta.title ?? '').not.toMatch(/greetMany|Добавь/)
+})
+
 test('abort mid-approval denies the pending approval and ends the turn aborted; the tool never runs', async () => {
   const fake = await makeServer(() =>
     toolCallSSE('write_file', JSON.stringify({ path: 'note.txt', content: 'hello' })))
@@ -407,8 +491,16 @@ test('switching sessions aborts an in-flight background compaction instead of ha
  */
 test('a message sent during a compaction waits for it instead of killing it', async () => {
   let compactions = 0
-  const fake = await makeServer((_body, streaming) => {
+  const fake = await makeServer((body, streaming) => {
     if (streaming) return textSSE('all done', { completion_tokens: 10, prompt_tokens: 900 })
+    // Only the summary generation counts as the compaction — the background PREWARM that
+    // follows a ready summary is also a non-streaming request (max_tokens 1) and must not
+    // be mistaken for a second compaction by this counter.
+    const last = (body.messages as { content?: string | null }[]).at(-1)
+    const isSummary = typeof last?.content === 'string' && last.content.includes('compacted to free up context')
+    if (!isSummary) {
+      return { choices: [{ message: { content: 'warm' }, finish_reason: 'length' }] }
+    }
     compactions++
     // Slow enough that the second send() below lands while it is still in flight, which is
     // the whole situation under test.

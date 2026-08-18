@@ -58,10 +58,18 @@ export class NavProcess {
   /** The root this helper has loaded, so a second workspace is a reload and not a lie. */
   private loadedRoot: string | null = null
   private loading: Promise<Record<string, unknown>> | null = null
+  /** Set by `stop()` and never cleared: a stopped helper must stay stopped. Without it, a
+   * caller that kept its own reference across a workspace switch — the background edge
+   * harvest is exactly that caller — would have its next question respawn the exe AFTER
+   * `stopNavProcess()` dropped this instance, leaving a .NET process nothing can ever
+   * reach again. A crash is different: `stopped` stays false there, so the established
+   * restart-on-next-call behavior for a died helper is untouched. */
+  private stopped = false
 
   constructor(private readonly exePath: string) {}
 
   private start(): void {
+    if (this.stopped) throw new Error('the C# navigation helper was stopped')
     if (this.child !== undefined) return
     const child = spawnHelper(this.exePath)
     child.stdout?.setEncoding('utf8')
@@ -136,6 +144,7 @@ export class NavProcess {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true
     const child = this.child
     if (child === undefined) return
     try { child.stdin?.end() } catch { /* already gone */ }

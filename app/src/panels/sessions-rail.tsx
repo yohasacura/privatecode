@@ -121,9 +121,13 @@ export function SessionsRail({
             ].filter(Boolean).join(' ')}
             onClick={() => onView(s.id)}
             disabled={busy}
+            // "the running session keeps going" is only reassuring while something RUNS —
+            // read next to an idle composer it claimed a running session that did not exist.
             title={s.id === activeSessionId
-              ? `${s.title || '(untitled)'}\nthis is the session that works`
-              : `${s.title || '(untitled)'}\nclick to read it — the running session keeps going`}
+              ? `${s.title || '(untitled)'}\nthe active session — typing below continues it`
+              : turnRunning
+                ? `${s.title || '(untitled)'}\nclick to read it — the running session keeps going`
+                : `${s.title || '(untitled)'}\nclick to read it — sending a message is what makes it the active one`}
           >
             <span class="rail-item-title">{s.title || '(untitled)'}</span>
             <span class="rail-item-meta">

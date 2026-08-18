@@ -70,6 +70,15 @@ export interface PromptOptions {
    * transcript. Absent (or a single folder) leaves this prompt byte-for-byte what it was.
    */
   folders?: { name: string; access: 'write' | 'read' }[]
+  /**
+   * The rendered task contract (`contract.ts`'s `renderContract`), promoted here at every
+   * compaction swap. The goal and its checkable criteria are the one thing a long task
+   * cannot afford to lose to a swap, and message 0 is the one place a swap rebuilds anyway
+   * — so carrying it here costs nothing and survives every later swap. Placed with the
+   * other listings, before memory: it is information about THIS task, and information in
+   * the prefix is the lever that measurably works on this model.
+   */
+  contract?: string
 }
 
 /**
@@ -188,6 +197,7 @@ export function buildSystemPrompt(opts: PromptOptions): string {
   if (opts.databaseSchema !== undefined && opts.databaseSchema !== '') {
     parts.push('', opts.databaseSchema)
   }
+  if (opts.contract !== undefined && opts.contract !== '') parts.push('', opts.contract)
   // Memory goes LAST -- see PromptOptions.memory. An absent or empty block leaves this
   // function returning byte-for-byte what it returned before memory existed, which is what
   // keeps every existing assertion about this prompt meaningful.

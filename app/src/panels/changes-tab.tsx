@@ -1,11 +1,12 @@
 import { useState } from 'preact/hooks'
-import { Fragment, type VNode } from 'preact'
+import { type VNode } from 'preact'
 import type { ChatItem } from '../lib/state'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
 import { WRITE_TOOLS, presentTool } from '../lib/tools'
 import { Icon } from '../components/icons'
-import { PanelEmpty, PanelGroupHead, PanelRow, PanelSection } from '../components/panel'
-import { groupByDirectory } from '../lib/path-tree'
+import { PanelEmpty, PanelRow, PanelSection } from '../components/panel'
+import { buildPathTree } from '../lib/path-tree'
+import { PathTreeLevel, toggleInSet } from '../components/path-tree-view'
 import { WorkingTree } from './working-tree'
 import type { ProtocolClient } from '../lib/client'
 
@@ -30,6 +31,14 @@ export interface ChangeEntry {
    * which is not a path anything can read -- clicking such a row asked the host to open a
    * file that cannot exist and produced an ENOENT banner. */
   openPath: string
+  /** Every path "Put back" must restore. One entry for an edit; TWO for a move — restoring
+   * only the destination deleted the file from both places: the destination did not exist
+   * at the session baseline (so restore removed it) and the source was never recreated. */
+  restorePaths: string[]
+  /** The LAST write to this path failed, but an earlier one succeeded — the row keeps the
+   * successful diff and its Put back (a failed edit changed nothing on disk), and says so
+   * instead of pretending the file was never changed. */
+  lastFailed?: boolean
 }
 
 /**
@@ -77,6 +86,23 @@ export function collectChanges(items: ChatItem[]): ChangeEntry[] {
     const key = p.path ?? p.target
     if (key === '') continue
     const previous = byPath.get(key)
+    // A write that RAN and failed changed nothing on disk, so it must not replace the
+    // successful entry it follows — that took the real diff, the +/- total and the Put
+    // back button off a file that genuinely was changed this session. The row keeps the
+    // last SUCCESSFUL state and carries the failure as a flag; `id` still advances so a
+    // reviewed row honestly resurfaces on the news.
+    if (!item.result.ok && previous !== undefined && previous.ok) {
+      byPath.set(key, { ...previous, id: item.id, revisions: previous.revisions + 1, lastFailed: true })
+      continue
+    }
+    // Restore paths ACCUMULATE across revisions: `move a→b` then `edit b` is one entry
+    // keyed on b, and putting it back must still recreate a — restoring only b deletes the
+    // file outright (absent there at baseline) with the source never recreated.
+    const restorePaths = [...new Set([
+      ...(previous?.restorePaths ?? []),
+      ...(p.fromPath !== undefined ? [p.fromPath] : []),
+      p.path ?? key,
+    ])]
     byPath.set(key, {
       id: item.id,
       tool: item.name,
@@ -85,6 +111,7 @@ export function collectChanges(items: ChatItem[]): ChangeEntry[] {
       content: item.result.content,
       revisions: (previous?.revisions ?? 0) + 1,
       openPath: p.path ?? key,
+      restorePaths,
     })
   }
   return [...byPath.values()].sort((a, b) => b.id - a.id)
@@ -137,6 +164,9 @@ export function ChangesTab({
    */
   const [reviewed, setReviewed] = useState<ReadonlyMap<string, number>>(new Map())
   const [showReviewed, setShowReviewed] = useState(false)
+  // Collapsed directory rows, keyed by `fullDir` — stable across renders and chain
+  // compression. Everything starts EXPANDED: a change list exists to be seen.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const { visible, hidden } = splitReviewed(entries, reviewed)
 
   function markReviewed(entry: ChangeEntry): void {
@@ -175,13 +205,10 @@ export function ChangesTab({
     removed += stat.removed
   }
 
-  // Grouped by directory with the shared prefix lifted out — see `lib/path-tree.ts` for why
-  // one level and not a full tree.
-  // Grouped by `openPath`, the real path on disk — NOT by `path`, which for a move is the
-  // display string `old → new`. Splitting that on its last slash produced a heading of
-  // `src/old.ts → src` and a row of `new.ts`, so a moved file landed in an invented
-  // directory having lost the half that says where it came from.
-  const grouped = groupByDirectory(visible, (e) => e.openPath)
+  // A real nested tree, like the Files panel — built from `openPath`, the path on disk —
+  // NOT from `path`, which for a move is the display string `old → new`. Splitting that on
+  // its slashes would scatter a moved file across invented directories.
+  const tree = buildPathTree(visible, (e) => e.openPath)
 
   return (
     <div class="changes-tab">
@@ -195,17 +222,16 @@ export function ChangesTab({
           </button>
         )}
       </div>
-      <PanelSection title="This session" subtitle={grouped.commonPrefix}>
-        {grouped.groups.map((group) => (
-          <Fragment key={group.fullDir}>
-            <PanelGroupHead
-              dir={group.dir}
-              fullDir={group.fullDir}
-              meta={`${group.items.length} file${group.items.length === 1 ? '' : 's'}`}
-            />
-            {group.items.map(({ item: entry, name }) => (
+      <PanelSection title="This session">
+        <PathTreeLevel
+          node={tree}
+          depth={0}
+          collapsed={collapsed}
+          onToggle={(dir) => setCollapsed((prev) => toggleInSet(prev, dir))}
+          dirMeta={(dir) => `${dir.totalFiles} file${dir.totalFiles === 1 ? '' : 's'}`}
+          renderFile={(entry, name, depth) => (
+            <div key={entry.id} style={{ paddingLeft: `${depth * 12}px` }}>
               <ChangeRow
-                key={entry.id}
                 entry={entry}
                 // A move keeps its whole `old → new` label: the file name alone would drop
                 // the only interesting half. Everything else shows its bare name.
@@ -215,9 +241,9 @@ export function ChangesTab({
                 onReverted={() => setReverts((n) => n + 1)}
                 onReviewed={() => markReviewed(entry)}
               />
-            ))}
-          </Fragment>
-        ))}
+            </div>
+          )}
+        />
         {visible.length === 0 && hidden.length > 0 && (
           <div class="changes-all-reviewed">Everything here is reviewed.</div>
         )}
@@ -244,6 +270,7 @@ export function ChangesTab({
     </div>
   )
 }
+
 
 /**
  * One file the agent wrote, with the two things you can do about it.
@@ -272,16 +299,43 @@ function ChangeRow({
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
+  /** What the restore actually DID, said on the row. Before this, success just closed the
+   * box and left an identical row still offering Put back — indistinguishable from nothing
+   * having happened, and an invitation to click it again. */
+  const [outcome, setOutcome] = useState<string | null>(null)
   const stat = entry.ok ? diffStat(entry.content) : null
 
-  function revert(): void {
+  async function revert(): Promise<void> {
     setBusy(true)
-    client.call('checkpoints.restoreFile', {
-      path: entry.openPath, ...(note.trim() !== '' ? { note: note.trim() } : {}),
-    })
-      .then(() => { setAsking(false); setNote(''); setFailed(null); onReverted() })
-      .catch((e: Error) => setFailed(e.message))
-      .finally(() => setBusy(false))
+    // EVERY path the change touched, not just the one the row opens: for a move that is
+    // the source and the destination — restoring only the destination deleted the file
+    // from both places (absent at baseline there, never recreated at the source).
+    const results: string[] = []
+    try {
+      for (const path of entry.restorePaths) {
+        const r = await client.call('checkpoints.restoreFile', {
+          path, ...(note.trim() !== '' ? { note: note.trim() } : {}),
+        })
+        results.push(r.removed
+          ? `${path} deleted — it did not exist before this session`
+          : `${path} restored`)
+      }
+      setAsking(false)
+      setNote('')
+      setFailed(null)
+      setOutcome(results.join(' · '))
+      onReverted()
+    } catch (e) {
+      // A failure halfway is not a clean failure: whatever restored before it is already
+      // on disk. Say both halves, and refresh the git status for the part that happened.
+      const message = e instanceof Error ? e.message : String(e)
+      setFailed(results.length > 0
+        ? `${message} — already put back before the failure: ${results.join(' · ')}`
+        : message)
+      if (results.length > 0) onReverted()
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -299,11 +353,12 @@ function ChangeRow({
           {entry.revisions > 1 && <span class="tag">{entry.revisions}×</span>}
           {stat && <DiffStatBadge stat={stat} />}
           {!entry.ok && <span class="tag tag-danger">failed</span>}
+          {entry.lastFailed === true && <span class="tag tag-danger">last write failed</span>}
         </>
       }
       actions={
         <>
-          {entry.ok && (
+          {entry.ok && outcome === null && (
             <button class="btn btn-small" onClick={() => setAsking(true)} disabled={asking}>
               Put back
             </button>
@@ -320,11 +375,13 @@ function ChangeRow({
         </>
       }
     >
+      {outcome !== null && <div class="revert-outcome">{outcome}</div>}
       {asking && (
         <div class="revert-box">
           <p>
             Restore <code>{entry.path}</code> to how it was before this session started, and
-            tell the agent why. Nothing else is touched.
+            tell the agent why. A file that did not exist then is <b>deleted</b>. Nothing
+            else is touched.
           </p>
           {failed !== null && <div class="panel-error">{failed}</div>}
           <div class="revert-actions">

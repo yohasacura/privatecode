@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { execa } from 'execa'
 import { parseRule, ruleMatches, type ParsedRule } from '../permissions/rules.js'
+import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import { localSettingsPath, projectSettingsPath, userSettingsPath, settingsText } from '../permissions/settings.js'
 import type { PermissionKey, ToolResult } from '../tools/types.js'
 import type { Workspace } from '../workspace.js'
@@ -123,8 +124,8 @@ export function createHookRunner(hooks: HookSpec[], workspace: Workspace): HookR
         if (!ruleMatches(hook.rule, key)) continue
         try {
           const run = await execa(
-            'powershell.exe',
-            ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', hook.command],
+            POWERSHELL_EXE,
+            powershellArgs(hook.command),
             {
               cwd: workspace.root,
               timeout: TIMEOUT_MS,

@@ -1,4 +1,5 @@
 import { execa } from 'execa'
+import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import { clipOutput } from '../tools/run-command.js'
 import type { VerifySpec } from './config.js'
 
@@ -35,8 +36,8 @@ export async function runVerify(
 ): Promise<VerifyOutcome> {
   try {
     const result = await execa(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', spec.command],
+      POWERSHELL_EXE,
+      powershellArgs(spec.command),
       {
         cwd,
         timeout: spec.timeoutMs,

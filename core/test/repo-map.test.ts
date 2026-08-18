@@ -98,6 +98,43 @@ describe('ranking', () => {
     const b = outline('src/a.ts', [['function', 'g', 0]], ['g'])
     expect(rankByReferences([a, b]).map((f) => f.path)).toEqual(['src/a.ts', 'src/b.ts'])
   })
+
+  test('a compiler-confirmed edge lifts a file the text cannot see', () => {
+    // The C# reality the semantic edges exist for: a DI registration reaches Service
+    // through the container, so Service's NAME never appears in the files that depend on
+    // it most — textually it looks lonely.
+    const service = outline('src/Service.cs', [['class', 'Service', 1]], ['Service'])
+    const textual = outline('src/Popular.cs', [['class', 'Popular', 1]], ['Popular'])
+    const a = outline('src/A.cs', [['class', 'A', 1]], ['A', 'Popular'])
+    const b = outline('src/B.cs', [['class', 'B', 1]], ['B', 'Popular'])
+    const files = [service, textual, a, b]
+
+    expect(rankByReferences(files)[0]?.path).toBe('src/Popular.cs')
+
+    const edges = new Map([
+      ['src/A.cs', new Map([['src/Service.cs', 3]])],
+      ['src/B.cs', new Map([['src/Service.cs', 3]])],
+    ])
+    expect(rankByReferences(files, [], edges)[0]?.path).toBe('src/Service.cs')
+  })
+
+  test('edges naming files the index does not know are ignored, not fatal', () => {
+    const a = outline('src/a.ts', [['function', 'f', 0]], ['f'])
+    const b = outline('src/b.ts', [['function', 'g', 0]], ['g'])
+    const edges = new Map([
+      ['src/deleted.ts', new Map([['src/a.ts', 5]])],
+      ['src/a.ts', new Map([['src/renamed.ts', 5], ['src/a.ts', 5]])],
+    ])
+    expect(rankByReferences([a, b], [], edges).map((f) => f.path))
+      .toEqual(rankByReferences([a, b]).map((f) => f.path))
+  })
+
+  test('an empty edge map ranks exactly as no edge map', () => {
+    const core = outline('src/core.ts', [['class', 'Engine', 0]], ['Engine'])
+    const a = outline('src/a.ts', [['function', 'a', 0]], ['a', 'Engine'])
+    expect(rankByReferences([a, core], [], new Map()).map((f) => f.path))
+      .toEqual(rankByReferences([a, core]).map((f) => f.path))
+  })
 })
 
 describe('rendering', () => {

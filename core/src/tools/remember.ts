@@ -36,8 +36,9 @@ export const rememberTool: Tool<RememberArgs> = {
       note: {
         type: 'string',
         description:
-          'One fact, in a sentence or three. "Act numbers are allocated by a row-locked ' +
-          'per-tenant counter, separate from the invoice sequence."',
+          'One durable fact. Usually a sentence or three; a genuinely rich finding (a ' +
+          'subsystem map, a measured behaviour with its numbers) may run long — up to ' +
+          '~20k characters — but record the fact, not the transcript of finding it.',
       },
       files: {
         type: 'array',

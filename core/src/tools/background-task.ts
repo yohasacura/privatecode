@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs'
 import { connect } from 'node:net'
+import { StringDecoder } from 'node:string_decoder'
 import { execa } from 'execa'
 import type { ResultPromise } from 'execa'
+import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import { clipOutput } from './run-command.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext } from './types.js'
 
@@ -105,16 +107,19 @@ export class BackgroundTasks {
   start(command: string, ready: ReadyWhen | null, cwd: string, origin: JobOrigin = 'agent'): Entry {
     const id = `task-${this.nextId++}`
     const child = execa(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
+      POWERSHELL_EXE,
+      powershellArgs(command),
       { cwd, reject: false, windowsHide: true, all: true, buffer: false },
     ) as unknown as ExecaChild
     const entry: Entry = {
       id, command, origin, child, buffer: '', dropped: 0, cursor: 0, markerSeen: false,
       ready, startedAt: Date.now(), exit: null,
     }
+    // Same reason as the live stream in run-command: a chunk boundary can split a
+    // multi-byte character, and toString() would turn the halves into mojibake.
+    const decoder = new StringDecoder('utf8')
     child.all?.on('data', (chunk: Buffer) => {
-      entry.buffer += chunk.toString('utf8')
+      entry.buffer += decoder.write(chunk)
       if (ready?.log_contains && !entry.markerSeen &&
           entry.buffer.includes(ready.log_contains)) {
         entry.markerSeen = true

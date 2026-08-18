@@ -6,6 +6,7 @@ import { pendingTool, type ChatAction, type ChatState } from '../lib/state'
 import { formatDuration } from '../lib/format'
 import { applyMention, mentionAtCaret, type Mention } from '../lib/mentions'
 import { Icon } from '../components/icons'
+import { carryAcceptance, glueSuggestions, lintPrompt, lintShaped, taskShaped, type DraftSuggestions } from '../lib/prompt-lint'
 
 /**
  * The input area: what you type, how much freedom the agent has while it runs, and the one
@@ -31,6 +32,9 @@ const MAX_SEND_CHARS = 500_000
 /** The one window-owned slash command; see `send()`. */
 const COMPACT_COMMAND = '/compact'
 
+/** Two quiet seconds over a gappy task-shaped draft before the improver runs by itself. */
+const IMPROVE_PAUSE_MS = 2_000
+
 export function Composer({
   client, state, dispatch, modalOpen, onAdoptViewed,
 }: {
@@ -45,6 +49,29 @@ export function Composer({
 }): VNode {
   const [input, setInput] = useState('')
   /**
+   * The improver's suggestion chips: what the model proposes ADDING to the draft — the
+   * draft itself is never rewritten. Criteria and constraints arrive accepted (uncheck to
+   * drop); questions travel only once answered. `improvedFor` is the draft the suggestions
+   * belong to — editing the draft keeps the chips (the user judges relevance) but a pause
+   * re-improves the NEW text and replaces them; a result for a stale draft is discarded.
+   */
+  const [suggested, setSuggested] = useState<DraftSuggestions | null>(null)
+  const [accepted, setAccepted] = useState<ReadonlySet<string>>(new Set())
+  const [answers, setAnswers] = useState<ReadonlyMap<string, string>>(new Map())
+  const [openQuestion, setOpenQuestion] = useState<string | null>(null)
+  const [improving, setImproving] = useState(false)
+  const [improveNote, setImproveNote] = useState<string | null>(null)
+  const improvedFor = useRef<string>('')
+  // A message the host reported as never delivered (Esc during contract distillation)
+  // comes back to the box it was typed in, in front of whatever was typed since — losing
+  // someone's paragraph to an abort is the one outcome this path exists to prevent.
+  useEffect(() => {
+    if (state.restoreDraft === null) return
+    const draft = state.restoreDraft
+    setInput((current) => current === '' ? draft : `${draft}\n${current}`)
+    dispatch({ type: 'draft-restored' })
+  }, [state.restoreDraft, dispatch])
+  /**
    * Text typed while a turn was running, held until it ends.
    *
    * The placeholder promised this ("Queue your next message") and `send()` simply returned
@@ -52,7 +79,17 @@ export function Composer({
    * Typing a follow-up while the agent works is the normal thing to do on a long run, so
    * the promise is the part worth keeping.
    */
-  const [queued, setQueued] = useState<{ text: string; attach: string[] } | null>(null)
+  //
+  // A LIST, drained one entry per turn end — never merged into one blob. Merging looked
+  // harmless ("two thoughts are both worth keeping") until the entries stopped being plain
+  // prose: "/compact" glued to a follow-up drained as the chat message "/compact\nhello",
+  // which the model — having no compaction tool — answered by announcing it had compacted.
+  // Separate entries keep a command a command and a message a message.
+  const [queued, setQueued] = useState<{ text: string; attach: string[] }[]>([])
+  /** A manual compaction in flight. It holds the host's single slot exactly like a turn,
+   * so the drain below must wait for it — draining into it just bounced off the host's
+   * refusal once per round trip for the whole compaction. */
+  const [compacting, setCompacting] = useState(false)
   const [pendingAutopilot, setPendingAutopilot] = useState(false)
   /**
    * Files picked with `@`, and the open picker's state.
@@ -70,9 +107,28 @@ export function Composer({
   /** The user's own slash commands. Re-fetched whenever the box starts with `/`, because
    * these are files edited by hand while the app is open. */
   const [commands, setCommands] = useState<{ name: string; description: string }[]>([])
+  /** Keyboard selection in the command picker — the mention picker's pattern, which this
+   * picker lacked: arrows moved the caret, Enter submitted the half-typed prefix into the
+   * slash guard's refusal, and Escape fell through to the window abort listener. */
+  const [commandPick, setCommandPick] = useState(0)
+  /** Escape dismisses the picker without sending anything anywhere; typing re-opens it. */
+  const [commandsDismissed, setCommandsDismissed] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  /** An unknown-command check in flight; see `send()`'s slash guard. */
+  const slashCheckRef = useRef(false)
   const mode: AgentMode = state.session?.mode ?? 'normal'
+
+  // Suggestions are distilled against ONE session's transcript; a switch makes them
+  // foreign context wearing familiar chips. The draft itself survives — only the model's
+  // additions to it are session-bound.
+  const sessionId = state.session?.sessionId
+  useEffect(() => {
+    setSuggested(null)
+    setOpenQuestion(null)
+    improvedFor.current = ''
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
 
   useEffect(() => {
     if (!state.turnRunning) return
@@ -114,9 +170,17 @@ export function Composer({
     name: 'compact',
     description: 'Summarise the conversation now and free the context it occupies',
   }]
-  const matching = slashPrefix === null
+  const matching = slashPrefix === null || commandsDismissed
     ? []
     : [...BUILT_IN, ...commands].filter((c) => c.name.startsWith(slashPrefix)).slice(0, 8)
+  const pickedCommand = matching[Math.min(commandPick, Math.max(0, matching.length - 1))]
+
+  /** Completes the picked entry into the box, ready for arguments (or a plain Enter). */
+  function chooseCommand(name: string): void {
+    setInput(`/${name} `)
+    setCommandPick(0)
+    textareaRef.current?.focus()
+  }
 
   useEffect(() => {
     if (mention === null) { setMentionHits([]); return }
@@ -155,8 +219,17 @@ export function Composer({
   // `turn.done` — and the audit confirmed four distinct failures through that gap, two of
   // them wedging the composer permanently and one aborting an hours-long run with a
   // single keystroke into a viewed session.
-  const busy = state.turnRunning || state.run !== null
+  // `improving` is in the list because `prompt.improve` holds the same host-side sending
+  // slot a turn does: a send fired into that window is refused, rolled back, requeued, and
+  // the drain effect resubmits it instantly — a refusal loop at WS round-trip rate until
+  // the improve finishes. Counted as busy, the send queues once and drains after.
+  const busy = state.turnRunning || state.run !== null || compacting || improving
   const blockedByRun = state.viewing !== null && busy
+  // For the ONE caller that runs after an await: the unknown-command check resolves against
+  // whatever is true THEN, not what was true at render time. A stale `busy === false`
+  // captured before the fetch would walk a message straight into a slot a run had taken.
+  const busyRef = useRef(busy)
+  busyRef.current = busy
 
   // Grow with the content up to a cap, then scroll -- a fixed two-line box makes writing a
   // real instruction (which is most of them) an exercise in scrolling blind.
@@ -176,18 +249,39 @@ export function Composer({
   // ends the agent's work, not your message, and the queued text is usually the new
   // direction. It is visible and cancellable the whole time it waits, so this is never a
   // surprise.
+  // ONE effect for both things that can happen to the queue, because their ORDER is the
+  // bug surface: as two effects, a session switch (which also resets turnRunning) ran the
+  // drain first, and the drain submitted session A's queued message as a real turn into
+  // session B before the restore ever saw it. Here the switch check comes first, always.
+  const drainSessionRef = useRef(state.session?.sessionId)
   useEffect(() => {
-    if (state.turnRunning || state.run !== null || queued === null) return
-    setQueued(null)
-    if (queued.text === COMPACT_COMMAND) runCompact()
-    else submit(queued.text, queued.attach)
+    const sessionId = state.session?.sessionId
+    if (drainSessionRef.current !== sessionId) {
+      drainSessionRef.current = sessionId
+      // Not delivered to the new session — a queued message belongs to the conversation it
+      // was typed into — but not destroyed either: back into the box, the same affordance
+      // the chip's own "edit" button offers.
+      if (queued.length > 0) {
+        const restored = queued.map((q) => q.text).join('\n')
+        setInput((cur) => (cur === '' ? restored : `${restored}\n${cur}`))
+        setAttached((a) => [...new Set([...a, ...queued.flatMap((q) => q.attach)])])
+        setQueued([])
+      }
+      return
+    }
+    if (state.turnRunning || state.run !== null || compacting || improving || queued.length === 0) return
+    const [next, ...rest] = queued
+    setQueued(rest)
+    // Entries were guarded when they were typed (the slash check runs before queueing), so
+    // the drain only routes: a queued /compact runs as the command it is, everything else
+    // sends. One entry per drain — sending starts a turn, and the next entry waits for it.
+    if (next!.text === COMPACT_COMMAND) runCompact()
+    else submit(next!.text, next!.attach)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- submit is recreated per render
-  }, [state.turnRunning, queued])
+  }, [state.turnRunning, state.run, compacting, improving, queued, state.session?.sessionId])
 
   // A queued message belongs to the conversation it was typed into. Switching sessions
   // must not deliver it to a different one.
-  const sessionId = state.session?.sessionId
-  useEffect(() => { setQueued(null) }, [sessionId])
 
   /**
    * The run-start card: the task comes from the composer (the thing you would type into a
@@ -244,8 +338,10 @@ export function Composer({
     const task = runTask
     if (busy) {
       setRunConfigOpen(false)
+      // A NOTE — this branch fires precisely BECAUSE a turn is streaming, and send-failed
+      // would flip that turn to not-running, the exact poisoning its message warns about.
       dispatch({
-        type: 'send-failed',
+        type: 'error-note',
         message: 'A turn started while the run card was open — let it finish (or stop it), then start the run.',
       })
       return
@@ -253,7 +349,7 @@ export function Composer({
     const maxTurns = parseBudget(maxTurnsText)
     const maxHours = parseBudget(maxHoursText)
     if (maxTurns === null || maxHours === null) {
-      dispatch({ type: 'send-failed', message: 'A budget is a positive number, or empty for none.' })
+      dispatch({ type: 'error-note', message: 'A budget is a positive number, or empty for none.' })
       return
     }
     setRunConfigOpen(false)
@@ -282,7 +378,16 @@ export function Composer({
   }
 
   function send(): void {
-    const text = input.trim()
+    // Accepted suggestions travel glued BELOW the draft; the draft itself goes as typed.
+    // Glued before the length guard and before the optimistic row, so what the user sees
+    // in the transcript is exactly what the model received. NOT glued onto a slash
+    // command: chips belong to the task draft they were made for, and if the box now holds
+    // `/compact` (the draft was replaced after they arrived) gluing would break the
+    // exact-match above and feed the chips to a command as arguments.
+    const draft = input.trim()
+    const text = (suggested !== null && !/^\/[a-z0-9-]+(\s|$)/i.test(draft)
+      ? glueSuggestions(draft, suggested, accepted, answers)
+      : draft)
     if (text === '') return
     // A manual send makes the open run card stale — its captured task may be the very text
     // being sent right now — so the card closes rather than offering to start a run whose
@@ -302,13 +407,63 @@ export function Composer({
       setInput('')
       setMention(null)
       if (busy) {
-        setQueued({ text: COMPACT_COMMAND, attach: [] })
+        setQueued((q) => [...q, { text: COMPACT_COMMAND, attach: [] }])
         return
       }
       runCompact()
       return
     }
 
+    // A slash command that is not one does NOT go to the model as chat. Watched live: a
+    // stray "/compact/compact" reached the model as text, and the model — having no
+    // compaction tool at all — confidently announced "the context is now compacted". A
+    // typo'd command answered with a fabricated success is strictly worse than an error.
+    // Only a leading single-token `/name` is treated as an attempted command; a path like
+    // `/etc/hosts` fails the shape test and is sent as the ordinary text it is.
+    const slash = /^\/([a-z0-9-]+)(?:\s|$)/i.exec(text)
+    if (slash) {
+      const name = slash[1]!.toLowerCase()
+      if (name === 'compact') {
+        // `/compact` alone was handled above, so this is `/compact <something>`. A NOTE,
+        // not send-failed: this can fire mid-turn, and send-failed would end a turn that
+        // is streaming fine.
+        dispatch({ type: 'error-note', message: '/compact takes no arguments. Nothing was sent.' })
+        return
+      }
+      const knownIn = (list: { name: string }[]): boolean =>
+        list.some((c) => c.name.toLowerCase() === name)
+      const refuse = (available: { name: string }[]): void => {
+        const known = ['/compact', ...available.map((c) => `/${c.name}`)].join(', ')
+        dispatch({
+          type: 'error-note',
+          message: `/${name} is not a command here (${known}). Nothing was sent — the model cannot run commands it does not have.`,
+        })
+      }
+      if (!knownIn(commands)) {
+        // The cache is filled by typing a slash, but a pasted command arrives whole and may
+        // land before any fetch — ask once more before refusing, and deliver after all if
+        // the workspace really has it. One check at a time: the text stays in the box while
+        // this resolves, so a second Enter would otherwise fire a second fetch and send the
+        // same message twice.
+        if (slashCheckRef.current) return
+        slashCheckRef.current = true
+        client.call('commands.list', {})
+          .then((r) => {
+            setCommands(r.commands)
+            if (knownIn(r.commands)) deliver(text)
+            else refuse(r.commands)
+          })
+          .catch(() => refuse(commands))
+          .finally(() => { slashCheckRef.current = false })
+        return
+      }
+    }
+
+    deliver(text)
+  }
+
+  /** The second half of `send()`: routing that applies once the text is cleared to go. */
+  function deliver(text: string): void {
     // Reading an earlier session, and about to write into it: SENDING is what commits to the
     // switch. Clicking a session in the rail only reads it, so the running one keeps going;
     // this is the moment you said you wanted it instead. Guarded above by the composer being
@@ -323,7 +478,14 @@ export function Composer({
       onAdoptViewed()
         .then(() => submit(pending.text, pending.attach))
         .catch((e: unknown) => {
-          dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
+          // The failure must land where the user is LOOKING, and the text must survive.
+          // The error row is appended to the live session's items, which the transcript
+          // does not show while `viewing` is set — so end the viewing; and the box was
+          // already cleared, so put the message back rather than losing it.
+          dispatch({ type: 'viewing-ended' })
+          dispatch({ type: 'error-note', message: e instanceof Error ? e.message : String(e) })
+          setInput((cur) => (cur === '' ? pending.text : `${pending.text}\n${cur}`))
+          setAttached((a) => [...new Set([...a, ...pending.attach])])
         })
       return
     }
@@ -331,12 +493,11 @@ export function Composer({
     // meant the files you picked for the NEXT message were cleared when the queued one
     // finally drained.
     const attach = liveAttachments
-    if (busy) {
-      // Appended, not replaced: two thoughts typed during one long turn are both worth
-      // keeping, and losing one silently is the bug this whole thing exists to fix.
-      setQueued((q) => (q === null
-        ? { text, attach }
-        : { text: `${q.text}\n${text}`, attach: [...new Set([...q.attach, ...attach])] }))
+    // Read through the ref, not the render closure: `deliver` also runs after the
+    // unknown-command fetch resolves, by which point a run may have taken the slot.
+    if (busyRef.current) {
+      // Appended as its OWN entry, never merged into the previous one — see `queued`.
+      setQueued((q) => [...q, { text, attach }])
       setInput('')
       setAttached([])
       setMention(null)
@@ -346,9 +507,12 @@ export function Composer({
   }
 
   function runCompact(): void {
-    client.call('compact', {}).catch((e: unknown) => {
-      dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
-    })
+    setCompacting(true)
+    client.call('compact', {})
+      .catch((e: unknown) => {
+        dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
+      })
+      .finally(() => setCompacting(false))
   }
 
   function submit(text: string, attach: string[] = []): void {
@@ -364,6 +528,9 @@ export function Composer({
     setInput('')
     setAttached([])
     setMention(null)
+    setSuggested(null)
+    setOpenQuestion(null)
+    improvedFor.current = ''
     dispatch({ type: 'user-message', text })
     dispatch({ type: 'turn-started' })
     client.call('send', { text, ...(attach.length > 0 ? { attach } : {}) }).catch((e: unknown) => {
@@ -374,9 +541,12 @@ export function Composer({
       // where a message used to be, with the box already emptied. Queued instead, which is
       // what the composer promises for anything typed mid-turn.
       if (message.includes('a turn is already running')) {
-        setQueued((q) => (q === null
-          ? { text, attach }
-          : { text: `${q.text}\n${text}`, attach: [...new Set([...q.attach, ...attach])] }))
+        // Undo the optimism FIRST: `turn-started` above set `turnRunning` for a turn the
+        // host refused to start, and nothing else ever clears it (a run's turns emit no
+        // `turn.done`), so without this the composer wedges on Stop forever — and the
+        // optimistic user-message row would render again when the queue drains.
+        dispatch({ type: 'send-rolled-back' })
+        setQueued((q) => [...q, { text, attach }])
         return
       }
       dispatch({ type: 'send-failed', message })
@@ -387,10 +557,57 @@ export function Composer({
     client.call('abort', {}).catch(() => { /* see the Esc handler */ })
   }
 
+  /**
+   * The model half of the prompt improver. One small request against the idle slot; the
+   * lint chips are the free half. `auto` swallows refusals (the pause trigger must never
+   * nag about a busy slot); Ctrl+E reports them. A result for a draft that changed while
+   * the request flew is DISCARDED — suggestions must describe the text under the cursor.
+   */
+  function improve(auto = false): void {
+    if (improving || state.turnRunning || !taskShaped(input)) return
+    const draft = input
+    if (auto && draft === improvedFor.current) return
+    setImproving(true)
+    client.call('prompt.improve', { text: draft })
+      .then((r) => {
+        if (textareaRef.current !== null && textareaRef.current.value !== draft) return
+        improvedFor.current = draft
+        if (r.suggestions !== null) {
+          // The user's curation survives a re-improve: chips that came back verbatim keep
+          // their state, only genuinely new ones arrive in the default one.
+          const carried = carryAcceptance(r.suggestions, suggested, accepted, answers)
+          setSuggested(r.suggestions)
+          setAccepted(carried.accepted)
+          setAnswers(carried.answers)
+          setOpenQuestion(null)
+        } else if (!auto) {
+          // A manual Ctrl+E deserves an answer even when it is "nothing": silence here
+          // read as the button being broken. Auto stays quiet — that is its whole point.
+          setImproveNote('улучшателю нечего добавить')
+          setTimeout(() => setImproveNote(null), 4_000)
+        }
+      })
+      .catch((e: unknown) => {
+        if (!auto) dispatch({ type: 'error-note', message: e instanceof Error ? e.message : String(e) })
+      })
+      .finally(() => setImproving(false))
+  }
+
+  // The pause trigger: two quiet seconds over a task-shaped draft with 2+ gaps, between
+  // turns, re-improves silently. Guards re-checked at FIRE time — the timer outlives them.
+  useEffect(() => {
+    if (state.turnRunning || !taskShaped(input) || lintPrompt(input).length < 2) return
+    if (input === improvedFor.current) return
+    const id = setTimeout(() => improve(true), IMPROVE_PAUSE_MS)
+    return () => clearTimeout(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input, state.turnRunning, improving])
+
   function applyMode(next: AgentMode): void {
     dispatch({ type: 'mode-changed', mode: next })
     client.call('setMode', { mode: next }).catch((e: unknown) => {
-      dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
+      // A note: a failed mode switch is not a failed send, and this can run mid-turn.
+      dispatch({ type: 'error-note', message: e instanceof Error ? e.message : String(e) })
     })
   }
 
@@ -410,7 +627,22 @@ export function Composer({
   // elapsed readout below counts from the step's start. Two anchors, because they are two
   // questions — sharing one field made the elapsed readout show 0.0s for every streaming
   // step, which is the readout that exists to prove the app has not hung.
-  const remainingMs = step ? Math.max(0, step.timeoutMs - (now - step.aliveAtMs)) : null
+  //
+  // Which BUDGET the silence counts against depends on where in the step it is. Until the
+  // first token — at the step's start AND at a forced continuation, both of which re-prefill
+  // — the core's clock is armed with the prefill-inclusive budget: everything appended has
+  // to be processed before anything can stream, minutes for a big tool result. Counting that
+  // stretch against the flat between-token budget showed "0s to timeout" for half a minute
+  // over a step that then completed. `waitingFirstToken` is the reducer's own record of
+  // which stretch this is.
+  const stepBudgetMs = step === null
+    ? null
+    : step.waitingFirstToken
+      ? step.firstTokenTimeoutMs ?? step.timeoutMs
+      : step.timeoutMs
+  const remainingMs = step && stepBudgetMs !== null
+    ? Math.max(0, stepBudgetMs - (now - step.aliveAtMs))
+    : null
   const last = state.lastStepDone
   const waitingOnYou = state.pendingApproval !== null || state.pendingQuestion !== null
   // The call actually EXECUTING, which is the oldest one still unanswered — not the last
@@ -479,7 +711,13 @@ export function Composer({
             ? <span class="status-quiet"> · writing the change — the tool call is generated a token at a time, like the reasoning above it</span>
             : !streaming && <span class="status-quiet"> · reading what the last step returned</span>}
           {remainingMs !== null && remainingMs < 20_000 && (
-            <span class="warn"> · {Math.ceil(remainingMs / 1000)}s to timeout</span>
+            // At zero the honest statement is what happens next, not a number that has
+            // stopped moving: the core abandons the step within moments of its own clock
+            // expiring, so a "0s" that persists longer than that would be this countdown
+            // being wrong, never the step being fine.
+            <span class="warn"> · {remainingMs > 0
+              ? `${Math.ceil(remainingMs / 1000)}s to timeout`
+              : 'out of time — abandoning this step'}</span>
           )}
         </span>
       )
@@ -509,16 +747,20 @@ export function Composer({
 
       {matching.length > 0 && (
         <div class="command-picker">
-          {matching.map((c) => (
+          {matching.map((c, i) => (
             <button
               key={c.name}
-              class="command-item"
-              onClick={() => { setInput(`/${c.name} `); textareaRef.current?.focus() }}
+              class={`command-item ${c === pickedCommand ? 'command-item-on' : ''}`}
+              onMouseEnter={() => setCommandPick(i)}
+              onClick={() => chooseCommand(c.name)}
             >
               <span class="command-name">/{c.name}</span>
               <span class="command-desc">{c.description}</span>
             </button>
           ))}
+          <div class="picker-hint">
+            <kbd>↑↓</kbd> pick · <kbd>↵</kbd> complete · <kbd>Esc</kbd> dismiss
+          </div>
         </div>
       )}
 
@@ -552,30 +794,86 @@ export function Composer({
         </div>
       )}
 
-      {queued !== null && (
-        <div class="queued-note">
+      {queued.map((q, qi) => (
+        <div class="queued-note" key={qi}>
           <span class="queued-label">Queued</span>
-          <span class="queued-text" title={queued.text}>{queued.text}</span>
+          <span class="queued-text" title={q.text}>{q.text}</span>
           <button
             class="queued-edit"
             onClick={() => {
-              setInput((i) => (i === '' ? queued.text : `${queued.text}\n${i}`))
-              setAttached((a) => [...new Set([...a, ...queued.attach])])
-              setQueued(null)
+              setInput((i) => (i === '' ? q.text : `${q.text}\n${i}`))
+              setAttached((a) => [...new Set([...a, ...q.attach])])
+              setQueued((qs) => qs.filter((_, j) => j !== qi))
             }}
             title="Put it back in the box"
           >
             edit
           </button>
-          <button class="icon-button" onClick={() => setQueued(null)} title="Discard it">
+          <button
+            class="icon-button"
+            onClick={() => setQueued((qs) => qs.filter((_, j) => j !== qi))}
+            title="Discard it"
+          >
             {Icon.x()}
           </button>
         </div>
-      )}
+      ))}
 
       {/* One bordered surface holding the input and everything that acts on it. The three
           separate strips this replaced -- a status line above, the box, a row of pills
-          below -- read as three unrelated widgets stacked around a text field. */}
+          below -- read as three unrelated widgets stacked around a text field.
+
+          The anchor div exists for the run-config popover alone: the shell clips its
+          children (overflow:hidden, for the rounded corners and the activity sweep), and
+          the popover used to live INSIDE it — anchored above the bar, i.e. entirely inside
+          the clip box, which showed only its bottom ~28px sliver over a one-line textarea.
+          Anchored to this wrapper it sits above the shell, unclipped. */}
+      <div class="composer-anchor">
+        {runConfigOpen && (
+          <div
+            class="run-config"
+            role="dialog"
+            aria-label="Start an unattended run"
+            onKeyDown={(e) => {
+              // Escape dismisses the card and STOPS: the window listener would abort the
+              // turn that startRun's own guard documents can already be running.
+              if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setRunConfigOpen(false) }
+            }}
+          >
+            <div class="run-config-task" title={runTask}>{runTask}</div>
+            <div class="run-config-fields">
+              <label class="run-config-field">
+                <span>Turn budget</span>
+                <input
+                  class="input input-small"
+                  inputMode="numeric"
+                  placeholder="none"
+                  value={maxTurnsText}
+                  onInput={(e) => setMaxTurnsText(e.currentTarget.value)}
+                />
+              </label>
+              <label class="run-config-field">
+                <span>Hour budget</span>
+                <input
+                  class="input input-small"
+                  inputMode="numeric"
+                  placeholder="none"
+                  value={maxHoursText}
+                  onInput={(e) => setMaxHoursText(e.currentTarget.value)}
+                />
+              </label>
+            </div>
+            <div class="run-config-hint">
+              Empty means no limit. The hour budget cuts a running turn; questions park in
+              the decision queue instead of blocking.
+            </div>
+            <div class="run-config-actions">
+              <button class="btn" onClick={() => setRunConfigOpen(false)}>Cancel</button>
+              <button class="btn btn-primary" onClick={startRun}>Start run</button>
+            </div>
+          </div>
+        )}
+
       <div class={`composer-shell ${state.turnRunning ? 'composer-shell-live' : ''}`}>
         <div class="composer-activity" aria-hidden="true" />
 
@@ -587,6 +885,9 @@ export function Composer({
           onInput={(e) => {
             const el = e.currentTarget
             setInput(el.value)
+            // Typing re-opens a dismissed command picker and resets its selection.
+            setCommandsDismissed(false)
+            setCommandPick(0)
             setMention(mentionAtCaret(el.value, el.selectionStart ?? el.value.length))
           }}
           // The caret can move without the text changing, and an `@` two words back is no
@@ -602,7 +903,51 @@ export function Composer({
             setMention(mentionAtCaret(el.value, el.selectionStart ?? el.value.length))
           }}
           onKeyDown={(e) => {
+            // The model half of the prompt improver, from the keyboard the draft is
+            // already under. Guarded inside improve(): task-shaped, idle, not already in
+            // flight.
+            if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E')) {
+              e.preventDefault()
+              improve()
+              return
+            }
             const picking = mention !== null && mentionHits.length > 0
+            // The command picker gets the same keyboard the mention picker has — without
+            // this, arrows moved the caret, Enter submitted the half-typed prefix straight
+            // into the slash guard's refusal, and Escape reached the window abort listener.
+            if (!picking && matching.length > 0) {
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                e.stopPropagation()
+                setCommandsDismissed(true)
+                return
+              }
+              if (e.key === 'ArrowDown') {
+                e.preventDefault()
+                setCommandPick((i) => (i + 1) % matching.length)
+                return
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault()
+                setCommandPick((i) => (i - 1 + matching.length) % matching.length)
+                return
+              }
+              if (e.key === 'Tab') {
+                e.preventDefault()
+                if (pickedCommand) chooseCommand(pickedCommand.name)
+                return
+              }
+              if (e.key === 'Enter' && !e.shiftKey) {
+                // Enter on a fully-typed command falls through and SENDS it; on a prefix it
+                // completes the picked entry instead.
+                const typed = input.trim().slice(1).toLowerCase()
+                if (!matching.some((c) => c.name.toLowerCase() === typed)) {
+                  e.preventDefault()
+                  if (pickedCommand) chooseCommand(pickedCommand.name)
+                  return
+                }
+              }
+            }
             if (picking) {
               // Escape closes the picker and STOPS THERE: the window's Escape listener
               // aborts the running turn, and dismissing a dropdown is not a request to
@@ -639,6 +984,103 @@ export function Composer({
                 : 'Ask for a change, a review, or an explanation'}
         />
 
+        {!state.turnRunning && suggested !== null && (
+          <div class="prompt-hints" aria-live="polite">
+            {/* The model's suggestions as toggle chips: on = travels with the send,
+                appended BELOW the draft — the draft itself is never rewritten. Questions
+                travel only once answered; clicking one opens its answer box. */}
+            {suggested.criteria.map((c) => (
+              <button
+                key={`c:${c}`}
+                class={accepted.has(`c:${c}`) ? 'prompt-suggest prompt-suggest-on' : 'prompt-suggest'}
+                aria-pressed={accepted.has(`c:${c}`)}
+                title={`Критерий готовности — уйдёт вместе с сообщением:
+${c}`}
+                onClick={() => {
+                  setAccepted((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(`c:${c}`)) next.delete(`c:${c}`)
+                    else next.add(`c:${c}`)
+                    return next
+                  })
+                  textareaRef.current?.focus()
+                }}
+              >
+                {accepted.has(`c:${c}`) ? '☑' : '☐'} {c}
+              </button>
+            ))}
+            {suggested.constraints.map((c) => (
+              <button
+                key={`k:${c}`}
+                class={accepted.has(`k:${c}`) ? 'prompt-suggest prompt-suggest-on' : 'prompt-suggest'}
+                aria-pressed={accepted.has(`k:${c}`)}
+                title={`Ограничение — уйдёт вместе с сообщением:
+${c}`}
+                onClick={() => {
+                  setAccepted((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(`k:${c}`)) next.delete(`k:${c}`)
+                    else next.add(`k:${c}`)
+                    return next
+                  })
+                  textareaRef.current?.focus()
+                }}
+              >
+                {accepted.has(`k:${c}`) ? '☑' : '☐'} {c}
+              </button>
+            ))}
+            {suggested.questions.map((q) => (
+              <span key={`q:${q}`} class="prompt-question-wrap">
+                <button
+                  class={answers.get(q)?.trim() ? 'prompt-suggest prompt-suggest-on' : 'prompt-suggest prompt-question'}
+                  title={answers.get(q)?.trim()
+                    ? `Уйдёт как уточнение:
+${q} — ${answers.get(q)}`
+                    : `Вопрос улучшателя — уйдёт только вместе с твоим ответом:
+${q}`}
+                  onClick={() => setOpenQuestion((cur) => cur === q ? null : q)}
+                >
+                  {answers.get(q)?.trim() ? '☑' : '?'} {q}
+                </button>
+                {openQuestion === q && (
+                  <input
+                    class="input input-small prompt-question-input"
+                    value={answers.get(q) ?? ''}
+                    placeholder="ответ…"
+                    // eslint-disable-next-line jsx-a11y/no-autofocus
+                    autoFocus
+                    onInput={(e) => {
+                      const v = e.currentTarget.value
+                      setAnswers((prev) => new Map(prev).set(q, v))
+                    }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); setOpenQuestion(null) } }}
+                  />
+                )}
+              </span>
+            ))}
+            <button
+              class="prompt-hint-improve"
+              title="Скрыть предложения — черновик уйдёт как есть"
+              onClick={() => { setSuggested(null); setOpenQuestion(null); textareaRef.current?.focus() }}
+            >
+              {Icon.x()}
+            </button>
+          </div>
+        )}
+        {!state.turnRunning && suggested === null && lintShaped(input) && lintPrompt(input).length > 0 && (
+          <div class="prompt-hints" aria-live="polite">
+            {lintPrompt(input).map((hint) => <span key={hint} class="prompt-hint">{hint}</span>)}
+            {improveNote !== null && <span class="prompt-hint">{improveNote}</span>}
+            <button
+              class="prompt-hint-improve"
+              onClick={() => improve()}
+              disabled={improving}
+              title="Предложить критерии и ограничения к черновику (Ctrl+E)"
+            >
+              {improving ? 'Думаю…' : 'Improve (Ctrl+E)'}
+            </button>
+          </div>
+        )}
         <div class="composer-bar">
           <div class="mode-group" role="group" aria-label="How much the agent may do without asking">
             {MODES.map((m) => (
@@ -670,42 +1112,6 @@ export function Composer({
             {state.run ? `Stop · turn ${state.run.turn}` : 'Run unattended'}
           </button>
 
-          {runConfigOpen && (
-            <div class="run-config" role="dialog" aria-label="Start an unattended run">
-              <div class="run-config-task" title={runTask}>{runTask}</div>
-              <div class="run-config-fields">
-                <label class="run-config-field">
-                  <span>Turn budget</span>
-                  <input
-                    class="input input-small"
-                    inputMode="numeric"
-                    placeholder="none"
-                    value={maxTurnsText}
-                    onInput={(e) => setMaxTurnsText(e.currentTarget.value)}
-                  />
-                </label>
-                <label class="run-config-field">
-                  <span>Hour budget</span>
-                  <input
-                    class="input input-small"
-                    inputMode="numeric"
-                    placeholder="none"
-                    value={maxHoursText}
-                    onInput={(e) => setMaxHoursText(e.currentTarget.value)}
-                  />
-                </label>
-              </div>
-              <div class="run-config-hint">
-                Empty means no limit. The hour budget cuts a running turn; questions park in
-                the decision queue instead of blocking.
-              </div>
-              <div class="run-config-actions">
-                <button class="btn" onClick={() => setRunConfigOpen(false)}>Cancel</button>
-                <button class="btn btn-primary" onClick={startRun}>Start run</button>
-              </div>
-            </div>
-          )}
-
           <div class="composer-meta">{statusLine()}</div>
 
           {/* While a turn runs the button is Stop -- but typed text still has somewhere to
@@ -728,6 +1134,7 @@ export function Composer({
             {state.turnRunning ? Icon.stop() : Icon.send()}
           </button>
         </div>
+      </div>
       </div>
     </div>
   )

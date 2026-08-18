@@ -109,8 +109,10 @@ export function StatusBar({
           class="status-context"
           title={lastStep?.estimated === true
             // Said out loud rather than shown as a reading: this is the transcript measured
-            // here, not the count the server reported, and the two differ a little.
-            ? 'context in use, estimated from the restored conversation — the exact figure arrives with the next step'
+            // here, not the count the server reported, and the two differ a little. True of
+            // a freshly restored session AND of a just-compacted one — both are waiting on
+            // the next step for the server's own number.
+            ? 'context in use, estimated from the conversation — the exact figure arrives with the next step'
             : 'context used by the last step'}
         >
           <span class="ctx-bar"><span class={`ctx-fill ${fillPct >= 80 ? 'ctx-high' : ''}`} style={{ width: `${fillPct}%` }} /></span>
@@ -221,6 +223,36 @@ export function SettingsModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // Dialog behaviour, not just dialog looks. Without these, focus stayed BEHIND the
+  // overlay: a keyboard user tabbed through the invisible composer and rail before ever
+  // reaching the dialog, and Enter pressed "blind" in the covered composer sent a real
+  // message to the agent while Settings was on screen. Focus moves in on mount, Tab wraps
+  // at the edges, and the opener gets focus back on close.
+  const modalRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    modalRef.current?.focus()
+    return () => opener?.focus()
+  }, [])
+  function trapTab(e: KeyboardEvent): void {
+    if (e.key !== 'Tab') return
+    const focusables = modalRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
+    )
+    if (!focusables || focusables.length === 0) return
+    const first = focusables[0]!
+    const last = focusables[focusables.length - 1]!
+    // Focus starts on the CONTAINER (tabindex=-1), which is neither first nor last — an
+    // immediate Shift+Tab from there escaped behind the overlay into the covered composer.
+    if (document.activeElement === modalRef.current) {
+      e.preventDefault()
+      ;(e.shiftKey ? last : first).focus()
+      return
+    }
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+  }
+
   async function pickWorkspaceDialog(): Promise<void> {
     const { open } = await import('@tauri-apps/plugin-dialog')
     const result = await open({ directory: true, multiple: false })
@@ -249,7 +281,16 @@ export function SettingsModal({
 
   return (
     <div class="modal-overlay" onClick={onClose}>
-      <div class="modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        tabindex={-1}
+        ref={modalRef}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={trapTab}
+      >
         <div class="modal-head">
           <b>Settings</b>
           <button class="icon-button" onClick={onClose} title="Close">{Icon.x()}</button>

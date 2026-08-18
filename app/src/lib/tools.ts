@@ -30,6 +30,10 @@ export interface ToolPresentation {
    * make a card clickable and to key the Changes list. `null` for tools with no single
    * path (a command, a search across the tree, a move with two). */
   path: string | null
+  /** `move_file` only: the SOURCE path. A restore of a move must put both sides back —
+   * restoring only the destination deletes the file outright (it did not exist there at
+   * the baseline) while the source is never recreated. */
+  fromPath?: string
 }
 
 /** The write family, as the permission engine and the Changes tab both understand it. */
@@ -139,7 +143,10 @@ export function presentTool(name: string, argsJson: string): ToolPresentation {
   if (name === 'move_file') {
     const from = str(args, 'from')
     const to = str(args, 'to')
-    return { kind, verb, target: from && to ? `${from} → ${to}` : '', path: to }
+    return {
+      kind, verb, target: from && to ? `${from} → ${to}` : '', path: to,
+      ...(from !== null ? { fromPath: from } : {}),
+    }
   }
   if (name === 'background_task') {
     const action = str(args, 'action') ?? 'poll'

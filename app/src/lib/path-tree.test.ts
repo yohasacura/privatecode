@@ -1,74 +1,63 @@
 import { describe, expect, it } from 'vitest'
-import { commonPrefixOf, groupByDirectory } from './path-tree'
+import { buildPathTree, decorateChanges } from './path-tree'
 
-/**
- * What makes a change list readable in a 420px column: the part every row shares is said
- * once, and the rows carry the part that differs.
- */
+describe('buildPathTree', () => {
+  const paths = (node: import('./path-tree').PathTreeNode<string>): string[] =>
+    [...node.dirs.map((d) => `${d.name}[${d.totalFiles}]`), ...node.files.map((f) => f.name)]
 
-const group = (paths: string[]) => groupByDirectory(paths, (p) => p)
-
-describe('the shared prefix', () => {
-  it('is whole segments, never half a name', () => {
-    // `src/app` and `src/apple` share `src` — a character-wise prefix would say `src/app`
-    // and produce headings like `le/thing.ts`.
-    expect(commonPrefixOf(['src/app/a.ts', 'src/apple/b.ts'])).toBe('src')
+  it('builds a real nested tree, files under the directories that hold them', () => {
+    const tree = buildPathTree(
+      ['a/x.ts', 'a/b/y.ts', 'z.ts'],
+      (p) => p,
+    )
+    expect(paths(tree)).toEqual(['a[2]', 'z.ts'])
+    const a = tree.dirs[0]!
+    expect(a.files.map((f) => f.name)).toEqual(['x.ts'])
+    expect(a.dirs[0]!.name).toBe('b')
+    expect(a.dirs[0]!.files.map((f) => f.name)).toEqual(['y.ts'])
   })
 
-  it('is empty when the paths have nothing in common', () => {
-    expect(commonPrefixOf(['src/a.ts', 'tests/b.ts'])).toBe('')
+  it('compresses single-child chains into one row, like a file explorer', () => {
+    // The objection to trees in a 420px column is six indent levels with one child each;
+    // compression spends depth only where the tree branches.
+    const tree = buildPathTree(
+      ['src/models/deal.js', 'src/models/client.js', 'tests/crm.test.js'],
+      (p) => p,
+    )
+    expect(tree.dirs.map((d) => d.name)).toEqual(['src/models', 'tests'])
+    expect(tree.dirs[0]!.fullDir).toBe('src/models')
+    expect(tree.dirs[0]!.files.map((f) => f.name)).toEqual(['deal.js', 'client.js'])
   })
 
-  it('ignores the file names themselves', () => {
-    // Two files in one directory share that directory, not the letters of their names.
-    expect(commonPrefixOf(['src/thing.ts', 'src/thingamajig.ts'])).toBe('src')
+  it('keeps the caller\'s file order and sorts directories by name', () => {
+    // A change list is newest-first and must stay that way; directories must not jump
+    // between renders.
+    const tree = buildPathTree(['d/new.ts', 'd/old.ts', 'b/x.ts', 'a/y.ts'], (p) => p)
+    expect(tree.dirs.map((d) => d.name)).toEqual(['a', 'b', 'd'])
+    expect(tree.dirs[2]!.files.map((f) => f.name)).toEqual(['new.ts', 'old.ts'])
   })
 
-  it('is the whole directory when there is only one path', () => {
-    expect(commonPrefixOf(['a/b/c/d.ts'])).toBe('a/b/c')
+  it('a directory that both branches and holds files is not compressed past its files', () => {
+    const tree = buildPathTree(['a/direct.ts', 'a/deep/leaf.ts'], (p) => p)
+    const a = tree.dirs[0]!
+    expect(a.name).toBe('a')
+    expect(a.files.map((f) => f.name)).toEqual(['direct.ts'])
+    expect(a.dirs.map((d) => d.name)).toEqual(['deep'])
+    expect(a.totalFiles).toBe(2)
   })
 })
 
-describe('grouping', () => {
-  it('lifts the shared prefix out and leaves what differs', () => {
-    const { groups, commonPrefix } = group([
-      'src/backend/App/Accounting/CreateAct.cs',
-      'src/backend/App/Accounting/VoidAct.cs',
-      'src/backend/Domain/Invoice.cs',
+describe('decorateChanges', () => {
+  it('files carry their diff shape, every ancestor directory carries the count', () => {
+    const { files, dirs } = decorateChanges([
+      { openPath: 'src/models/deal.js', revisions: 2, stat: { added: 5, removed: 1 } },
+      { openPath: 'src/crm.js', revisions: 1, lastFailed: true, stat: null },
+      { openPath: 'root.md', revisions: 1, stat: { added: 1, removed: 0 } },
     ])
-    expect(commonPrefix).toBe('src/backend')
-    expect(groups.map((g) => g.dir)).toEqual(['App/Accounting', 'Domain'])
-    expect(groups[0]!.items.map((i) => i.name)).toEqual(['CreateAct.cs', 'VoidAct.cs'])
-  })
-
-  it('keeps the caller order inside a group', () => {
-    // A change list is newest-first and must stay that way; only the groups are sorted.
-    const { groups } = group(['src/z.ts', 'src/a.ts'])
-    expect(groups[0]!.items.map((i) => i.name)).toEqual(['z.ts', 'a.ts'])
-  })
-
-  it('collapses to one group when everything shares a directory', () => {
-    // Nothing to separate: the whole path becomes the prefix and the rows are bare names.
-    const { groups, commonPrefix } = group(['src/app/a.ts', 'src/app/b.ts'])
-    expect(commonPrefix).toBe('src/app')
-    expect(groups).toHaveLength(1)
-    expect(groups[0]!.dir).toBe('')
-    expect(groups[0]!.items.map((i) => i.name)).toEqual(['a.ts', 'b.ts'])
-  })
-
-  it('handles a file at the workspace root', () => {
-    const { groups, commonPrefix } = group(['README.md', 'src/a.ts'])
-    expect(commonPrefix).toBe('')
-    expect(groups.map((g) => g.dir)).toEqual(['', 'src'])
-  })
-
-  it('keeps the full directory for a tooltip, since the short one can be ambiguous', () => {
-    const { groups } = group(['a/x/f.ts', 'b/x/g.ts'])
-    expect(groups.map((g) => g.fullDir)).toEqual(['a/x', 'b/x'])
-  })
-
-  it('an empty list is an empty grouping, not a crash', () => {
-    expect(group([]).groups).toEqual([])
-    expect(group([]).commonPrefix).toBe('')
+    expect(files.get('src/models/deal.js')).toEqual({ added: 5, removed: 1, revisions: 2, lastFailed: false })
+    expect(files.get('src/crm.js')).toEqual({ added: 0, removed: 0, revisions: 1, lastFailed: true })
+    expect(dirs.get('src')).toBe(2)
+    expect(dirs.get('src/models')).toBe(1)
+    expect(dirs.has('')).toBe(false)
   })
 })

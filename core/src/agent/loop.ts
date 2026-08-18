@@ -89,6 +89,15 @@ export interface StepStartInfo {
    * delta, because that is exactly what the core's own clock does.
    */
   timeoutMs: number
+  /**
+   * The budget for the wait before this step's FIRST token — `timeoutMs` plus the prefill
+   * allowance for everything appended since the last request (`firstTokenBudget`). The clock
+   * is armed with THIS number until the first token arrives, so a countdown rendered against
+   * the flat `timeoutMs` alone reaches zero and sits there while the step is healthy —
+   * watched live: a step prefilling two ~20k-token search results showed "0s to timeout"
+   * for half a minute and then completed. Until something streams, count against this.
+   */
+  firstTokenTimeoutMs: number
 }
 
 export interface StepInfo {
@@ -135,8 +144,24 @@ export interface AgentEvents {
   /**
    * The step ran out of room mid-thought and a forced continuation is starting *now*.
    * Without this the median hard step is silent across two full generations.
+   *
+   * `firstTokenTimeoutMs` is the budget the clock is re-armed with for the continuation's
+   * own first token — the carried-back reasoning is thousands of tokens the server has not
+   * seen, so this silence is prefill again, and a countdown still holding the flat budget
+   * called a healthy continuation "out of time". Same reasoning as
+   * `StepStartInfo.firstTokenTimeoutMs`, at the other moment a request starts cold.
    */
-  onContinuation?(step: number): void
+  onContinuation?(step: number, firstTokenTimeoutMs?: number): void
+  /**
+   * The server died mid-call, came back healthy, and the SAME request is being re-sent
+   * right now. The dead attempt's partial deltas are superseded — the retry re-streams
+   * from the start — so a renderer should discard its open reasoning/writing cards
+   * rather than let the fresh stream append onto them.
+   */
+  onStepRetry?(): void
+  /** A running tool's live output (run_command's stdout/stderr as it arrives). Chunks,
+   * not lines; display-only — the tool result stays the authoritative record. */
+  onToolOutput?(name: string, text: string): void
   /**
    * A tool call being WRITTEN, fired as the server streams its arguments.
    *
@@ -276,6 +301,18 @@ export interface AgentOptions {
    */
   stepTimeoutMs?: number
   /**
+   * How often an expired first-token window re-checks `/slots` before giving up, while the
+   * server reports prefill progress. Tests shrink it; everything else keeps the default.
+   */
+  prefillRecheckMs?: number
+  /**
+   * Sampling override for every request of this agent's turns. The one intended caller is
+   * the session's escalated retry, which raises temperature after two same-approach
+   * failures; `assertSafeSampling` still guards the floor, and everything else keeps the
+   * frozen profile by leaving this absent.
+   */
+  sampling?: import('../llama/types.js').Sampling
+  /**
    * A separate, larger deadline for the FIRST step only.
    *
    * `stepTimeoutMs` is sized for generation against a WARM prompt cache — "roughly two
@@ -336,6 +373,14 @@ export interface TurnResult {
    */
   finalText: string
   stoppedBecause: 'done' | 'max_steps' | 'aborted' | 'timeout' | 'truncated'
+  /**
+   * Set to false by `Session.send()` alone, on the one abort path where the user message
+   * never reached the transcript (signal already aborted before runTurn appended it —
+   * e.g. Esc during contract distillation). The loop never sets it: any turn that ran a
+   * step was delivered. A front end seeing false must roll its optimistic message row
+   * back, or the next "продолжай" continues from a message the model never saw.
+   */
+  delivered?: false
 }
 
 /** What one step produced, once its model call(s) are over. */
@@ -412,7 +457,19 @@ function describeExternalTools(
   return { browser: names.includes(BROWSER_TOOL), mcpServers: [...servers].sort() }
 }
 
+/** How long a dead request waits for the watchdog's relaunch before giving up: model
+ * reload measured at ~19-30 s, plus the launcher's own restart delay and margin. */
+const SERVER_RESTART_WAIT_MS = 90_000
+
+/** Between /slots checks once a first-token window has expired but the server reports
+ * prefill progress. Short enough that a prefill which STALLS still dies quickly; long
+ * enough that a legitimate multi-minute re-prefill costs a handful of probes. */
+const PREFILL_RECHECK_MS = 20_000
+
 export class Agent {
+  /** Declines per tool+path within this agent's one turn (a fresh Agent is built per
+   * send), backing the second-decline escalation in the deny branch below. */
+  private readonly denialsThisTurn = new Map<string, number>()
   private readonly opts: Required<
     Pick<AgentOptions, 'maxSteps' | 'maxTokensPerStep' | 'mode' | 'stepTimeoutMs' | 'toolChoice'>
   > & AgentOptions
@@ -712,15 +769,19 @@ export class Agent {
     // Every other step appends to a prefix the server has just processed.
     const timeoutMs = coldTimeoutMs
       ?? (step === 1 ? this.opts.firstStepTimeoutMs ?? this.opts.stepTimeoutMs : this.opts.stepTimeoutMs)
+    // Computed once and used for BOTH the event and the clock: `firstTokenBudget` advances
+    // `charsAtLastRequest`, so a second call would see zero fresh characters and hand the
+    // clock a smaller budget than the one just announced.
+    const firstTokenTimeoutMs = this.firstTokenBudget(timeoutMs)
     const clock = this.stepClock(this.opts.stepTimeoutMs)
-    this.opts.events?.onStepStart?.({ step, timeoutMs })
+    this.opts.events?.onStepStart?.({ step, timeoutMs, firstTokenTimeoutMs })
 
     let continued = false
     let last: ChatResult | undefined
     try {
       // `timeoutMs` is the floor for this step's FIRST request: the caller's cold-cache
       // budget when it knows the prefix changed under it, otherwise the flat budget.
-      clock.beforeRequest(this.firstTokenBudget(timeoutMs))
+      clock.beforeRequest(firstTokenTimeoutMs)
       const first = await this.chat(schemas, this.opts.toolChoice, clock)
       if (first.kind !== 'ok') return first
       last = first.result
@@ -733,11 +794,12 @@ export class Agent {
       continued = true
       this.appendTruncated(first.result.message)
       this.transcript.append({ role: 'user', content: CONTINUE_NUDGE })
-      this.opts.events?.onContinuation?.(step)
-
       // The continuation carries the abandoned reasoning back into the prompt, which can be
-      // thousands of tokens the server has not seen. Same allowance, no cold floor.
-      clock.beforeRequest(this.firstTokenBudget(this.opts.stepTimeoutMs))
+      // thousands of tokens the server has not seen. Same allowance, no cold floor — and
+      // computed once, for the event and the clock, for `firstTokenBudget`'s usual reason.
+      const continuationBudgetMs = this.firstTokenBudget(this.opts.stepTimeoutMs)
+      this.opts.events?.onContinuation?.(step, continuationBudgetMs)
+      clock.beforeRequest(continuationBudgetMs)
       const again = await this.chat(schemas, 'required', clock)
       if (again.kind !== 'ok') return again
       last = again.result
@@ -799,9 +861,33 @@ export class Agent {
   } {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
+    // While a request is waiting for its FIRST token, an expired window asks the server
+    // before killing anything. The char-counter behind `firstTokenBudget` predicts prefill
+    // from what THIS process appended — it cannot see a server-side cache eviction, and
+    // one evicted 180k-token prefix turned into a nine-minute re-prefill that died against
+    // a deadline sized for a few hundred fresh tokens (watched live). `/slots` reports the
+    // server's own progress on exactly that work: growing means the silence is prefill,
+    // not failure, and the window re-arms; stalled or unreachable dies as it always did.
+    // Generation re-arms through `touch()` on every delta, so the extension never loosens
+    // the between-token guard.
+    let awaitingFirstToken = false
+    let lastProcessed = -1
+    const quiet = (): void => { controller.abort(new Error('step went quiet')) }
+    const fire = (): void => {
+      if (!awaitingFirstToken) { quiet(); return }
+      void this.opts.client.slotPrefillProgress().then((p) => {
+        if (controller.signal.aborted) return
+        if (p !== null && p.processing && p.processed > lastProcessed) {
+          lastProcessed = p.processed
+          arm(this.opts.prefillRecheckMs ?? PREFILL_RECHECK_MS)
+          return
+        }
+        quiet()
+      })
+    }
     const arm = (ms: number): void => {
       if (timer !== undefined) clearTimeout(timer)
-      timer = setTimeout(() => { controller.abort(new Error('step went quiet')) }, ms)
+      timer = setTimeout(fire, ms)
       // Node keeps the process alive for a pending timer. A step's clock must never be the
       // reason a CLI run or a test worker refuses to exit.
       timer.unref?.()
@@ -809,8 +895,10 @@ export class Agent {
     arm(steadyMs)
     return {
       signal: controller.signal,
-      beforeRequest: (budgetMs) => { if (!controller.signal.aborted) arm(budgetMs) },
-      touch: () => { if (!controller.signal.aborted) arm(steadyMs) },
+      beforeRequest: (budgetMs) => {
+        if (!controller.signal.aborted) { awaitingFirstToken = true; lastProcessed = -1; arm(budgetMs) }
+      },
+      touch: () => { if (!controller.signal.aborted) { awaitingFirstToken = false; arm(steadyMs) } },
       stop: () => { if (timer !== undefined) clearTimeout(timer) },
     }
   }
@@ -863,8 +951,21 @@ export class Agent {
       tools: schemas,
       toolChoice,
       maxTokens: this.opts.maxTokensPerStep,
+      // A caller-supplied override for the whole turn — the escalated retry raises the
+      // temperature to sample a DIFFERENT approach off the identical cached prefix.
+      // Absent everywhere else, which keeps the frozen QWEN_SAMPLING default.
+      ...(this.opts.sampling !== undefined ? { sampling: this.opts.sampling } : {}),
       signal,
     }
+    // One retry, after waiting the server back to health. Watched live: llama.cpp dies
+    // silently on a VRAM spike mid-generation ("stream read error (TypeError:
+    // terminated)" during thinking), the launcher's watchdog relaunches it, and the model
+    // reload takes ~20-30 s. The prompt is unchanged between attempts, so the retry costs
+    // one cheap re-prefill through the cache — while NOT retrying costs the whole turn for
+    // an outage the server has already recovered from. Deltas the dead attempt streamed
+    // are superseded by the fresh attempt's; the step deadline keeps running throughout,
+    // so a retry that would overrun the step reports 'timeout' exactly as before.
+    for (let attempt = 0; ; attempt++) {
     try {
       // Streaming is opt-in per host: only switched on when a host actually wired a delta
       // callback. Integration tests and compaction never set one, so they keep calling
@@ -900,7 +1001,17 @@ export class Agent {
         return { kind: 'aborted' }
       }
       if (deadline.aborted) return { kind: 'timeout' }
+      if (attempt === 0 && e instanceof LlamaRequestError &&
+          await this.opts.client.waitHealthy(SERVER_RESTART_WAIT_MS, this.opts.signal)) {
+        if (this.opts.signal?.aborted) { this.appendInterrupted(e); return { kind: 'aborted' } }
+        if (deadline.aborted) return { kind: 'timeout' }
+        // Announced BEFORE the re-send: a renderer that keeps appending would show the
+        // dead attempt's partial reasoning with the retry's spliced onto it.
+        events?.onStepRetry?.()
+        continue
+      }
       throw e
+    }
     }
   }
 
@@ -1010,10 +1121,24 @@ export class Agent {
           }
           if (decided.verdict === 'deny') {
             const why = decided.comment ? `: "${decided.comment}"` : ''
+            // Watched live: a denied edit came back as a "different" edit to the same file,
+            // twice, three times — each one a fresh variant, so the exact-args dedup guard
+            // rightly stayed silent, and every variant cost the user another approval card.
+            // One denial is feedback on the attempt; two on the same tool+target are
+            // feedback on the GOAL, and the escalation says so instead of letting variant
+            // number four arrive.
+            const target = `${key.tool}:${key.target ?? ''}`
+            const denials = (this.denialsThisTurn.get(target) ?? 0) + 1
+            this.denialsThisTurn.set(target, denials)
             return {
               ok: false,
-              content: `The user declined this ${name} call${why}. Take their comment into ` +
-                       'account and adjust your approach; do not simply retry the same call.',
+              content: denials >= 2
+                ? `The user declined this ${name} call${why} — decline #${denials} for ` +
+                  'the same target this turn. STOP proposing further variants of this ' +
+                  'change: the user does not want it. Ask them what they actually want, or ' +
+                  'finish the turn explaining what was not done and why.'
+                : `The user declined this ${name} call${why}. Take their comment into ` +
+                  'account and adjust your approach; do not simply retry the same call.',
             }
           }
           if (decided.verdict !== 'allow') {
@@ -1041,7 +1166,7 @@ export class Agent {
                  'treated as a denial.',
       }
     }
-    const result = await this.opts.registry.executePrepared(prepared, this.toolContext())
+    const result = await this.opts.registry.executePrepared(prepared, this.toolContext(name))
     detector?.record(name, args, result.content)
 
     // After-tool hooks fire HERE: after the tool ran, before `runTurn` appends the tool
@@ -1109,12 +1234,18 @@ export class Agent {
    * tools carry their own timeouts. A caller-supplied context signal is combined rather
    * than replaced, so a caller that already has its own cancellation keeps it.
    */
-  private toolContext(): ToolContext {
+  private toolContext(toolName?: string): ToolContext {
+    const events = this.opts.events
+    const live: Pick<ToolContext, 'onLiveOutput'> =
+      toolName !== undefined && events?.onToolOutput
+        ? { onLiveOutput: (text) => events.onToolOutput?.(toolName, text) }
+        : {}
     const turn = this.opts.signal
-    if (!turn) return this.opts.context
+    if (!turn) return { ...this.opts.context, ...live }
     const own = this.opts.context.signal
     return {
       ...this.opts.context,
+      ...live,
       signal: own && own !== turn ? AbortSignal.any([own, turn]) : turn,
     }
   }

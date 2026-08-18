@@ -3,6 +3,7 @@ import type { Tool } from './types.js'
 export interface AskUserArgs {
   question: string
   options: string[]
+  multiSelect?: boolean
 }
 
 export const askUserTool: Tool<AskUserArgs> = {
@@ -10,7 +11,8 @@ export const askUserTool: Tool<AskUserArgs> = {
   readOnly: true,
   description:
     'Ask the user a question with suggested options. The host always accepts free text in addition ' +
-    'to the suggested options.',
+    'to the suggested options. Set multi_select true when the options are not mutually exclusive ' +
+    'and the user may pick several.',
   parameters: {
     type: 'object',
     properties: {
@@ -19,6 +21,10 @@ export const askUserTool: Tool<AskUserArgs> = {
         type: 'array',
         items: { type: 'string', description: 'A suggested option. Max 100 characters.' },
         description: '2–4 distinct options.',
+      },
+      multi_select: {
+        type: 'boolean',
+        description: 'True when several options may be chosen together. Default false: exactly one.',
       },
     },
     required: ['question', 'options'],
@@ -56,7 +62,15 @@ export const askUserTool: Tool<AskUserArgs> = {
       seen.add(opt)
     }
 
-    return { ok: true, args: { question: r.question, options: r.options } }
+    // Snake case on the wire (every schema property the model sees is snake), camel inside.
+    const multi = (raw as { multi_select?: unknown }).multi_select
+    if (multi !== undefined && typeof multi !== 'boolean') {
+      return { ok: false, error: 'multi_select must be a boolean' }
+    }
+    return {
+      ok: true,
+      args: { question: r.question, options: r.options, ...(multi === true ? { multiSelect: true } : {}) },
+    }
   },
   async execute(args, ctx) {
     if (!ctx.interaction) {
@@ -66,7 +80,10 @@ export const askUserTool: Tool<AskUserArgs> = {
       }
     }
 
-    const answer = await ctx.interaction.askUser({ question: args.question, options: args.options })
+    const answer = await ctx.interaction.askUser({
+      question: args.question, options: args.options,
+      ...(args.multiSelect === true ? { multiSelect: true } : {}),
+    })
     // An abort resolves the pending question rather than rejecting it, so without this
     // check the tool reported `ok` with "The user answered: cancelled" -- a statement the
     // user never made, written permanently into the session JSONL and fed back to the

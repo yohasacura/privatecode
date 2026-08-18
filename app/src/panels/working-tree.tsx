@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
-import { Fragment, type VNode } from 'preact'
+import { type VNode } from 'preact'
 import type { GitFileChange, GitRepoView } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { DiffView } from '../lib/diff'
 import { Icon } from '../components/icons'
-import { PanelError, PanelGroupHead, PanelRow, PanelSection } from '../components/panel'
-import { groupByDirectory } from '../lib/path-tree'
+import { PanelError, PanelRow, PanelSection } from '../components/panel'
+import { buildPathTree, type PathTreeNode } from '../lib/path-tree'
+import { PathTreeLevel, toggleInSet } from '../components/path-tree-view'
 
 /**
  * The working tree, under this session's own changes.
@@ -91,6 +92,7 @@ function RepoSection({
   onCommitted: () => void
 }): VNode {
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -128,15 +130,17 @@ function RepoSection({
   }
 
   const branch = repo.branch !== null ? ` · ${repo.branch}` : ''
-  // Grouped by directory with the shared prefix lifted into the heading — see
-  // `lib/path-tree.ts`. A repository's dirty files are exactly the list where the first
-  // sixty characters of every row are identical.
-  const grouped = groupByDirectory(repo.files, (f) => f.path)
+  // The same real tree the Changes list renders — the two answer "what changed" at two
+  // scales and must read as one structure. A directory row's meta is selected-of-total,
+  // counted through the subtree, so a collapsed row still says where the selection is.
+  const tree = buildPathTree(repo.files, (f) => f.path)
+  const selectedUnder = (node: PathTreeNode<GitFileChange>): number =>
+    node.files.filter((f) => selected.has(f.item.path)).length +
+    node.dirs.reduce((n, d) => n + selectedUnder(d), 0)
   return (
     <PanelSection
       title={alone ? `Working tree${branch}` : `${repo.label}${branch}`}
       count={repo.files.length}
-      subtitle={grouped.commonPrefix}
     >
       {repo.problem !== undefined && <div class="history-note">{repo.problem}</div>}
       {error !== null && <PanelError message={error} />}
@@ -166,25 +170,24 @@ function RepoSection({
                 {selected.size} of {repo.files.length} selected
               </span>
             </div>
-            {grouped.groups.map((group) => (
-              <Fragment key={group.fullDir}>
-                <PanelGroupHead
-                  dir={group.dir}
-                  fullDir={group.fullDir}
-                  meta={`${group.items.filter((i) => selected.has(i.item.path)).length}/${group.items.length}`}
-                />
-                {group.items.map(({ item: file, name }) => (
+            <PathTreeLevel
+              node={tree}
+              depth={0}
+              collapsed={collapsed}
+              onToggle={(dir) => setCollapsed((prev) => toggleInSet(prev, dir))}
+              dirMeta={(dir) => `${selectedUnder(dir)}/${dir.totalFiles}`}
+              renderFile={(file, name, depth) => (
+                <div key={file.path} style={{ paddingLeft: `${depth * 12}px` }}>
                   <FileRow
-                    key={file.path}
                     client={client}
                     file={file}
                     name={name}
                     checked={selected.has(file.path)}
                     onToggle={() => toggle(file.path)}
                   />
-                ))}
-              </Fragment>
-            ))}
+                </div>
+              )}
+            />
             <div class="commit-box">
               <input
                 class="input"

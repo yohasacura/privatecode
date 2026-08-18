@@ -1,6 +1,7 @@
 import type { TodoItem } from '../interaction.js'
 import type { Session } from '../session/session.js'
 import type { TurnResult } from '../agent/loop.js'
+import { saysFinished } from '../session/contract.js'
 
 /**
  * Turn after turn, until the work is done or something says stop.
@@ -40,6 +41,14 @@ export interface UnattendedOptions {
   onEnd?(info: RunSummary): void
   /** Injected for tests; defaults to real time. */
   now?(): number
+  /**
+   * Compact between turns once the conversation is heavy (`REFRESH_CONTEXT_AT`), so each
+   * turn of a long run starts from the distilled briefing + plan + contract instead of
+   * dragging one ever-heavier context across the whole night. On by default — the drift,
+   * re-reads and spirals all live in the dragged context; `false` restores the old
+   * behaviour.
+   */
+  refreshContext?: boolean
 }
 
 export interface RunSummary {
@@ -51,6 +60,13 @@ export interface RunSummary {
 
 export const DEFAULT_MAX_TURNS = 50
 export const DEFAULT_MAX_HOURS = 8
+
+/** Below this many transcript tokens, a between-turn refresh would summarise a
+ * conversation that still fits comfortably in the model's attention, let alone its
+ * window — the cost (a summary generation per turn) would exceed the drift it prevents.
+ * 60k, because the incompressible floor (system prompt + briefing + the 24k kept-tail
+ * cap) can reach ~37k: a threshold at 40k re-compacted every single turn forever. */
+export const REFRESH_CONTEXT_AT = 60_000
 
 /** Two turns in a row that changed nothing and ran nothing. */
 const IDLE_LIMIT = 2
@@ -77,18 +93,9 @@ export function nudgeFor(todos: readonly TodoItem[]): string {
     '\n\nWork on the next one. If they are all actually finished, say so plainly and stop.'
 }
 
-/**
- * True when the model's closing text reads as "I am finished".
- *
- * Deliberately narrow. A loose match ends the run on the first turn that happens to contain
- * the word "done", and an overnight run that stops at 22:05 because the model said "done
- * with the first file" is a worse failure than one that takes an extra turn to notice.
- */
-export function saysFinished(text: string): boolean {
-  const tail = text.trim().toLowerCase().slice(-400)
-  return /\b(all done|everything (is )?(now )?(done|finished|complete)|task (is )?complete|nothing (else|more) (left )?to do|no (further|more) (work|changes) (is |are )?(needed|required))\b/
-    .test(tail)
-}
+// Moved to `session/contract.ts`: the acceptance gate shares it now, and the session
+// layer must not import from the CLI layer. Re-exported so every import keeps working.
+export { saysFinished }
 
 export async function runUnattended(opts: UnattendedOptions): Promise<RunSummary> {
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS
@@ -134,7 +141,9 @@ export async function runUnattended(opts: UnattendedOptions): Promise<RunSummary
     let result: TurnResult
     const before = opts.session.turnFootprint()
     try {
-      result = await opts.session.send(next, turnSignal)
+      // Only the FIRST turn carries the user's task; every later `next` is this loop's own
+      // nudge, and a nudge distilled into a contract replaced the real one all night.
+      result = await opts.session.send(next, turnSignal, { distill: turns === 1 })
       serverFailures = 0
     } catch (e) {
       // A transport failure is not a turn outcome — `Session.send` folds abort and timeout
@@ -188,7 +197,27 @@ export async function runUnattended(opts: UnattendedOptions): Promise<RunSummary
     }
 
     if (saysFinished(result.finalText) && stillOpen.length === 0) {
-      return finish('done', 'the agent reported the work finished')
+      // The gate's verdict outranks the prose: "done" from a turn the acceptance check
+      // left criteria standing on is exactly the confident-but-unmet ending this whole
+      // mechanism exists to stop.
+      const unmet = opts.session.lastAcceptanceUnmet?.() ?? 0
+      if (unmet === 0) return finish('done', 'the agent reported the work finished')
+      return finish('blocked',
+        `the agent reported the work finished, but ${unmet} contract ` +
+        `criteri${unmet === 1 ? 'on' : 'a'} remained unmet after the fix rounds`)
+    }
+
+    // A fresh frame for the next turn once the conversation has grown heavy: the summary
+    // briefing plus the plan plus the contract IS the distilled state, and it is measured
+    // to carry constraints faithfully — while a single context dragged across many turns
+    // is where the drift, the re-reads and the spirals live. Between turns is the one
+    // moment this costs nothing extra: the slot is idle and the next turn re-prefills
+    // anyway. `forceCompact` keeps its own nothing-to-gain gate, so small conversations
+    // pass through untouched.
+    if (opts.refreshContext !== false && opts.session.contextUsage().approxTokens >= REFRESH_CONTEXT_AT) {
+      try {
+        await opts.session.forceCompact(opts.signal)
+      } catch { /* an uncompacted next turn is the status quo, not a failure */ }
     }
 
     next = nudgeFor(todos)

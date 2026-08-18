@@ -67,6 +67,23 @@ export function Palette({
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
+  // Escape closes the palette from ANYWHERE — a result button, or nowhere at all after a
+  // click on the overlay moved focus to body. The input's own handler only covers the
+  // input; everywhere else the keypress fell through to the composer's window abort
+  // listener, so Esc on an open palette silently stopped a running turn. Capture phase for
+  // files-tab.tsx's reason: it must run before window's bubble-phase abort handler.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (e.key !== 'Escape') return
+      // The settings dialog can be on screen above this palette; its Escape must close IT.
+      if (document.querySelector('.modal') !== null) return
+      e.stopPropagation()
+      onClose()
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [onClose])
+
   useEffect(() => {
     let cancelled = false
     client.call('fs.find', { query, limit: 8 })

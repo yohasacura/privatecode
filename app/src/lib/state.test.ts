@@ -39,6 +39,17 @@ describe('the silence countdown', () => {
     expect(state.currentStep).toMatchObject({ startedAtMs: 7_000, aliveAtMs: 7_000 })
   })
 
+  it('carries the prefill-inclusive first-token budget when the core sends one', () => {
+    // The countdown must count the pre-first-token silence against THIS budget: counted
+    // against the flat one it showed "0s to timeout" over a healthy two-minute prefill.
+    const state = run([{
+      type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 7_000, firstTokenTimeoutMs: 250_000,
+    }])
+    expect(state.currentStep?.firstTokenTimeoutMs).toBe(250_000)
+    const bare = run([{ type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 7_000 }])
+    expect(bare.currentStep?.firstTokenTimeoutMs).toBeUndefined()
+  })
+
   it('is not restarted between steps, when there is no step to keep alive', () => {
     // Between a step's model call ending and the next starting — a tool running, an approval
     // open — `currentStep` is null. A late frame flushing then must not invent a step.
@@ -100,6 +111,50 @@ describe('a call abandoned mid-write', () => {
     const card = state.items.find((i) => i.kind === 'tool')
     expect(card && card.kind === 'tool' && card.result?.ok).toBe(false)
     expect(card && card.kind === 'tool' && card.result?.content.startsWith('Not run:')).toBe(true)
+  })
+})
+
+describe('a server-death retry inside the step', () => {
+  // llama.cpp died mid-generation, the watchdog relaunched it, and the loop re-sends the
+  // identical request. The retry re-streams the same generation from the start, so the
+  // dead attempt's partial cards are superseded: kept, they would show the reasoning
+  // twice and splice the retry's JSON deltas onto a half-written tool card.
+  it('removes the dead attempt\'s open reasoning and writing cards', () => {
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 1_000 },
+      { type: 'thinking.delta', text: 'partial thought cut by the crash' },
+      { type: 'tool.call.delta', index: 0, name: 'write_file' },
+      { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts","cont' },
+      { type: 'step.retry', atMs: 2_000 },
+    ])
+    expect(state.items.filter((i) => i.kind === 'thinking')).toEqual([])
+    expect(state.items.filter((i) => i.kind === 'tool')).toEqual([])
+    // The wait that follows is the relaunched server's cold prefill.
+    expect(state.currentStep?.waitingFirstToken).toBe(true)
+    expect(state.currentStep?.aliveAtMs).toBe(2_000)
+  })
+
+  it('leaves earlier steps alone and gives the retry a fresh reasoning block', () => {
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 1_000 },
+      { type: 'tool.call.delta', index: 0, name: 'run_command' },
+      { type: 'tool.call', name: 'run_command', args: '{"command":"npm test"}' },
+      { type: 'tool.result', name: 'run_command', ok: true, content: 'exit 0' },
+      // The next model call: its own mark, so a retry inside it reaches back only this far.
+      { type: 'step.start', step: 2, timeoutMs: 90_000, startedAtMs: 2_000 },
+      { type: 'thinking.delta', text: 'dead partial' },
+      { type: 'step.retry', atMs: 3_000 },
+      { type: 'thinking.delta', text: 'fresh full thought' },
+    ])
+    // The completed call survives untouched; only the dead partial went.
+    const tools = state.items.filter((i) => i.kind === 'tool')
+    expect(tools).toHaveLength(1)
+    expect(tools[0]?.kind === 'tool' && tools[0].result?.ok).toBe(true)
+    const thinking = state.items.filter((i) => i.kind === 'thinking')
+    expect(thinking).toHaveLength(1)
+    expect(thinking[0]?.kind === 'thinking' && thinking[0].text).toBe('fresh full thought')
   })
 })
 
@@ -167,6 +222,34 @@ describe('the optimistic turn, refused', () => {
     expect(state.currentStep).toBeNull()
     // The run itself is untouched — it was never this window's to roll back.
     expect(state.run).toMatchObject({ task: 'the night task' })
+  })
+
+  it('an undelivered turn removes the row and hands the text back as a draft', () => {
+    // Watched live: Esc during contract distillation. The message never reached any
+    // transcript, yet the row stayed under a "Stopped by you… continues from here"
+    // banner — and vanished on the next reload, taking the user's paragraph with it.
+    const state = run([
+      { type: 'user-message', text: 'большая задача про greetMany' },
+      { type: 'turn-started' },
+      { type: 'turn.done', stoppedBecause: 'aborted', delivered: false },
+    ])
+    expect(state.turnRunning).toBe(false)
+    expect(state.items.some((i) => i.kind === 'user')).toBe(false)
+    expect(state.items.some((i) => i.kind === 'stopped')).toBe(false)
+    expect(state.restoreDraft).toBe('большая задача про greetMany')
+    const drained = reduceChat(state, { type: 'draft-restored' })
+    expect(drained.restoreDraft).toBeNull()
+  })
+
+  it('a delivered abort keeps the row and restores no draft', () => {
+    const state = run([
+      { type: 'user-message', text: 'обычная задача' },
+      { type: 'turn-started' },
+      { type: 'turn.done', stoppedBecause: 'aborted' },
+    ])
+    expect(state.items.some((i) => i.kind === 'user')).toBe(true)
+    expect(state.items.some((i) => i.kind === 'stopped')).toBe(true)
+    expect(state.restoreDraft).toBeNull()
   })
 })
 
@@ -982,5 +1065,141 @@ describe('reduceChat: a background compaction that finishes while nobody is typi
     const rows = rowsOf(run(phases('started', 'ready', 'failed')))
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ state: 'failed' })
+  })
+})
+
+describe('reduceChat: errors that must not touch the running turn', () => {
+  it('error-note appends the row and leaves the turn alone', () => {
+    // send-failed doubles as "roll the optimistic turn back" — dispatched as a generic
+    // toast mid-turn it flipped Stop to Send while the host streamed on, and the real
+    // turn.done was then dropped at the turnRunning guard.
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 1_000 },
+      { type: 'error-note', message: '/tets is not a command here' },
+    ])
+    expect(state.turnRunning).toBe(true)
+    expect(state.currentStep).not.toBeNull()
+    expect(state.items[state.items.length - 1]).toMatchObject({ kind: 'error', message: '/tets is not a command here' })
+    // The turn still ends normally afterwards.
+    const done = reduceChat(state, { type: 'turn.done', stoppedBecause: 'done' })
+    expect(done.turnRunning).toBe(false)
+  })
+
+  it('send-rolled-back removes the optimistic user row along with the flag', () => {
+    const state = run([
+      { type: 'user-message', text: 'queued while a run held the slot' },
+      { type: 'turn-started' },
+      { type: 'send-rolled-back' },
+    ])
+    expect(state.turnRunning).toBe(false)
+    expect(state.items.filter((i) => i.kind === 'user')).toHaveLength(0)
+  })
+})
+
+describe('reduceChat: a run ending clears what it orphaned', () => {
+  it('pending approval and question cards do not survive run.ended', () => {
+    // The host denies every pending interaction at run end; a card left on screen said
+    // "Paused, waiting for you" forever, and Allow answered a requestId that was gone.
+    const state = run([
+      { type: 'run-started', task: 't', atMs: 0 },
+      { type: 'approval.request', requestId: 'r1', tool: 'run_command', summary: 's', detail: 'd', suggestedRules: [] },
+      { type: 'question.request', requestId: 'q1', question: '?', options: [] },
+      { type: 'run.ended', turns: 3, stoppedBecause: 'budget', detail: 'done' },
+    ])
+    expect(state.pendingApproval).toBeNull()
+    expect(state.pendingQuestion).toBeNull()
+  })
+})
+
+describe('reduceChat: the context meter at a compaction swap', () => {
+  /**
+   * The meter reads `lastStepDone.promptTokens`, and the next server-measured count rides
+   * the first `step.done` of the NEXT turn — so the bar kept showing the pre-compaction
+   * number long after the transcript row said "compacted". Reported from the running app:
+   * "the value only changes some time into the next message".
+   */
+  const applied: ChatAction = {
+    type: 'compaction', state: 'applied', droppedMessages: 40,
+    detail: { beforeTokens: 100_000, afterTokens: 12_000, summary: 'briefing', keptMessages: 6 },
+  }
+  const beforeSwap: ChatAction[] = [
+    { type: 'turn-started' },
+    { type: 'step.done', step: 3, seconds: 2, tokensPerSecond: 40, promptTokens: 100_000 },
+  ]
+
+  it('an applied swap moves the meter immediately, flagged as an estimate', () => {
+    const state = [...beforeSwap, applied].reduce(reduceChat, initialChatState())
+    expect(state.lastStepDone).toMatchObject({ promptTokens: 12_000, estimated: true })
+    // Unrelated readings survive: the transcript shrank, the hardware did not slow down.
+    expect(state.lastStepDone?.tokensPerSecond).toBe(40)
+  })
+
+  it('the next server-measured count replaces the estimate and clears the flag', () => {
+    const state = [
+      ...beforeSwap, applied,
+      { type: 'step.done' as const, step: 1, seconds: 1, tokensPerSecond: 38, promptTokens: 14_500 },
+    ].reduce(reduceChat, initialChatState())
+    expect(state.lastStepDone?.promptTokens).toBe(14_500)
+    expect(state.lastStepDone?.estimated).toBeUndefined()
+  })
+
+  it('a step that reports no count keeps the estimate flagged, not promoted to a reading', () => {
+    // An aborted or timed-out step carries no usage; the carried-over number is still the
+    // compaction's guess and must keep saying so.
+    const state = [
+      ...beforeSwap, applied,
+      { type: 'step.done' as const, step: 1, seconds: 1 },
+    ].reduce(reduceChat, initialChatState())
+    expect(state.lastStepDone).toMatchObject({ promptTokens: 12_000, estimated: true })
+  })
+
+  it('an applied event without detail leaves the meter alone', () => {
+    const state = [
+      ...beforeSwap,
+      { type: 'compaction' as const, state: 'applied' as const },
+    ].reduce(reduceChat, initialChatState())
+    expect(state.lastStepDone).toMatchObject({ promptTokens: 100_000 })
+    expect(state.lastStepDone?.estimated).toBeUndefined()
+  })
+
+  it('postponed and failed do not touch the meter — the transcript did not change', () => {
+    const state = [
+      ...beforeSwap,
+      { type: 'compaction' as const, state: 'started' as const },
+      { type: 'compaction' as const, state: 'postponed' as const },
+    ].reduce(reduceChat, initialChatState())
+    expect(state.lastStepDone).toMatchObject({ promptTokens: 100_000 })
+    expect(state.lastStepDone?.estimated).toBeUndefined()
+  })
+})
+
+describe('live tool output', () => {
+  it('attaches to the running call, tail-caps, and yields to the result', () => {
+    let state = run([
+      { type: 'turn-started' },
+      { type: 'tool.call', name: 'run_command', args: '{"command":"npm test"}' },
+      { type: 'tool.output', text: 'compiling...\n' },
+      { type: 'tool.output', text: 'test 1 ok\n' },
+    ])
+    const running = state.items.find((i) => i.kind === 'tool')
+    expect(running?.kind === 'tool' && running.live).toBe('compiling...\ntest 1 ok\n')
+
+    // A firehose is a viewport, not a record: only the tail survives, announced.
+    state = reduceChat(state, { type: 'tool.output', text: 'x'.repeat(20_000) })
+    const capped = state.items.find((i) => i.kind === 'tool')
+    if (capped?.kind !== 'tool') throw new Error('no tool item')
+    expect(capped.live!.length).toBeLessThanOrEqual(16_001)
+    expect(capped.live!.startsWith('…')).toBe(true)
+
+    // The result is the authoritative record; the live viewport goes with the run.
+    state = reduceChat(state, { type: 'tool.result', name: 'run_command', ok: true, content: 'all output' })
+    const done = state.items.find((i) => i.kind === 'tool')
+    expect(done?.kind === 'tool' && done.live).toBeUndefined()
+  })
+
+  it('output with no running call is a no-op, not a crash', () => {
+    const state = run([{ type: 'tool.output', text: 'stray' }])
+    expect(state.items).toEqual([])
   })
 })

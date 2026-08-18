@@ -34,8 +34,16 @@ export const VISIBLE_TAIL = 400
  * bar above the transcript reports, and it is the count of items NOT rendered — never a
  * guess, never "about".
  */
-export function visibleWindow<T>(items: readonly T[], showAll: boolean): { shown: readonly T[]; hidden: number } {
-  const hidden = showAll ? 0 : Math.max(0, items.length - VISIBLE_TAIL)
+export function visibleWindow<T>(
+  items: readonly T[], showAll: boolean, frozenStart?: number,
+): { shown: readonly T[]; hidden: number } {
+  const natural = showAll ? 0 : Math.max(0, items.length - VISIBLE_TAIL)
+  // While the reader is scrolled UP, the window's start is FROZEN where it was when they
+  // unpinned: advancing it live meant every streamed item deleted a row from under them —
+  // the view held until the row being read was evicted, then jumped, repeatedly, in
+  // exactly the >400-item sessions the cap exists for. The window grows downward during
+  // the read and snaps back to the sliding tail on re-pin.
+  const hidden = frozenStart !== undefined ? Math.min(natural, frozenStart) : natural
   return { shown: hidden === 0 ? items : items.slice(hidden), hidden }
 }
 
@@ -154,8 +162,13 @@ export function Transcript({
   // governed a twenty-thousand-row one.
   const [showAll, setShowAll] = useState(false)
   const shownSessionId = viewing === null ? (state.session?.sessionId ?? '') : viewing.sessionId
-  useEffect(() => { setShowAll(false) }, [shownSessionId])
-  const { shown, hidden } = visibleWindow(all, showAll)
+  const frozenStartRef = useRef<number | undefined>(undefined)
+  useEffect(() => { setShowAll(false); frozenStartRef.current = undefined }, [shownSessionId])
+  // Pinned to the bottom → the window slides as it always did. Scrolled up → freeze the
+  // start where the reader left the bottom, so nothing is evicted from under them.
+  if (stuck) frozenStartRef.current = undefined
+  else frozenStartRef.current ??= showAll ? 0 : Math.max(0, all.length - VISIBLE_TAIL)
+  const { shown, hidden } = visibleWindow(all, showAll, frozenStartRef.current)
 
   return (
     <div class="transcript-wrap">
@@ -551,6 +564,7 @@ function ReasoningBlock({ item }: { item: ChatItem & { kind: 'thinking' } }): VN
   // Always expanded by default -- the user asked to see the reasoning, not to click for it.
   const [open, setOpen] = useState(true)
   const [now, setNow] = useState(() => Date.now())
+  const bodyRef = useRef<HTMLDivElement>(null)
 
   // The timer lives HERE, not in the transcript: a clock passed down as a prop ticks every
   // row and defeats the memoisation the file header explains. Only a block that is still
@@ -560,6 +574,17 @@ function ReasoningBlock({ item }: { item: ChatItem & { kind: 'thinking' } }): VN
     const id = setInterval(() => setNow(Date.now()), 200)
     return () => clearInterval(id)
   }, [item.done])
+
+  // The body is its own 440px scroller, and nothing else ever scrolls it — the sticky
+  // follower pins the OUTER transcript only. Past ~21 lines a live stream continued below
+  // this box's fold: text and caret frozen mid-sentence while the token counter climbed,
+  // which reads exactly like a hang. While streaming, the box follows its own bottom;
+  // once done it stays wherever the reader put it.
+  useEffect(() => {
+    if (item.done) return
+    const el = bodyRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [item.text, item.done])
 
   const elapsed = item.done
     ? (item.endedAtMs !== null ? item.endedAtMs - item.startedAtMs : null)
@@ -579,7 +604,7 @@ function ReasoningBlock({ item }: { item: ChatItem & { kind: 'thinking' } }): VN
         <span class="reasoning-chevron">{open ? Icon.chevronDown() : Icon.chevronRight()}</span>
       </button>
       {open && (
-        <div class="reasoning-body">
+        <div class="reasoning-body" ref={bodyRef}>
           {item.text}
           {!item.done && <span class="caret" aria-hidden="true" />}
         </div>
@@ -736,6 +761,32 @@ function formatBytes(n: number): string {
   return n < 1000 ? `${n} chars` : `${(n / 1000).toFixed(1)}k chars`
 }
 
+/**
+ * A terminal viewport for a command still running: auto-follows the tail unless the user
+ * scrolled up to read something, in which case their position is theirs until they return
+ * to the bottom — the same contract every terminal emulator honours.
+ */
+function LiveOutput({ text }: { text: string }): VNode {
+  const ref = useRef<HTMLPreElement>(null)
+  const stickRef = useRef(true)
+  useEffect(() => {
+    const el = ref.current
+    if (el !== null && stickRef.current) el.scrollTop = el.scrollHeight
+  }, [text])
+  return (
+    <pre
+      class="tool-live"
+      ref={ref}
+      onScroll={(e) => {
+        const el = e.currentTarget
+        stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+      }}
+    >
+      {text}
+    </pre>
+  )
+}
+
 function ToolCard({
   item, onOpenFile, client,
 }: {
@@ -810,6 +861,13 @@ function ToolCard({
             <span class="cmd-prompt">$</span>
             <code class="cmd-text">{p.target}</code>
           </div>
+        )}
+
+        {/* The run, WHILE it runs: stdout/stderr as it arrives, pinned to the tail like a
+            terminal. Before this, a two-minute build was a frozen card and "is it working
+            or wedged" had no answer in the window. Replaced by the result on exit. */}
+        {pending && item.live !== undefined && item.live !== '' && (
+          <LiveOutput text={item.live} />
         )}
 
         {!pending && isOpen && (

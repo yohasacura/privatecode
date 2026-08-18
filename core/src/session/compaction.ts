@@ -56,7 +56,77 @@ Be concrete: exact file paths, exact function/variable names, exact remaining st
 nothing a continuation would need and add nothing it would not.`
 
 /** The same chars-per-token estimate `Transcript.approxTokens` uses, per message. */
-function approxTokensOf(m: ChatMessage): number {
+/**
+ * Drops the BODIES of reads that later tail messages supersede — the safe subset of the
+ * collapse-swap idea, running only where the cache is being rebuilt anyway.
+ *
+ * A `read_file` result whose path is read AGAIN later in the tail, or edited later in the
+ * tail, is dead weight: the model's current belief about that file comes from the later
+ * message, and the earlier bytes only pad the window. Measured motivation: superseded
+ * reads were ~30% of peak prompt on long recorded sessions. This runs at a compaction
+ * swap ONLY — mid-session it would invalidate the server's prefix cache; at a swap the
+ * prefix is being rewritten regardless.
+ *
+ * The stub SAYS what happened and where the truth now lives, per the rule that the model
+ * must never receive silently truncated data.
+ */
+export function collapseSupersededReads(tail: ChatMessage[]): ChatMessage[] {
+  // Pair tool results to their calls: id -> {name, path}.
+  const calls = new Map<string, { name: string; path: string | null }>()
+  for (const m of tail) {
+    for (const c of m.tool_calls ?? []) {
+      let path: string | null = null
+      try {
+        const args = JSON.parse(c.function.arguments) as { path?: unknown; to?: unknown }
+        path = typeof args.path === 'string' ? args.path : typeof args.to === 'string' ? args.to : null
+      } catch { /* unparseable arguments never produced a read worth collapsing */ }
+      calls.set(c.id, { name: c.function.name, path })
+    }
+  }
+  // For each path: the index of its LAST read result, and whether a write touches it later.
+  const lastReadAt = new Map<string, number>()
+  const writtenAfter = new Map<string, number>()
+  tail.forEach((m, i) => {
+    if (m.role === 'tool' && m.tool_call_id !== undefined) {
+      const call = calls.get(m.tool_call_id)
+      if (call?.name === 'read_file' && call.path !== null) lastReadAt.set(call.path, i)
+    }
+    for (const c of m.tool_calls ?? []) {
+      const call = calls.get(c.id)
+      if (call && call.path !== null && WRITE_TOOL_NAMES.has(call.name)) {
+        writtenAfter.set(call.path, i)
+      }
+    }
+  })
+  return tail.map((m, i) => {
+    if (m.role !== 'tool' || m.tool_call_id === undefined || typeof m.content !== 'string') return m
+    if (m.content.length < COLLAPSE_MIN_CHARS) return m
+    const call = calls.get(m.tool_call_id)
+    if (call?.name !== 'read_file' || call.path === null) return m
+    const rereadLater = (lastReadAt.get(call.path) ?? i) > i
+    const editedLater = (writtenAfter.get(call.path) ?? -1) > i
+    if (!rereadLater && !editedLater) return m
+    return {
+      ...m,
+      content: `[superseded read of ${call.path}: the file was ${editedLater ? 'edited' : 're-read'} ` +
+        'later in this conversation — the current content is in the later message, or one ' +
+        'read_file away. The original bytes were dropped at compaction.]',
+    }
+  })
+}
+
+/** The write family, matched by call NAME because this module must not import the
+ * session's own registry. Kept in sync with `session.ts`'s WRITE_TOOLS by the test. */
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['edit_file', 'write_file', 'move_file', 'delete_file'])
+
+/** A read smaller than this is cheaper to keep than to explain away. */
+const COLLAPSE_MIN_CHARS = 600
+
+/** Exported for the session's nothing-to-gain gate: counting a message any OTHER way there
+ * (it once counted only content + reasoning) makes the gate blind to exactly the messages
+ * whose bulk is `tool_calls` arguments — a write-heavy stretch is whole files in
+ * `arguments` with `content: null`, and it read as "nothing to compact". */
+export function approxTokensOf(m: ChatMessage): number {
   let chars = (m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0)
   for (const c of m.tool_calls ?? []) chars += c.function.arguments.length + 20
   return Math.ceil(chars / 4)
@@ -422,7 +492,10 @@ const MAX_CARRIED_FILE = 4_000
  * Anything unreadable is skipped in silence — its name is still listed above, so the model
  * knows it exists, and a briefing must never fail because a file was deleted.
  */
-function readBodies(paths: readonly string[], root: string | undefined, budget: number): string {
+function readBodies(
+  paths: readonly string[], root: string | undefined, budget: number,
+  diffsByPath?: ReadonlyMap<string, string>,
+): string {
   if (root === undefined) return ''
   const blocks: string[] = []
   let spent = 0
@@ -433,13 +506,48 @@ function readBodies(paths: readonly string[], root: string | undefined, budget: 
     } catch {
       continue
     }
-    if (text.length > MAX_CARRIED_FILE) continue
-    const block = `--- ${rel}\n${text}`
+    let block: string
+    if (text.length <= MAX_CARRIED_FILE) {
+      block = `--- ${rel}\n${text}`
+    } else {
+      // The file the model is MOST in the middle of is usually the one too big to carry
+      // whole — dropping it silently (the old behaviour) is what made 9 of 10 post-swap
+      // reads re-reads. Carry the regions this session actually edited instead, from the
+      // transcript's own diffs; a big file with no diffs (created whole) carries its head.
+      // Every omission is announced — the model must never mistake a part for the whole.
+      const hunks = diffsByPath?.get(rel)
+      block = hunks !== undefined
+        ? `--- ${rel} [${text.length} chars on disk — too big to carry whole. ` +
+          'The regions this session edited (oldest first); read_file for anything outside them:]\n' +
+          (hunks.length > MAX_CARRIED_FILE
+            ? `[... earlier edits omitted]\n${hunks.slice(hunks.length - MAX_CARRIED_FILE)}`
+            : hunks)
+        : `--- ${rel} [${text.length} chars on disk — too big to carry whole. ` +
+          `Its first ${MAX_CARRIED_FILE} chars; read_file for the rest:]\n${text.slice(0, MAX_CARRIED_FILE)}`
+    }
     if (spent + block.length > budget) break
     blocks.push(block)
     spent += block.length
   }
   return blocks.join('\n\n')
+}
+
+/**
+ * The last diffs each path received this stretch, keyed by path — `readBodies`' source for
+ * the edited regions of files too big to carry whole. The first line of every edit-family
+ * tool result is `--- <path>`, which is the pairing this reads.
+ */
+export function diffsByPath(messages: readonly ChatMessage[]): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const m of messages) {
+    if (m.role !== 'tool' || typeof m.content !== 'string' || !m.content.startsWith('--- ')) continue
+    const firstLine = m.content.slice(4, m.content.indexOf('\n'))
+    const path = firstLine.trim()
+    if (path === '') continue
+    const prev = out.get(path)
+    out.set(path, prev === undefined ? m.content : `${prev}\n${m.content}`)
+  }
+  return out
 }
 
 export function continuationInventory(
@@ -493,7 +601,7 @@ export function continuationInventory(
     // Most recently changed first, and only while the budget holds: this is the one part of
     // the briefing that can grow without bound, and a swap that carried thirty files would be
     // a swap that freed nothing.
-    const bodies = readBodies(changed, root, bodyBudget)
+    const bodies = readBodies(changed, root, bodyBudget, diffsByPath(messages))
     if (bodies !== '') {
       parts.push(
         'The current contents of the ones you changed most recently, so you do not have to ' +

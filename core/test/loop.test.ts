@@ -7,7 +7,7 @@ import { LoopDetector } from '../src/agent/loop-detector.js'
 import { LlamaClient } from '../src/llama/client.js'
 import { ToolRegistry } from '../src/tools/registry.js'
 import { Workspace } from '../src/workspace.js'
-import { startFakeServer, TrickleResponse } from './fake-server.js'
+import { RawResponse, startFakeServer, TrickleResponse } from './fake-server.js'
 import type { Tool } from '../src/tools/types.js'
 
 let stop: (() => Promise<void>) | undefined
@@ -124,6 +124,7 @@ function recorder() {
     onStepStart: (i) => { events.push(['stepStart', i]) },
     onThinking: (t) => { events.push(['thinking', t]) },
     onContinuation: (s) => { events.push(['continuation', s]) },
+    onStepRetry: () => { events.push(['stepRetry']) },
     onToolCall: (n, a) => { events.push(['toolCall', n, a]) },
     onToolResult: (n, r) => { events.push(['toolResult', n, r]) },
     onAssistantText: (t) => { events.push(['assistantText', t]) },
@@ -136,6 +137,95 @@ function recorder() {
     of: (name: string) => events.filter((e) => e[0] === name).map((e) => e[1]),
   }
 }
+
+test('a tool that produces live output reaches the host through onToolOutput', async () => {
+  // The chain behind the live console pane: tool -> ctx.onLiveOutput -> AgentEvents ->
+  // (host) tool.output event. Wired only when a host listens; the tool result stays the
+  // authoritative record either way.
+  const chunks: [string, string][] = []
+  const chatty: Tool<Record<string, never>> = {
+    name: 'chatty',
+    readOnly: true,
+    description: 'emits output over time',
+    parameters: { type: 'object', properties: {} },
+    validate: () => ({ ok: true, args: {} }),
+    execute: async (_args, ctx) => {
+      ctx.onLiveOutput?.('line 1\n')
+      ctx.onLiveOutput?.('line 2\n')
+      return { ok: true, content: 'line 1\nline 2\n' }
+    },
+  }
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    return n === 1 ? toolCallResponse('chatty', '{}') : textResponse('done')
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url, {
+    events: { onToolOutput: (name, text) => { chunks.push([name, text]) } },
+  }, [chatty])
+  const result = await agent.runTurn('go')
+  expect(result.stoppedBecause).toBe('done')
+  expect(chunks).toEqual([['chatty', 'line 1\n'], ['chatty', 'line 2\n']])
+})
+
+test('a silent step survives while /slots shows the prefill moving', async () => {
+  // Watched live: a server-side cache eviction made the next turn re-prefill ~187k tokens
+  // for nine minutes — pure silence to the client — and the step died against a window
+  // sized from the few hundred chars THIS process had appended. The clock now asks the
+  // server before killing a first-token wait: growing n_prompt_tokens_processed means the
+  // silence is prefill, and the window re-arms.
+  let slotPolls = 0
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/slots') {
+      slotPolls++
+      return [{ is_processing: true, n_prompt_tokens_processed: slotPolls * 1000 }]
+    }
+    return new Promise((resolve) => setTimeout(() => resolve(textResponse('after long prefill')), 6500))
+  })
+  stop = fake.close
+  const result = await makeAgent(fake.url, {
+    stepTimeoutMs: 200, firstStepTimeoutMs: 200, prefillRecheckMs: 200,
+  }).runTurn('hi')
+  expect(result.stoppedBecause).toBe('done')
+  expect(result.finalText).toBe('after long prefill')
+  expect(slotPolls).toBeGreaterThan(0)
+})
+
+test('a stalled prefill still times out instead of waiting forever', async () => {
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/slots') {
+      // Processing, but the counter never moves: whatever the server is doing, it is not
+      // working through our prompt — the guard must not be extendable by mere liveness.
+      return [{ is_processing: true, n_prompt_tokens_processed: 500 }]
+    }
+    return hang()
+  })
+  stop = fake.close
+  const result = await makeAgent(fake.url, { stepTimeoutMs: 200, firstStepTimeoutMs: 200, prefillRecheckMs: 150 }).runTurn('hi')
+  expect(result.stoppedBecause).toBe('timeout')
+})
+
+test('a request the server died under is retried once health returns', async () => {
+  // Watched live: llama.cpp dies on a VRAM spike mid-generation, the watchdog relaunches
+  // it in ~20-30 s, and before this retry existed the whole turn ended on "stream read
+  // error (TypeError: terminated)" for an outage the server had already recovered from.
+  let n = 0
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/health') return { status: 'ok' }
+    n++
+    return n === 1 ? new RawResponse(500, 'CUDA error: out of memory', 'text/plain') : textResponse('survived')
+  })
+  stop = fake.close
+  const rec = recorder()
+  const result = await makeAgent(fake.url, { events: rec.handlers }).runTurn('hello')
+  expect(result.stoppedBecause).toBe('done')
+  expect(result.finalText).toBe('survived')
+  expect(n).toBe(2)
+  // The renderer is told the dead attempt's partials are superseded BEFORE the re-send —
+  // without this the retry's stream appends onto the dead attempt's open cards.
+  expect(rec.names()).toContain('stepRetry')
+})
 
 test('executes a tool call, feeds the result back, then finishes', async () => {
   let n = 0
@@ -830,7 +920,13 @@ test('a plain two-step turn emits the whole event surface in order', async () =>
     'toolCall', 'toolResult',
     'stepStart', 'stepDone', 'assistantText',
   ])
-  expect(rec.of('stepStart')).toEqual([{ step: 1, timeoutMs: 9_000 }, { step: 2, timeoutMs: 9_000 }])
+  // `firstTokenTimeoutMs` is the flat budget plus the prefill allowance for what this step
+  // appends, so its exact value tracks prompt sizes; what is stable — and what the UI's
+  // countdown depends on — is that it exists and is never smaller than the flat budget.
+  const starts = rec.of('stepStart') as { step: number; timeoutMs: number; firstTokenTimeoutMs: number }[]
+  expect(starts.map(({ step, timeoutMs }) => ({ step, timeoutMs })))
+    .toEqual([{ step: 1, timeoutMs: 9_000 }, { step: 2, timeoutMs: 9_000 }])
+  for (const s of starts) expect(s.firstTokenTimeoutMs).toBeGreaterThanOrEqual(s.timeoutMs)
   expect(rec.of('thinking')).toEqual(['brief'])
   // Prose that rides along with a tool call is surfaced too, not only a final answer.
   expect(rec.of('assistantText')).toEqual(['looking now', 'all done'])

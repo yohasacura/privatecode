@@ -134,7 +134,15 @@ async function main(): Promise<void> {
         process.stderr.write(`ws-bridge: ignoring a message that is not a request: ${JSON.stringify(msg)}\n`)
         return
       }
-      void host.handle(msg)
+      // Timed, to stderr, per request: the dev stand's page dies easily (reloads, pane
+      // hijacks), and when it does, this log is the only witness to whether a method the
+      // page fired ever finished host-side — a `workspace.set → init` that "loads forever"
+      // is diagnosed from exactly these lines.
+      const started = Date.now()
+      void host.handle(msg).then(
+        () => process.stderr.write(`ws-bridge: ${msg.method} #${msg.id} done in ${Date.now() - started}ms\n`),
+        (e) => process.stderr.write(`ws-bridge: ${msg.method} #${msg.id} FAILED in ${Date.now() - started}ms: ${e instanceof Error ? e.message : String(e)}\n`),
+      )
     })
 
     ws.on('close', () => {
