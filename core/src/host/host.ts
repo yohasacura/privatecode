@@ -104,6 +104,8 @@ import type {
   WorkspaceGetResult,
   PromptImproveParams,
   PromptImproveResult,
+  PromptExpandParams,
+  PromptExpandResult,
   WorkspaceSetParams,
   WorkspaceSetResult,
   SetModeParams,
@@ -438,6 +440,7 @@ export class SessionHost {
       case 'workspace.get': return this.workspaceGet()
       case 'workspace.set': return this.workspaceSet(params as WorkspaceSetParams)
       case 'prompt.improve': return this.promptImprove(params as PromptImproveParams)
+      case 'prompt.expand': return this.promptExpand(params as PromptExpandParams)
       case 'git.status': return this.gitStatusFor()
       case 'git.diff': return this.gitDiffFor(params as GitDiffParams)
       case 'git.commit': return this.gitCommitFor(params as GitCommitParams)
@@ -1326,6 +1329,24 @@ export class SessionHost {
     this.currentAbort = new AbortController()
     try {
       return { suggestions: await session.previewSuggestions(params.text, this.currentAbort.signal) }
+    } finally {
+      this.sending = false
+      this.currentAbort = undefined
+    }
+  }
+
+  /** The composer's expand preview. Same slot discipline as `promptImprove` above and for
+   * the same reason: this is a real model request against the single slot. */
+  private async promptExpand(params: PromptExpandParams): Promise<PromptExpandResult> {
+    const session = this.requireSession()
+    if (typeof params?.text !== 'string' || params.text.trim() === '') {
+      throw new Error('prompt.expand needs the draft text')
+    }
+    if (this.sending) throw new Error('a turn is already running in this session')
+    this.sending = true
+    this.currentAbort = new AbortController()
+    try {
+      return { expanded: await session.previewExpansion(params.text, this.currentAbort.signal) }
     } finally {
       this.sending = false
       this.currentAbort = undefined

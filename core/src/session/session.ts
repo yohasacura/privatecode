@@ -35,7 +35,7 @@ import {
 } from './compaction.js'
 import {
   DIFF_REVIEW_MIN_CHARS, acceptanceFailureMessage, checkAcceptance, distillContract,
-  improveDraft, looksLikeTask, renderCheckedState, renderContract, reviewDiff,
+  expandDraft, improveDraft, looksLikeTask, renderCheckedState, renderContract, reviewDiff,
   reviewFailureMessage, type DraftSuggestions,
   saysFinished,
 } from './contract.js'
@@ -2045,7 +2045,45 @@ export class Session {
    * declines or suggests nothing — the caller keeps its quiet lint chips, never an error.
    */
   async previewSuggestions(text: string, signal?: AbortSignal): Promise<DraftSuggestions | null> {
-    return improveDraft(this.opts.client, this.transcript.messages(), text, signal)
+    return improveDraft(this.opts.client, this.previewContext(), text, signal)
+  }
+
+  /** The composer's expand preview: a rough command grown into a detailed brief from the
+   * same context a send would carry (message 0's repo map and notes included). A preview
+   * and nothing more, exactly like `previewSuggestions` above. */
+  async previewExpansion(text: string, signal?: AbortSignal): Promise<string | null> {
+    return expandDraft(this.opts.client, this.previewContext(), text, signal)
+  }
+
+  /**
+   * What a preview request is allowed to know. A FRESH session's transcript is seeded by
+   * the Agent at the first send — so a preview fired before any turn saw no system
+   * message at all: no repo map, no notes, no folder list. Watched live: the expander,
+   * asked in an untouched workspace, confidently briefed against `src/App.tsx` — a file
+   * that exists nowhere in the mounts, invented from training priors the instant the
+   * context stopped saying otherwise. Built per call and NOT appended to the transcript:
+   * a preview must leave the session exactly as it found it.
+   */
+  private previewContext(): ChatMessage[] {
+    const messages = [...this.transcript.messages()]
+    if (messages.length > 0 && messages[0]!.role === 'system') return messages
+    return [{
+      role: 'system',
+      content: buildSystemPrompt({
+        workspaceRoot: this.workspace.root,
+        mode: this.meta.mode,
+        ...(this.memoryText !== undefined ? { memory: this.memoryText } : {}),
+        ...(this.notesText !== undefined ? { notes: this.notesText } : {}),
+        ...(this.skillsText !== undefined ? { skills: this.skillsText } : {}),
+        ...(this.repoMapText !== undefined ? { repoMap: this.repoMapText } : {}),
+        ...(this.schemaText !== undefined ? { databaseSchema: this.schemaText } : {}),
+        ...(this.meta.contract !== undefined && this.meta.contract.satisfied !== true
+          ? { contract: renderContract(this.meta.contract) } : {}),
+        ...(this.workspace.multi
+          ? { folders: this.workspace.mounts.map((m) => ({ name: m.name, access: m.access })) }
+          : {}),
+      }),
+    }, ...messages]
   }
 
   async forceCompact(signal?: AbortSignal): Promise<void> {

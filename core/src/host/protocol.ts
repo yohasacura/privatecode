@@ -435,6 +435,7 @@ export interface HostMethodMap {
   'workspace.get': { params: WorkspaceGetParams; result: WorkspaceGetResult }
   'workspace.set': { params: WorkspaceSetParams; result: WorkspaceSetResult }
   'prompt.improve': { params: PromptImproveParams; result: PromptImproveResult }
+  'prompt.expand': { params: PromptExpandParams; result: PromptExpandResult }
   compact: { params: CompactParams; result: CompactResult }
   'approval.reply': { params: ApprovalReplyParams; result: ApprovalReplyResult }
   'question.reply': { params: QuestionReplyParams; result: QuestionReplyResult }
@@ -707,6 +708,12 @@ export interface PromptImproveParams { text: string }
 export interface PromptImproveResult {
   suggestions: { criteria: string[]; constraints: string[]; questions: string[] } | null
 }
+
+export interface PromptExpandParams { text: string }
+/** The rough command rewritten as a detailed, project-grounded brief — shown as a
+ * PREVIEW; only an explicit accept puts it into the composer. Null when the model
+ * declined or returned nothing usable: the composer stays quiet, never shows an error. */
+export interface PromptExpandResult { expanded: string | null }
 
 export type DecisionsListParams = Empty
 export interface DecisionsListResult { decisions: DecisionInfo[] }

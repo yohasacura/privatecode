@@ -27,6 +27,37 @@ export function lintShaped(text: string): boolean {
   return t.length >= 120 && t.split(/[.!?\n]+/).filter((s) => s.trim().length > 0).length >= 2
 }
 
+/** Imperative openers, the shape of a rough command. Russian carries the imperative in
+ * the word form («сделай», never «сделать»), so those may sit anywhere near the start;
+ * English has no such marker — bare `fix`/`build`/`update` are nouns all over bug
+ * reports — so an English verb counts only when it OPENS the draft and is followed by a
+ * Latin word («make выдаёт ошибку» is a report about make, not an order). Hand-rolled
+ * boundaries, because `\b` is ASCII-only and never fires next to a Cyrillic letter;
+ * digits, `_` and `-` count as word characters so `add_user.py` and `fix-login.ts` stay
+ * file names, not orders. */
+const RU_IMPERATIVE =
+  /(?:^|[^0-9a-zа-яё_-])(сделай|добавь|поправь|почини|исправь|создай|напиши|убери|удали|переделай|обнови|замени|поменяй|вынеси|перенеси|настрой|подключи|запусти|покрась|отрефактори)(?=[^0-9a-zа-яё_-]|$)/i
+const EN_IMPERATIVE =
+  /^\s*(make|add|fix|create|write|update|remove|delete|refactor|implement|build|change|rename|move|wire|style)\s+["'`(]?[a-z]/i
+
+/**
+ * The EXPANDER's input shape: a rough short command — «сделай красную кнопку» — that a
+ * person could have briefed in detail but did not. Deliberately disjoint from
+ * `taskShaped`: a draft that long already gets the chips, and running both would race
+ * two model requests over one slot. The Russian verb must land within the opening
+ * stretch of the FULL string (an index check, not a slice — cutting mid-word once turned
+ * «обновит» into a match for «обнови»), and a draft containing `?` is never a command:
+ * questions are the false positive every other heuristic here trips over.
+ */
+export function commandShaped(text: string): boolean {
+  const t = text.trim()
+  if (t.length < 12 || taskShaped(t)) return false
+  if (t.includes('?')) return false
+  const ru = RU_IMPERATIVE.exec(t)
+  if (ru !== null && ru.index < 48) return true
+  return EN_IMPERATIVE.test(t)
+}
+
 /**
  * Carries the user's decisions across a re-improve: a suggestion that survived verbatim
  * keeps its checkbox state and its answer; new ones arrive in the default state (checked

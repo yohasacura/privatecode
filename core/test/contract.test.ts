@@ -274,3 +274,14 @@ describe('parseSuggestions', () => {
     expect(s).toEqual({ criteria: ['a', 'b'], constraints: ['x'], questions: ['q1', 'q2', 'q3', 'q4'] })
   })
 })
+
+describe('parseExpanded', () => {
+  test('returns the trimmed brief, and null for garbage or emptiness', async () => {
+    const { parseExpanded } = await import('../src/session/contract.js')
+    expect(parseExpanded('not json')).toBeNull()
+    expect(parseExpanded(JSON.stringify({ expanded: '   ' }))).toBeNull()
+    expect(parseExpanded(JSON.stringify({ expanded: 42 }))).toBeNull()
+    expect(parseExpanded(JSON.stringify({ expanded: '  Сделай кнопку через --accent из App.css.  ' })))
+      .toBe('Сделай кнопку через --accent из App.css.')
+  })
+})

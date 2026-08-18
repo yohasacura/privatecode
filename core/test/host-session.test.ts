@@ -330,6 +330,42 @@ test('prompt.improve returns the draft suggestions, and touches nothing', async 
   expect(existsSync(join(root, '.privatecode', 'state', 'sessions'))).toBe(false)
 })
 
+test('prompt.expand returns the rewritten brief, and touches nothing', async () => {
+  // The expander behind the composer's preview card: a rough command grown into a
+  // detailed brief. Same preview discipline as prompt.improve above.
+  const fake = await makeServer((body: any) => {
+    if (body.tool_choice !== 'required') return new RawResponse(500, 'unexpected request', 'text/plain')
+    return {
+      choices: [{
+        finish_reason: 'tool_calls',
+        message: {
+          role: 'assistant', content: null,
+          tool_calls: [{
+            id: 'c1', type: 'function',
+            function: {
+              name: 'expand_prompt',
+              arguments: JSON.stringify({
+                expanded: 'Сделай красную кнопку: возьми --danger из src/App.css, ' +
+                  'за основу — Button из components/button.tsx, размеры как у соседних.',
+              }),
+            },
+          }],
+        },
+      }],
+      usage: { completion_tokens: 80 },
+    }
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+
+  await host.handle({ id: 2, method: 'prompt.expand', params: { text: 'сделай красную кнопку' } })
+  const result = resultOf<{ expanded: string | null }>(transport, 2)
+  expect(result.expanded).toMatch(/--danger/)
+  expect(result.expanded).toMatch(/button\.tsx/)
+  expect(existsSync(join(root, '.privatecode', 'state', 'sessions'))).toBe(false)
+})
+
 test('abort during contract distillation rolls the whole message back: delivered:false, no title, no contract', async () => {
   // Watched live: Esc two seconds into a task-shaped send. The distiller was the request
   // in flight, so the user message had not reached the transcript — yet the UI kept the

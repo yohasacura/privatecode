@@ -232,6 +232,20 @@ kbd {
 /* The improver's suggestion chips: toggleable additions BELOW the draft — on travels with
  * the send, off stays behind, a question opens its little answer box. Same row the lint
  * chips live in, because they are the same feature at two stages of knowledge. */
+/* The expansion preview: the rough command rewritten as a detailed brief. A bounded,
+ * scrolling card like .tool-live — the composer must not grow with the model's answer. */
+.prompt-expand {
+  margin: 4px 10px 0; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.prompt-expand-text {
+  margin: 0 0 4px; white-space: pre-wrap; word-break: break-word;
+  max-height: 180px; overflow-y: auto;
+  font: inherit; font-size: 12px; color: var(--text);
+}
+.prompt-expand-actions { display: flex; gap: 8px; align-items: center; }
+.prompt-expand-actions .prompt-hint-improve { margin-left: 0; }
+
 .prompt-suggest {
   font-size: 11px; border-radius: 9px; padding: 1px 8px; cursor: pointer;
   background: none; border: 1px solid var(--border); color: var(--text-dim);

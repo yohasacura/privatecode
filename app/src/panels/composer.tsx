@@ -6,7 +6,7 @@ import { pendingTool, type ChatAction, type ChatState } from '../lib/state'
 import { formatDuration } from '../lib/format'
 import { applyMention, mentionAtCaret, type Mention } from '../lib/mentions'
 import { Icon } from '../components/icons'
-import { carryAcceptance, glueSuggestions, lintPrompt, lintShaped, taskShaped, type DraftSuggestions } from '../lib/prompt-lint'
+import { carryAcceptance, commandShaped, glueSuggestions, lintPrompt, lintShaped, taskShaped, type DraftSuggestions } from '../lib/prompt-lint'
 
 /**
  * The input area: what you type, how much freedom the agent has while it runs, and the one
@@ -56,6 +56,13 @@ export function Composer({
    * re-improves the NEW text and replaces them; a result for a stale draft is discarded.
    */
   const [suggested, setSuggested] = useState<DraftSuggestions | null>(null)
+  /** The EXPANDER's result: the rough command rewritten as a detailed, project-grounded
+   * brief, shown as a preview card. Nothing enters the box without an explicit click. */
+  const [expandPreview, setExpandPreview] = useState<string | null>(null)
+  /** The draft the preview describes. Unlike the chips — additive, safe to keep across
+   * edits — accepting a preview REPLACES the box, so the card must die the moment the
+   * draft diverges from what it was generated for. */
+  const expandFor = useRef<string>('')
   const [accepted, setAccepted] = useState<ReadonlySet<string>>(new Set())
   const [answers, setAnswers] = useState<ReadonlyMap<string, string>>(new Map())
   const [openQuestion, setOpenQuestion] = useState<string | null>(null)
@@ -125,6 +132,7 @@ export function Composer({
   const sessionId = state.session?.sessionId
   useEffect(() => {
     setSuggested(null)
+    setExpandPreview(null)
     setOpenQuestion(null)
     improvedFor.current = ''
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -230,6 +238,11 @@ export function Composer({
   // captured before the fetch would walk a message straight into a slot a run had taken.
   const busyRef = useRef(busy)
   busyRef.current = busy
+  // For the abort-on-send in deliver(): true when the ONLY thing holding the host slot
+  // is a draft preview (improve/expand) — the one busy contributor safe to kill.
+  const previewHoldsSlot = improving && !state.turnRunning && state.run === null && !compacting
+  const previewHoldsSlotRef = useRef(previewHoldsSlot)
+  previewHoldsSlotRef.current = previewHoldsSlot
 
   // Grow with the content up to a cap, then scroll -- a fixed two-line box makes writing a
   // real instruction (which is most of them) an exercise in scrolling blind.
@@ -354,6 +367,13 @@ export function Composer({
     }
     setRunConfigOpen(false)
     setInput('')
+    // The same advisor cleanup submit() does: the draft the chips and the preview
+    // described was just consumed as the run's task, and turnRunning stays false for a
+    // run's whole duration — without this the stale card sat on screen all run long.
+    setSuggested(null)
+    setExpandPreview(null)
+    setOpenQuestion(null)
+    improvedFor.current = ''
     dispatch({ type: 'user-message', text: task })
     dispatch({
       type: 'run-started', task, atMs: Date.now(),
@@ -501,6 +521,11 @@ export function Composer({
       setInput('')
       setAttached([])
       setMention(null)
+      // When the only thing ahead of the queue is an auto-fired preview, waiting is
+      // pure loss: the box just emptied, so its result is guaranteed to be discarded.
+      // Kill it — the host's currentAbort IS the preview's controller, the draft
+      // helpers swallow the abort into null, `improving` clears, the drain submits.
+      if (previewHoldsSlotRef.current) void client.call('abort', {}).catch(() => { /* already over */ })
       return
     }
     submit(text, attach)
@@ -529,6 +554,7 @@ export function Composer({
     setAttached([])
     setMention(null)
     setSuggested(null)
+    setExpandPreview(null)
     setOpenQuestion(null)
     improvedFor.current = ''
     dispatch({ type: 'user-message', text })
@@ -564,7 +590,12 @@ export function Composer({
    * the request flew is DISCARDED — suggestions must describe the text under the cursor.
    */
   function improve(auto = false): void {
-    if (improving || state.turnRunning || !taskShaped(input)) return
+    // The full busy set plus `viewing`, not just turnRunning: a run and a compaction hold
+    // the same host slot (each fire would be a refusal, and the auto path retried it every
+    // pause for the length of a run), and while READING an earlier session the host would
+    // distill against the live one — the wrong conversation entirely.
+    if (improving || state.turnRunning || state.run !== null || compacting || state.viewing !== null) return
+    if (!taskShaped(input)) return
     const draft = input
     if (auto && draft === improvedFor.current) return
     setImproving(true)
@@ -580,6 +611,9 @@ export function Composer({
           setAccepted(carried.accepted)
           setAnswers(carried.answers)
           setOpenQuestion(null)
+          // One draft, one advisor: chips and an expansion preview must never describe
+          // the box at the same time.
+          setExpandPreview(null)
         } else if (!auto) {
           // A manual Ctrl+E deserves an answer even when it is "nothing": silence here
           // read as the button being broken. Auto stays quiet — that is its whole point.
@@ -588,20 +622,82 @@ export function Composer({
         }
       })
       .catch((e: unknown) => {
+        // A refused draft is not retried until edited — without this, the pause trigger
+        // re-armed on every `improving` flip and hammered a busy host every ~2 seconds.
+        improvedFor.current = draft
         if (!auto) dispatch({ type: 'error-note', message: e instanceof Error ? e.message : String(e) })
       })
       .finally(() => setImproving(false))
   }
 
-  // The pause trigger: two quiet seconds over a task-shaped draft with 2+ gaps, between
-  // turns, re-improves silently. Guards re-checked at FIRE time — the timer outlives them.
+  /**
+   * The other model half: a short rough command («сделай красную кнопку») grown into a
+   * detailed brief out of what the session context already knows about the project —
+   * repo map, notes, conversation. A PREVIEW: nothing replaces the draft without a
+   * click. Same slot and stale-discard discipline as improve() above.
+   */
+  function expand(auto = false): void {
+    // Same guard set as improve(), same reasons — see there.
+    if (improving || state.turnRunning || state.run !== null || compacting || state.viewing !== null) return
+    const draft = input
+    if (draft.trim().length < 8) return
+    if (auto && draft === improvedFor.current) return
+    setImproving(true)
+    client.call('prompt.expand', { text: draft })
+      .then((r) => {
+        if (textareaRef.current !== null && textareaRef.current.value !== draft) return
+        improvedFor.current = draft
+        if (r.expanded !== null) {
+          expandFor.current = draft
+          setExpandPreview(r.expanded)
+          // One draft, one advisor — chips from an earlier, different draft must not be
+          // glued below a brief they never described.
+          setSuggested(null)
+          setAccepted(new Set())
+          setAnswers(new Map())
+          setOpenQuestion(null)
+        } else if (!auto) {
+          setImproveNote('модель не добавила деталей')
+          setTimeout(() => setImproveNote(null), 4_000)
+        }
+      })
+      .catch((e: unknown) => {
+        improvedFor.current = draft
+        if (!auto) dispatch({ type: 'error-note', message: e instanceof Error ? e.message : String(e) })
+      })
+      .finally(() => setImproving(false))
+  }
+
+  // The preview describes exactly one draft, and its accept REPLACES the box — so the
+  // card leaves the moment the draft diverges. Accepting is safe against this effect:
+  // it clears the preview in the same commit that changes the input.
   useEffect(() => {
-    if (state.turnRunning || !taskShaped(input) || lintPrompt(input).length < 2) return
+    if (expandPreview !== null && input !== expandFor.current) setExpandPreview(null)
+  }, [input, expandPreview])
+
+  /** Ctrl+E and the pause trigger route by draft shape: a long task-shaped draft gets
+   * the suggestion chips, everything else gets the expansion preview. */
+  function improveOrExpand(auto = false): void {
+    if (taskShaped(input)) improve(auto)
+    else expand(auto)
+  }
+
+  // The pause trigger: two quiet seconds between turns re-improves silently — a
+  // task-shaped draft with 2+ gaps gets chips, a rough command gets the expansion
+  // preview. Guards re-checked at FIRE time — the timer outlives them.
+  useEffect(() => {
+    // The FULL busy set plus viewing, matching the fire-time guards in improve()/expand():
+    // a timer armed against a run or a compaction fired a refusal every ~2 seconds for as
+    // long as the slot was held, and one armed while reading an old session asked about
+    // the wrong conversation.
+    if (state.turnRunning || state.run !== null || compacting || state.viewing !== null) return
     if (input === improvedFor.current) return
-    const id = setTimeout(() => improve(true), IMPROVE_PAUSE_MS)
+    const wantsChips = taskShaped(input) && lintPrompt(input).length >= 2
+    if (!wantsChips && !commandShaped(input)) return
+    const id = setTimeout(() => improveOrExpand(true), IMPROVE_PAUSE_MS)
     return () => clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, state.turnRunning, improving])
+  }, [input, state.turnRunning, state.run, compacting, state.viewing, improving])
 
   function applyMode(next: AgentMode): void {
     dispatch({ type: 'mode-changed', mode: next })
@@ -908,7 +1004,7 @@ export function Composer({
             // flight.
             if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E')) {
               e.preventDefault()
-              improve()
+              improveOrExpand()
               return
             }
             const picking = mention !== null && mentionHits.length > 0
@@ -1067,17 +1163,53 @@ ${q}`}
             </button>
           </div>
         )}
-        {!state.turnRunning && suggested === null && lintShaped(input) && lintPrompt(input).length > 0 && (
+        {!state.turnRunning && expandPreview !== null && (
+          <div class="prompt-expand" aria-live="polite">
+            {/* The expanded brief as a PREVIEW: accepting replaces the draft (it stays
+                editable), dismissing sends the draft as typed. Never applied silently. */}
+            <pre class="prompt-expand-text">{expandPreview}</pre>
+            <div class="prompt-expand-actions">
+              <button
+                class="prompt-hint-improve"
+                onClick={() => {
+                  setInput(expandPreview)
+                  // The accepted text is "already processed": no auto re-run until edited.
+                  improvedFor.current = expandPreview
+                  setExpandPreview(null)
+                  // Belt to the braces in expand(): whatever chips exist described some
+                  // OTHER draft, and gluing them under the brief would smuggle dead
+                  // requirements into the send.
+                  setSuggested(null)
+                  setOpenQuestion(null)
+                  textareaRef.current?.focus()
+                }}
+              >
+                Принять — заменить черновик
+              </button>
+              <button
+                class="prompt-hint-improve"
+                title="Скрыть — черновик уйдёт как есть"
+                onClick={() => { setExpandPreview(null); textareaRef.current?.focus() }}
+              >
+                {Icon.x()}
+              </button>
+            </div>
+          </div>
+        )}
+        {!state.turnRunning && suggested === null && expandPreview === null &&
+          (lintShaped(input) && lintPrompt(input).length > 0 || commandShaped(input) || improveNote !== null) && (
           <div class="prompt-hints" aria-live="polite">
-            {lintPrompt(input).map((hint) => <span key={hint} class="prompt-hint">{hint}</span>)}
+            {lintShaped(input) && lintPrompt(input).map((hint) => <span key={hint} class="prompt-hint">{hint}</span>)}
             {improveNote !== null && <span class="prompt-hint">{improveNote}</span>}
             <button
               class="prompt-hint-improve"
-              onClick={() => improve()}
+              onClick={() => improveOrExpand()}
               disabled={improving}
-              title="Предложить критерии и ограничения к черновику (Ctrl+E)"
+              title={taskShaped(input)
+                ? 'Предложить критерии и ограничения к черновику (Ctrl+E)'
+                : 'Развернуть команду в детальный промпт по материалам проекта (Ctrl+E)'}
             >
-              {improving ? 'Думаю…' : 'Improve (Ctrl+E)'}
+              {improving ? 'Думаю…' : taskShaped(input) ? 'Improve (Ctrl+E)' : 'Развернуть (Ctrl+E)'}
             </button>
           </div>
         )}

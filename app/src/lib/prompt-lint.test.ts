@@ -1,10 +1,46 @@
 import { describe, expect, it } from 'vitest'
-import { carryAcceptance, glueSuggestions, lintPrompt, taskShaped } from './prompt-lint'
+import { carryAcceptance, commandShaped, glueSuggestions, lintPrompt, taskShaped } from './prompt-lint'
 
 const LONG_VAGUE =
   'Сделай пожалуйста нормальную обработку ошибок во всём проекте, и заодно посмотри почему ' +
   'иногда всё падает при запуске, хочется чтобы стало стабильнее и понятнее, и вообще наведи ' +
   'порядок там где это возможно, чтобы дальше было проще жить и развивать этот код.'
+
+describe('commandShaped — the expander\'s input gate', () => {
+  it('matches a rough imperative command in either language', () => {
+    expect(commandShaped('сделай красную кнопку в шапке')).toBe(true)
+    expect(commandShaped('кнопку в шапке сделай красной')).toBe(true)
+    expect(commandShaped('fix the login redirect loop')).toBe(true)
+  })
+
+  it('stays out of questions, reports and chatter', () => {
+    // «сделать» is not an imperative — a question about how is not an order to do.
+    expect(commandShaped('как сделать красную кнопку?')).toBe(false)
+    expect(commandShaped('я вчера добавил кнопку и всё сломалось')).toBe(false)
+    expect(commandShaped('спасибо, отличная работа')).toBe(false)
+    // A `?` anywhere is a question, whatever vocabulary it uses.
+    expect(commandShaped('сделай красную кнопку?')).toBe(false)
+  })
+
+  it('does not mistake English nouns and CLI names for orders', () => {
+    // English has no imperative form, so a verb counts only when it OPENS the draft
+    // and is followed by a Latin word — reports about fix/build/update stay out.
+    expect(commandShaped('how do I make a red button')).toBe(false)
+    expect(commandShaped('did the fix work')).toBe(false)
+    expect(commandShaped('npm run build падает с ошибкой')).toBe(false)
+    expect(commandShaped('этот fix не помог, стало хуже')).toBe(false)
+    expect(commandShaped('что делает git add -p ?')).toBe(false)
+    expect(commandShaped('fix-login.ts глянь пожалуйста')).toBe(false)
+    expect(commandShaped('make выдаёт ошибку линкера')).toBe(false)
+    expect(commandShaped('посмотри на add_user.py, почему падает')).toBe(false)
+  })
+
+  it('leaves the ends of the spectrum to their own tools', () => {
+    // Too short to mean anything; long enough that the chips distiller owns it.
+    expect(commandShaped('сделай')).toBe(false)
+    expect(commandShaped(`сделай так: ${'подробности '.repeat(20)}`)).toBe(false)
+  })
+})
 
 describe('prompt lint', () => {
   it('a short message is not a task and gets no hints', () => {

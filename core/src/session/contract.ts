@@ -304,6 +304,89 @@ export function parseSuggestions(argsJson: string): DraftSuggestions | null {
   return out
 }
 
+/** `suggest_improvements`' sibling for SHORT drafts: not structure around a long draft
+ * but a rewritten one — the rough command expanded into a detailed brief out of what
+ * message 0 already knows about the project (repo map, notes, conversation). */
+const EXPAND_TOOL: ToolSchema = {
+  type: 'function',
+  function: {
+    name: 'expand_prompt',
+    description: 'Rewrite a rough draft command as a detailed task brief. Never begin the work.',
+    parameters: {
+      type: 'object',
+      required: ['expanded'],
+      properties: {
+        expanded: {
+          type: 'string',
+          description: 'The same request, written the way a careful colleague would brief ' +
+            'it: name the concrete files, components, styles, tokens and conventions from ' +
+            'THIS project the work should build on. WRITTEN IN THE LANGUAGE OF THE DRAFT ' +
+            '— a Russian draft expands into Russian, never English. Only facts the ' +
+            'context supports — anything essential it cannot answer stays a short open ' +
+            'question inside the text. Plain prose, no headings.',
+        },
+      },
+    },
+  },
+}
+
+/** Tolerant like the parsers above; empty or non-string is "nothing worth showing". */
+export function parseExpanded(argsJson: string): string | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(argsJson)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const v = (parsed as Record<string, unknown>)['expanded']
+  if (typeof v !== 'string' || v.trim() === '') return null
+  return v.trim()
+}
+
+/**
+ * The expander behind the composer's preview card: a rough command («сделай красную
+ * кнопку») grown into the brief the user would have written with the project open in
+ * their head. Same clipped context a send would get — message 0 carries the repo map and
+ * the notes, which is exactly where the file names and tokens come from — so the request
+ * rides the cached prefix. Null when the model declines or returns nothing usable.
+ */
+export async function expandDraft(
+  client: LlamaClient,
+  transcript: readonly ChatMessage[],
+  draft: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const messages: ChatMessage[] = [
+    ...distillContext(transcript),
+    {
+      role: 'user',
+      content:
+        `${draft}\n\n` +
+        '[The user is still DRAFTING the rough request above — do not begin the work. ' +
+        'Call expand_prompt with the same request expanded into a detailed brief: pull ' +
+        'the concrete file paths, components, design tokens and conventions it should ' +
+        'build on from the project context you already have (repo map, project notes, ' +
+        'this conversation). Never invent a path or a value the context does not ' +
+        'support — anything essential it cannot answer, keep as a short open question ' +
+        'inside the text. Keep the user\'s intent exactly, and write the brief in the ' +
+        'SAME LANGUAGE as the draft: русский черновик разворачивается по-русски.]',
+    },
+  ]
+  try {
+    const result = await client.chat({
+      messages, tools: [EXPAND_TOOL], toolChoice: 'required',
+      maxTokens: DISTILL_MAX_TOKENS, disableThinking: true,
+      ...(signal ? { signal } : {}),
+    })
+    const call = result.message.tool_calls?.[0]
+    if (!call || call.function.name !== 'expand_prompt') return null
+    return parseExpanded(call.function.arguments)
+  } catch {
+    return null
+  }
+}
+
 /**
  * The improver behind the composer's suggestion chips: the draft, distilled the way a
  * sent message would be (same transcript context, so a continuation draft is understood
