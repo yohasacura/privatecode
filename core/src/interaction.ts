@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { ensureStateDir, statePath } from './private-dir.js'
 
 /** The plan on disk. JSON, not markdown: the app renders it, nobody hand-edits it. */
@@ -82,16 +82,57 @@ export class TodoStore {
   /** Absent for a store with no workspace — the CLI's one-shot mode and every test that
    * does not care. Then this behaves exactly as it did before it could persist at all. */
   private readonly root: string | undefined
+  /** The session this plan belongs to, once `bind()` has said so. Unbound, the store
+   * keeps the legacy single-file behaviour (the CLI's one-shot mode never binds). */
+  private sessionId: string | undefined
 
   constructor(workspaceRoot?: string) {
     this.root = workspaceRoot
     if (workspaceRoot === undefined) return
-    const path = statePath(workspaceRoot, PLAN_FILE)
-    if (!existsSync(path)) return
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
-      if (Array.isArray(parsed)) this.items = Object.freeze(parsed as TodoItem[])
-    } catch { /* an unreadable plan is an empty plan, not a broken session */ }
+    this.items = readPlan(statePath(workspaceRoot, PLAN_FILE))
+  }
+
+  /**
+   * Re-points the store at ONE session's plan.
+   *
+   * A plan is a session's plan, not the workspace's: the store used to be a single
+   * workspace-wide file, and because the toolset outlives every session switch, the plan
+   * followed the user from session to session — finish a task, start a fresh session, and
+   * the old task's list is still on screen («план бегает между сессиями»). The host calls
+   * this on every session build; each session reads and writes its own file.
+   *
+   * Migration: the FIRST session bound in a workspace that still has the old
+   * workspace-wide `plan.json` adopts it and the legacy file is removed. The first bind
+   * after an update is the resumed last session — which is exactly whose plan that file
+   * was holding. Every later session starts clean, as the fix intends.
+   */
+  bind(sessionId: string): void {
+    this.sessionId = sessionId
+    this.versionCounter++
+    if (this.root === undefined) {
+      this.items = Object.freeze([])
+      return
+    }
+    const own = statePath(this.root, this.file())
+    const legacy = statePath(this.root, PLAN_FILE)
+    if (!existsSync(own) && existsSync(legacy)) {
+      const adopted = readPlan(legacy)
+      try {
+        if (adopted.length > 0) writeFileSync(own, JSON.stringify(adopted, null, 2), 'utf8')
+        rmSync(legacy, { force: true })
+      } catch { /* best-effort, like every other persistence path here */ }
+      this.items = adopted
+      return
+    }
+    this.items = readPlan(own)
+  }
+
+  /** Session ids are filename-safe today; the replace keeps a hostile one from walking
+   * out of the state directory rather than trusting that they stay so. */
+  private file(): string {
+    return this.sessionId === undefined
+      ? PLAN_FILE
+      : `plan-${this.sessionId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`
   }
 
   set(items: TodoItem[]): void {
@@ -100,11 +141,20 @@ export class TodoStore {
     if (this.root === undefined) return
     try {
       ensureStateDir(this.root)
-      writeFileSync(statePath(this.root, PLAN_FILE), JSON.stringify(this.items, null, 2), 'utf8')
+      writeFileSync(statePath(this.root, this.file()), JSON.stringify(this.items, null, 2), 'utf8')
     } catch { /* the in-memory plan is what this session runs on */ }
   }
 
   list(): readonly TodoItem[] { return this.items }
 
   get version(): number { return this.versionCounter }
+}
+
+function readPlan(path: string): readonly TodoItem[] {
+  if (!existsSync(path)) return Object.freeze([])
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (Array.isArray(parsed)) return Object.freeze(parsed as TodoItem[])
+  } catch { /* an unreadable plan is an empty plan, not a broken session */ }
+  return Object.freeze([])
 }

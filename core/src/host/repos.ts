@@ -1,4 +1,5 @@
 import { execa } from 'execa'
+import { existsSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { findNestedRepos } from '../checkpoints/units.js'
 import type { Workspace } from '../workspace.js'
@@ -188,7 +189,19 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
       if (roots.some((r) => r !== repo.root && isInside(r, repo.root) && isInside(abs, r))) continue
       const mount = workspace.mountFor(abs)
       if (mount === undefined) continue // inside the repository, outside the workspace
-      repo.files.push({ ...file, path: workspace.display(abs) })
+      // A rename's old path travels along, workspace-addressed like the new one — the
+      // unstage of a rename must name both halves. Dropped when the old name falls
+      // outside the workspace (renamed INTO a mounted subtree): the caller cannot
+      // address what it cannot see, and staging-wise that half is not its to touch.
+      const { oldPath: rawOldPath, ...rest } = file
+      const oldAbs = rawOldPath !== undefined ? join(repo.root, rawOldPath) : undefined
+      repo.files.push({
+        ...rest,
+        path: workspace.display(abs),
+        ...(oldAbs !== undefined && workspace.mountFor(oldAbs) !== undefined
+          ? { oldPath: workspace.display(oldAbs) }
+          : {}),
+      })
     }
   }
 
@@ -219,9 +232,19 @@ export async function describeFolder(root: string): Promise<string> {
  * row, and a directory scan per click is not something a panel can afford. It is also more
  * precise — `--show-toplevel` from the file's own directory lands on the nested repository
  * that actually holds it, without any of the enclosing-unit reasoning.
+ *
+ * The walk up matters: for a file deleted TOGETHER WITH ITS DIRECTORY the parent no longer
+ * exists, git cannot run there at all, and the answer used to be "not a repository" — which
+ * made a whole-directory deletion impossible to stage or diff from the panel.
  */
 export async function repoRootFor(absolutePath: string): Promise<string | null> {
-  return toplevelOf(dirname(absolutePath))
+  let dir = dirname(absolutePath)
+  while (!existsSync(dir)) {
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+  return toplevelOf(dir)
 }
 
 /**

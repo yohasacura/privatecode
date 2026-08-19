@@ -221,7 +221,15 @@ export interface FsFindResult { paths: string[] }
  * person's decision, made over a message they can read and edit.
  */
 export type GitStatusParams = Empty
-export interface GitFileChange { path: string; code: string; staged: boolean; untracked: boolean }
+export interface GitFileChange {
+  path: string
+  code: string
+  staged: boolean
+  untracked: boolean
+  /** A rename's OLD path (workspace-addressed) — unstaging must send both names, or the
+   * old name's staged deletion survives alone and Commit would delete the file. */
+  oldPath?: string
+}
 
 /**
  * One repository the workspace touches.
@@ -294,7 +302,17 @@ export interface CheckpointsRestoreFileResult { removed: boolean }
 export interface GitDiffParams { path: string; untracked?: boolean }
 export interface GitDiffResult { diff: string }
 
-export interface GitCommitParams { message: string; paths: string[] }
+/**
+ * Staging, as its own visible act. Paths are workspace-addressed; the host resolves the
+ * owning repository itself and refuses a set that spans two — same discipline as commit.
+ */
+export interface GitStageParams { paths: string[] }
+export interface GitStageResult { ok: boolean; problem?: string }
+
+/** Commits the INDEX of one repository — what the user staged, never more. `root` comes
+ * from `git.status`; the host re-verifies it belongs to this workspace and that nothing
+ * staged falls outside the workspace's own folders before anything permanent happens. */
+export interface GitCommitParams { root: string; message: string }
 export interface GitCommitResult { ok: boolean; sha?: string; problem?: string }
 
 export interface FsTreeEntry { name: string; dir: boolean }
@@ -446,6 +464,8 @@ export interface HostMethodMap {
   }
   'git.status': { params: GitStatusParams; result: GitStatusResult }
   'git.diff': { params: GitDiffParams; result: GitDiffResult }
+  'git.stage': { params: GitStageParams; result: GitStageResult }
+  'git.unstage': { params: GitStageParams; result: GitStageResult }
   'git.commit': { params: GitCommitParams; result: GitCommitResult }
   'fs.read': { params: FsReadParams; result: FsReadResult }
   status: { params: StatusParams; result: StatusResult }

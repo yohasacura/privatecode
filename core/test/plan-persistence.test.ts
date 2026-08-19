@@ -57,6 +57,63 @@ test('a corrupt plan file is an empty plan, not a broken session', () => {
   expect(new TodoStore(root).list()).toEqual([])
 })
 
+test('a plan belongs to its session: switching sessions does not carry it over', () => {
+  // The reported bug: finish a task, start a fresh session, and the old task's plan is
+  // still on screen — the store was one workspace-wide file shared by every session.
+  const store = new TodoStore(root)
+  store.bind('session-a')
+  store.set([{ text: 'task A step', status: 'in_progress' }])
+
+  store.bind('session-b')
+  expect(store.list()).toEqual([])
+
+  // Coming BACK to a session brings its own plan back, untouched.
+  store.bind('session-a')
+  expect(store.list()).toHaveLength(1)
+  expect(store.list()[0]).toMatchObject({ text: 'task A step' })
+})
+
+test('a bound plan survives a restart under its own session file', () => {
+  const first = new TodoStore(root)
+  first.bind('session-a')
+  first.set([{ text: 'a step', status: 'pending' }])
+
+  const second = new TodoStore(root)
+  second.bind('session-a')
+  expect(second.list()).toHaveLength(1)
+  expect(existsSync(statePath(root, 'plan-session-a.json'))).toBe(true)
+})
+
+test('the first bind adopts the legacy workspace-wide plan, later sessions start clean', () => {
+  // A user updating across the fix must not lose the plan their last session was
+  // running on — the first bind after an update IS that resumed session.
+  new TodoStore(root).set([{ text: 'carried over', status: 'in_progress' }])
+  expect(existsSync(statePath(root, 'plan.json'))).toBe(true)
+
+  const store = new TodoStore(root)
+  store.bind('resumed-session')
+  expect(store.list()[0]).toMatchObject({ text: 'carried over' })
+  // Adopted once: the legacy file is gone, and the next session starts clean.
+  expect(existsSync(statePath(root, 'plan.json'))).toBe(false)
+  store.bind('fresh-session')
+  expect(store.list()).toEqual([])
+})
+
+test('binding bumps the version so plan-upkeep sees the change of plan', () => {
+  const store = new TodoStore(root)
+  const before = store.version
+  store.bind('session-a')
+  expect(store.version).toBeGreaterThan(before)
+})
+
+test('a hostile session id cannot walk out of the state directory', () => {
+  const store = new TodoStore(root)
+  store.bind('../../escape')
+  store.set([{ text: 'a step', status: 'pending' }])
+  expect(existsSync(statePath(root, 'plan-______escape.json'))).toBe(true)
+  expect(existsSync(join(root, '..', 'escape.json'))).toBe(false)
+})
+
 test('done_when is validated, normalised, and stray keys are dropped', () => {
   const v = todoWriteTool.validate({
     todos: [{ text: 'a step', status: 'pending', done_when: '  tests green  ', nonsense: 1 }],

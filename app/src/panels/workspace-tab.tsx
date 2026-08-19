@@ -1,38 +1,42 @@
 import { useCallback, useEffect, useMemo, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
-import type { WorkspaceFolderView } from '@core/host/protocol'
+import type { GitRepoView, WorkspaceFolderView } from '@core/host/protocol'
 import type { ChatItem } from '../lib/state'
 import type { ProtocolClient } from '../lib/client'
 import { Icon } from '../components/icons'
 import { DiffStatBadge, diffStat } from '../lib/diff'
 import { decorateChanges } from '../lib/path-tree'
+import { ghostRows, gitMarks, letterOf } from '../lib/git-scm'
 import { type ChangeEntry, splitReviewed } from './changes-tab'
-import { FilesTab } from './files-tab'
-import { WorkingTree } from './working-tree'
-import type { MountActions, MountInfo } from './tree'
+import { TreePanel, type GitRowActions, type MountActions, type MountInfo } from './tree'
 
 /**
- * The Workspace tab: ONE tree, wearing everything.
+ * The Workspace tab: ONE tree, wearing everything — including git.
  *
- * «All files» and «Changes» used to be two states of this panel, and the owner's ruling
- * was that they are one thing: Files, with the changes carried as badges. So the tree is
- * the only view. The strip above it says how much moved in total; pressing it FILTERS the
- * same tree down to what the session touched — a filter, not a second view, so structure,
- * indent and badges never change shape. A badge click (or the toggle on an opened file)
- * shows the diff, where Put back and Reviewed live.
+ * The working tree used to be its own section below the files: a second list of the same
+ * files, with checkboxes. The owner's ruling was that git lives ON the tree («Working
+ * tree должно быть сразу на файлах»): each changed file carries its letter, a staged
+ * file's row highlights (staging IS the selection), `+`/`−` on the row move a file in and
+ * out of the next commit, and the commit box sits above the tree where a message is
+ * written after the changes were read.
+ *
+ * The strip under the commit box says how much moved in total; pressing it FILTERS the
+ * same tree down to what changed — a filter, not a second view. A badge or letter click
+ * opens the DIFF as a tab beside the chat.
  *
  * The header owns the workspace's lifecycle: rename by clicking the name, add a folder,
  * switch, close. Folder rows on the tree carry their own access/rename/remove.
  */
 export function WorkspaceTab({
-  client, items, changes, openPath, onOpenFile, workspaceRoot, workspaceName, folderCount,
-  reloadKey, isDevBridge, onReopenWorkspace, onSwitchWorkspace, onCloseWorkspace, sessionKey,
+  client, items, changes, onOpenFile, workspaceRoot, workspaceName, folderCount,
+  reloadKey, isDevBridge, onReopenWorkspace, onSwitchWorkspace, onCloseWorkspace,
+  sessionKey, reviewed, onMarkReviewed,
 }: {
   client: ProtocolClient
   items: ChatItem[]
   changes: ChangeEntry[]
-  openPath: string | null
-  onOpenFile: (path: string | null) => void
+  /** Opens a file as a TAB beside the chat; `face: 'diff'` lands on the diff. */
+  onOpenFile: (path: string, face?: 'file' | 'diff') => void
   workspaceRoot: string
   workspaceName: string
   folderCount: number
@@ -46,6 +50,10 @@ export function WorkspaceTab({
   /** Back to the start screen. The workspace's sessions and files are untouched. */
   onCloseWorkspace: () => void
   sessionKey: string
+  /** Reviewed watermarks, owned by App now — the diff face lives in a chat-column tab,
+   * and two owners of one judgement would drift. */
+  reviewed: ReadonlyMap<string, number>
+  onMarkReviewed: (entries: readonly ChangeEntry[]) => void
 }): VNode {
   const [folders, setFolders] = useState<WorkspaceFolderView[]>([])
   const [wsName, setWsName] = useState(workspaceName)
@@ -54,17 +62,20 @@ export function WorkspaceTab({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [filterChanged, setFilterChanged] = useState(false)
-  /** Files marked reviewed, path -> the last-write id the review covered. A NEWER write
-   * outruns its watermark and the badge honestly un-dims. View state only. */
-  const [reviewed, setReviewed] = useState<ReadonlyMap<string, number>>(new Map())
-  /** Bumped by a Put back so the working tree re-reads itself: the revert changed the
-   * disk, and a git status from before it is a lie. */
-  const [reverts, setReverts] = useState(0)
 
-  // A different session starts unreviewed and unfiltered — these are judgements about
-  // ONE session's changes, not about the workspace.
+  // Git, ON the tree. Loaded here because this tab owns the reload rhythm: every
+  // resolved write-tool bumps `reloadKey`, and every stage/unstage/commit reloads too.
+  const [repos, setRepos] = useState<GitRepoView[]>([])
+  const [unversioned, setUnversioned] = useState<{ mount: string }[]>([])
+  const [gitProblem, setGitProblem] = useState<string | null>(null)
+  const [gitBusy, setGitBusy] = useState(false)
+  const [repoChoice, setRepoChoice] = useState<string | null>(null)
+  const [message, setMessage] = useState('')
+  const [gitNote, setGitNote] = useState<{ kind: 'ok' | 'bad'; text: string } | null>(null)
+
+  // The filter is a judgement about ONE session's changes; a different session starts
+  // unfiltered. (Reviewed state lives in App now, reset there the same way.)
   useEffect(() => {
-    setReviewed(new Map())
     setFilterChanged(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionKey])
@@ -76,18 +87,49 @@ export function WorkspaceTab({
   }, [client])
   useEffect(() => { load() }, [load, workspaceRoot, reloadKey])
 
-  const decor = useMemo(() => decorateChanges(changes.map((c) => ({
-    openPath: c.openPath,
-    revisions: c.revisions,
-    ...(c.lastFailed !== undefined ? { lastFailed: c.lastFailed } : {}),
-    stat: c.ok ? diffStat(c.content) : null,
-  }))), [changes])
+  const loadGit = useCallback(() => {
+    client.call('git.status', {})
+      .then((r) => {
+        setRepos(r.repos)
+        setUnversioned(r.unversioned)
+        setGitProblem(r.problem ?? null)
+      })
+      .catch((e: Error) => setGitProblem(e.message))
+  }, [client])
+  useEffect(() => { loadGit() }, [loadGit, workspaceRoot, reloadKey])
 
-  const changesByPath = useMemo(
-    () => new Map(changes.map((c) => [c.openPath, c])), [changes])
+  const marks = useMemo(() => gitMarks(repos), [repos])
+
+  const decor = useMemo(() => {
+    const base = decorateChanges(changes.map((c) => ({
+      openPath: c.openPath,
+      revisions: c.revisions,
+      ...(c.lastFailed !== undefined ? { lastFailed: c.lastFailed } : {}),
+      stat: c.ok ? diffStat(c.content) : null,
+    })))
+    // Directory counts are the UNION: a folder holding a git-only change (your own edit,
+    // or something left over from before the session) still confesses while collapsed.
+    for (const path of marks.keys()) {
+      if (base.files.has(path)) continue
+      let dir = ''
+      for (const segment of path.split('/').slice(0, -1)) {
+        dir = dir === '' ? segment : `${dir}/${segment}`
+        base.dirs.set(dir, (base.dirs.get(dir) ?? 0) + 1)
+      }
+    }
+    return base
+  }, [changes, marks])
+
+  const ghosts = useMemo(() => ghostRows(
+    marks,
+    changes.filter((c) => c.tool === 'delete_file' && c.ok).map((c) => c.openPath),
+  ), [marks, changes])
 
   const { hidden } = splitReviewed(changes, reviewed)
   const reviewedPaths = useMemo(() => new Set(hidden.map((e) => e.openPath)), [hidden])
+
+  const unionCount = useMemo(
+    () => new Set([...decor.files.keys(), ...marks.keys()]).size, [decor, marks])
 
   const total = useMemo(() => {
     let added = 0
@@ -169,6 +211,62 @@ export function WorkspaceTab({
     },
   }
 
+  // The repository the commit box is addressed to. One repo is the ordinary case; with
+  // several, chips above the box pick, and a vanished choice falls back to the first.
+  const repo = repos.find((r) => r.root === repoChoice) ?? repos[0]
+  // Conflicts stand APART from every staging set: `git add` on one declares it resolved
+  // with the markers still in the file, `git reset` throws away the merge bookkeeping,
+  // and porcelain's `UU` parses as "staged" — which without this filter put conflicts
+  // into Stage all, Unstage all AND the commit count at once.
+  const conflicted = (repo?.files ?? []).filter((f) => letterOf(f.code) === '!')
+  const stagedFiles = (repo?.files ?? []).filter((f) => f.staged && letterOf(f.code) !== '!')
+  const stagedCount = stagedFiles.length
+  const dirtyPaths = (repo?.files ?? [])
+    .filter((f) => (f.untracked || (f.code[1] !== undefined && f.code[1] !== ' ')) && letterOf(f.code) !== '!')
+    .map((f) => f.path)
+  // A staged rename is TWO index entries (old name deleted, new name added); unstaging
+  // must name both, or the old name's deletion survives alone and Commit deletes the file.
+  const stagedPaths = stagedFiles.flatMap(
+    (f) => (f.oldPath !== undefined ? [f.path, f.oldPath] : [f.path]))
+
+  function gitApply(method: 'git.stage' | 'git.unstage', paths: string[]): void {
+    if (paths.length === 0 || gitBusy) return
+    setGitBusy(true)
+    setGitNote(null)
+    client.call(method, { paths })
+      .then((r) => {
+        if (!r.ok) setGitNote({ kind: 'bad', text: r.problem ?? 'git said no' })
+      })
+      .catch((e: Error) => setGitNote({ kind: 'bad', text: e.message }))
+      .finally(() => { setGitBusy(false); loadGit() })
+  }
+
+  const gitActions: GitRowActions = {
+    busy: gitBusy,
+    stage: (path) => gitApply('git.stage', [path]),
+    unstage: (path) => {
+      const oldPath = marks.get(path)?.oldPath
+      gitApply('git.unstage', oldPath !== undefined ? [path, oldPath] : [path])
+    },
+  }
+
+  function commit(): void {
+    if (repo === undefined || gitBusy) return
+    setGitBusy(true)
+    setGitNote(null)
+    client.call('git.commit', { root: repo.root, message: message.trim() || repo.suggestion })
+      .then((r) => {
+        if (r.ok) {
+          setMessage('')
+          setGitNote({ kind: 'ok', text: `committed${r.sha !== undefined ? ` ${r.sha}` : ''}` })
+        } else {
+          setGitNote({ kind: 'bad', text: r.problem ?? 'the commit did not happen' })
+        }
+      })
+      .catch((e: Error) => setGitNote({ kind: 'bad', text: e.message }))
+      .finally(() => { setGitBusy(false); loadGit() })
+  }
+
   return (
     <div class="workspace-tab">
       <div class="workspace-head">
@@ -238,7 +336,95 @@ export function WorkspaceTab({
         />
       )}
       {error !== null && <div class="workspace-error">{error}</div>}
-      {changes.length > 0 && (
+
+      {/* The commit box, above the tree it commits from. Only when git is actually
+          there — a workspace under no version control gets the tree and nothing else. */}
+      {repo !== undefined && (
+        <div class="scm">
+          {repos.length > 1 && (
+            <div class="scm-repos">
+              {repos.map((r) => (
+                <button
+                  key={r.root}
+                  class={`scm-repo ${r.root === repo.root ? 'scm-repo-on' : ''}`}
+                  onClick={() => setRepoChoice(r.root)}
+                  title={r.root}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          )}
+          <input
+            class="input scm-message"
+            value={message}
+            placeholder={repo.suggestion !== '' ? repo.suggestion : 'Commit message'}
+            onInput={(e) => setMessage(e.currentTarget.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && stagedCount > 0) commit() }}
+          />
+          <div class="scm-actions">
+            <button
+              class="btn btn-primary btn-small"
+              disabled={gitBusy || stagedCount === 0}
+              onClick={commit}
+              title={stagedCount === 0
+                ? 'Nothing staged yet — + on a changed row, or Stage all'
+                : `Commit ${stagedCount} staged file${stagedCount === 1 ? '' : 's'}`}
+            >
+              {gitBusy ? 'Working…' : `Commit${stagedCount > 0 ? ` ${stagedCount}` : ''}`}
+            </button>
+            {dirtyPaths.length > 0 && (
+              <button
+                class="btn btn-small"
+                disabled={gitBusy}
+                onClick={() => gitApply('git.stage', dirtyPaths)}
+                title="Stage every change in this repository"
+              >
+                Stage all
+              </button>
+            )}
+            {stagedPaths.length > 0 && (
+              <button
+                class="btn btn-small"
+                disabled={gitBusy}
+                onClick={() => gitApply('git.unstage', stagedPaths)}
+                title="Take everything back out of the commit — changes stay on disk"
+              >
+                Unstage all
+              </button>
+            )}
+            <span class="scm-branch" title={repo.root}>
+              {Icon.branch()}
+              {repo.branch ?? 'no branch'}
+            </span>
+          </div>
+          {conflicted.length > 0 && (
+            <div class="workspace-error">
+              {conflicted.length} conflicted file{conflicted.length === 1 ? '' : 's'} — resolve
+              {conflicted.length === 1 ? ' it' : ' them'} in an editor first; git will not
+              commit over a conflict.
+            </div>
+          )}
+          {stagedCount === 0 && repo.files.length > 0 && conflicted.length === 0 && gitNote === null && (
+            <div class="scm-hint">
+              Stage what the commit should carry — <b>+</b> on a row, or Stage all. Staged
+              rows highlight.
+            </div>
+          )}
+          {gitNote !== null && (
+            <div class={gitNote.kind === 'ok' ? 'scm-outcome' : 'workspace-error'}>{gitNote.text}</div>
+          )}
+          {repo.problem !== undefined && <div class="history-note">{repo.problem}</div>}
+          {unversioned.length > 0 && (
+            <div class="history-note">
+              Not under version control: {unversioned.map((u) => u.mount).join(', ')}.
+            </div>
+          )}
+        </div>
+      )}
+      {gitProblem !== null && <div class="workspace-error">{gitProblem}</div>}
+
+      {unionCount > 0 && (
         <div class="workspace-changes-strip">
           <button
             class={filterChanged ? 'ws-view ws-view-active' : 'ws-view'}
@@ -246,19 +432,15 @@ export function WorkspaceTab({
             onClick={() => setFilterChanged((v) => !v)}
             title={filterChanged
               ? 'Show every file again'
-              : 'Filter the tree down to what this session changed'}
+              : 'Filter the tree down to what changed — this session and uncommitted'}
           >
-            {changes.length} changed
-            <DiffStatBadge stat={total} />
+            {unionCount} changed
+            {changes.length > 0 && <DiffStatBadge stat={total} />}
           </button>
           {changes.length > reviewedPaths.size && (
             <button
               class="btn btn-small"
-              onClick={() => setReviewed((m) => {
-                const next = new Map(m)
-                for (const entry of changes) next.set(entry.path, entry.id)
-                return next
-              })}
+              onClick={() => onMarkReviewed(changes)}
               title="Dim every current change's badge; a newer write brings its badge back"
             >
               All reviewed
@@ -266,22 +448,24 @@ export function WorkspaceTab({
           )}
         </div>
       )}
-      <FilesTab
-        client={client}
-        toolItems={items}
-        openPath={openPath}
-        onOpenFile={onOpenFile}
-        workspaceRoot={workspaceRoot}
-        decor={decor}
-        mounts={mounts}
-        mountActions={mountActions}
-        changesByPath={changesByPath}
-        filterChanged={filterChanged}
-        reviewedPaths={reviewedPaths}
-        onMarkReviewed={(entry) => setReviewed((m) => new Map(m).set(entry.path, entry.id))}
-        onReverted={() => setReverts((n) => n + 1)}
-      />
-      <WorkingTree client={client} reloadKey={reloadKey + reverts} />
+
+      <div class="files-tree">
+        <TreePanel
+          client={client}
+          toolItems={items}
+          onOpenFile={(p) => onOpenFile(p, 'file')}
+          workspaceRoot={workspaceRoot}
+          decor={decor}
+          mounts={mounts}
+          mountActions={mountActions}
+          filterChanged={filterChanged}
+          reviewedPaths={reviewedPaths}
+          onOpenDiff={(p) => onOpenFile(p, 'diff')}
+          git={marks}
+          gitActions={gitActions}
+          ghosts={ghosts}
+        />
+      </div>
     </div>
   )
 }

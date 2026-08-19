@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'preact/hooks'
+import { useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatItem } from '../lib/state'
 import { Icon } from '../components/icons'
-import { collectChanges } from './changes-tab'
+import type { ChangeEntry } from './changes-tab'
 import { WorkspaceTab } from './workspace-tab'
 import { HistoryTab } from './history-tab'
 import { TerminalTab } from './terminal-tab'
@@ -31,13 +31,19 @@ import { useJobs } from '../lib/use-jobs'
 export type ContextTab = 'workspace' | 'history' | 'terminal'
 
 export function ContextPanel({
-  client, items, openPath, onOpenFile, hasSession, workspaceRoot, workspaceName,
-  folderCount, isDevBridge, onReopenWorkspace, onSwitchWorkspace, onCloseWorkspace, sessionKey,
+  client, items, changes, reloadKey, onOpenFile, hasSession, workspaceRoot, workspaceName,
+  folderCount, isDevBridge, onReopenWorkspace, onSwitchWorkspace, onCloseWorkspace,
+  sessionKey, reviewed, onMarkReviewed,
 }: {
   client: ProtocolClient
   items: ChatItem[]
-  openPath: string | null
-  onOpenFile: (path: string | null) => void
+  /** The session's changes, computed once in App — the chat-column diff tabs read the
+   * same list, and two computations of one truth would drift. */
+  changes: ChangeEntry[]
+  /** Bumps when a write tool resolves or a Put back changes the disk. */
+  reloadKey: number
+  /** Opens a file as a TAB beside the chat; `face: 'diff'` lands on the diff. */
+  onOpenFile: (path: string, face?: 'file' | 'diff') => void
   hasSession: boolean
   /** Which workspace these paths belong to; see `TreePanel`. */
   workspaceRoot: string
@@ -52,22 +58,13 @@ export function ContextPanel({
   /** The live session's id. Keys the Changes tab, so its reviewed-state — a per-session
    * judgement — resets when the session does instead of leaking across. */
   sessionKey: string
+  reviewed: ReadonlyMap<string, number>
+  onMarkReviewed: (entries: readonly ChangeEntry[]) => void
 }): VNode {
   const [tab, setTab] = useState<ContextTab>('workspace')
   // Polled at the panel level so the Terminal badge is live on every tab, not only its own.
   const { jobs } = useJobs(client, hasSession, 2000)
   const runningJobs = jobs.filter((j) => j.running).length
-
-  // `items` is a new array on every streamed token, so memoising on it directly would
-  // never hit. The change list can only move when an item is ADDED or when a tool call
-  // gets its result -- neither of which a token does -- so those two counts are an exact
-  // key, and they cost a loop instead of a JSON.parse per write call per token.
-  const resolvedTools = items.reduce((n, i) => n + (i.kind === 'tool' && i.result !== undefined ? 1 : 0), 0)
-  const changes = useMemo(
-    () => collectChanges(items),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the two counts above
-    [items.length, resolvedTools],
-  )
 
   const tabs: { id: ContextTab; label: string; icon: () => VNode; badge?: number }[] = [
     { id: 'workspace', label: 'Workspace', icon: Icon.files, badge: changes.length },
@@ -100,20 +97,21 @@ export function ContextPanel({
             client={client}
             items={items}
             changes={changes}
-            openPath={openPath}
             onOpenFile={onOpenFile}
             workspaceRoot={workspaceRoot}
             workspaceName={workspaceName}
             folderCount={folderCount}
-            reloadKey={resolvedTools}
+            reloadKey={reloadKey}
             isDevBridge={isDevBridge}
             onReopenWorkspace={onReopenWorkspace}
             onSwitchWorkspace={onSwitchWorkspace}
             onCloseWorkspace={onCloseWorkspace}
             sessionKey={sessionKey}
+            reviewed={reviewed}
+            onMarkReviewed={onMarkReviewed}
           />
         )}
-        {tab === 'history' && <HistoryTab client={client} reloadKey={resolvedTools} />}
+        {tab === 'history' && <HistoryTab client={client} reloadKey={reloadKey} />}
         {tab === 'terminal' && (
           <TerminalTab client={client} items={items} active={tab === 'terminal'} canRun={hasSession} />
         )}

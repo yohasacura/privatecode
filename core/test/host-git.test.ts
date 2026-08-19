@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { gitCommit, gitDiff, suggestCommitMessage } from '../src/host/git.js'
+import { gitCommitStaged, gitDiff, gitStage, gitUnstage, stagedPaths, suggestCommitMessage } from '../src/host/git.js'
 import { discoverRepos } from '../src/host/repos.js'
 import { Workspace } from '../src/workspace.js'
 
@@ -59,11 +59,35 @@ describe('reading the working tree', () => {
     expect(byPath.get('staged.txt')).toMatchObject({ staged: true, untracked: false })
   })
 
-  test('a rename is reported by the path that exists on disk', async () => {
-    // Porcelain writes `R  old -> new`, and the panel opens what it lists.
+  test('a rename is reported by the path that exists on disk, carrying its old name', async () => {
+    // Porcelain writes `R  old -> new`; the panel opens the new path, and the old one
+    // travels along because unstaging a rename must name both halves.
     await run(['mv', 'kept.txt', 'moved.txt'])
     const files = (await statusOf(root))?.files ?? []
-    expect(files.map((f) => f.path)).toContain('moved.txt')
+    const moved = files.find((f) => f.path === 'moved.txt')
+    expect(moved).toBeDefined()
+    expect(moved?.oldPath).toBe('kept.txt')
+  })
+
+  test('unstaging a rename with both names restores the whole thing', async () => {
+    await run(['mv', 'kept.txt', 'moved.txt'])
+    expect(await gitUnstage(root, ['moved.txt', 'kept.txt'])).toMatchObject({ ok: true })
+    // Nothing staged any more: the old name is back in the index as HEAD has it, the new
+    // name is plain untracked — not a staged deletion waiting inside the next commit.
+    expect(await stagedPaths(root)).toEqual([])
+  })
+
+  test('a file deleted together with its directory can still be found a repository for', async () => {
+    // `git rev-parse` cannot run from a directory that no longer exists; the walk up finds
+    // the nearest surviving ancestor — without it a whole-directory deletion could be
+    // neither staged nor diffed from the panel.
+    const { repoRootFor } = await import('../src/host/repos.js')
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(join(root, 'docs', 'guide.md'), 'text\n', 'utf8')
+    await run(['add', 'docs/guide.md'])
+    await run(['commit', '--quiet', '-m', 'docs'])
+    rmSync(join(root, 'docs'), { recursive: true, force: true })
+    expect(await repoRootFor(join(root, 'docs', 'guide.md'))).toBe(root)
   })
 
   test('a directory that is not a repository is listed as unversioned, not as a failure', async () => {
@@ -96,35 +120,74 @@ describe('diffing', () => {
   })
 })
 
+describe('staging', () => {
+  test('stage puts a file in the index and the status says so', async () => {
+    write('kept.txt', 'changed\n')
+    write('new.txt', 'brand new\n')
+
+    expect(await gitStage(root, ['new.txt'])).toMatchObject({ ok: true })
+    expect(await stagedPaths(root)).toEqual(['new.txt'])
+
+    const byPath = new Map(((await discoverRepos(new Workspace(root))).repos[0]?.files ?? []).map((f) => [f.path, f]))
+    expect(byPath.get('new.txt')).toMatchObject({ staged: true })
+    expect(byPath.get('kept.txt')).toMatchObject({ staged: false })
+  })
+
+  test('unstage takes it back out and touches nothing on disk', async () => {
+    write('kept.txt', 'changed\n')
+    await gitStage(root, ['kept.txt'])
+    expect(await gitUnstage(root, ['kept.txt'])).toMatchObject({ ok: true })
+    expect(await stagedPaths(root)).toEqual([])
+    // Still modified on disk — unstaging is an index operation, never a checkout.
+    const files = (await discoverRepos(new Workspace(root))).repos[0]?.files ?? []
+    expect(files.map((f) => f.path)).toEqual(['kept.txt'])
+  })
+
+  test('unstage works in a repository with no commits yet', async () => {
+    // `git reset HEAD` has nothing to reset to before the first commit; the fallback
+    // removes the index entry itself, which is the same end state.
+    const fresh = mkdtempSync(join(tmpdir(), 'pc-git-unborn-'))
+    try {
+      await execa('git', ['init', '--quiet'], { cwd: fresh })
+      writeFileSync(join(fresh, 'a.txt'), 'a\n', 'utf8')
+      await execa('git', ['add', 'a.txt'], { cwd: fresh })
+      expect(await gitUnstage(fresh, ['a.txt'])).toMatchObject({ ok: true })
+      expect(await stagedPaths(fresh)).toEqual([])
+    } finally {
+      rmSync(fresh, { recursive: true, force: true })
+    }
+  })
+
+  test('an empty set is refused in both directions', async () => {
+    expect(await gitStage(root, [])).toMatchObject({ ok: false })
+    expect(await gitUnstage(root, [])).toMatchObject({ ok: false })
+  })
+})
+
 describe('committing', () => {
-  test('commits exactly the files named', async () => {
+  test('commits exactly what is staged, never the rest of the tree', async () => {
     write('kept.txt', 'changed\n')
     write('other.txt', 'not this one\n')
+    await gitStage(root, ['kept.txt'])
 
-    const result = await gitCommit(root, 'update kept', ['kept.txt'])
+    const result = await gitCommitStaged(root, 'update kept')
     expect(result.ok).toBe(true)
     expect(result.sha).toMatch(/^[0-9a-f]{7,}$/)
 
-    // The file that was not named is still sitting there uncommitted.
+    // The file that was not staged is still sitting there uncommitted.
     const after = (await discoverRepos(new Workspace(root))).repos[0]
     expect(after?.files.map((f) => f.path)).toEqual(['other.txt'])
   })
 
-  test('an empty selection is refused, never widened to everything', async () => {
-    // A window that committed the whole tree because the list happened to be on screen
-    // would eventually catch a file someone was in the middle of.
-    write('kept.txt', 'changed\n')
-    expect(await gitCommit(root, 'msg', [])).toMatchObject({ ok: false })
-    expect((await discoverRepos(new Workspace(root))).repos[0]?.files).toHaveLength(1)
-  })
-
   test('an empty message is refused', async () => {
     write('kept.txt', 'changed\n')
-    expect(await gitCommit(root, '   ', ['kept.txt'])).toMatchObject({ ok: false })
+    await gitStage(root, ['kept.txt'])
+    expect(await gitCommitStaged(root, '   ')).toMatchObject({ ok: false })
   })
 
   test('git\'s own refusal is reported, not swallowed', async () => {
-    const result = await gitCommit(root, 'nothing to do', ['kept.txt'])
+    // Nothing staged: git itself declines, and the panel shows its words.
+    const result = await gitCommitStaged(root, 'nothing to do')
     expect(result.ok).toBe(false)
     expect(result.problem).toBeTruthy()
   })

@@ -3,6 +3,7 @@ import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChangeDecor } from '../lib/path-tree'
 import type { ChatItem } from '../lib/state'
+import { describeMark, type GhostRow, type GitMark } from '../lib/git-scm'
 import { Icon } from '../components/icons'
 
 /**
@@ -82,9 +83,67 @@ export interface MountActions {
   busy: boolean
 }
 
+/** Stage and unstage, right on the row that shows the change. Wired by the workspace
+ * tab, which owns the git status and its reload. */
+export interface GitRowActions {
+  stage(path: string): void
+  unstage(path: string): void
+  /** True while a git call is in flight; the row actions ignore clicks. */
+  busy: boolean
+}
+
+/**
+ * The git cluster on a changed file's row: hover actions first, then the letter.
+ *
+ * Spans with click handlers, not buttons — the row itself is a button and buttons cannot
+ * nest. The letter is always visible; `+`/`−` appear on row hover (CSS gates
+ * pointer-events with opacity, so an invisible control is also an unclickable one).
+ */
+function GitCluster({
+  path, mark, actions,
+}: {
+  path: string
+  mark: GitMark
+  actions: GitRowActions | undefined
+}): VNode {
+  return (
+    <span class="tree-git">
+      {actions !== undefined && mark.dirty && mark.letter !== '!' && (
+        <span
+          class="tree-git-act"
+          role="button"
+          title="Stage — include this file in the next commit"
+          onClick={(e) => { e.stopPropagation(); if (!actions.busy) actions.stage(path) }}
+        >
+          {Icon.plus()}
+        </span>
+      )}
+      {/* A conflict is not a thing to stage or unstage from a hover: `git add` would
+          declare it resolved with the markers still in the file, and `git reset` would
+          throw away the merge bookkeeping. The letter alone, loudly. */}
+      {actions !== undefined && mark.staged && mark.letter !== '!' && (
+        <span
+          class="tree-git-act"
+          role="button"
+          title="Unstage — keep the change, take it out of the commit"
+          onClick={(e) => { e.stopPropagation(); if (!actions.busy) actions.unstage(path) }}
+        >
+          {Icon.minus()}
+        </span>
+      )}
+      <span
+        class={`tree-git-letter tree-git-${mark.letter === '!' ? 'conflict' : mark.letter.toLowerCase()}${mark.staged ? ' tree-git-letter-staged' : ''}`}
+        title={describeMark(mark)}
+      >
+        {mark.letter}
+      </span>
+    </span>
+  )
+}
+
 export function TreePanel({
   client, toolItems, onOpenFile, workspaceRoot, decor, mounts, mountActions,
-  filterChanged, reviewedPaths, onOpenDiff,
+  filterChanged, reviewedPaths, onOpenDiff, git, gitActions, ghosts,
 }: {
   client: ProtocolClient
   toolItems: ChatItem[]
@@ -114,6 +173,12 @@ export function TreePanel({
   reviewedPaths?: ReadonlySet<string>
   /** Clicking a change badge jumps straight to the DIFF, not the file body. */
   onOpenDiff?: (path: string) => void
+  /** Git worn ON the rows: one letter per changed file, staged rows highlighted. */
+  git?: ReadonlyMap<string, GitMark>
+  /** Stage/unstage on hover, next to the letter. */
+  gitActions?: GitRowActions
+  /** Deleted files, grouped by parent directory — rows the disk listing cannot have. */
+  ghosts?: ReadonlyMap<string, GhostRow[]>
 }) {
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']))
@@ -198,6 +263,9 @@ export function TreePanel({
         {...(filterChanged !== undefined ? { filterChanged } : {})}
         {...(reviewedPaths !== undefined ? { reviewedPaths } : {})}
         {...(onOpenDiff !== undefined ? { onOpenDiff } : {})}
+        {...(git !== undefined ? { git } : {})}
+        {...(gitActions !== undefined ? { gitActions } : {})}
+        {...(ghosts !== undefined ? { ghosts } : {})}
       />
       {filterChanged === true && decor !== undefined && decor.files.size === 0 && (
         <div class="tree-empty">nothing changed this session</div>
@@ -281,7 +349,7 @@ function MountControls({ mount, actions }: { mount: MountInfo; actions: MountAct
 
 function DirChildren({
   path, dirs, expanded, onToggle, onOpenFile, onRetry, depth, decor, mounts, mountActions,
-  filterChanged, reviewedPaths, onOpenDiff,
+  filterChanged, reviewedPaths, onOpenDiff, git, gitActions, ghosts,
 }: {
   path: string
   dirs: Record<string, DirState>
@@ -302,6 +370,9 @@ function DirChildren({
   filterChanged?: boolean
   reviewedPaths?: ReadonlySet<string>
   onOpenDiff?: (path: string) => void
+  git?: ReadonlyMap<string, GitMark>
+  gitActions?: GitRowActions
+  ghosts?: ReadonlyMap<string, GhostRow[]>
 }) {
   const state = dirs[path]
   if (!state) return null
@@ -320,19 +391,53 @@ function DirChildren({
   if (state.entries === null) {
     return state.loading ? <div class="tree-loading loading-quiet" style={{ paddingLeft: `${depth * 12 + 6}px` }}>loading…</div> : null
   }
-  if (state.entries.length === 0 && path !== '') {
+  const entries = state.entries
+
+  // Deleted files, appended after what the disk still has: the listing cannot contain
+  // them, and a deletion nobody can see is the change most worth seeing. A name that
+  // somehow exists on disk again (deleted, then recreated untracked) is not ghosted.
+  //
+  // A directory deleted WHOLE takes its listing with it, so its ghosts would render
+  // nowhere. They are claimed here by the deepest listing that still exists: a ghost
+  // whose parent directory is gone shows in the nearest surviving ancestor, wearing the
+  // missing part of its path as its name (`docs/guide.md` at the root after `rm -rf
+  // docs`). "Gone" is decided locally — the ghost's first path segment below this
+  // listing is not among its directories — which is exactly when no deeper DirChildren
+  // can exist to claim it.
+  const prefix = path === '' ? '' : `${path}/`
+  const ghostList: GhostRow[] = []
+  if (ghosts !== undefined) {
+    for (const [dir, list] of ghosts) {
+      if (dir === path) {
+        ghostList.push(...list.filter((g) => !entries.some((e) => e.name === g.name)))
+        continue
+      }
+      if (!dir.startsWith(prefix) || dir === '') continue
+      const below = dir.slice(prefix.length)
+      const first = below.split('/')[0]!
+      if (entries.some((e) => e.dir && e.name === first)) continue
+      ghostList.push(...list.map((g) => ({ name: `${below}/${g.name}`, path: g.path })))
+    }
+    ghostList.sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  // A directory emptied BY deletions is not "empty" — it is where the ghosts live.
+  if (entries.length === 0 && ghostList.length === 0 && path !== '') {
     return <div class="tree-empty" style={{ paddingLeft: `${depth * 12 + 28}px` }}>empty</div>
   }
 
   // ONE view, filtered — not a second view: with the filter on, a row renders only when
-  // the session touched it (the decor is the ground truth for "touched"), and the tree's
-  // structure, indent and badges stay exactly what they are the rest of the time.
+  // something changed it — the session's decor OR git — and the tree's structure, indent
+  // and badges stay exactly what they are the rest of the time. Directory counts are
+  // already the union (the workspace tab merges git-only files in before passing decor).
   const shown = filterChanged === true && decor !== undefined
-    ? state.entries.filter((entry) => {
+    ? entries.filter((entry) => {
         const childPath = path === '' ? entry.name : `${path}/${entry.name}`
-        return entry.dir ? (decor.dirs.get(childPath) ?? 0) > 0 : decor.files.has(childPath)
+        return entry.dir
+          ? (decor.dirs.get(childPath) ?? 0) > 0
+          : decor.files.has(childPath) || git?.has(childPath) === true
       })
-    : state.entries
+    : entries
 
   return (
     <>
@@ -345,13 +450,21 @@ function DirChildren({
         // the ordinary row-button beside the controls, not inside it.
         const mount = depth === 0 && entry.dir ? mounts?.find((m) => m.name === entry.name) : undefined
         const fileChange = !entry.dir ? decor?.files.get(childPath) : undefined
+        const mark = !entry.dir ? git?.get(childPath) : undefined
         const row = (
           /* A button, not a div with onClick: bare divs cannot take focus, so the whole
               tree was unreachable by keyboard — not one directory could be expanded, not
               one file opened, without a mouse. A button gets Tab, Enter and Space for
               free, and aria-expanded tells a screen reader which rows unfold. */
           <button
-            class={`tree-row ${entry.dir ? 'tree-dir' : 'tree-file'}${mount !== undefined ? ' tree-mount-main' : ''}`}
+            class={[
+              'tree-row',
+              entry.dir ? 'tree-dir' : 'tree-file',
+              mount !== undefined ? 'tree-mount-main' : '',
+              // Staged = selected for the commit — the row itself says so («подсвети
+              // файлы если я их выбрал для коммита»), not a checkbox column.
+              mark?.staged === true ? 'tree-row-staged' : '',
+            ].filter(Boolean).join(' ')}
             style={{ paddingLeft: `${depth * 12 + 6}px` }}
             onClick={() => (entry.dir ? onToggle(childPath) : onOpenFile(childPath))}
             title={childPath}
@@ -361,12 +474,14 @@ function DirChildren({
               {entry.dir ? (isExpanded ? Icon.chevronDown() : Icon.chevronRight()) : null}
             </span>
             <span class="tree-icon">{entry.dir ? Icon.folder() : Icon.file()}</span>
-            <span class="tree-name">{entry.name}</span>
+            <span class={`tree-name${mark !== undefined ? ` tree-name-git-${mark.letter === '!' ? 'conflict' : mark.letter.toLowerCase()}` : ''}`}>
+              {entry.name}
+            </span>
             {mount !== undefined && mount.access === 'read' && (
               <span class="tree-mount-ro" title="Read-only">read-only</span>
             )}
-            {/* The session's fingerprints, right on the tree: a changed file carries its
-                diff shape, a folder carries how many changed files hide under it. */}
+            {/* The fingerprints, right on the tree: a changed file carries its diff
+                shape, a folder carries how many changed files hide under it. */}
             {entry.dir && decor !== undefined && (decor.dirs.get(childPath) ?? 0) > 0 && (
               <span class="tree-change-count">{decor.dirs.get(childPath)}</span>
             )}
@@ -389,6 +504,9 @@ function DirChildren({
                 +{fileChange.added} −{fileChange.removed}
               </span>
             )}
+            {mark !== undefined && (
+              <GitCluster path={childPath} mark={mark} actions={gitActions} />
+            )}
           </button>
         )
         return (
@@ -403,9 +521,37 @@ function DirChildren({
                 {...(filterChanged !== undefined ? { filterChanged } : {})}
                 {...(reviewedPaths !== undefined ? { reviewedPaths } : {})}
                 {...(onOpenDiff !== undefined ? { onOpenDiff } : {})}
+                {...(git !== undefined ? { git } : {})}
+                {...(gitActions !== undefined ? { gitActions } : {})}
+                {...(ghosts !== undefined ? { ghosts } : {})}
               />
             )}
           </div>
+        )
+      })}
+      {ghostList.map((g) => {
+        const mark = git?.get(g.path)
+        const fileChange = decor?.files.get(g.path)
+        return (
+          <button
+            key={`ghost:${g.path}`}
+            class="tree-row tree-file tree-ghost"
+            style={{ paddingLeft: `${depth * 12 + 6}px` }}
+            title={`${g.path} — deleted; click for the diff`}
+            onClick={() => onOpenDiff?.(g.path)}
+          >
+            <span class="tree-chevron" />
+            <span class="tree-icon">{Icon.file()}</span>
+            <span class="tree-name tree-name-ghost">{g.name}</span>
+            {fileChange !== undefined && (
+              <span class="tree-change-stat">
+                +{fileChange.added} −{fileChange.removed}
+              </span>
+            )}
+            {mark !== undefined && (
+              <GitCluster path={g.path} mark={mark} actions={gitActions} />
+            )}
+          </button>
         )
       })}
     </>

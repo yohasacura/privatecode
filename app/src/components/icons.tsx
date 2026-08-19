@@ -30,6 +30,16 @@ function Svg({ children, size = 16 }: { children: preact.ComponentChildren; size
 
 export const Icon = {
   plus: () => <Svg><path d="M8 3v10M3 8h10" /></Svg>,
+  minus: () => <Svg><path d="M3 8h10" /></Svg>,
+  /** Two dots on one line, one budding off: a branch. The commit box wears it. */
+  branch: () => (
+    <Svg>
+      <circle cx="4.5" cy="3.8" r="1.7" />
+      <circle cx="4.5" cy="12.2" r="1.7" />
+      <circle cx="11.5" cy="5.8" r="1.7" />
+      <path d="M4.5 5.5v5M11.5 7.5c0 2.6-3.4 2.3-5.6 3.4" />
+    </Svg>
+  ),
   send: () => <Svg><path d="M2.5 8h10M8.5 3.5 13 8l-4.5 4.5" /></Svg>,
   stop: () => <Svg><rect x="4" y="4" width="8" height="8" rx="1.5" /></Svg>,
   chat: () => <Svg><path d="M13.5 9.5A2.5 2.5 0 0 1 11 12H6l-3.5 2.5V4A2.5 2.5 0 0 1 5 1.5h6A2.5 2.5 0 0 1 13.5 4z" /></Svg>,

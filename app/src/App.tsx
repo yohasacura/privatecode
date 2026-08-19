@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import {
   createClient, restartSidecar, sidecarStderr, withTimeout, wsUrlFromSearch,
@@ -11,14 +11,23 @@ import { conversationAsMarkdown } from './lib/export'
 import { MIN_CONTEXT, MIN_RAIL, fitColumns } from './lib/layout'
 import { Icon } from './components/icons'
 import { Splitter } from './components/split'
+import { collectChanges } from './panels/changes-tab'
 import { Composer } from './panels/composer'
 import { ContextPanel } from './panels/context-panel'
+import { FileView } from './panels/file-view'
 import { SessionsRail, type SessionSwitch } from './panels/sessions-rail'
 import { StatusBar, SettingsModal } from './panels/status'
 import { WorkspaceSwitch } from './panels/workspace-switch'
 import { Palette, type PaletteAction } from './panels/palette'
 import { Transcript } from './panels/transcript'
 import './App.css'
+
+/** One opened file, as a TAB beside the chat. The face — content or diff — is tab state,
+ * so switching away and back lands where you were. */
+interface EditorTab {
+  path: string
+  face: 'file' | 'diff'
+}
 
 /**
  * The shell: three columns — sessions, conversation, workspace context — plus a title bar
@@ -140,7 +149,11 @@ export default function App() {
   const [workspaceInput, setWorkspaceInput] = useState('')
   const [serverInput, setServerInput] = useState(DEFAULT_SERVER_URL)
   const [recents, setRecents] = useState<string[]>([])
-  const [previewPath, setPreviewPath] = useState<string | null>(null)
+  /** Files opened as tabs beside the chat, and which tab is fronted (`null` = Chat).
+   * The owner's ruling: files and diffs are siblings of the conversation, not an overlay
+   * squeezed into the 420px side panel. */
+  const [tabs, setTabs] = useState<EditorTab[]>([])
+  const [activeTab, setActiveTab] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [switchOpen, setSwitchOpen] = useState(false)
   /** What this workspace is called and how many folders it spans. Kept beside `phase`
@@ -149,6 +162,67 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [sessionsKey, setSessionsKey] = useState(0)
   const [chatState, dispatch] = useChatSession(client)
+
+  /** Reviewed watermarks (path → last-write id the review covered) live HERE because two
+   * surfaces act on them now: the tree dims badges, and a diff tab's Reviewed button sets
+   * them. A per-session judgement — reset when the session changes. */
+  const [reviewed, setReviewed] = useState<ReadonlyMap<string, number>>(new Map())
+  /** Bumped by a Put back so git status re-reads itself: the revert changed the disk. */
+  const [reverts, setReverts] = useState(0)
+  const liveSessionId = chatState.session?.sessionId ?? ''
+  useEffect(() => { setReviewed(new Map()) }, [liveSessionId])
+
+  // `items` is a new array on every streamed token, so memoising on it directly would
+  // never hit. The change list can only move when an item is ADDED or when a tool call
+  // gets its result — neither of which a token does — so those two counts are an exact
+  // key, and they cost a loop instead of a JSON.parse per write call per token.
+  const resolvedTools = chatState.items.reduce(
+    (n, i) => n + (i.kind === 'tool' && i.result !== undefined ? 1 : 0), 0)
+  const changes = useMemo(
+    () => collectChanges(chatState.items),
+    // The session id is part of the key: a switch REPLACES items, and if the old and new
+    // sessions happen to have equal counts the two-count key would keep the previous
+    // session's list — now feeding a destructive consumer (Put back in a diff tab).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the counts + session
+    [chatState.items.length, resolvedTools, liveSessionId],
+  )
+  const changesByPath = useMemo(
+    () => new Map(changes.map((c) => [c.openPath, c])), [changes])
+
+  /** Open a file as a tab (or re-front its existing tab) on the requested face. */
+  const openTab = useCallback((path: string, face: 'file' | 'diff' = 'file') => {
+    setTabs((prev) => (prev.some((t) => t.path === path)
+      ? prev.map((t) => (t.path === path ? { ...t, face } : t))
+      : [...prev, { path, face }]))
+    setActiveTab(path)
+  }, [])
+
+  function closeTab(path: string): void {
+    const idx = tabs.findIndex((t) => t.path === path)
+    const next = tabs.filter((t) => t.path !== path)
+    setTabs(next)
+    // Closing the fronted tab lands on its left neighbour, then Chat — the way editors do.
+    if (activeTab === path) setActiveTab(next[Math.max(0, idx - 1)]?.path ?? null)
+  }
+
+  function setTabFace(path: string, face: 'file' | 'diff'): void {
+    setTabs((prev) => prev.map((t) => (t.path === path ? { ...t, face } : t)))
+  }
+
+  // Esc on a file tab returns to the chat — it does NOT close the tab, and (capture
+  // phase, same trick as everywhere) it must not fall through to the composer's abort
+  // listener and silently stop a running turn. Modals keep their own Esc.
+  useEffect(() => {
+    if (activeTab === null) return
+    function onKey(e: KeyboardEvent): void {
+      if (e.key !== 'Escape') return
+      if (document.querySelector('.modal-overlay, .command-picker, .run-config') !== null) return
+      e.stopPropagation()
+      setActiveTab(null)
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [activeTab])
 
   const [railOpen, setRailOpen] = useState(() => loadLayout('railOpen', true))
   const [contextOpen, setContextOpen] = useState(() => loadLayout('contextOpen', true))
@@ -190,6 +264,10 @@ export default function App() {
 
   const connect = useCallback(async (c: ProtocolClient, workspace: string, serverUrl: string): Promise<void> => {
     setPhase({ kind: 'initializing', workspace })
+    // Tab paths are workspace-addressed; a different (or re-opened) workspace makes
+    // every one of them a stranger.
+    setTabs([])
+    setActiveTab(null)
     try {
       // `continueLast`: opening a workspace picks up where it was left, rather than
       // discarding the conversation you were in the middle of when you closed the window.
@@ -350,7 +428,8 @@ export default function App() {
     dispatch({ type: 'session-switched', ...info })
     if (info.items.length > 0) dispatch({ type: 'transcript-restored', entries: info.items })
     for (const text of info.problems) dispatch({ type: 'settings-problem', text })
-    setPreviewPath(null)
+    // File tabs survive a session switch — the files are the workspace's, not the
+    // session's. A diff tab whose session entry vanished falls back to the git diff.
     // Re-seed the parked-decision count: 'session-switched' resets it to zero, and the
     // host only announces CHANGES — so questions parked by last night's run were invisible
     // the next morning until some unrelated park or resolve happened to fire the event.
@@ -364,9 +443,8 @@ export default function App() {
   // an inline arrow recreated on every render would make every row look changed on every
   // streamed token and defeat the memoisation entirely (see transcript.tsx's header).
   const openFileFromTranscript = useCallback((path: string) => {
-    setPreviewPath(path)
-    setContextOpen(true)
-  }, [])
+    openTab(path, 'file')
+  }, [openTab])
 
   /**
    * What a palette choice does. Every branch is something the window already does; the
@@ -485,35 +563,95 @@ export default function App() {
             )}
 
             <main class="column column-chat">
-              <Transcript
-                client={client}
-                state={chatState}
-                dispatch={dispatch}
-                onOpenFile={openFileFromTranscript}
-                onBackToLive={() => dispatch({ type: 'viewing-ended' })}
-              />
-              {chatState.problems.length > 0 && (
-                <div class="problem-strip">
-                  <span class="problem-icon">{Icon.alert()}</span>
-                  <div class="problem-list">
-                    {chatState.problems.map((p) => <div key={p}>{p}</div>)}
-                  </div>
+              {/* The editor strip appears only once something is open — a permanent
+                  one-tab bar would be chrome with no decision behind it. The chat is
+                  the first tab and never closes; it keeps streaming while hidden. */}
+              {tabs.length > 0 && (
+                <div class="editor-tabs" role="tablist">
                   <button
-                    class="icon-button"
-                    onClick={() => dispatch({ type: 'problems-dismissed' })}
-                    title="Dismiss"
+                    class={`editor-tab ${activeTab === null ? 'editor-tab-active' : ''}`}
+                    onClick={() => setActiveTab(null)}
+                    role="tab"
+                    aria-selected={activeTab === null}
+                    title="The conversation (Esc)"
                   >
-                    {Icon.x()}
+                    {Icon.chat()}
+                    <span class="editor-tab-name">Chat</span>
                   </button>
+                  {tabs.map((t) => (
+                    <button
+                      key={t.path}
+                      class={`editor-tab ${activeTab === t.path ? 'editor-tab-active' : ''}`}
+                      onClick={() => setActiveTab(t.path)}
+                      onAuxClick={(e) => { if (e.button === 1) closeTab(t.path) }}
+                      role="tab"
+                      aria-selected={activeTab === t.path}
+                      title={t.path}
+                    >
+                      {t.face === 'diff' ? Icon.diff() : Icon.file()}
+                      <span class="editor-tab-name">{baseName(t.path)}</span>
+                      <span
+                        class="editor-tab-close"
+                        role="button"
+                        title="Close"
+                        onClick={(e) => { e.stopPropagation(); closeTab(t.path) }}
+                      >
+                        {Icon.x()}
+                      </span>
+                    </button>
+                  ))}
                 </div>
               )}
-              <Composer
-                client={client}
-                state={chatState}
-                dispatch={dispatch}
-                modalOpen={settingsOpen}
-                onAdoptViewed={adoptViewed}
-              />
+              <div class={`chat-face ${activeTab !== null ? 'chat-face-hidden' : ''}`}>
+                <Transcript
+                  client={client}
+                  state={chatState}
+                  dispatch={dispatch}
+                  onOpenFile={openFileFromTranscript}
+                  onBackToLive={() => dispatch({ type: 'viewing-ended' })}
+                />
+                {chatState.problems.length > 0 && (
+                  <div class="problem-strip">
+                    <span class="problem-icon">{Icon.alert()}</span>
+                    <div class="problem-list">
+                      {chatState.problems.map((p) => <div key={p}>{p}</div>)}
+                    </div>
+                    <button
+                      class="icon-button"
+                      onClick={() => dispatch({ type: 'problems-dismissed' })}
+                      title="Dismiss"
+                    >
+                      {Icon.x()}
+                    </button>
+                  </div>
+                )}
+                <Composer
+                  client={client}
+                  state={chatState}
+                  dispatch={dispatch}
+                  modalOpen={settingsOpen}
+                  onAdoptViewed={adoptViewed}
+                />
+              </div>
+              {tabs.map((t) => (activeTab === t.path
+                ? (
+                  <FileView
+                    key={t.path}
+                    client={client}
+                    path={t.path}
+                    face={t.face}
+                    onFaceChange={(face) => setTabFace(t.path, face)}
+                    entry={changesByPath.get(t.path)}
+                    reviewed={(() => {
+                      const entry = changesByPath.get(t.path)
+                      const mark = reviewed.get(entry?.path ?? t.path)
+                      return entry !== undefined && mark !== undefined && entry.id <= mark
+                    })()}
+                    onMarkReviewed={(entry) => setReviewed((m) => new Map(m).set(entry.path, entry.id))}
+                    onReverted={() => setReverts((n) => n + 1)}
+                  />
+                  )
+                : null))}
             </main>
 
             {contextShown && (
@@ -523,8 +661,9 @@ export default function App() {
                   <ContextPanel
                     client={client}
                     items={chatState.items}
-                    openPath={previewPath}
-                    onOpenFile={setPreviewPath}
+                    changes={changes}
+                    reloadKey={resolvedTools + reverts}
+                    onOpenFile={openTab}
                     hasSession={chatState.session !== null}
                     workspaceRoot={workspaceRoot}
                     workspaceName={workspaceLabel.name || baseName(workspaceRoot)}
@@ -534,8 +673,18 @@ export default function App() {
                     onSwitchWorkspace={() => setSwitchOpen(true)}
                     // Back to the start screen; nothing on disk is touched, and boot's
                     // auto-connect still remembers this workspace for next launch.
-                    onCloseWorkspace={() => setPhase({ kind: 'welcome', error: null })}
-                    sessionKey={chatState.session?.sessionId ?? ''}
+                    onCloseWorkspace={() => {
+                      setTabs([])
+                      setActiveTab(null)
+                      setPhase({ kind: 'welcome', error: null })
+                    }}
+                    sessionKey={liveSessionId}
+                    reviewed={reviewed}
+                    onMarkReviewed={(entries) => setReviewed((m) => {
+                      const next = new Map(m)
+                      for (const entry of entries) next.set(entry.path, entry.id)
+                      return next
+                    })}
                   />
                 </aside>
               </>
@@ -625,7 +774,8 @@ export default function App() {
             for (const text of info.problems) dispatch({ type: 'settings-problem', text })
             setPhase({ kind: 'ready', workspace: info.workspaceRoot })
             setWorkspaceLabel({ name: info.workspaceName, folders: info.folderCount })
-            setPreviewPath(null)
+            setTabs([])
+            setActiveTab(null)
             setSessionsKey((k) => k + 1)
             setSwitchOpen(false)
           }}
@@ -643,7 +793,8 @@ export default function App() {
             for (const text of info.problems) dispatch({ type: 'settings-problem', text })
             setPhase({ kind: 'ready', workspace: info.workspaceRoot })
             setWorkspaceLabel({ name: info.workspaceName, folders: info.folderCount })
-            setPreviewPath(null)
+            setTabs([])
+            setActiveTab(null)
             setSessionsKey((k) => k + 1)
             setSettingsOpen(false)
           }}

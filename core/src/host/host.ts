@@ -76,6 +76,8 @@ import type {
   GitCommitResult,
   GitDiffParams,
   GitDiffResult,
+  GitStageParams,
+  GitStageResult,
   GitStatusResult,
   FsTreeParams,
   FsTreeResult,
@@ -121,7 +123,7 @@ import { rankFiles, walkFiles } from './file-search.js'
 import { attachFiles } from './attachments.js'
 import { indexRepo, renderIndex, type ReferenceEdges, type RepoIndex } from '../outline/repo-map.js'
 import { harvestReferenceEdges } from '../csharp/reference-edges.js'
-import { gitCommit, gitDiff, suggestCommitMessage } from './git.js'
+import { gitCommitStaged, gitDiff, gitStage, gitUnstage, stagedPaths, suggestCommitMessage } from './git.js'
 import { describeFolder, discoverRepos, repoRootFor, toRepoPaths } from './repos.js'
 import { searchSessions } from './session-search.js'
 
@@ -444,6 +446,8 @@ export class SessionHost {
       case 'prompt.expand': return this.promptExpand(params as PromptExpandParams)
       case 'git.status': return this.gitStatusFor()
       case 'git.diff': return this.gitDiffFor(params as GitDiffParams)
+      case 'git.stage': return this.gitStageFor(params as GitStageParams, 'stage')
+      case 'git.unstage': return this.gitStageFor(params as GitStageParams, 'unstage')
       case 'git.commit': return this.gitCommitFor(params as GitCommitParams)
       case 'fs.read': return this.fsRead(params as FsReadParams)
       case 'status': return this.status()
@@ -934,6 +938,10 @@ export class SessionHost {
 
     const session = new Session(sessionOpts)
     this.session = session
+    // The plan follows the SESSION, not the toolset: the toolset outlives every switch,
+    // and an unbound store carried session A's plan straight into session B's Plan card.
+    // Bound before the `todos` emit below, so what gets emitted is this session's own.
+    this.toolset?.todos.bind(session.id)
     // Wired here rather than inside Session: the queue is core's, the event is the wire's,
     // and Session has no business knowing a protocol exists.
     session.decisionQueue()?.onChange((pending) => this.emit('decisions.changed', { pending }))
@@ -1404,7 +1412,11 @@ export class SessionHost {
         branch: repo.branch,
         relation: repo.relation,
         files: repo.files,
-        suggestion: suggestCommitMessage(repo.files),
+        // The suggestion describes what a commit WOULD contain, which is the staged set —
+        // only before anything is staged does it fall back to describing all of it.
+        suggestion: suggestCommitMessage(
+          repo.files.some((f) => f.staged) ? repo.files.filter((f) => f.staged) : repo.files,
+        ),
         ...(repo.problem !== undefined ? { problem: repo.problem } : {}),
       })),
       unversioned: found.unversioned,
@@ -1424,24 +1436,63 @@ export class SessionHost {
   }
 
   /**
-   * Commits into whichever repository holds the selection.
+   * Stage or unstage, into whichever repository holds the paths.
    *
-   * A selection that spans two repositories is refused, not split: one message describing two
-   * commits is a message that is wrong about both, and the panel groups by repository anyway,
-   * so reaching this is already a sign something was misunderstood.
+   * A set that spans two repositories is refused, not split — same discipline as commit:
+   * the tree sends one file per click and one repository per "stage all", so reaching the
+   * refusal is already a sign something was misunderstood.
    */
-  private async gitCommitFor(params: GitCommitParams): Promise<GitCommitResult> {
+  private async gitStageFor(params: GitStageParams, action: 'stage' | 'unstage'): Promise<GitStageResult> {
     const { workspace } = this.requireInitialized()
     const first = params.paths[0]
-    if (first === undefined) return { ok: false, problem: 'select at least one file to commit' }
+    if (first === undefined) return { ok: false, problem: `nothing to ${action}` }
     const repoRoot = await repoRootFor(workspace.resolve(first))
     if (repoRoot === null) {
       return { ok: false, problem: `${first} is not inside a git repository` }
     }
     const translated = toRepoPaths(workspace, repoRoot, params.paths)
     if (!translated.ok) return { ok: false, problem: translated.problem }
+    return action === 'stage'
+      ? gitStage(repoRoot, translated.paths)
+      : gitUnstage(repoRoot, translated.paths)
+  }
 
-    const result = await gitCommit(repoRoot, params.message, translated.paths)
+  /**
+   * Commits the index of one repository — what the user staged on the tree, never more.
+   *
+   * Two refusals guard the "never more". The root must be a repository this workspace
+   * actually touches, not an arbitrary directory the wire named. And every staged path
+   * must be inside the workspace's own folders: in the mounted-subdir-of-a-monorepo case
+   * the index can carry files staged elsewhere by hand, and committing them under this
+   * window's message would make the commit say things its author never saw.
+   */
+  private async gitCommitFor(params: GitCommitParams): Promise<GitCommitResult> {
+    const { workspace } = this.requireInitialized()
+    const found = await discoverRepos(workspace)
+    const repo = found.repos.find((r) => r.root === resolve(params.root))
+    if (repo === undefined) {
+      return { ok: false, problem: 'that repository is not part of this workspace' }
+    }
+
+    const staged = await stagedPaths(repo.root)
+    if (staged.length === 0) {
+      return { ok: false, problem: 'nothing is staged — stage the files to commit first' }
+    }
+    // Read-only mounts count as OUTSIDE: the panel never lists their files (discoverRepos
+    // skips read-only folders), and committing what the window cannot show would put
+    // changes its author never saw under this message.
+    const outside = staged.filter((p) => {
+      const mount = workspace.mountFor(join(repo.root, p))
+      return mount === undefined || mount.access === 'read'
+    })
+    if (outside.length > 0) {
+      return {
+        ok: false,
+        problem: `the index also holds files outside this workspace (${outside.slice(0, 3).join(', ')}${outside.length > 3 ? ', …' : ''}) — commit those from a terminal first`,
+      }
+    }
+
+    const result = await gitCommitStaged(repo.root, params.message)
     return {
       ok: result.ok,
       ...(result.sha !== undefined ? { sha: result.sha } : {}),

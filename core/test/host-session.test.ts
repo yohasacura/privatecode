@@ -915,8 +915,13 @@ test('a small task-shaped send seeds the plan from the contract criteria, for fr
     'функция greetMany добавлена', 'тесты в tests/greet.test.js проходят',
   ])
   expect(items.every((i) => i.status === 'pending')).toBe(true)
-  // Persisted where the plan lives, so it survives a restart.
-  const plan = JSON.parse(readFileSync(join(root, '.privatecode', 'state', 'plan.json'), 'utf8'))
+  // Persisted where the plan lives — one file PER SESSION, so a fresh session does not
+  // inherit this one's plan — and it survives a restart.
+  const { readdirSync } = await import('node:fs')
+  const planFiles = readdirSync(join(root, '.privatecode', 'state'))
+    .filter((f) => f.startsWith('plan-') && f.endsWith('.json'))
+  expect(planFiles).toHaveLength(1)
+  const plan = JSON.parse(readFileSync(join(root, '.privatecode', 'state', planFiles[0]!), 'utf8'))
   expect(plan).toHaveLength(2)
 })
 

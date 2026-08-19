@@ -4,7 +4,7 @@ import { WRITE_TOOLS, presentTool } from '../lib/tools'
 /**
  * The session's changes, as DATA. The tab that rendered this list is gone — the owner's
  * ruling was that Files and Changes are one thing, so the tree wears the change badges
- * and the diff face of an opened file carries Put back and Reviewed (files-tab.tsx).
+ * and the diff face of an opened file carries Put back and Reviewed (file-view.tsx).
  * What remains here is the collection itself: every write this session made, collapsed
  * per path with a revision count, plus the reviewed-watermark split the badges dim by.
  */

@@ -514,6 +514,68 @@ kbd {
 .body { display: flex; min-height: 0; min-width: 0; overflow: hidden; }
 .column { display: flex; flex-direction: column; min-height: 0; }
 .column-chat { flex: 1; min-width: 0; background: var(--bg); }
+
+/* --- editor tabs: files and diffs as siblings of the chat ----------------------------- */
+
+.editor-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.editor-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 120ms ease, background 120ms ease;
+}
+.editor-tab:hover { color: var(--text); background: var(--bg-raised); }
+.editor-tab-active {
+  color: var(--text);
+  background: var(--bg);
+  border-color: var(--border-soft);
+}
+.editor-tab .icon { width: 13px; height: 13px; flex: none; color: var(--text-faint); }
+.editor-tab-active .icon { color: var(--accent); }
+.editor-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.editor-tab-close {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  color: var(--text-faint);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.editor-tab-close .icon { width: 12px; height: 12px; }
+.editor-tab:hover .editor-tab-close, .editor-tab-active .editor-tab-close {
+  opacity: 1;
+  pointer-events: auto;
+}
+.editor-tab-close:hover { color: var(--text); background: var(--bg-raised); }
+
+/* The chat is the first tab: hidden, not unmounted, so the stream keeps folding in. */
+.chat-face { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.chat-face-hidden { display: none; }
+
+.file-view { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.file-view .diff-face-body { padding: 8px 14px 12px; }
 .column-rail { flex: none; background: var(--bg-panel); border-right: 1px solid var(--border-soft); }
 .column-context { flex: none; background: var(--bg-panel); border-left: 1px solid var(--border-soft); }
 
@@ -1755,7 +1817,6 @@ kbd {
 .pgroup-meta { flex: none; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 
 /* files */
-.files-tab { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .files-tree { flex: 1; min-height: 0; overflow: auto; padding: 6px 0; }
 .tree-panel { font-size: 12.5px; }
 /* Buttons now (keyboard reachability), so the button chrome is reset explicitly and the
@@ -1793,17 +1854,8 @@ kbd {
 }
 .tree-error:hover { background: rgba(224, 105, 108, 0.12); }
 
-/* An overlay, not a second half. Splitting the column gave a three-entry tree 40% of the
-   height and the file you wanted to read the rest -- with no line numbers, no wrapping and
-   a horizontal scrollbar pinned to the bottom of the panel. */
-.preview {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-}
+/* The opened file's chrome — worn by the chat-column FileView tabs now; the side panel
+   no longer previews anything itself. */
 .preview-head {
   display: flex;
   align-items: center;
@@ -2295,41 +2347,107 @@ kbd {
   vertical-align: bottom;
 }
 
-/* --- the working tree, under this session's own changes ------------------------------- */
+/* --- git, worn by the tree ------------------------------------------------------------ */
 
-.tree-check {
-  width: 13px;
-  height: 13px;
-  margin: 0;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-
-/* The selection, said out loud above the rows: the per-file checkbox lives in the row's
-   icon slot, which everywhere else in this column is decoration. */
-.commit-selection {
-  display: flex;
+/* One letter per changed file, editor convention: M amber, A/U green, D red, ! loud.
+   Filled when staged (part of the next commit), outline when not — the Changes/Staged
+   distinction as SHAPE, not a second list. */
+.tree-git { display: inline-flex; align-items: center; gap: 3px; flex: none; margin-left: auto; }
+/* When the session's diff stat is also on the row, IT holds the right edge. */
+.tree-change-stat + .tree-git { margin-left: 4px; }
+.tree-git-letter {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px var(--row-pad);
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+}
+.tree-git-m, .tree-git-r { color: var(--yellow); }
+.tree-git-a, .tree-git-u { color: var(--green); }
+.tree-git-d { color: var(--red); }
+.tree-git-conflict { color: var(--red); font-weight: 700; }
+/* Staged: the letter fills — a solid chip against the outline of the unstaged. */
+.tree-git-m.tree-git-letter-staged, .tree-git-r.tree-git-letter-staged { background: var(--yellow); border-color: var(--yellow); color: var(--bg); }
+.tree-git-a.tree-git-letter-staged, .tree-git-u.tree-git-letter-staged { background: var(--green); border-color: var(--green); color: var(--bg); }
+.tree-git-d.tree-git-letter-staged { background: var(--red); border-color: var(--red); color: var(--bg); }
+
+/* The file NAME carries the state colour too, the way editors do it. */
+.tree-name-git-m, .tree-name-git-r { color: var(--yellow); }
+.tree-name-git-a, .tree-name-git-u { color: var(--green); }
+.tree-name-git-d { color: var(--red); }
+.tree-name-git-conflict { color: var(--red); font-weight: 600; }
+
+/* Staged = chosen for the commit: the row itself says so. */
+.tree-row-staged { background: rgba(217, 119, 87, 0.08); box-shadow: inset 2px 0 0 var(--accent); }
+.tree-row-staged:hover { background: rgba(217, 119, 87, 0.14); }
+
+/* Stage/unstage live on the row, visible on hover only — and unclickable while
+   invisible (pointer-events), so a blind click cannot stage anything. */
+.tree-git-act {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-dim);
+  opacity: 0;
+  pointer-events: none;
+  border-radius: 4px;
+  transition: opacity 120ms ease;
+}
+.tree-git-act .icon { width: 13px; height: 13px; }
+.tree-row:hover .tree-git-act, .tree-row:focus-visible .tree-git-act {
+  opacity: 1;
+  pointer-events: auto;
+}
+.tree-git-act:hover { color: var(--text); background: var(--bg-raised); }
+
+/* A deleted file's ghost row: the disk listing cannot contain it, the tree still must. */
+.tree-ghost { opacity: 0.75; }
+.tree-name-ghost { color: var(--red); text-decoration: line-through; }
+
+/* --- the commit box, above the tree it commits from ----------------------------------- */
+
+.scm {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px var(--row-pad);
+  border-bottom: 1px solid var(--border-soft);
+}
+.scm-repos { display: flex; flex-wrap: wrap; gap: 4px; }
+.scm-repo {
+  border: 1px solid var(--border);
+  background: none;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font: inherit;
   font-size: 11.5px;
   color: var(--text-dim);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
 }
-
-.commit-box {
-  display: flex;
-  gap: 6px;
-  padding: 8px var(--row-pad) 10px;
-  border-top: 1px solid var(--border-soft);
-}
-.commit-box .input { flex: 1; min-width: 0; }
-/* Why Commit is disabled — on screen, not in a tooltip attached to the disabled control. */
-.commit-blocked {
-  padding: 0 var(--row-pad) 10px;
+.scm-repo:hover { color: var(--text); border-color: var(--accent-line); }
+.scm-repo-on { color: var(--text); border-color: var(--accent); }
+.scm-message { width: 100%; }
+.scm-actions { display: flex; align-items: center; gap: 6px; }
+.scm-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
   font-size: 11.5px;
-  line-height: 1.5;
   color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+.scm-branch .icon { width: 13px; height: 13px; flex: none; }
+.scm-hint { font-size: 11.5px; line-height: 1.5; color: var(--text-faint); }
+.scm-outcome { font-size: 11.5px; color: var(--green); }
 
 /* The one place a session's own change can be undone on its own. Deliberately reached
    through a second click and never offered on a failed write, which changed nothing. */

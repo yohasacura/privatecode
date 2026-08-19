@@ -71,7 +71,7 @@ export function Palette({
   // click on the overlay moved focus to body. The input's own handler only covers the
   // input; everywhere else the keypress fell through to the composer's window abort
   // listener, so Esc on an open palette silently stopped a running turn. Capture phase for
-  // files-tab.tsx's reason: it must run before window's bubble-phase abort handler.
+  // App's editor-tab Esc reason: it must run before window's bubble-phase abort handler.
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       if (e.key !== 'Escape') return
