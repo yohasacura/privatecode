@@ -12,6 +12,30 @@
  * render the tree now, and a grouping nobody renders is a shape waiting to drift.)
  */
 
+/**
+ * The order a file explorer shows a folder in — VS Code's default, which is the one the
+ * owner asked for: FOLDERS FIRST, then files, and within each group names compared the way
+ * a person reads them.
+ *
+ * "The way a person reads them" is two rules a bare `localeCompare` gets wrong. Case is
+ * not a sort key — `GUIDE.md` belongs beside `greet.js`, not in a separate uppercase block
+ * ahead of it — and digits count as numbers, so `v2` comes before `v10`. The
+ * case-sensitive tiebreak is only there to keep the order STABLE when two names differ by
+ * nothing else, which a case-insensitive comparison alone would leave to chance.
+ *
+ * The host sorts its `fs.tree` answer by the same rule for whoever else reads it, but the
+ * tree re-sorts here rather than trusting that: the rows it renders are not only the
+ * host's entries — deleted files arrive from git as ghost rows and have to land in their
+ * natural place among the files, not in a heap at the bottom.
+ */
+export function compareTreeRows(
+  a: { name: string; dir: boolean }, b: { name: string; dir: boolean },
+): number {
+  if (a.dir !== b.dir) return a.dir ? -1 : 1
+  const byName = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+  return byName !== 0 ? byName : a.name.localeCompare(b.name)
+}
+
 export interface PathTreeNode<T> {
   /** One segment, or a compressed single-child chain rendered as one row: `src/models`. */
   name: string

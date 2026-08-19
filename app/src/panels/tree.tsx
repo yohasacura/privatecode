@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
-import type { ChangeDecor } from '../lib/path-tree'
+import { compareTreeRows, type ChangeDecor } from '../lib/path-tree'
 import type { ChatItem } from '../lib/state'
 import { describeMark, type GhostRow, type GitMark } from '../lib/git-scm'
 import { Icon } from '../components/icons'
@@ -397,9 +397,9 @@ function DirChildren({
   }
   const entries = state.entries
 
-  // Deleted files, appended after what the disk still has: the listing cannot contain
-  // them, and a deletion nobody can see is the change most worth seeing. A name that
-  // somehow exists on disk again (deleted, then recreated untracked) is not ghosted.
+  // Deleted files, folded in among the files the disk still has: the listing cannot
+  // contain them, and a deletion nobody can see is the change most worth seeing. A name
+  // that somehow exists on disk again (deleted, then recreated untracked) is not ghosted.
   //
   // A directory deleted WHOLE takes its listing with it, so its ghosts would render
   // nowhere. They are claimed here by the deepest listing that still exists: a ghost
@@ -422,7 +422,6 @@ function DirChildren({
       if (entries.some((e) => e.dir && e.name === first)) continue
       ghostList.push(...list.map((g) => ({ name: `${below}/${g.name}`, path: g.path })))
     }
-    ghostList.sort((a, b) => a.name.localeCompare(b.name))
   }
 
   // A directory emptied BY deletions is not "empty" — it is where the ghosts live.
@@ -443,9 +442,19 @@ function DirChildren({
       })
     : entries
 
+  // One list, in explorer order. The ghosts are merged in rather than appended so a
+  // deleted file sits where it lived — the folder still reads like the folder, which is
+  // the whole point of showing it at all.
+  const rows: ({ ghost: false; name: string; dir: boolean } | { ghost: true; name: string; dir: boolean; path: string })[] = [
+    ...shown.map((e) => ({ ghost: false as const, name: e.name, dir: e.dir })),
+    ...ghostList.map((g) => ({ ghost: true as const, name: g.name, dir: false, path: g.path })),
+  ].sort(compareTreeRows)
+
   return (
     <>
-      {shown.map((entry) => {
+      {rows.map((row) => {
+        if (row.ghost) return renderGhost(row)
+        const entry = { name: row.name, dir: row.dir }
         const childPath = path === '' ? entry.name : `${path}/${entry.name}`
         const isExpanded = expanded.has(childPath)
         // The workspace's own folders, managed right where they are seen: a top-level
@@ -455,7 +464,7 @@ function DirChildren({
         const mount = depth === 0 && entry.dir ? mounts?.find((m) => m.name === entry.name) : undefined
         const fileChange = !entry.dir ? decor?.files.get(childPath) : undefined
         const mark = !entry.dir ? git?.get(childPath) : undefined
-        const row = (
+        const rowNode = (
           /* A button, not a div with onClick: bare divs cannot take focus, so the whole
               tree was unreachable by keyboard — not one directory could be expanded, not
               one file opened, without a mouse. A button gets Tab, Enter and Space for
@@ -519,8 +528,8 @@ function DirChildren({
         return (
           <div key={childPath}>
             {mount !== undefined && mountActions !== undefined
-              ? <div class="tree-mount">{row}<MountControls mount={mount} actions={mountActions} /></div>
-              : row}
+              ? <div class="tree-mount">{rowNode}<MountControls mount={mount} actions={mountActions} /></div>
+              : rowNode}
             {entry.dir && isExpanded && (
               <DirChildren
                 path={childPath} dirs={dirs} expanded={expanded} onToggle={onToggle}
@@ -536,33 +545,36 @@ function DirChildren({
           </div>
         )
       })}
-      {ghostList.map((g) => {
-        const mark = git?.get(g.path)
-        const fileChange = decor?.files.get(g.path)
-        return (
-          <button
-            key={`ghost:${g.path}`}
-            // A staged deletion is as much "chosen for the commit" as a staged edit —
-            // the ghost row wears the same highlight the living rows do.
-            class={`tree-row tree-file tree-ghost${mark?.staged === true ? ' tree-row-staged' : ''}`}
-            style={{ paddingLeft: `${depth * 12 + 6}px` }}
-            title={`${g.path} — deleted; click for the diff`}
-            onClick={() => onOpenDiff?.(g.path)}
-          >
-            <span class="tree-chevron" />
-            <span class="tree-icon">{Icon.file()}</span>
-            <span class="tree-name tree-name-ghost">{g.name}</span>
-            {fileChange !== undefined && (
-              <span class="tree-change-stat">
-                +{fileChange.added} −{fileChange.removed}
-              </span>
-            )}
-            {mark !== undefined && (
-              <GitCluster path={g.path} mark={mark} actions={gitActions} />
-            )}
-          </button>
-        )
-      })}
     </>
   )
+
+  /** A deleted file's row. Same shape as a living one, struck through, and it opens the
+   * diff rather than a file the disk no longer has. */
+  function renderGhost(g: { name: string; path: string }): VNode {
+    const mark = git?.get(g.path)
+    const fileChange = decor?.files.get(g.path)
+    return (
+      <button
+        key={`ghost:${g.path}`}
+        // A staged deletion is as much "chosen for the commit" as a staged edit —
+        // the ghost row wears the same highlight the living rows do.
+        class={`tree-row tree-file tree-ghost${mark?.staged === true ? ' tree-row-staged' : ''}`}
+        style={{ paddingLeft: `${depth * 12 + 6}px` }}
+        title={`${g.path} — deleted; click for the diff`}
+        onClick={() => onOpenDiff?.(g.path)}
+      >
+        <span class="tree-chevron" />
+        <span class="tree-icon">{Icon.file()}</span>
+        <span class="tree-name tree-name-ghost">{g.name}</span>
+        {fileChange !== undefined && (
+          <span class="tree-change-stat">
+            +{fileChange.added} −{fileChange.removed}
+          </span>
+        )}
+        {mark !== undefined && (
+          <GitCluster path={g.path} mark={mark} actions={gitActions} />
+        )}
+      </button>
+    )
+  }
 }

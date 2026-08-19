@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest'
-import { buildPathTree, decorateChanges } from './path-tree'
+import { buildPathTree, compareTreeRows, decorateChanges } from './path-tree'
+
+describe('compareTreeRows', () => {
+  const order = (names: string[], dirs: string[] = []): string[] =>
+    names.map((name) => ({ name, dir: dirs.includes(name) }))
+      .sort(compareTreeRows)
+      .map((r) => r.name)
+
+  it('puts folders above files, the way a file explorer does', () => {
+    expect(order(['README.md', 'src', 'GUIDE.md', 'docs'], ['src', 'docs']))
+      .toEqual(['docs', 'src', 'GUIDE.md', 'README.md'])
+  })
+
+  it('does not sort by case: an uppercase name belongs beside its neighbours', () => {
+    // The reported symptom — every capitalised file jumped into a block of its own.
+    expect(order(['greet.js', 'GUIDE.md', 'app.ts'])).toEqual(['app.ts', 'greet.js', 'GUIDE.md'])
+  })
+
+  it('reads digits as numbers, so v2 comes before v10', () => {
+    expect(order(['v10.ts', 'v2.ts', 'v1.ts'])).toEqual(['v1.ts', 'v2.ts', 'v10.ts'])
+  })
+
+  it('is stable for names that differ only in case', () => {
+    // Case-insensitive alone leaves these to chance; the tiebreak has to decide.
+    const one = order(['a.ts', 'A.ts'])
+    const other = order(['A.ts', 'a.ts'])
+    expect(one).toEqual(other)
+  })
+})
 
 describe('buildPathTree', () => {
   const paths = (node: import('./path-tree').PathTreeNode<string>): string[] =>

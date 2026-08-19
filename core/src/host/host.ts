@@ -1535,7 +1535,16 @@ export class SessionHost {
       // not the model's picker (`file-search.ts` SKIP governs that one).
       .filter((d) => !(d.isDirectory() && (d.name === '.privatecode' || d.name === '.git')))
       .map((d) => ({ name: d.name, dir: d.isDirectory() }))
-      .sort((a, b) => a.name.localeCompare(b.name))
+      // A file explorer's order: folders first, then files, names compared without case as
+      // a sort key and with digits read as numbers (`v2` before `v10`). A flat
+      // `localeCompare` mixed folders in among the files and pushed every capitalised name
+      // into a block of its own — see `compareTreeRows` in the app, which sorts what is
+      // actually rendered (its rows include git's deleted-file ghosts) by the same rule.
+      .sort((a, b) => {
+        if (a.dir !== b.dir) return a.dir ? -1 : 1
+        const byName = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+        return byName !== 0 ? byName : a.name.localeCompare(b.name)
+      })
     return { entries }
   }
 
