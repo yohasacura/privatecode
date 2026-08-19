@@ -408,6 +408,7 @@ export class SessionHost {
     await Promise.all([
       toolset ? toolset.background.stopAll().catch(() => {}) : Promise.resolve(),
       toolset ? toolset.browser.close().catch(() => {}) : Promise.resolve(),
+      toolset ? toolset.webRenderer.close().catch(() => {}) : Promise.resolve(),
       this.mcp ? this.mcp.closeAll().catch(() => {}) : Promise.resolve(),
       // The C# navigator holds a whole compilation in memory and is per-workspace, so it
       // belongs in exactly this list: an `init` that switched workspaces while leaving the

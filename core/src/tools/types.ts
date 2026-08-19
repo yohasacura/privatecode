@@ -20,6 +20,11 @@ export interface ToolContext {
   todos?: TodoStore
   /** The browser, when this host provides one. Lazy: holding it starts nothing. */
   browser?: BrowserManager
+  /** The HEADLESS renderer the `web` tool escalates to for JavaScript-shell pages.
+   * A separate instance from `browser` on purpose: reading a page for research must
+   * never flash a window, and the visible browser's page must never be navigated away
+   * under the user by a background read. Lazy like its sibling. */
+  webRenderer?: BrowserManager
   /**
    * The database this workspace works against, when one is configured.
    *

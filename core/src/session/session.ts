@@ -2851,6 +2851,7 @@ export class Session {
       // The toolset owns it, so it survives a session switch: closing a page the user is
       // looking at because they clicked Resume would be its own small betrayal.
       browser: this.opts.toolset.browser,
+      webRenderer: this.opts.toolset.webRenderer,
       reads: this.opts.toolset.reads,
     }
     // Built once per Session, so the circuit breaker inside it counts failures across the

@@ -27,7 +27,9 @@
     "ws": "^8.21.1"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "execa": "^9.5.0",
+    "linkedom": "^0.18.13",
     "web-tree-sitter": "^0.24.7"
   }
 }

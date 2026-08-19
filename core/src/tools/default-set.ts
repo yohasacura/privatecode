@@ -14,6 +14,7 @@ import { gitStatusTool } from './git-tool.js'
 import { TodoStore } from '../interaction.js'
 import { todoWriteTool } from './todo-write.js'
 import { askUserTool } from './ask-user.js'
+import { webTool } from './web.js'
 import { symbolOutlineTool } from './symbol-outline.js'
 import { browserTool } from './browser.js'
 import { useSkillTool } from './use-skill.js'
@@ -22,6 +23,7 @@ import { databaseTool } from './database.js'
 import { sqlDeployTool } from './sql-deploy.js'
 import { rememberTool } from './remember.js'
 import { BrowserManager, type BrowserOptions } from '../browser/manager.js'
+import { profileDir } from '../browser/launcher.js'
 
 export interface Toolset {
   registry: ToolRegistry
@@ -34,6 +36,10 @@ export interface Toolset {
   /** Owned by the host in the same way: call close() on shutdown. Lazy — constructing it
    * starts no browser, so a session that never opens a page never pays for one. */
   browser: BrowserManager
+  /** The `web` tool's headless renderer for JavaScript-shell pages. Its own instance so
+   * a background read never flashes a window or steals the visible browser's page.
+   * Lazy and host-closed exactly like `browser`. */
+  webRenderer: BrowserManager
 }
 
 export interface ToolsetOptions {
@@ -49,17 +55,29 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   const todos = new TodoStore(opts.workspaceRoot)
   const reads = new ReadMemory()
   const browser = new BrowserManager(opts.browser ?? {})
+  // Same executable override as the visible browser, forced headless: this one exists to
+  // render JavaScript-shell pages for the `web` tool, and a window would be a bug. Its
+  // OWN profile directory, non-negotiably: Chromium runs one instance per profile, so on
+  // the shared default the renderer and the visible browser killed each other — one web
+  // read of a JS-shell page disabled the browser tool for the rest of the session.
+  const webRenderer = new BrowserManager({
+    ...(opts.browser?.exePath !== undefined ? { exePath: opts.browser.exePath } : {}),
+    headless: true,
+    userDataDir: `${profileDir()}-headless`,
+  })
   // Registration order is the order the schemas reach the model, and `csharp_nav` sat 17th
   // of 18 -- past every file tool, next to the browser. Moved beside `search_code`, which is
   // what it competes with: both answer "where is this used", one by text and one by meaning.
   // Free, and unmeasured: no claim is made here that position is what routes the choice.
-  for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, csharpNavTool, databaseTool,
+  // `web` sits beside the search family for the same unmeasured reason: it answers "find
+  // out", and the model reaching for information should meet it before run_command.
+  for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webTool, csharpNavTool, databaseTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool, sqlDeployTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
                    symbolOutlineTool, browserTool, useSkillTool, rememberTool]) {
     registry.register(t)
   }
-  return { registry, background, todos, browser, reads }
+  return { registry, background, todos, browser, webRenderer, reads }
 }
 
 /** Back-compat for existing callers/tests that only need the registry. */

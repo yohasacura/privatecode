@@ -19,6 +19,11 @@ export interface BrowserOptions {
   headless?: boolean
   /** Override the browser executable. Default: the first Edge or Chrome that is installed. */
   exePath?: string
+  /** The Chromium profile directory. Chromium allows ONE live instance per profile, so
+   * two managers meant to coexist (the visible browser and the web tool's headless
+   * renderer) MUST each carry their own — sharing the default silently killed whichever
+   * launched second, and the survivor's DevToolsActivePort was deleted from under it. */
+  userDataDir?: string
 }
 
 export class BrowserManager {
@@ -62,6 +67,7 @@ export class BrowserManager {
     this.dead = false
     const browser = await launchBrowser({
       ...(this.opts.exePath !== undefined ? { exePath: this.opts.exePath } : {}),
+      ...(this.opts.userDataDir !== undefined ? { userDataDir: this.opts.userDataDir } : {}),
       headless: this.opts.headless ?? false,
     })
     this.browser = browser

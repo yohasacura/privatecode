@@ -51,6 +51,11 @@ export const EXEC_TOOLS: ReadonlySet<string> = new Set(['run_command', 'backgrou
 /** The single browser tool. Named here so the engine does not import the tool module. */
 export const BROWSER_TOOL = 'browser'
 
+/** The web search/read tool, same arrangement. Its `search` action carries this fixed
+ * target; reads carry the URL. */
+export const WEB_TOOL = 'web'
+export const WEB_SEARCH_TARGET = 'search'
+
 // Re-exported so every caller has one place to import the MCP namespace from; it is
 // declared in rules.ts because `ruleMatches` needs it and the dependency only runs one way.
 export { MCP_TOOL_PREFIX }
@@ -69,7 +74,7 @@ export { MCP_TOOL_PREFIX }
  * the only ungated one in it.
  */
 export function isExternalTool(name: string): boolean {
-  return name === BROWSER_TOOL || name.startsWith(MCP_TOOL_PREFIX)
+  return name === BROWSER_TOOL || name === WEB_TOOL || name.startsWith(MCP_TOOL_PREFIX)
 }
 
 /**
@@ -80,7 +85,8 @@ export function isExternalTool(name: string): boolean {
 function acceptsSpec(tool: string): boolean {
   // An MCP key carries none of the three: `mcp__x__y(anything)` is always a dead rule.
   if (tool.startsWith(MCP_TOOL_PREFIX)) return false
-  return FILE_WRITE_TOOLS.has(tool) || EXEC_TOOLS.has(tool) || tool === BROWSER_TOOL
+  return FILE_WRITE_TOOLS.has(tool) || EXEC_TOOLS.has(tool) || tool === BROWSER_TOOL ||
+    tool === WEB_TOOL
 }
 
 /**
@@ -355,6 +361,17 @@ export class PermissionEngine {
     // fallback once no rule matched at all.
     if (EXEC_TOOLS.has(key.tool) && key.command === undefined) {
       return { verdict: 'allow', reason: 'control operation', source: 'mode' }
+    }
+
+    // Searching is free in every working mode — it reaches only the search engine, and
+    // per-search approvals would train reflexive clicking, the weakest gate there is.
+    // This is the MODE default: an explicit `deny: ["web"]` (or `web(search)`) rule
+    // matched earlier in decide() and still kills it. Reads fall through to the
+    // external-tool arms below and ask per origin, exactly like the browser.
+    // (Plan mode never reaches here for `web` at all: the tool is not read-only, so a
+    // plan-mode agent is never offered it.)
+    if (key.tool === WEB_TOOL && key.target === WEB_SEARCH_TARGET && this.mode !== 'plan') {
+      return { verdict: 'allow', reason: 'web search reaches only the search engine', source: 'mode' }
     }
 
     switch (this.mode) {

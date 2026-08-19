@@ -345,6 +345,7 @@ describe.runIf(enabled)('Plan 3 live acceptance suite', () => {
         background: new BackgroundTasks(),
         todos: new TodoStore(),
         browser: new BrowserManager(),
+        webRenderer: new BrowserManager({ headless: true }),
         reads: new ReadMemory(),
       }
       const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })

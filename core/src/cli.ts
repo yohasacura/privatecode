@@ -205,6 +205,7 @@ async function main() {
     await Promise.all([
       toolset.background.stopAll().catch(() => {}),
       toolset.browser.close().catch(() => {}),
+      toolset.webRenderer.close().catch(() => {}),
       mcp.closeAll().catch(() => {}),
     ])
   }
