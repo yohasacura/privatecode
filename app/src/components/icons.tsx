@@ -36,6 +36,8 @@ export const Icon = {
   files: () => <Svg><path d="M2.5 4.5A1.5 1.5 0 0 1 4 3h2.2l1.3 1.6H12a1.5 1.5 0 0 1 1.5 1.5v5.4A1.5 1.5 0 0 1 12 13H4a1.5 1.5 0 0 1-1.5-1.5z" /></Svg>,
   file: () => <Svg><path d="M4 2h4.5L12 5.5V14H4z" /><path d="M8.5 2v3.5H12" /></Svg>,
   folder: () => <Svg><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2l1.3 1.6h5.7A1.5 1.5 0 0 1 14 6.1v5.4A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5z" /></Svg>,
+  /** Two opposed arrows: exchanging one thing for another. The workspace switcher. */
+  swap: () => <Svg><path d="M2.5 5h8.5M8.5 2.5 11 5l-2.5 2.5M13.5 11H5M7.5 8.5 5 11l2.5 2.5" /></Svg>,
   diff: () => <Svg><path d="M4 2.5v11M2 4.5h4M2 11.5h4M10 2.5v11M8 7h4" /></Svg>,
   terminal: () => <Svg><path d="M3 4l3 3-3 3M8.5 11H13" /><rect x="1.5" y="1.5" width="13" height="13" rx="2" /></Svg>,
   jobs: () => <Svg><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3.2l2 1.3" /></Svg>,

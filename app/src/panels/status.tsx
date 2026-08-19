@@ -7,7 +7,6 @@ import type { ChatState } from '../lib/state'
 import { formatTokenCount } from '../lib/format'
 import { Icon } from '../components/icons'
 import type { SessionSwitch } from './sessions-rail'
-import { Folders } from './folders'
 import { Permissions } from './permissions'
 import { McpEditor } from './mcp-editor'
 import { Skills } from './skills'
@@ -185,12 +184,9 @@ function McpServers({ client }: { client: ProtocolClient }): VNode | null {
 }
 
 export function SettingsModal({
-  client, isDevBridge, onClose, onSessionSwitched, liveMode,
+  client, onClose, onSessionSwitched, liveMode,
 }: {
   client: ProtocolClient
-  /** Dev-bridge mode (a `?ws=` URL) has no Tauri window behind it to own a native folder
-   * dialog, so it gets a plain text field instead. */
-  isDevBridge: boolean
   /** See Permissions.liveMode. */
   liveMode?: AgentMode
   onClose: () => void
@@ -201,17 +197,17 @@ export function SettingsModal({
   ) => void
 }): VNode {
   const [serverUrl, setServerUrl] = useState('http://127.0.0.1:8080')
+  /** The CURRENT workspace, held invisibly: applying a server change re-opens it, and
+   * the most recent entry is by definition the one that is open. */
   const [workspace, setWorkspace] = useState('')
-  const [recent, setRecent] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
-  const [tab, setTab] = useState<'workspace' | 'permissions' | 'skills' | 'mcp'>('workspace')
+  const [tab, setTab] = useState<'server' | 'permissions' | 'skills' | 'mcp'>('server')
 
   useEffect(() => {
     client.call('config.get', {})
       .then((r) => {
         if (r.serverUrl !== undefined) setServerUrl(r.serverUrl)
-        setRecent(r.recentWorkspaces)
         if (r.recentWorkspaces[0]) setWorkspace(r.recentWorkspaces[0])
       })
       .catch(() => { /* host-side defaults already cover this */ })
@@ -251,12 +247,6 @@ export function SettingsModal({
     }
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
-  }
-
-  async function pickWorkspaceDialog(): Promise<void> {
-    const { open } = await import('@tauri-apps/plugin-dialog')
-    const result = await open({ directory: true, multiple: false })
-    if (typeof result === 'string') setWorkspace(result)
   }
 
   function connect(): void {
@@ -301,7 +291,7 @@ export function SettingsModal({
             it. A section you have to already know about to find is not a section. */}
         <div class="modal-tabs" role="tablist">
           {([
-            ['workspace', 'Workspace'],
+            ['server', 'Server'],
             ['permissions', 'Permissions'],
             ['skills', 'Skills'],
             ['mcp', 'MCP servers'],
@@ -318,7 +308,10 @@ export function SettingsModal({
           ))}
         </div>
 
-        {tab === 'workspace' && (
+        {/* Only the SERVER lives here now. Everything about the workspace — its folders,
+            its name, switching to another one — moved to the Workspace tab, which is
+            where the owner went looking for all of it. */}
+        {tab === 'server' && (
           <>
             <label class="field-label" for="set-url">Model server</label>
             <input
@@ -330,40 +323,6 @@ export function SettingsModal({
             />
             <div class="field-hint">Your llama.cpp server. Nothing is ever sent anywhere else.</div>
 
-            <label class="field-label" for="set-ws">Workspace</label>
-            <div class="field-row">
-              <input
-                id="set-ws"
-                class="input"
-                value={workspace}
-                readOnly={!isDevBridge}
-                onInput={(e) => setWorkspace(e.currentTarget.value)}
-                placeholder={isDevBridge ? 'C:/path/to/project' : '(none picked)'}
-              />
-              {!isDevBridge && <button class="btn" onClick={() => void pickWorkspaceDialog()}>Browse…</button>}
-            </div>
-            <div class="field-hint">Everything the agent may read or change is bounded by this folder.</div>
-
-            {recent.length > 0 && (
-              <>
-                <div class="field-label">Recent</div>
-                <div class="recent-list">
-                  {recent.map((w) => (
-                    <button key={w} class={`recent-item ${w === workspace ? 'recent-item-active' : ''}`} onClick={() => setWorkspace(w)}>
-                      {w}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-
-            <div class="field-label">Folders</div>
-            <Folders
-              client={client}
-              isDevBridge={isDevBridge}
-              onChanged={() => connect()}
-            />
-
             {error && <div class="panel-error">{error}</div>}
 
             <button
@@ -371,10 +330,11 @@ export function SettingsModal({
               disabled={connecting || workspace.trim() === '' || serverUrl.trim() === ''}
               onClick={connect}
             >
-              {connecting ? 'Opening…' : 'Open workspace'}
+              {connecting ? 'Applying…' : 'Apply — re-open the workspace'}
             </button>
             <div class="field-hint">
-              Opening a workspace picks up its most recent session. New session starts a clean one.
+              Changing the server means re-opening the workspace against it; the current
+              session is picked back up.
             </div>
           </>
         )}

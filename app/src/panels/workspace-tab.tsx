@@ -161,7 +161,7 @@ export function WorkspaceTab({
             onClick={onSwitchWorkspace}
             title="Switch workspace — recents and the folder picker"
           >
-            {Icon.folder()}
+            {Icon.swap()}
           </button>
           <button
             class="icon-button"

@@ -15,6 +15,7 @@ import { Composer } from './panels/composer'
 import { ContextPanel } from './panels/context-panel'
 import { SessionsRail, type SessionSwitch } from './panels/sessions-rail'
 import { StatusBar, SettingsModal } from './panels/status'
+import { WorkspaceSwitch } from './panels/workspace-switch'
 import { Palette, type PaletteAction } from './panels/palette'
 import { Transcript } from './panels/transcript'
 import './App.css'
@@ -141,6 +142,7 @@ export default function App() {
   const [recents, setRecents] = useState<string[]>([])
   const [previewPath, setPreviewPath] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [switchOpen, setSwitchOpen] = useState(false)
   /** What this workspace is called and how many folders it spans. Kept beside `phase`
    * rather than inside it because it survives a session switch unchanged. */
   const [workspaceLabel, setWorkspaceLabel] = useState<{ name: string; folders: number }>({ name: '', folders: 1 })
@@ -529,7 +531,7 @@ export default function App() {
                     folderCount={workspaceLabel.folders}
                     isDevBridge={isDevBridge}
                     onReopenWorkspace={() => { if (client) void connect(client, workspaceRoot, serverInput.trim() || DEFAULT_SERVER_URL) }}
-                    onSwitchWorkspace={() => setSettingsOpen(true)}
+                    onSwitchWorkspace={() => setSwitchOpen(true)}
                     // Back to the start screen; nothing on disk is touched, and boot's
                     // auto-connect still remembers this workspace for next launch.
                     onCloseWorkspace={() => setPhase({ kind: 'welcome', error: null })}
@@ -611,10 +613,28 @@ export default function App() {
         />
       )}
 
+      {switchOpen && client && (
+        <WorkspaceSwitch
+          client={client}
+          isDevBridge={isDevBridge}
+          currentRoot={workspaceRoot}
+          onClose={() => setSwitchOpen(false)}
+          onSessionSwitched={(info) => {
+            dispatch({ type: 'session-switched', ...info })
+            if (info.items.length > 0) dispatch({ type: 'transcript-restored', entries: info.items })
+            for (const text of info.problems) dispatch({ type: 'settings-problem', text })
+            setPhase({ kind: 'ready', workspace: info.workspaceRoot })
+            setWorkspaceLabel({ name: info.workspaceName, folders: info.folderCount })
+            setPreviewPath(null)
+            setSessionsKey((k) => k + 1)
+            setSwitchOpen(false)
+          }}
+        />
+      )}
+
       {settingsOpen && client && (
         <SettingsModal
           client={client}
-          isDevBridge={isDevBridge}
           {...(chatState.session !== null ? { liveMode: chatState.session.mode } : {})}
           onClose={() => setSettingsOpen(false)}
           onSessionSwitched={(info) => {
