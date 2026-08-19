@@ -1,6 +1,6 @@
 import type { InteractionPort } from '../interaction.js'
 import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
-import type { ChatMessage, ChatResult, Timings, ToolCall } from '../llama/types.js'
+import type { ChatMessage, ChatResult, StreamProgress, Timings, ToolCall } from '../llama/types.js'
 import { BROWSER_TOOL, MCP_TOOL_PREFIX, type AgentMode, type PermissionEngine } from '../permissions/engine.js'
 import { suggestRules } from '../permissions/rules.js'
 import { Transcript } from '../transcript/transcript.js'
@@ -176,6 +176,16 @@ export interface AgentEvents {
    * on when a host wires one of them.
    */
   onToolCallDelta?(info: { index: number; name?: string; args?: string }): void
+  /**
+   * How far the current step's request has got — prefill, then generation.
+   *
+   * The state this exists for is the one with nothing to stream: while the server reads the
+   * prompt, no reasoning, no text and no tool argument is produced, so every other callback
+   * here is silent, and the window's only honest options were "working" or an inference
+   * drawn from the SHAPE of the transcript. This is the measurement instead. Fires under the
+   * same opt-in rule as the other delta callbacks, and is throttled in the client.
+   */
+  onProgress?(progress: StreamProgress): void
   onToolCall?(name: string, args: string): void
   /** `callId` is the model's own id for this call. Passed because the host records how each
    * call ended in a file beside the session -- the transcript keeps the result TEXT, which
@@ -1004,14 +1014,23 @@ export class Agent {
       // tool dispatch, transcript append, timeout/abort mapping — reads the ASSEMBLED
       // ChatResult that both methods return in the same shape; nothing downstream knows
       // which path produced it.
-      const result = events?.onThinkingDelta || events?.onTextDelta || events?.onToolCallDelta
+      const result = events?.onThinkingDelta || events?.onTextDelta || events?.onToolCallDelta ||
+        events?.onProgress
         ? await this.opts.client.chatStream(request, {
           onDelta: (d) => {
-            clock.touch()
-            // Every delta is proof the server is alive, whatever it carries — reasoning,
+            // Every delta that carries GENERATION is proof the server is alive — reasoning,
             // visible text, or a fragment of a tool argument. Re-arming here rather than only
             // for the kinds a host happens to render is the point: a step spends most of a
             // large edit emitting `toolCallArguments` and nothing else.
+            //
+            // A progress-only delta deliberately does NOT re-arm. It says the server is
+            // working, not that the generation is moving, and `firstTokenTimeoutMs` is a
+            // prefill-INCLUSIVE budget: letting prefill chunks extend it would quietly turn
+            // a total budget into a between-chunks one, so a prefill that crawls forever
+            // would never time out. That may well be the better policy — it is not this
+            // change's to make, and this change is meant to be purely observational.
+            if (d.progress === undefined) clock.touch()
+            else events?.onProgress?.(d.progress)
             if (d.reasoning) events?.onThinkingDelta?.(d.reasoning)
             if (d.content) events?.onTextDelta?.(d.content)
             if (d.toolCallIndex !== undefined && (d.toolCallName !== undefined || d.toolCallArguments !== undefined)) {

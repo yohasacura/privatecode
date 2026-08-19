@@ -129,6 +129,15 @@ export type ChatItem =
     droppedMessages?: number
     keptMessages?: number
     summary?: string
+    /**
+     * How far the summariser has got, while `state` is `'running'`.
+     *
+     * Carried on the ITEM rather than beside it in `ChatState` so the live number reaches the
+     * screen without giving every memoised transcript row a prop that changes four times a
+     * second. Only this row's identity changes, so only this row re-renders — the same reason
+     * the streamed text lives on its own item.
+     */
+    progress?: StepProgress
   }
 
 /** The turn-paused card `approvals.tsx` renders above the input while the sidecar awaits
@@ -193,6 +202,23 @@ export interface StepTiming {
    * streaming step. Four separate audit lenses found it independently.
    */
   aliveAtMs: number
+  /** How far this step's request has got — see `StepProgress`. Absent until the server
+   * reports something, and absent for a core too old to send it. */
+  progress?: StepProgress
+}
+
+/**
+ * A running generation's own account of where it is.
+ *
+ * One phase at a time, and which one is the information: `prompt` means the server is still
+ * READING (nothing streams during this, and on a long conversation it is the longest wait in
+ * a turn), `generated` means tokens are coming out. A progress event replaces this wholesale
+ * rather than merging into it, so the moment generation starts the prefill numbers stop being
+ * shown — a stale "12.4k / 18.1k" beside a live token count would read as two live phases.
+ */
+export interface StepProgress {
+  prompt?: { processed: number; total: number; cache: number }
+  generated?: { tokens: number; perSecond?: number }
 }
 
 export interface LastStepStats {
@@ -344,6 +370,9 @@ export type ChatAction =
   /** The server died mid-call and the same request is being re-sent: the dead attempt's
    * partial cards are superseded and must go, or the retry streams onto them. */
   | { type: 'step.retry'; atMs: number }
+  /** Where a running generation has got to — the turn's step, or the background compaction.
+   * Purely a readout: it moves no clock and closes no card. */
+  | { type: 'generation.progress'; scope: 'step' | 'compaction'; progress: StepProgress }
   /** Something streamed, so the step is alive: restarts the silence countdown. Dispatched
    * once per animation frame by whichever buffer had content, mirroring the core's
    * `clock.touch()` on every delta. */
@@ -451,6 +480,28 @@ function openThinking(items: ChatItem[]): (ChatItem & { kind: 'thinking' }) | un
  * and only the live state ends, which is what stops the animation. A no-op when nothing is
  * open, so every action that could possibly end reasoning can call it unconditionally.
  */
+/** Last match's index, or -1. Hand-written rather than `Array.prototype.findLastIndex`,
+ * which this app's lib target does not carry (the same reason `.at()` is avoided here). */
+function findLastIndex<T>(items: readonly T[], match: (item: T) => boolean): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (match(items[i] as T)) return i
+  }
+  return -1
+}
+
+/**
+ * The step with the previous request's progress dropped.
+ *
+ * A forced continuation and a server-death retry both start a NEW request, whose prefill
+ * begins again from whatever the server still has cached. Carrying the readout forward would
+ * show the dead attempt's token count while the live one has produced nothing — the same
+ * class of lie as the spliced reasoning the retry case removes items for.
+ */
+function restarted(step: StepTiming): StepTiming {
+  const { progress: _dropped, ...rest } = step
+  return rest
+}
+
 function closeThinking(items: ChatItem[], atMs: number | undefined): ChatItem[] {
   const open = openThinking(items)
   if (!open) return items
@@ -649,6 +700,27 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         },
       }
 
+    case 'generation.progress': {
+      if (action.scope === 'compaction') {
+        // Onto the one running compaction row, if there is one. Searched from the end
+        // because a long session holds every earlier compaction's finished row, and only the
+        // last can be live: `compaction` moves a row out of `'running'` before the next one
+        // can start. No running row means the summariser finished (or never started) between
+        // the server's chunk and this reducer — nothing to update, and nothing wrong.
+        const at = findLastIndex(state.items, (i) => i.kind === 'compaction-record' && i.state === 'running')
+        if (at === -1) return state
+        const items = [...state.items]
+        items[at] = { ...(items[at] as Extract<ChatItem, { kind: 'compaction-record' }>), progress: action.progress }
+        return { ...state, items }
+      }
+      // A step's progress with no step running is not an error worth reacting to — the
+      // likeliest cause is the tail of a request whose step already ended — but it must not
+      // conjure a `currentStep` out of nothing, which everything downstream reads as "a step
+      // is running".
+      if (state.currentStep === null) return state
+      return { ...state, currentStep: { ...state.currentStep, progress: action.progress } }
+    }
+
     case 'step.continuation':
       if (state.currentStep === null) return state
       return {
@@ -666,7 +738,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         // call never resolved.
         items: closeWritingCalls(state.items, TRUNCATED_BEFORE_CALL),
         currentStep: {
-          ...state.currentStep,
+          ...restarted(state.currentStep),
           // A fresh silent-prefill stretch starts NOW: the anchor moves so the countdown
           // measures this wait, and the budget is the continuation's own.
           aliveAtMs: action.atMs,
@@ -698,7 +770,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         // first-token countdown exactly as a continuation does. The original
         // firstTokenTimeoutMs is kept by the spread — the step's own budget still applies.
         ...(state.currentStep !== null
-          ? { currentStep: { ...state.currentStep, aliveAtMs: action.atMs, waitingFirstToken: true } }
+          ? { currentStep: { ...restarted(state.currentStep), aliveAtMs: action.atMs, waitingFirstToken: true } }
           : {}),
       }
     }
@@ -1231,8 +1303,12 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           (item.state === 'running' || item.state === 'ready')
         if (updated || !live) return item
         updated = true
+        // `progress` goes with the running state that owned it. Nothing renders it on a
+        // closed row, so keeping it would be invisible rather than wrong — which is exactly
+        // how a stale reading survives to be shown by some later change.
+        const { progress: _finished, ...carried } = item
         return {
-          ...item,
+          ...carried,
           state: outcome,
           ...(action.droppedMessages !== undefined ? { droppedMessages: action.droppedMessages } : {}),
           ...(action.reason !== undefined ? { reason: action.reason } : {}),

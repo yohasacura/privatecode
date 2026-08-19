@@ -7,7 +7,7 @@ import { pendingTool, type ChatAction, type ChatItem, type ChatState } from '../
 import { Markdown } from '../lib/markdown'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
 import { presentTool, screenshotPathOf, type ToolKind } from '../lib/tools'
-import { formatDuration } from '../lib/format'
+import { formatDuration, formatProgress } from '../lib/format'
 import { useStickToBottom } from '../lib/sticky-scroll'
 import { Icon } from '../components/icons'
 import { CopyButton } from '../components/copy'
@@ -173,6 +173,11 @@ export function Transcript({
 
   const waiting = state.turnRunning && isQuiet(lastItem) &&
     !state.pendingApproval && !state.pendingQuestion
+  /** The waiting row is shown exactly when nothing is streaming, which is exactly when the
+   * server's own progress is the only thing that can distinguish working from stuck. */
+  const waitingProgress = state.currentStep?.progress !== undefined
+    ? formatProgress(state.currentStep.progress)
+    : null
 
   // While an approval is open, the call it is asking about is already announced -- in more
   // detail, with the diff or the command text -- by the card itself. Rendering the bare
@@ -272,6 +277,7 @@ export function Transcript({
             <div class="row-gutter" aria-hidden="true"><span class="pulse-dot" /></div>
             <div class="row-body">
               working{state.currentStep ? ` · step ${state.currentStep.step}` : ''}
+              {waitingProgress !== null && <span class="record-quiet"> · {waitingProgress}</span>}
             </div>
           </div>
         )}
@@ -343,11 +349,16 @@ function CompactionRecord({ item }: { item: Extract<ChatItem, { kind: 'compactio
   const [open, setOpen] = useState(false)
 
   if (item.state === 'running') {
+    // A compaction re-reads the entire conversation before it writes a word, so the first
+    // stretch of this row is pure prefill and the sentence below was, for minutes, the only
+    // thing distinguishing it from a hang. The measured line says which half it is in.
+    const measured = item.progress !== undefined ? formatProgress(item.progress) : null
     return (
       <Row kind="record record-compaction" marker={<span class="pulse-dot" />}>
         <span class="record-text">
           compacting the conversation — summarising what happened so far so it fits in the
           context window. This takes a few minutes on a full one.
+          {measured !== null && <span class="record-quiet"> · {measured}</span>}
         </span>
       </Row>
     )

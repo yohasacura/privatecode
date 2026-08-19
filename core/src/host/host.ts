@@ -870,6 +870,9 @@ export class SessionHost {
           ...(info.reason !== undefined ? { reason: info.reason } : {}),
         })
       },
+      onCompactionProgress: (progress) => this.emit('generation.progress', {
+        scope: 'compaction', ...progress,
+      }),
     }
     if (memory.layers.length > 0) sessionOpts.memory = memory
     if (skills.skills.length > 0) sessionOpts.skills = skills
@@ -1252,6 +1255,7 @@ export class SessionHost {
         ...(info.completionTokens !== undefined ? { completionTokens: info.completionTokens } : {}),
         ...(info.draftAcceptance !== undefined ? { draftAcceptance: info.draftAcceptance } : {}),
       }),
+      onProgress: (progress) => this.emit('generation.progress', { scope: 'step', ...progress }),
       onThinkingDelta: (text) => this.emit('thinking.delta', { text }),
       onTextDelta: (text) => this.emit('text.delta', { text }),
       onToolCallDelta: (info) => this.emit('tool.call.delta', info),

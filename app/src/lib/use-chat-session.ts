@@ -180,6 +180,16 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         type: 'tool.result', name: d.name, ok: d.ok, content: d.content,
         ...(d.display !== undefined ? { display: d.display } : {}),
       })),
+      client.on('generation.progress', (d) => emit({
+        type: 'generation.progress',
+        scope: d.scope,
+        // Rebuilt rather than spread so a future field on the wire cannot arrive in the
+        // reducer's state unannounced. One of the two is present, never both.
+        progress: {
+          ...(d.prompt !== undefined ? { prompt: d.prompt } : {}),
+          ...(d.generated !== undefined ? { generated: d.generated } : {}),
+        },
+      })),
       client.on('step.done', (d) => emit({
         type: 'step.done',
         step: d.step,

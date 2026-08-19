@@ -11,6 +11,42 @@ export function formatTokenCount(n: number): string {
   return String(Math.round(n))
 }
 
+/**
+ * A running generation's own account of where it is, as one short phrase.
+ *
+ * Two phases, and which one is showing is the point. `reading 12.4k / 18.1k · 9.7k cached`
+ * is prefill — the server is working through the prompt and nothing streams, which is the
+ * silence that used to read as a freeze. `1.2k tokens · 61 tok/s` is generation.
+ *
+ * The cached figure stays even at zero, spelled `none cached`, because zero is the loudest
+ * reading there is: it means the prefix diverged and the whole prompt is being re-read, which
+ * on this machine is the difference between half a second and half a minute. A bare `0` in a
+ * row of numbers is easy to skim past; `none` is not.
+ *
+ * Null when there is nothing measured to say, which is what a caller falls back from.
+ */
+export function formatProgress(progress: {
+  prompt?: { processed: number; total: number; cache: number }
+  generated?: { tokens: number; perSecond?: number }
+}): string | null {
+  const { prompt, generated } = progress
+  if (generated !== undefined && generated.tokens > 0) {
+    const rate = generated.perSecond !== undefined && generated.perSecond > 0
+      ? ` · ${Math.round(generated.perSecond)} tok/s`
+      : ''
+    return `${formatTokenCount(generated.tokens)} tokens${rate}`
+  }
+  if (prompt !== undefined && prompt.total > 0) {
+    const cached = prompt.cache > 0 ? `${formatTokenCount(prompt.cache)} cached` : 'none cached'
+    // Clamped because the two numbers come from different counters on the server, and a
+    // "19.0k / 18.1k" would read as a bug in the app rather than as the last batch of a
+    // finished prefill.
+    const processed = Math.min(prompt.processed, prompt.total)
+    return `reading ${formatTokenCount(processed)} / ${formatTokenCount(prompt.total)} · ${cached}`
+  }
+  return null
+}
+
 /** `0.8s` / `12s` / `3m 04s` / `1h 12m` -- a duration a human reads at a glance. */
 export function formatDuration(ms: number): string {
   const s = ms / 1000

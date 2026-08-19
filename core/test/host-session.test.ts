@@ -72,6 +72,21 @@ function toolCallSSE(
   return new RawResponse(200, body, 'text/event-stream')
 }
 
+/**
+ * A `chatStream`-shaped SSE response for a COMPACTION: prose only, no tool call, and a
+ * `prompt_progress` chunk ahead of it — the shape a compaction really has now that it
+ * streams, and the one the live row's readout is built from.
+ */
+function compactionSSE(text: string, finishReason: 'stop' | 'length' = 'stop'): RawResponse {
+  const body =
+    sseFrame({ choices: [], prompt_progress: { total: 900, cache: 400, processed: 900, time_ms: 12 } }) +
+    sseFrame({ choices: [{ delta: { content: text } }], timings: { predicted_n: 7, predicted_per_second: 60 } }) +
+    sseFrame({ choices: [{ finish_reason: finishReason, delta: {} }], timings: {} }) +
+    sseFrame({ choices: [], usage: { prompt_tokens: 900, completion_tokens: 7 } }) +
+    SSE_DONE
+  return new RawResponse(200, body, 'text/event-stream')
+}
+
 /** A `chatStream`-shaped SSE response for a step that ends the turn with plain text. */
 function textSSE(
   text: string,
@@ -86,12 +101,18 @@ function textSSE(
 }
 
 /**
- * Routes `/props`/`/health` distinctly from `/v1/chat/completions`, and further splits
- * chat traffic by `body.stream`: every host-driven TURN always streams (SessionHost wires
- * onThinkingDelta/onTextDelta unconditionally -- see host.ts), while `generateCompaction`
- * always calls the plain, non-streaming `chat()` (`stream: false` in its payload) -- so
- * `body.stream` alone is enough to tell a turn's own generation apart from a background
- * compaction's, with no call-order bookkeeping needed.
+ * Routes `/props`/`/health` distinctly from `/v1/chat/completions`, and further splits chat
+ * traffic into "a turn's own generation" and everything else.
+ *
+ * `body.stream` alone used to be that split, because a host-driven turn always streamed and
+ * `generateCompaction` always called the plain `chat()`. It no longer is: a compaction under
+ * the host streams too, so that its prefill — the longest silence the app ever shows — can be
+ * reported live. `tool_choice: 'none'` is what still separates them, and it is not a proxy but
+ * the definitional difference: a compaction is the one request in this system with no tools
+ * and nothing to decide (`buildCompactionRequest`), while a turn always carries a tool list.
+ *
+ * The background PREWARM stays non-streaming and lands in the same branch a compaction used
+ * to; the two tests that care tell them apart by the message text, as they already did.
  */
 async function makeServer(
   chatHandler: (body: any, streaming: boolean) => unknown,
@@ -102,7 +123,7 @@ async function makeServer(
       return contextLength === null ? {} : { default_generation_settings: { n_ctx: contextLength } }
     }
     if (req.url === '/health') return { status: 'ok' }
-    return chatHandler(body, body.stream === true)
+    return chatHandler(body, body.stream === true && body.tool_choice !== 'none')
   })
 }
 
@@ -545,10 +566,7 @@ test('a message sent during a compaction waits for it instead of killing it', as
     compactions++
     // Slow enough that the second send() below lands while it is still in flight, which is
     // the whole situation under test.
-    return new Promise((resolve) => setTimeout(
-      () => resolve({ choices: [{ message: { content: 'a summary' }, finish_reason: 'stop' }] }),
-      120,
-    ))
+    return new Promise((resolve) => setTimeout(() => resolve(compactionSSE('a summary')), 120))
   })
   stop = fake.close
   const root = newWorkspace()
@@ -760,12 +778,7 @@ test('a long turn compacts between its own steps instead of dying on a full wind
   const fake = await makeServer((_body, streaming) => {
     if (!streaming) {
       compactions++
-      return {
-        choices: [{
-          message: { role: 'assistant', content: 'BRIEFING: what happened so far, in short.' },
-          finish_reason: 'stop',
-        }],
-      }
+      return compactionSSE('BRIEFING: what happened so far, in short.')
     }
     streamed++
     // Each working step reports a prompt the server itself measured at nearly the whole
@@ -1042,14 +1055,7 @@ test('a compaction rebuilds message 0 with the browser and injection-guard parag
   const CONTEXT = 40_000
   let streamed = 0
   const fake = await makeServer((_body, streaming) => {
-    if (!streaming) {
-      return {
-        choices: [{
-          message: { role: 'assistant', content: 'BRIEFING: two directories were listed.' },
-          finish_reason: 'stop',
-        }],
-      }
-    }
+    if (!streaming) return compactionSSE('BRIEFING: two directories were listed.')
     streamed++
     if (streamed === 1 || streamed === 3) return fatToolCallSSE(`d${streamed}`)
     return textSSE('listed it', { prompt_tokens: 2_000, completion_tokens: 5 })

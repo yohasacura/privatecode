@@ -796,6 +796,13 @@ kbd {
 .record-deny .row-gutter { color: var(--red); }
 .record-text { word-break: break-word; }
 .record-text em { font-style: normal; opacity: 0.8; }
+/* A live measurement sitting inside a sentence: same faint weight the status line gives its
+   own readings, and tabular figures so a count ticking four times a second does not shuffle
+   the words after it sideways. */
+.record-quiet {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
 
 .row-waiting {
   color: var(--text-faint);

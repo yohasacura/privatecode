@@ -23,7 +23,7 @@ import type { VerifySpec } from '../verify/config.js'
 import { runVerify, verifyFailureMessage } from '../verify/runner.js'
 import type { InteractionPort, TodoItem } from '../interaction.js'
 import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
-import type { ChatMessage } from '../llama/types.js'
+import type { ChatMessage, StreamProgress } from '../llama/types.js'
 import {
   BROWSER_TOOL, MCP_TOOL_PREFIX, type AgentMode, type PermissionEngine,
 } from '../permissions/engine.js'
@@ -254,6 +254,14 @@ export interface SessionOptions {
    */
   compactionDefaults?: Omit<CompactionOptions, 'contextLength'>
   onCompaction?(info: CompactionEvent): void
+  /**
+   * How far the compaction generation has got, while it runs.
+   *
+   * Wiring this is also what switches the compaction request to the streaming path — see
+   * `generateCompaction`. A front end that shows nothing (the CLI, every headless test)
+   * leaves it unset and keeps the cheaper non-streaming call.
+   */
+  onCompactionProgress?(progress: StreamProgress): void
 }
 
 /** What counts as changing the workspace, for `turnFootprint`. Mirrors the permission
@@ -2315,6 +2323,7 @@ export class Session {
             budgetTokens: this.summaryBudget(),
           },
           signal,
+          this.opts.onCompactionProgress,
         )
         this.opts.onCompaction?.({ state: 'ready' })
         const applied = this.applyCompactionSwap(result.summary)
@@ -2781,6 +2790,7 @@ export class Session {
         this.opts.client,
         { messages, workspaceRoot: this.opts.workspaceRoot, budgetTokens: this.summaryBudget() },
         signal,
+        this.opts.onCompactionProgress,
       )
       this.pendingSummary = result.summary
       // PREWARM, while the slot is idle and the summary waits for its swap: feed the

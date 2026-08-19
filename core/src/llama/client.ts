@@ -56,6 +56,17 @@ export class LlamaRequestError extends Error {
 /** Ceiling on how much of a response body is carried on an error. */
 const MAX_ERROR_BODY_CHARS = 600
 
+/** How often a running generation reports its token count. Four readings a second is past
+ * the rate a person reads a changing number, and far below the ~60 the server now offers. */
+const PROGRESS_MIN_INTERVAL_MS = 250
+
+/** A number off the wire, or the fallback. Guards the progress fields specifically: they
+ * are the one part of the SSE contract measured from documentation rather than from the
+ * live server, so a string, a null or a NaN there must read as "not reported". */
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
 export class LlamaClient {
   private readonly baseUrl: string
   private readonly model: string
@@ -189,9 +200,28 @@ export class LlamaClient {
       stream: true,
       stream_options: { include_usage: true },
       cache_prompt: true,
+      // The two opt-ins that make a running request observable rather than merely pending.
+      //
+      // `return_progress` adds `prompt_progress` chunks DURING prefill — the phase that
+      // streams nothing and is the longest silence in a turn. `timings_per_token` puts
+      // `timings` on every partial chunk instead of only the last, which is where the live
+      // token count comes from; counting SSE chunks would undercount, because with
+      // speculative decoding on this machine a chunk routinely carries two or three tokens.
+      //
+      // Both are ignored by a server that does not know them (llama.cpp drops unknown
+      // request fields), so this degrades to the previous behaviour rather than failing.
+      return_progress: true,
+      timings_per_token: true,
     }
     if (req.tools?.length) payload.tools = req.tools
     if (req.toolChoice) payload.tool_choice = req.toolChoice
+    // The same opt-out `chat()` sends, and it was missing here — latent until compaction
+    // started streaming, because until then every `disableThinking` caller (the distiller,
+    // the acceptance audit, the compaction summary) used the non-streaming path. A streamed
+    // compaction without this thinks: measured before the flag existed, two compactions
+    // generated 4022 and 4298 tokens against a 3000 budget, were truncated, and paid for a
+    // second generation each to produce one clipped summary. See `ChatRequest.disableThinking`.
+    if (req.disableThinking) payload.chat_template_kwargs = { enable_thinking: false }
 
     const path = '/v1/chat/completions'
     const timeout = AbortSignal.timeout(this.timeoutMs)
@@ -241,6 +271,22 @@ export class LlamaClient {
     let sawFinishReason = false
     let usage: ChatResult['usage']
     let timings: ChatResult['timings']
+    /**
+     * When a generation-progress delta was last emitted.
+     *
+     * `timings_per_token` means the server offers a fresh reading on EVERY token, which at
+     * this machine's ~60 tok/s would push sixty progress events a second through the agent
+     * loop, the host transport and a Preact reducer — for a number a person reads about
+     * four times a second. Throttled here rather than at the renderer because the cheapest
+     * event is the one never sent, and nothing downstream wants the finer grain.
+     *
+     * Dropping the last sample this way costs nothing: the authoritative final counts ride
+     * `ChatResult.timings`, which every consumer already reads at step end.
+     */
+    let lastProgressAtMs = 0
+    /** Whether THIS request has streamed anything of its own yet — the guard that keeps the
+     * slot's previous `predicted_n` from being reported as this generation's. See below. */
+    let sawGeneratedDelta = false
 
     /** Returns 'done' when this event was the literal `[DONE]` terminator. */
     const handleEvent = (raw: string): 'done' | void => {
@@ -258,6 +304,29 @@ export class LlamaClient {
       if (parsed.timings !== undefined) timings = parsed.timings
       if (parsed.usage != null) usage = parsed.usage
 
+      // Prefill progress rides its own chunk, which carries no `choices` at all — so it has
+      // to be read BEFORE the tolerate-no-choice return below, alongside timings and usage.
+      // Every field is read defensively: this is the one part of the wire format the spike
+      // never covered, and a missing key must degrade to "no progress shown" rather than
+      // throwing inside the stream reader, where the throw would be reported to the user as
+      // the model's answer having failed.
+      const rawPrompt = parsed.prompt_progress
+      if (rawPrompt != null && typeof rawPrompt === 'object') {
+        const total = numberOr(rawPrompt.total, 0)
+        // A total of zero says nothing and would render as a division by zero downstream.
+        if (total > 0) {
+          cb?.onDelta?.({
+            progress: {
+              prompt: {
+                processed: numberOr(rawPrompt.processed, 0),
+                total,
+                cache: numberOr(rawPrompt.cache, 0),
+              },
+            },
+          })
+        }
+      }
+
       const choice = parsed.choices?.[0]
       if (!choice) return // the usage-only chunk: tolerate no choices[0]
 
@@ -268,6 +337,13 @@ export class LlamaClient {
       }
 
       const delta = choice.delta ?? {}
+      // Has THIS request produced anything yet? The opening chunk is a bare `delta.role`
+      // marker whose `content` is null, and `typeof null` is not 'string', so it does not
+      // count — which is right: it is the server acknowledging the request, not answering it.
+      if (typeof delta.reasoning_content === 'string' || typeof delta.content === 'string' ||
+        Array.isArray(delta.tool_calls)) {
+        sawGeneratedDelta = true
+      }
       if (typeof delta.reasoning_content === 'string') {
         reasoning += delta.reasoning_content
         cb?.onDelta?.({ reasoning: delta.reasoning_content })
@@ -306,6 +382,39 @@ export class LlamaClient {
               })
             }
           }
+        }
+      }
+
+      // Generation progress, LAST — after the deltas above have said whether this request has
+      // actually started producing tokens.
+      //
+      // Measured against the live server, and the reason this is not simply `predicted_n > 0`:
+      // during prefill llama.cpp attaches the SLOT's previous timings to every progress chunk.
+      // A 22k-token prefill reported `predicted_n: 575` fourteen times in a row — the last
+      // request's count — so the window would have shown "575 tokens · 47.7 tok/s" ticking
+      // beside a request that had produced nothing, for the fifty-four seconds before its
+      // first real token. Waiting for a delta of our own is what tells the two apart.
+      if (sawGeneratedDelta) {
+        const predicted = numberOr(parsed.timings?.predicted_n, 0)
+        const now = performance.now()
+        if (predicted > 0 && now - lastProgressAtMs >= PROGRESS_MIN_INTERVAL_MS) {
+          lastProgressAtMs = now
+          const perSecond = parsed.timings?.predicted_per_second
+          // A rate over ONE token is not a rate: the server divides by an elapsed time of
+          // very nearly zero and the answer explodes. Measured live, the first frame after a
+          // warm prefill reported `predicted_per_second: 1000000` — which would have flashed
+          // "1 tokens · 1000000 tok/s" on screen and read as a broken readout. The count
+          // itself is true and is still shown; only the rate waits for a second token.
+          const rateIsMeaningful = predicted >= 2 && typeof perSecond === 'number' &&
+            Number.isFinite(perSecond)
+          cb?.onDelta?.({
+            progress: {
+              generated: {
+                tokens: predicted,
+                ...(rateIsMeaningful ? { perSecond: perSecond as number } : {}),
+              },
+            },
+          })
         }
       }
     }

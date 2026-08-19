@@ -64,8 +64,37 @@ export interface Timings {
   predicted_per_second?: number
   prompt_ms?: number
   predicted_ms?: number
+  /** Token COUNTS, as opposed to the rates above. Present on every partial chunk once a
+   * request opts into `timings_per_token`, which is what makes a live "1,240 tokens so
+   * far" possible without counting SSE chunks — a chunk is not a token when the server
+   * runs speculative decoding, and this machine's draft acceptance means chunks routinely
+   * carry two or three. */
+  prompt_n?: number
+  predicted_n?: number
   draft_n?: number
   draft_n_accepted?: number
+}
+
+/**
+ * Where a request has got to, while it is still running.
+ *
+ * Two phases, and telling them apart is the whole point. Prefill is the server reading the
+ * prompt: no token has been produced, nothing streams, and on a long conversation it is by
+ * far the longest silence in a turn — measured on this machine, appending to a 14.9k history
+ * costs 0.5 s while changing one word near its start costs 27.7 s, because llama.cpp matches
+ * its cache by longest common prefix and everything after the divergence is re-read.
+ * Generation is what follows, at a completely different and much steadier rate.
+ *
+ * `cache` is the number that explains the difference: how much of the prompt the server
+ * recognised and did not have to process. A drop in it IS the reason a turn suddenly got
+ * slow, and it is invisible in every other reading.
+ */
+export interface StreamProgress {
+  /** Prefill, from the server's own `prompt_progress` chunks. */
+  prompt?: { processed: number; total: number; cache: number }
+  /** Generation, from `timings` on partial chunks. `perSecond` is the server's rate, not
+   * one computed here. */
+  generated?: { tokens: number; perSecond?: number }
 }
 
 export interface ChatResult {
@@ -106,6 +135,14 @@ export interface StreamDelta {
   /** Which call a `toolCallName`/`toolCallArguments` fragment belongs to. Parallel calls
    * share one stream and interleave by index. */
   toolCallIndex?: number
+  /**
+   * How far the request has got — see `StreamProgress`.
+   *
+   * Carried on the delta channel rather than a callback of its own so a consumer opts in
+   * the same way it opts into text: nothing new to wire, and a renderer that ignores it is
+   * exactly as correct as it was before this existed.
+   */
+  progress?: StreamProgress
 }
 
 export interface StreamCallbacks {

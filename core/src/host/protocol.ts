@@ -637,6 +637,28 @@ export interface CompactionEvent {
   }
 }
 
+/**
+ * How far a running generation has got — the answer to "is it stuck?", measured.
+ *
+ * Prefill and generation are different phases with different speeds, and only one of them
+ * streams anything. While the server reads the prompt there is no reasoning, no text and no
+ * tool argument, so every other event here is silent; on a long conversation that silence is
+ * the longest stretch of a turn. `prompt` is that phase, `generated` is what follows, and a
+ * given event carries exactly one of them.
+ *
+ * `scope` separates the turn's step from the background compaction, because the two overlap
+ * on screen and a single number would flicker between two unrelated generations.
+ */
+export interface GenerationProgressEvent {
+  scope: 'step' | 'compaction'
+  /** Prefill: prompt tokens processed of the total, and how many the server took from its
+   * cache rather than reading. The cache figure is what explains a turn that suddenly got
+   * slow — it is invisible in every other reading. */
+  prompt?: { processed: number; total: number; cache: number }
+  /** Generation: tokens produced so far, and the server's own rate for them. */
+  generated?: { tokens: number; perSecond?: number }
+}
+
 export interface SettingsProblemEvent { text: string }
 
 /** Same three fields as `send`'s `SendResult.turn`, flattened -- see `TurnSummary`. */
@@ -651,6 +673,7 @@ export interface HostEventMap {
   'step.continuation': StepContinuationEvent
   'step.retry': StepRetryEvent
   'step.done': StepDoneEvent
+  'generation.progress': GenerationProgressEvent
   'thinking.delta': ThinkingDeltaEvent
   'text.delta': TextDeltaEvent
   'assistant.text': AssistantTextEvent

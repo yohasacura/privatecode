@@ -3,7 +3,7 @@ import type { VNode } from 'preact'
 import type { AgentMode } from '@core/permissions/engine'
 import type { ProtocolClient } from '../lib/client'
 import { pendingTool, type ChatAction, type ChatState } from '../lib/state'
-import { formatDuration } from '../lib/format'
+import { formatDuration, formatProgress } from '../lib/format'
 import { applyMention, mentionAtCaret, type Mention } from '../lib/mentions'
 import { Icon } from '../components/icons'
 import { carryAcceptance, commandShaped, glueSuggestions, lintPrompt, lintShaped, taskShaped, type DraftSuggestions } from '../lib/prompt-lint'
@@ -781,6 +781,9 @@ export function Composer({
   const composingCall = newestItem !== undefined && newestItem.kind === 'tool' &&
     newestItem.writing === true
 
+  /** What the server says about the running request, or null when it says nothing. */
+  const measured = step?.progress !== undefined ? formatProgress(step.progress) : null
+
   function statusLine(): VNode | null {
     if (waitingOnYou) return <span class="status-live">waiting on you · nothing generating</span>
     // Why a run ENDED outranks how the last turn went: after an unattended run the first
@@ -803,9 +806,17 @@ export function Composer({
               characters (~15k tokens), and at the ~393 tok/s measured on this machine that is
               close to forty seconds of silence, after which generation runs at its usual
               speed. Saying so turns "it hung" into "it is reading". */}
-          {composingCall
-            ? <span class="status-quiet"> · writing the change — the tool call is generated a token at a time, like the reasoning above it</span>
-            : !streaming && <span class="status-quiet"> · reading what the last step returned</span>}
+          {/* The server's own reading, when it sends one, outranks every inference above:
+              `reading 12.4k / 18.1k · 9.7k cached` says what the silence IS, and the cached
+              figure says why this one is long. The inferences stay as the fallback for a
+              server built without `return_progress` — they were right about the state and
+              could only ever guess at its size. */}
+          {composingCall && <span class="status-quiet"> · writing the change</span>}
+          {measured !== null
+            ? <span class="status-quiet"> · {measured}</span>
+            : composingCall
+              ? <span class="status-quiet"> — the tool call is generated a token at a time, like the reasoning above it</span>
+              : !streaming && <span class="status-quiet"> · reading what the last step returned</span>}
           {remainingMs !== null && remainingMs < 20_000 && (
             // At zero the honest statement is what happens next, not a number that has
             // stopped moving: the core abandons the step within moments of its own clock

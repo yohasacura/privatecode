@@ -1320,3 +1320,76 @@ describe('live tool output', () => {
     expect(state.items).toEqual([])
   })
 })
+
+describe('live generation progress', () => {
+  const PREFILL = { prompt: { processed: 12_400, total: 18_100, cache: 9_700 } }
+  const GENERATING = { generated: { tokens: 1_240, perSecond: 61 } }
+
+  it('lands on the running step', () => {
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 1_000 },
+      { type: 'generation.progress', scope: 'step', progress: PREFILL },
+    ])
+    expect(state.currentStep?.progress).toEqual(PREFILL)
+  })
+
+  it('replaces rather than merges, so prefill numbers stop showing once tokens start', () => {
+    // Merged, a finished prefill would sit beside a live token count as though both phases
+    // were running — two live readings for one request.
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 1_000 },
+      { type: 'generation.progress', scope: 'step', progress: PREFILL },
+      { type: 'generation.progress', scope: 'step', progress: GENERATING },
+    ])
+    expect(state.currentStep?.progress).toEqual(GENERATING)
+    expect(state.currentStep?.progress?.prompt).toBeUndefined()
+  })
+
+  it('never conjures a step out of a stray reading', () => {
+    // The tail of a request whose step already ended. A `currentStep` invented here reads
+    // downstream as "a step is running" and leaves the composer showing one forever.
+    const state = run([{ type: 'generation.progress', scope: 'step', progress: PREFILL }])
+    expect(state.currentStep).toBeNull()
+  })
+
+  it('is dropped by a continuation and by a retry, which both start a new request', () => {
+    const base: ChatAction[] = [
+      { type: 'turn-started' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 1_000 },
+      { type: 'generation.progress', scope: 'step', progress: GENERATING },
+    ]
+    // Carried forward, the dead attempt's count would tick beside a request that has
+    // produced nothing — the same class of lie as the spliced reasoning a retry removes.
+    expect(run([...base, { type: 'step.continuation', atMs: 2_000 }]).currentStep?.progress)
+      .toBeUndefined()
+    expect(run([...base, { type: 'step.retry', atMs: 2_000 }]).currentStep?.progress)
+      .toBeUndefined()
+  })
+
+  it('rides the running compaction row, not the step', () => {
+    const state = run([
+      { type: 'compaction', state: 'started' },
+      { type: 'generation.progress', scope: 'compaction', progress: PREFILL },
+    ])
+    const row = state.items.find((i) => i.kind === 'compaction-record')
+    expect(row?.kind === 'compaction-record' && row.progress).toEqual(PREFILL)
+  })
+
+  it('and goes away with it, so a finished summary leaves no frozen number', () => {
+    const state = run([
+      { type: 'compaction', state: 'started' },
+      { type: 'generation.progress', scope: 'compaction', progress: PREFILL },
+      { type: 'compaction', state: 'ready' },
+    ])
+    const row = state.items.find((i) => i.kind === 'compaction-record')
+    expect(row?.kind === 'compaction-record' && row.state).toBe('ready')
+    expect(row?.kind === 'compaction-record' && row.progress).toBeUndefined()
+  })
+
+  it('with no compaction running it changes nothing', () => {
+    const state = run([{ type: 'generation.progress', scope: 'compaction', progress: PREFILL }])
+    expect(state.items).toEqual([])
+  })
+})

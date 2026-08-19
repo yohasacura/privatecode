@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { LlamaClient } from '../llama/client.js'
-import type { ChatMessage, ChatRequest } from '../llama/types.js'
+import type { ChatMessage, ChatRequest, ChatResult, StreamProgress } from '../llama/types.js'
 
 export interface CompactionInput {
   messages: readonly ChatMessage[] // the full current transcript
@@ -239,16 +239,31 @@ export async function generateCompaction(
   client: LlamaClient,
   input: CompactionInput,
   signal?: AbortSignal,
+  onProgress?: (progress: StreamProgress) => void,
 ): Promise<CompactionResult> {
   const request = buildCompactionRequest(input)
   if (signal) request.signal = signal
 
+  // Streaming only when someone is watching. `chatStream` assembles the identical
+  // `ChatResult`, so the truncation retry and every check below read the same thing either
+  // way — but it is the heavier path (an SSE reader, its own mid-stream failure mode), and
+  // the CLI and every test that compacts headlessly have nothing to show for it.
+  //
+  // Watched, this is the single longest silence the app ever displays: a compaction
+  // re-reads the whole conversation, and until it finished there was a pulsing dot and no
+  // way to tell a working summariser from a hung one.
+  const run = (req: ChatRequest): Promise<ChatResult> => (
+    onProgress === undefined
+      ? client.chat(req)
+      : client.chatStream(req, { onDelta: (d) => { if (d.progress) onProgress(d.progress) } })
+  )
+
   const started = performance.now()
-  let result = await client.chat(request)
+  let result = await run(request)
 
   if (result.finishReason === 'length') {
     const retryRequest: ChatRequest = { ...request, maxTokens: RETRY_MAX_TOKENS }
-    result = await client.chat(retryRequest)
+    result = await run(retryRequest)
     if (result.finishReason === 'length') {
       throw new Error(
         `compaction summary truncated (finish_reason "length") even after retrying at ` +
