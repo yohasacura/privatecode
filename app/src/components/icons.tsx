@@ -28,9 +28,54 @@ function Svg({ children, size = 16 }: { children: preact.ComponentChildren; size
   )
 }
 
+/** The states a changed file can be in, as the tree marks them. */
+export type GitMarkKind = 'M' | 'A' | 'U' | 'D' | 'R' | '!'
+
+/**
+ * One git status mark: a rounded square carrying the symbol for its state.
+ *
+ * A square per state rather than a letter, because a column of letters is a column of
+ * words to read, while a column of squares is a shape the eye scans — the same reason
+ * every editor's SCM gutter uses glyphs. The symbols are the diff vocabulary people
+ * already know: a dot for modified, `+` for added, `−` for deleted, an arrow for renamed,
+ * `!` for a conflict.
+ *
+ * STAGED fills the square and knocks the symbol out of it. That keeps the
+ * Changes/Staged distinction as a difference in WEIGHT, visible at a glance across a long
+ * list, without a second column or a second colour: an outline is work you have done, a
+ * solid is work the next commit will carry.
+ */
+function gitMark(kind: GitMarkKind, staged: boolean): VNode {
+  // The knockout colour is the panel's own background, so a filled mark reads as a hole
+  // in the square rather than as a differently-coloured glyph.
+  const on = staged ? 'var(--bg-panel)' : 'currentColor'
+  return (
+    <svg
+      class="icon"
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.4"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="3.2" {...(staged ? { fill: 'currentColor' } : {})} />
+      {kind === 'M' && <circle cx="8" cy="8" r="1.9" fill={on} stroke="none" />}
+      {(kind === 'A' || kind === 'U') && <path d="M8 5.2v5.6M5.2 8h5.6" stroke={on} />}
+      {kind === 'D' && <path d="M5.2 8h5.6" stroke={on} />}
+      {kind === 'R' && <path d="M5 8h4.6M8.2 6.2 10 8l-1.8 1.8" stroke={on} />}
+      {kind === '!' && <path d="M8 4.9v4M8 11.1v.01" stroke={on} />}
+    </svg>
+  )
+}
+
 export const Icon = {
   plus: () => <Svg><path d="M8 3v10M3 8h10" /></Svg>,
   minus: () => <Svg><path d="M3 8h10" /></Svg>,
+  gitMark,
   /** Two dots on one line, one budding off: a branch. The commit box wears it. */
   branch: () => (
     <Svg>

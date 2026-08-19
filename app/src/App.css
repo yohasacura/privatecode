@@ -328,12 +328,21 @@ kbd {
 
 /* The session's fingerprints on the tree: a diff shape on a changed file, a count of
  * changed files on a folder — visible even while the folder is collapsed. */
+/* A folder's count sits in the SAME 18px trailing column a file's git mark does, so the
+   two read as one column down the tree instead of two ragged ones. No `margin-left: auto`
+   anywhere in the row any more — `.tree-name` takes the slack (below), which is what keeps
+   every trailing box at a fixed x. */
 .tree-change-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
-  margin-left: auto; font-size: 10.5px; color: var(--accent);
-  border: 1px solid var(--accent-line); border-radius: 999px; padding: 0 6px;
+  width: 18px;
+  font-size: 10.5px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
 }
-.tree-change-stat { flex: none; margin-left: auto; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tree-change-stat { flex: none; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tree-change-failed { color: var(--red); }
 
 /* The improver's suggestion chips: toggleable additions BELOW the draft — on travels with
@@ -1826,7 +1835,9 @@ kbd {
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 2px 8px 2px 0;
+  /* No right padding: the trailing column's own 18px box IS the gutter, and padding on
+     top of it pushed the marks off the panel's optical right edge. */
+  padding: 2px 4px 2px 0;
   border: none;
   background: none;
   font: inherit;
@@ -1840,7 +1851,10 @@ kbd {
 .tree-icon { display: flex; color: var(--text-faint); }
 .tree-dir .tree-icon { color: var(--blue); opacity: 0.75; }
 .tree-file .tree-icon { color: var(--text-faint); }
-.tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The name takes the slack: every trailing box (diff stat, git mark, folder count) is
+   `flex: none`, so they stack against the right edge in a fixed column and the name is
+   what shrinks under an ellipsis. */
+.tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tree-loading, .tree-error, .tree-empty { padding: 3px 8px; font-size: 11.5px; color: var(--text-faint); }
 .tree-error {
   display: block;
@@ -2349,32 +2363,26 @@ kbd {
 
 /* --- git, worn by the tree ------------------------------------------------------------ */
 
-/* One letter per changed file, editor convention: M amber, A/U green, D red, ! loud.
-   Filled when staged (part of the next commit), outline when not — the Changes/Staged
-   distinction as SHAPE, not a second list. */
-.tree-git { display: inline-flex; align-items: center; gap: 3px; flex: none; margin-left: auto; }
-/* When the session's diff stat is also on the row, IT holds the right edge. */
-.tree-change-stat + .tree-git { margin-left: 4px; }
-.tree-git-letter {
+/* One glyph per changed file — a dot for modified, + added, − deleted, → renamed, ! for a
+   conflict — filled when staged. Colour says WHAT changed, weight says whether the next
+   commit carries it; see Icon.gitMark for why squares beat letters in a column.
+
+   THE COLUMN IS THE POINT. Every trailing element is a fixed-width box and the name takes
+   the slack, so the marks line up down the whole tree no matter what else a row carries.
+   Ragged right edges were what the owner saw first in the letter-chip version. */
+.tree-git { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.tree-git-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 15px;
-  height: 15px;
-  border-radius: 4px;
-  border: 1px solid currentColor;
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 1;
+  flex: none;
+  width: 18px;
+  height: 16px;
 }
 .tree-git-m, .tree-git-r { color: var(--yellow); }
 .tree-git-a, .tree-git-u { color: var(--green); }
 .tree-git-d { color: var(--red); }
-.tree-git-conflict { color: var(--red); font-weight: 700; }
-/* Staged: the letter fills — a solid chip against the outline of the unstaged. */
-.tree-git-m.tree-git-letter-staged, .tree-git-r.tree-git-letter-staged { background: var(--yellow); border-color: var(--yellow); color: var(--bg); }
-.tree-git-a.tree-git-letter-staged, .tree-git-u.tree-git-letter-staged { background: var(--green); border-color: var(--green); color: var(--bg); }
-.tree-git-d.tree-git-letter-staged { background: var(--red); border-color: var(--red); color: var(--bg); }
+.tree-git-conflict { color: var(--red); }
 
 /* The file NAME carries the state colour too, the way editors do it. */
 .tree-name-git-m, .tree-name-git-r { color: var(--yellow); }

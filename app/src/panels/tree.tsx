@@ -131,11 +131,15 @@ function GitCluster({
           {Icon.minus()}
         </span>
       )}
+      {/* Last in the row, and a fixed-width box: every mark in the tree then lands on the
+          same x whatever else the row carries — a diff stat, a read-only tag, the hover
+          actions that appear to its left. A ragged right edge was the first thing the
+          owner noticed about the old letter chips. */}
       <span
-        class={`tree-git-letter tree-git-${mark.letter === '!' ? 'conflict' : mark.letter.toLowerCase()}${mark.staged ? ' tree-git-letter-staged' : ''}`}
+        class={`tree-git-mark tree-git-${mark.letter === '!' ? 'conflict' : mark.letter.toLowerCase()}`}
         title={describeMark(mark)}
       >
-        {mark.letter}
+        {Icon.gitMark(mark.letter, mark.staged)}
       </span>
     </span>
   )
