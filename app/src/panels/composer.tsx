@@ -32,9 +32,6 @@ const MAX_SEND_CHARS = 500_000
 /** The one window-owned slash command; see `send()`. */
 const COMPACT_COMMAND = '/compact'
 
-/** Two quiet seconds over a gappy task-shaped draft before the improver runs by itself. */
-const IMPROVE_PAUSE_MS = 2_000
-
 export function Composer({
   client, state, dispatch, modalOpen, onAdoptViewed,
 }: {
@@ -682,22 +679,23 @@ export function Composer({
     else expand(auto)
   }
 
-  // The pause trigger: two quiet seconds between turns re-improves silently — a
-  // task-shaped draft with 2+ gaps gets chips, a rough command gets the expansion
-  // preview. Guards re-checked at FIRE time — the timer outlives them.
-  useEffect(() => {
-    // The FULL busy set plus viewing, matching the fire-time guards in improve()/expand():
-    // a timer armed against a run or a compaction fired a refusal every ~2 seconds for as
-    // long as the slot was held, and one armed while reading an old session asked about
-    // the wrong conversation.
-    if (state.turnRunning || state.run !== null || compacting || state.viewing !== null) return
-    if (input === improvedFor.current) return
-    const wantsChips = taskShaped(input) && lintPrompt(input).length >= 2
-    if (!wantsChips && !commandShaped(input)) return
-    const id = setTimeout(() => improveOrExpand(true), IMPROVE_PAUSE_MS)
-    return () => clearTimeout(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, state.turnRunning, state.run, compacting, state.viewing, improving])
+  // THE PAUSE TRIGGER IS GONE, and its absence is the feature.
+  //
+  // It fired on three invisible gates at once — a lint heuristic deciding the draft was
+  // "task-shaped with 2+ gaps", two quiet seconds, and a free slot — so from outside it
+  // appeared sometimes and not others with nothing to explain the difference. Reported as
+  // "где-то она появляется, где-то нет".
+  //
+  // The half of it that was worth having is now the understanding check, which runs in the
+  // core: it reads the request through three lenses at the moment the model stops reading
+  // files and is about to write one, and asks only where its own readings disagreed. That
+  // arrives as an ordinary question in the conversation rather than as chips over the input,
+  // it cannot invent a question (the text of one IS one of the readings), and it never fires
+  // twice for the same task.
+  //
+  // What is left here is the rule that makes the composer predictable: AUTOMATIC things ask,
+  // and things that WRITE into your draft happen only when you press the button. Ctrl+E and
+  // the Improve/Expand controls below are unchanged.
 
   function applyMode(next: AgentMode): void {
     dispatch({ type: 'mode-changed', mode: next })

@@ -28,6 +28,18 @@ import type { ChatMessage, ToolSchema } from '../llama/types.js'
  */
 
 export interface TaskContract {
+  /**
+   * The user's request in THEIR OWN WORDS, kept beside the distillation of it.
+   *
+   * The contract is a restatement, and a restatement cannot catch a misreading — so the
+   * understanding check has to read the original, not this file's summary of it. Stored on
+   * the contract so it survives a resumed session and a compaction, both of which can put
+   * the request itself out of reach.
+   */
+  request?: string
+  /** Set once the understanding check has run for this task, so it runs once and not before
+   * every write. Absent means it has not run; a new task replaces the whole contract. */
+  understood?: boolean
   /** Set once the gate has seen every criterion met (and the diff review, when it ran,
    * raise nothing). A satisfied contract stops gating and stops being promoted — small
    * follow-up turns must not keep paying an audit for a task that is finished. Only a new
@@ -586,6 +598,96 @@ const MATCH_STOPWORDS = new Set([
  * letters are kept as letters so a Russian-language contract normalises the same way. */
 function matchWords(text: string): string[] {
   return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== '')
+}
+
+/**
+ * Whether two lines say the same thing — the pairwise sibling of `matchCriterionIndex`.
+ *
+ * Used to compare one reading of a request against another (`understanding.ts`), where there
+ * is no list to disambiguate against, only two sentences. The first two rules are the same
+ * ones the audit uses and are safe pairwise: identical once punctuation, case and dash style
+ * are folded, or one is a contiguous word-run inside the other ("keeps its padding" inside
+ * "the invoice number keeps its padding").
+ *
+ * The third is deliberately stricter than the audit's. There, an unmatched report is
+ * SURFACED, so a miss is loud; here a false match quietly merges two readings and hides the
+ * disagreement that was the entire point of taking them. So containment by content words
+ * also requires the shorter line to carry at least half the longer one's content — without
+ * that, a three-word line is a subset of half of everything and every difference dissolves.
+ */
+/**
+ * A word with its inflection knocked off, crudely.
+ *
+ * `matchCriterionIndex` deliberately does no stemming and says so: there, an unmatched report
+ * is surfaced loudly, so a miss is cheap and a wrong tick is not. Here the trade runs the
+ * other way. Two readings of one request differ mostly by MORPHOLOGY — measured live on this
+ * model: "invoice numbers are never skipped" against "invoice numbers never skip a value",
+ * and "every call site now invokes X" against "every call site that used X now uses X". Left
+ * unstemmed those are two questions about one thing, which is precisely the noise this whole
+ * feature exists to remove.
+ *
+ * A false merge is also the cheaper mistake HERE specifically, and only because of how the
+ * question is built: a merged line becomes SHARED, and shared lines are stated to the person
+ * verbatim ("here is what I am about to do"). So an over-merge still reaches their eyes — it
+ * just arrives as a statement instead of a question. An under-merge is what fills the card
+ * with three phrasings of one sentence.
+ *
+ * Latin suffixes first, then the Russian endings, because the model answers in the language
+ * of the request and both turn up. Short words are left alone: they are mostly stopwords
+ * already, and stemming them is how "use" and "us" become the same token.
+ */
+function stem(word: string): string {
+  if (word.length < 4) return word
+  for (const suffix of ['ing', 'ed', 'es', 's']) {
+    if (word.length - suffix.length >= 3 && word.endsWith(suffix)) {
+      const cut = word.slice(0, word.length - suffix.length)
+      // "skipped" -> "skipp" -> "skip": a doubled final consonant is an artefact of the
+      // suffix, not part of the word.
+      const last = cut[cut.length - 1]
+      const before = cut[cut.length - 2]
+      return last !== undefined && last === before && !'aeiou'.includes(last) ? cut.slice(0, -1) : cut
+    }
+  }
+  for (const suffix of ['ами', 'ями', 'ов', 'ев', 'ах', 'ях', 'ый', 'ая', 'ое', 'ые', 'ой', 'ем', 'ом']) {
+    if (word.length - suffix.length >= 3 && word.endsWith(suffix)) return word.slice(0, word.length - suffix.length)
+  }
+  for (const suffix of ['а', 'я', 'ы', 'и', 'е', 'у', 'ю', 'о']) {
+    if (word.length - suffix.length >= 4 && word.endsWith(suffix)) return word.slice(0, word.length - suffix.length)
+  }
+  return word
+}
+
+export function alignReadings(a: string, b: string): boolean {
+  const wa = matchWords(a).map(stem)
+  const wb = matchWords(b).map(stem)
+  if (wa.length === 0 || wb.length === 0) return false
+  if (wa.join(' ') === wb.join(' ')) return true
+
+  // The size guard, and it gates BOTH containment rules below rather than only the last.
+  // A three-word line is a subset — and often a leading run — of half of everything, so
+  // without it "the counter" and "the counter is row-locked, gap-free and per-year" merge
+  // into one line and the specific half is never asked about. The legitimate case the
+  // containment rules exist for is a restatement that drops a trailing clause, and that keeps
+  // most of its content: "the invoice number keeps its padding" against the same line plus
+  // "when the year rolls over" passes this comfortably.
+  const content = (words: string[]): string[] => [...new Set(words)].filter((w) => !MATCH_STOPWORDS.has(w))
+  const ca = content(wa)
+  const cb = content(wb)
+  const [short, long] = ca.length <= cb.length ? [ca, cb] : [cb, ca]
+  if (short.length < 2) return false
+  // A third, not a half. Measured live: the same outcome came back as four content words
+  // from one lens and twelve from another, because one of them padded its line with an
+  // example — and a half-length floor split them into two questions about one thing. See the
+  // note above on why an over-merge is the cheaper mistake here.
+  if (short.length * 3 < long.length) return false
+
+  const runOf = (hay: string[], needle: string[]): boolean =>
+    needle.length > 0 && needle.length <= hay.length &&
+    ` ${hay.join(' ')} `.includes(` ${needle.join(' ')} `)
+  if (runOf(wa, wb) || runOf(wb, wa)) return true
+
+  const inLong = new Set(long)
+  return short.every((w) => inLong.has(w))
 }
 
 /**

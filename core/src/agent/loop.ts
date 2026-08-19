@@ -246,6 +246,19 @@ export interface AgentOptions {
    */
   permissions?: PermissionEngine
   /**
+   * Consulted immediately before a tool runs. A returned string REPLACES the call's result
+   * and the tool never executes; `undefined` lets it through.
+   *
+   * Separate from `permissions` although both gate a call, because they answer different
+   * questions and confusing them would be a security smell: permissions decide whether an
+   * action is ALLOWED, and this decides whether the turn is ready for it. Its one use is the
+   * understanding check — the last quiet moment before exploration turns into code — and
+   * turning the first write into a result that carries the user's answers is the only place
+   * those answers can reach the model without appending to a transcript mid-step, which
+   * would leave an assistant tool-call message separated from its replies.
+   */
+  onBeforeTool?(name: string, args: string): Promise<string | undefined>
+  /**
    * How an `ask` verdict is put to the user. Required for `permissions` to ever produce
    * anything other than a flat refusal: with an engine but no port, an `ask` verdict
    * cannot be shown to anyone, so the call is refused with a message telling the model to
@@ -741,6 +754,14 @@ export class Agent {
           continue
         }
         this.opts.events?.onToolCall?.(call.function.name, call.function.arguments)
+        // Before the call, not after: whatever this returns is meant to reach the model
+        // INSTEAD of what the tool would have done.
+        const instead = await this.opts.onBeforeTool?.(call.function.name, call.function.arguments)
+        if (instead !== undefined) {
+          this.answer(call, { ok: false, content: instead })
+          resultChars += instead.length
+          continue
+        }
         const result = await this.runTool(call.function.name, call.function.arguments)
         this.answer(call, result)
         resultChars += result.content.length

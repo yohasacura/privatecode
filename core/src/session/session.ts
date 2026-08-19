@@ -40,6 +40,11 @@ import {
   decomposeTodos, distillContract,
   expandDraft, improveDraft, looksLikeTask, renderCheckedState, renderContract,
   resolveReportedCriteria, reviewDiff,
+} from './contract.js'
+import {
+  buildQuestion, foldAnswer, readThroughLenses, type Understanding,
+} from './understanding.js'
+import {
   reviewFailureMessage, type AcceptanceReport, type DraftSuggestions, type TaskContract,
   saysFinished,
 } from './contract.js'
@@ -1035,6 +1040,89 @@ export class Session {
     return parts.join('\n\n')
   }
 
+  /**
+   * The understanding check, at the last moment it is still free.
+   *
+   * Fires once per task, on the FIRST write. Everything before a write is reading — cheap,
+   * reversible, and the reason to wait: asked on send, the questions are uninformed and half
+   * of them are answered by code the model had not opened yet. Asked here, the readings are
+   * grounded in what it actually found, so a question is specific and usually answerable in
+   * one word.
+   *
+   * The write it lands on does not run. Its result carries the user's answers instead, which
+   * is the only way they can reach the model from inside a step: appending to the transcript
+   * here would separate an assistant tool-call message from its replies and invalidate it.
+   * One re-issued call is the whole cost, against a misunderstanding that would otherwise be
+   * found after the work was built on it.
+   *
+   * Silent in every case where it has nothing to say — no contract, already run, the readings
+   * agreed, or the readings could not be taken at all. Silence is the common outcome and the
+   * correct one.
+   */
+  private async understandingGate(
+    tool: string, port: InteractionPort, signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    if (!WRITE_TOOLS.has(tool)) return undefined
+    const contract = this.meta.contract
+    if (contract === undefined || contract.understood === true) return undefined
+    if (contract.satisfied === true) return undefined
+    const request = contract.request
+    if (request === undefined || request.trim() === '') return undefined
+
+    // Marked BEFORE the generations, not after: a check that is aborted or throws halfway
+    // must not re-fire on the next write and ask the same three readings again. One attempt
+    // per task is the promise, and a failed attempt has been spent.
+    contract.understood = true
+    this.opts.store?.saveMeta(this.meta)
+
+    // The readings diverge from the conversation's tool list, so the server's cache is
+    // displaced exactly as a compaction generation displaces it — flagged so the next
+    // request buys its cold prefill honestly rather than being surprised by it.
+    this.compactionDisplacedCache = true
+    this.promptCacheCold = true
+
+    let understanding: Understanding | null
+    try {
+      understanding = await readThroughLenses(
+        this.opts.client, this.transcript.messages(), request, signal,
+      )
+    } catch {
+      return undefined
+    }
+    if (understanding === null || signal?.aborted) return undefined
+    const question = buildQuestion(understanding)
+    if (question === null) return undefined
+
+    let answer: string
+    try {
+      answer = await port.askUser(question)
+    } catch {
+      // Nobody answered — an unattended run with a full queue, or the window going away.
+      // The turn carries on with the reading the model already had, which is exactly where
+      // it stood before this check existed.
+      return undefined
+    }
+
+    const { criteria, constraints } = foldAnswer(understanding, answer)
+    contract.criteria = [...contract.criteria, ...criteria].slice(0, 12)
+    contract.constraints = [...contract.constraints, ...constraints].slice(0, 12)
+    // The audit's record of where the task stands is about the OLD criteria; leaving it
+    // would promote "1,2,3 met" into message 0 over a contract that has grown since.
+    delete contract.checkedState
+    this.opts.store?.saveMeta(this.meta)
+    this.opts.onAcceptance?.({ met: criteria.length, unmet: 0, round: 1, kind: 'criteria' })
+
+    const wanted = criteria.length > 0
+      ? `They want these, and they are now part of what "done" means:\n${criteria.map((c) => `- ${c}`).join('\n')}\n`
+      : 'They did not want any of them.\n'
+    const refused = constraints.length > 0
+      ? `\nThey did NOT pick these, so leave them alone:\n${constraints.map((c) => `- ${c}`).join('\n')}\n`
+      : ''
+    return 'Not run: before this change the user was asked what they actually meant, ' +
+      `because your own readings of the request disagreed.\n\n${wanted}${refused}\n` +
+      'Re-issue the change with that settled. Nothing was written.'
+  }
+
   /** The verify commands that apply to what this turn wrote, in mount order. */
   private verifyJobs(): { spec: VerifySpec; root: string; folder: string }[] {
     const jobs: { spec: VerifySpec; root: string; folder: string }[] = []
@@ -1674,6 +1762,10 @@ export class Session {
           this.opts.client, this.transcript.messages(), userText, signal,
         )
         if (contract !== null) {
+          // The user's own words ride along with the distillation of them: the understanding
+          // check reads the request, never the summary, because a summary is where the
+          // misreading would already have happened.
+          contract.request = userText
           this.meta.contract = contract
           this.opts.store?.saveMeta(this.meta)
           // The plan appears WITH the contract, every time — not when the model feels
@@ -2975,6 +3067,9 @@ export class Session {
       transcript: this.transcript,
       loopDetector: this.loopDetector,
     }
+    // Only with somewhere to ask. Without a port the check could read the request three ways
+    // and have nobody to put the disagreement to, which is a generation spent on nothing.
+    if (port) agentOpts.onBeforeTool = (name) => this.understandingGate(name, port, signal)
     if (this.memoryText !== undefined) agentOpts.memory = this.memoryText
     if (this.notesText !== undefined) agentOpts.notes = this.notesText
     if (this.skillsText !== undefined) agentOpts.skills = this.skillsText
