@@ -78,15 +78,13 @@ export interface MountActions {
   toggleAccess(name: string): void
   remove(name: string): void
   rename(name: string, next: string): void
-  addFolder(path: string): void
-  /** The native folder picker is a Tauri plugin; the dev bridge runs in a browser. */
-  isDevBridge: boolean
   /** True while a change is applying (the workspace re-opens); controls disable. */
   busy: boolean
 }
 
 export function TreePanel({
   client, toolItems, onOpenFile, workspaceRoot, decor, mounts, mountActions,
+  filterChanged, reviewedPaths, onOpenDiff,
 }: {
   client: ProtocolClient
   toolItems: ChatItem[]
@@ -109,6 +107,13 @@ export function TreePanel({
    * a plain read-only tree (the standalone Files context). */
   mounts?: MountInfo[]
   mountActions?: MountActions
+  /** ONE view, filtered — the owner's ruling on «All files vs Changes»: when true, only
+   * rows the session touched render (the decor is the filter). */
+  filterChanged?: boolean
+  /** Files whose change has been looked at; their badges dim. */
+  reviewedPaths?: ReadonlySet<string>
+  /** Clicking a change badge jumps straight to the DIFF, not the file body. */
+  onOpenDiff?: (path: string) => void
 }) {
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']))
@@ -190,8 +195,13 @@ export function TreePanel({
         onRetry={loadDir} depth={0} decor={decor}
         {...(mounts !== undefined ? { mounts } : {})}
         {...(mountActions !== undefined ? { mountActions } : {})}
+        {...(filterChanged !== undefined ? { filterChanged } : {})}
+        {...(reviewedPaths !== undefined ? { reviewedPaths } : {})}
+        {...(onOpenDiff !== undefined ? { onOpenDiff } : {})}
       />
-      {mountActions !== undefined && <AddFolderRow actions={mountActions} />}
+      {filterChanged === true && decor !== undefined && decor.files.size === 0 && (
+        <div class="tree-empty">nothing changed this session</div>
+      )}
     </div>
   )
 }
@@ -269,49 +279,9 @@ function MountControls({ mount, actions }: { mount: MountInfo; actions: MountAct
   )
 }
 
-/** The add-folder affordance, living where the folders live: the last row of the tree. */
-function AddFolderRow({ actions }: { actions: MountActions }): VNode {
-  const [typing, setTyping] = useState(false)
-  const [path, setPath] = useState('')
-
-  async function pick(): Promise<void> {
-    const { open } = await import('@tauri-apps/plugin-dialog')
-    const result = await open({ directory: true, multiple: false })
-    if (typeof result === 'string') actions.addFolder(result)
-  }
-
-  if (actions.isDevBridge && typing) {
-    return (
-      <input
-        class="input input-small tree-add-input"
-        value={path}
-        placeholder="paste a folder path — Enter adds it"
-        // eslint-disable-next-line jsx-a11y/no-autofocus
-        autoFocus
-        onInput={(e) => setPath(e.currentTarget.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && path.trim() !== '') { actions.addFolder(path.trim()); setPath(''); setTyping(false) }
-          if (e.key === 'Escape') { e.stopPropagation(); setTyping(false) }
-        }}
-      />
-    )
-  }
-  return (
-    <button
-      class="tree-row tree-add-folder"
-      disabled={actions.busy}
-      onClick={() => (actions.isDevBridge ? setTyping(true) : void pick())}
-      title="Add a folder to the workspace — it appears right in this tree"
-    >
-      <span class="tree-chevron" />
-      <span class="tree-icon">{Icon.plus()}</span>
-      <span class="tree-name">{actions.busy ? 'Re-opening…' : 'Add folder…'}</span>
-    </button>
-  )
-}
-
 function DirChildren({
   path, dirs, expanded, onToggle, onOpenFile, onRetry, depth, decor, mounts, mountActions,
+  filterChanged, reviewedPaths, onOpenDiff,
 }: {
   path: string
   dirs: Record<string, DirState>
@@ -329,6 +299,9 @@ function DirChildren({
   decor: ChangeDecor | undefined
   mounts?: MountInfo[]
   mountActions?: MountActions
+  filterChanged?: boolean
+  reviewedPaths?: ReadonlySet<string>
+  onOpenDiff?: (path: string) => void
 }) {
   const state = dirs[path]
   if (!state) return null
@@ -351,9 +324,19 @@ function DirChildren({
     return <div class="tree-empty" style={{ paddingLeft: `${depth * 12 + 28}px` }}>empty</div>
   }
 
+  // ONE view, filtered — not a second view: with the filter on, a row renders only when
+  // the session touched it (the decor is the ground truth for "touched"), and the tree's
+  // structure, indent and badges stay exactly what they are the rest of the time.
+  const shown = filterChanged === true && decor !== undefined
+    ? state.entries.filter((entry) => {
+        const childPath = path === '' ? entry.name : `${path}/${entry.name}`
+        return entry.dir ? (decor.dirs.get(childPath) ?? 0) > 0 : decor.files.has(childPath)
+      })
+    : state.entries
+
   return (
     <>
-      {state.entries.map((entry) => {
+      {shown.map((entry) => {
         const childPath = path === '' ? entry.name : `${path}/${entry.name}`
         const isExpanded = expanded.has(childPath)
         // The workspace's own folders, managed right where they are seen: a top-level
@@ -361,6 +344,7 @@ function DirChildren({
         // gone. Nested buttons are invalid HTML, so a mount row is a flex wrapper with
         // the ordinary row-button beside the controls, not inside it.
         const mount = depth === 0 && entry.dir ? mounts?.find((m) => m.name === entry.name) : undefined
+        const fileChange = !entry.dir ? decor?.files.get(childPath) : undefined
         const row = (
           /* A button, not a div with onClick: bare divs cannot take focus, so the whole
               tree was unreachable by keyboard — not one directory could be expanded, not
@@ -386,10 +370,23 @@ function DirChildren({
             {entry.dir && decor !== undefined && (decor.dirs.get(childPath) ?? 0) > 0 && (
               <span class="tree-change-count">{decor.dirs.get(childPath)}</span>
             )}
-            {!entry.dir && decor?.files.has(childPath) && (
-              <span class={decor.files.get(childPath)!.lastFailed ? 'tree-change-stat tree-change-failed' : 'tree-change-stat'}>
-                {decor.files.get(childPath)!.revisions > 1 ? `${decor.files.get(childPath)!.revisions}× ` : ''}
-                +{decor.files.get(childPath)!.added} −{decor.files.get(childPath)!.removed}
+            {fileChange !== undefined && (
+              // The badge is the door to the DIFF: a span with its own click (a button
+              // cannot nest inside the row button), stopping propagation so the row's
+              // open-the-file click stays separate. Reviewed changes dim.
+              <span
+                class={[
+                  'tree-change-stat',
+                  fileChange.lastFailed ? 'tree-change-failed' : '',
+                  reviewedPaths?.has(childPath) ? 'tree-change-reviewed' : '',
+                ].filter(Boolean).join(' ')}
+                title="Show the diff"
+                onClick={onOpenDiff !== undefined
+                  ? (e) => { e.stopPropagation(); onOpenDiff(childPath) }
+                  : undefined}
+              >
+                {fileChange.revisions > 1 ? `${fileChange.revisions}× ` : ''}
+                +{fileChange.added} −{fileChange.removed}
               </span>
             )}
           </button>
@@ -403,6 +400,9 @@ function DirChildren({
               <DirChildren
                 path={childPath} dirs={dirs} expanded={expanded} onToggle={onToggle}
                 onOpenFile={onOpenFile} onRetry={onRetry} depth={depth + 1} decor={decor}
+                {...(filterChanged !== undefined ? { filterChanged } : {})}
+                {...(reviewedPaths !== undefined ? { reviewedPaths } : {})}
+                {...(onOpenDiff !== undefined ? { onOpenDiff } : {})}
               />
             )}
           </div>
