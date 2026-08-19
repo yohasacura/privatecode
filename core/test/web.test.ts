@@ -2,7 +2,9 @@ import { describe, expect, test } from 'vitest'
 import { PermissionEngine } from '../src/permissions/engine.js'
 import type { PermissionKey } from '../src/tools/types.js'
 import { webTool } from '../src/tools/web.js'
-import { extractReadable, isPrivateHost, redirectRefusal } from '../src/web/read.js'
+import {
+  extractReadable, isPrivateHost, redirectRefusal, redirectRefusalResolved,
+} from '../src/web/read.js'
 import { parseBingResults, parseDdgResults, renderHits, unwrapDdgHref } from '../src/web/search.js'
 
 // ---------------------------------------------------------------------------------------
@@ -146,6 +148,108 @@ describe('redirect gating', () => {
 
   test('non-http(s) redirect targets are refused outright', () => {
     expect(redirectRefusal(new URL('https://a.dev/'), new URL('file:///C:/x'))).toMatch(/only http/)
+  })
+
+  test('the IPv6 spellings of loopback are private too', () => {
+    // WHATWG serialises `http://[::ffff:127.0.0.1]/` to the hostname `::ffff:7f00:1`,
+    // which is 127.0.0.1 and which the dotted-quad matcher never saw.
+    for (const h of ['[::1]', '::ffff:7f00:1', '::ffff:127.0.0.1', '[::]', 'fd00::1',
+      'fdff:ffff::1', 'fe80::1', 'fe80::1%eth0']) {
+      expect(isPrivateHost(h), h).toBe(true)
+    }
+    for (const h of ['2606:4700::1', '::ffff:8.8.8.8', '::ffff:808:808', '[2001:4860:4860::8888]']) {
+      expect(isPrivateHost(h), h).toBe(false)
+    }
+    expect(isPrivateHost(new URL('http://[::ffff:127.0.0.1]:8080/props').hostname)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------------------
+// The same gate once the name is resolved. The resolver is a parameter, so none of this
+// asks the network — or a DNS server — anything.
+// ---------------------------------------------------------------------------------------
+
+const resolvesTo = (map: Record<string, string[]>) =>
+  async (hostname: string): Promise<string[]> => {
+    const answer = map[hostname]
+    if (answer === undefined) throw new Error(`ENOTFOUND ${hostname}`)
+    return answer
+  }
+
+describe('resolved redirect gating', () => {
+  const publicStart = new URL('https://evil.example/page')
+
+  test('a public name that resolves to loopback is refused, and the refusal says so', async () => {
+    // lvh.me and 127.0.0.1.nip.io are real public domains whose A record is 127.0.0.1.
+    const refusal = await redirectRefusalResolved(
+      publicStart,
+      new URL('http://lvh.me:8080/props'),
+      resolvesTo({ 'lvh.me': ['127.0.0.1'] }),
+    )
+    expect(refusal).toMatch(/private address/)
+    expect(refusal).toContain('lvh.me')
+    expect(refusal).toContain('127.0.0.1')
+  })
+
+  test('one private answer among several is enough to refuse', async () => {
+    const refusal = await redirectRefusalResolved(
+      publicStart,
+      new URL('http://dual.example/x'),
+      resolvesTo({ 'dual.example': ['93.184.216.34', '::1'] }),
+    )
+    expect(refusal).toMatch(/private address/)
+  })
+
+  test('an ordinary public hop still goes through', async () => {
+    expect(await redirectRefusalResolved(
+      publicStart,
+      new URL('https://docs.example/a'),
+      resolvesTo({ 'docs.example': ['93.184.216.34'] }),
+    )).toBeNull()
+  })
+
+  test('a name that will not resolve is left to fail at the fetch, not accused here', async () => {
+    expect(await redirectRefusalResolved(
+      publicStart,
+      new URL('https://gone.example/a'),
+      resolvesTo({}),
+    )).toBeNull()
+  })
+
+  test('the resolver is spared when the spelling already settles it', async () => {
+    const asked: string[] = []
+    const resolver = async (hostname: string): Promise<string[]> => {
+      asked.push(hostname)
+      return ['93.184.216.34']
+    }
+    // Same origin: still inside what was approved.
+    expect(await redirectRefusalResolved(
+      publicStart, new URL('https://evil.example/other'), resolver,
+    )).toBeNull()
+    // A private start may bounce within private space — a dev server redirecting itself.
+    expect(await redirectRefusalResolved(
+      new URL('http://localhost:5173/'), new URL('http://localhost:5173/app'), resolver,
+    )).toBeNull()
+    // An address literal was judged exactly by the lexical pass, either way.
+    expect(await redirectRefusalResolved(
+      publicStart, new URL('http://127.0.0.1:8080/completion'), resolver,
+    )).toMatch(/private address/)
+    expect(await redirectRefusalResolved(
+      publicStart, new URL('http://93.184.216.34/x'), resolver,
+    )).toBeNull()
+    expect(asked).toEqual([])
+  })
+
+  test('the lexical refusals keep their shape and cost no lookup', async () => {
+    const resolver = async (): Promise<string[]> => {
+      throw new Error('the resolver must not be asked')
+    }
+    expect(await redirectRefusalResolved(
+      publicStart, new URL('http://localhost:8917/'), resolver,
+    )).toMatch(/a public page redirected into a private address/)
+    expect(await redirectRefusalResolved(
+      new URL('https://a.dev/'), new URL('file:///C:/x'), resolver,
+    )).toMatch(/only http/)
   })
 })
 

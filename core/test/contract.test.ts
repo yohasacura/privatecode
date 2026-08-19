@@ -8,7 +8,7 @@ import { SessionStore } from '../src/session/store.js'
 import { ToolRegistry } from '../src/tools/registry.js'
 import { Toolset } from '../src/tools/default-set.js'
 import {
-  looksLikeTask, parseAcceptance, parseContract, renderContract,
+  looksLikeTask, parseAcceptance, parseContract, renderCheckedState, renderContract,
 } from '../src/session/contract.js'
 import { collapseSupersededReads } from '../src/session/compaction.js'
 import type { ChatMessage } from '../src/llama/types.js'
@@ -81,6 +81,70 @@ describe('renderCheckedState', () => {
     })
     expect(state).toBe('1,3 met; 2 UNMET (no assertion write happened)')
     expect(renderContract({ ...contract, checkedState: state })).toContain('Last audit: 1,3 met')
+  })
+})
+
+/**
+ * The audit reports criteria back in the model's own words, and the contract is scored
+ * against them by NAME. Exact string equality made every restatement a silent pass: the
+ * gap matched nothing, so nothing was recorded as unmet and `checkedState` was promoted
+ * into message 0 as "Last audit: 1,2,3 met" at every later compaction — while the fix
+ * round for the gap was still running.
+ */
+describe('matching an audit report back to the contract criteria', () => {
+  const contract = {
+    goal: 'fix the crash',
+    criteria: [
+      'The reported crash no longer happens',
+      'A reproduction (script or test) demonstrably FAILED before the fix — its red run ' +
+      'is in the conversation — and passes after it',
+      'No existing check regressed',
+    ],
+    constraints: [],
+  }
+
+  test('a shortened restatement of a criterion is still recorded as UNMET', () => {
+    const state = renderCheckedState(contract, {
+      met: 2,
+      unmet: [{
+        criterion: 'Reproduction test failed before and passes after.',
+        why: 'no red run is in the conversation',
+      }],
+    })
+    expect(state).toBe('1,3 met; 2 UNMET (no red run is in the conversation)')
+  })
+
+  test('case, trailing punctuation and dash style are not a different criterion', () => {
+    const state = renderCheckedState(contract, {
+      met: 2,
+      unmet: [{ criterion: 'the reported crash no longer happens.', why: 'still crashes' }],
+    })
+    expect(state).toBe('2,3 met; 1 UNMET (still crashes)')
+  })
+
+  test('a gap naming no recognisable criterion is spelled out instead of vanishing', () => {
+    const state = renderCheckedState(contract, {
+      met: 3,
+      unmet: [{ criterion: 'the docs were never updated', why: 'nothing here touches docs' }],
+    })
+    expect(state).toContain('not matched to a criterion')
+    expect(state).toContain('the docs were never updated')
+    expect(state).toContain('nothing here touches docs')
+  })
+
+  test('a restatement that fits two criteria equally well ticks neither', () => {
+    // The whole point of the looser match is that it must stay unable to tick the WRONG
+    // line: "tests pass" sits inside both of these, so it names neither.
+    const twins = {
+      goal: 'green everywhere',
+      criteria: ['the tests pass on Windows', 'the tests pass on Linux'],
+      constraints: [],
+    }
+    const state = renderCheckedState(twins, {
+      met: 1, unmet: [{ criterion: 'tests pass', why: 'never run' }],
+    })
+    expect(state).toContain('1,2 met')
+    expect(state).toContain('not matched to a criterion')
   })
 })
 
@@ -261,6 +325,118 @@ test('the whole arc: distilled up front, gate catches a missed criterion, fix ro
   // The gate ran, found the gap, the fixer was told EXACTLY the gap, and the re-check passed.
   expect(acceptanceCalls).toBe(2)
   expect(fixerSawGaps).toBe(true)
+})
+
+/**
+ * Where the turn STARTS, once a compaction has landed in the middle of it.
+ *
+ * The swap rebuilds the transcript as [system, briefing, (ack,) ...kept tail], and the ack
+ * is skipped whenever the tail already opens on an assistant message — which is the ordinary
+ * shape of a mid-turn boundary. The remap used to clamp the turn-start index to a fixed 3,
+ * so in that case it pointed one message PAST the first kept message; when that message
+ * carried the turn's `write_file` calls, the created file's body — the only source
+ * `turnDiffText` has for a file that did not exist before — was silently missing from the
+ * independent review, and the review passed on an empty diff.
+ */
+test('a mid-turn compaction leaves the diff review reading the turn it belongs to', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pc-turnstart-'))
+  dirs.push(root)
+
+  /** Big enough on its own to clear DIFF_REVIEW_MIN_CHARS, so the review runs iff the
+   * write_file CALL is inside the reviewed slice. */
+  const CREATED = `export function clamp() {}\n${'z'.repeat(3_000)}`
+  const CONTEXT = 40_000
+
+  const mkTool = (name: string, content: string, readOnly: boolean): Tool<Record<string, unknown>> => ({
+    name, readOnly, description: name,
+    parameters: { type: 'object', properties: {} },
+    validate: (args) => ({ ok: true, args: args as Record<string, unknown> }),
+    execute: async () => ({ ok: true, content }),
+  })
+  const registry = new ToolRegistry()
+  registry.register(mkTool('read_file', 'q'.repeat(20_000), true))
+  registry.register(mkTool('write_file', 'wrote', false))
+
+  const criteria = ['clamp exists', 'clamp is covered']
+  const reviewed: string[] = []
+  let turnCall = 0
+  const call = (name: string, args: unknown, promptTokens: number) => ({
+    choices: [{
+      message: {
+        role: 'assistant', content: null,
+        tool_calls: [{ id: `t${turnCall}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }],
+      },
+      finish_reason: 'tool_calls',
+    }],
+    usage: { prompt_tokens: promptTokens, completion_tokens: 20 },
+  })
+
+  const fake = await startFakeServer((body, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: CONTEXT } }
+    if (req.url === '/health') return { status: 'ok' }
+    const names = ((body.tools ?? []) as { function: { name: string } }[]).map((t) => t.function.name)
+    const forced = names.length === 1 ? names[0] : undefined
+    if (forced === 'set_contract') {
+      return call('set_contract', { goal: 'clamp exists and is covered', criteria, constraints: [] }, 900)
+    }
+    if (forced === 'report_acceptance') {
+      return call('report_acceptance', {
+        items: criteria.map((c) => ({ criterion: c, met: true, evidence: 'the write landed' })),
+      }, 1_500)
+    }
+    if (forced === 'review_verdict') {
+      reviewed.push(JSON.stringify(body.messages))
+      return call('review_verdict', { issues: [] }, 1_500)
+    }
+    const last = (body.messages as { content?: string | null }[]).at(-1)
+    if (typeof last?.content === 'string' && last.content.includes('compacted to free up context')) {
+      return { choices: [{ message: { role: 'assistant', content: 'BRIEFING: a file was created.' }, finish_reason: 'stop' }] }
+    }
+    turnCall++
+    // Turn one is only there to push the second turn's start index past the fixed 3 the
+    // remap used to clamp to — on the very first turn of a session the clamp was harmless.
+    if (turnCall === 1) {
+      return {
+        choices: [{ message: { role: 'assistant', content: 'It reads files.' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 500, completion_tokens: 5 },
+      }
+    }
+    // Two fat reads build a middle worth summarising, then the write, and only then a
+    // prompt count the pre-step check reads as "this no longer fits".
+    if (turnCall === 2) return call('read_file', { path: 'a.ts' }, 2_000)
+    if (turnCall === 3) return call('read_file', { path: 'b.ts' }, 3_000)
+    if (turnCall === 4) return call('write_file', { path: 'clamp.ts', content: CREATED }, 37_000)
+    return {
+      choices: [{ message: { role: 'assistant', content: 'All done, everything works.' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 9_000, completion_tokens: 5 },
+    }
+  })
+  stop = fake.close
+
+  const states: string[] = []
+  const session = new Session({
+    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+    toolset: { registry } as Toolset,
+    workspaceRoot: root,
+    mode: 'autopilot',
+    store: new SessionStore(root),
+    // keepRecent 2 walks the tail back onto the assistant message carrying the write call,
+    // which is the boundary shape where the ack is skipped and the old clamp lost a message.
+    compaction: { contextLength: CONTEXT, keepRecent: 2 },
+    onCompaction: (e) => states.push(e.state),
+  })
+
+  await session.send('what does read_file do?')
+  const result = await session.send(BIG_TASK)
+
+  expect(result.stoppedBecause).toBe('done')
+  expect(states).toContain('applied')
+  // The swap really did land mid-turn: the briefing is in the transcript the turn finished on.
+  expect(session.messages().some((m) =>
+    typeof m.content === 'string' && m.content.includes('BRIEFING: a file was created'))).toBe(true)
+  // And the review ran on THIS turn's creation rather than on an empty diff.
+  expect(reviewed).toHaveLength(1)
+  expect(reviewed[0]).toContain('export function clamp')
 })
 
 describe('parseSuggestions', () => {

@@ -570,22 +570,137 @@ export function renderContract(c: TaskContract): string {
   return lines.join('\n')
 }
 
+/** Words carrying no identity of their own, ignored when a restatement is scored against
+ * a criterion: they are in every English sentence, so counting them would let a short
+ * generic phrase look like a strong match for anything. */
+const MATCH_STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'by', 'for', 'from', 'has', 'have',
+  'in', 'is', 'it', 'its', 'of', 'on', 'or', 'that', 'the', 'their', 'them', 'then',
+  'they', 'this', 'to', 'was', 'were', 'when', 'which', 'with',
+])
+
+/** Case, punctuation and dash style folded away: the model restates a criterion with a
+ * trailing period, straight quotes for curly ones, or a hyphen where the contract had an
+ * em dash, and none of those are a different criterion. Splitting on every non-alphanumeric
+ * run also folds the numbering the audit prompt itself adds ("1. tests pass"). Unicode
+ * letters are kept as letters so a Russian-language contract normalises the same way. */
+function matchWords(text: string): string[] {
+  return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== '')
+}
+
+/**
+ * Which criterion a reported item is talking about, or `null` when nothing can be said.
+ *
+ * The rule, in order, and it is deliberately three narrow steps rather than a similarity
+ * score with a threshold — a wrong tick is worse than no tick, because a criterion marked
+ * met is one nothing will look at again:
+ *   1. the normalised words are identical (punctuation, case and dash style folded);
+ *   2. one side's normalised words are a contiguous run inside the other's — a criterion
+ *      quoted with a "Criterion 2:" prefix, or a restatement that drops a trailing clause;
+ *   3. every content word of the restatement (stopwords dropped) appears in the criterion,
+ *      there are at least two such words, AND no other criterion swallows them too — an
+ *      ambiguous restatement matches nothing rather than the first plausible criterion.
+ *
+ * Comparison stays literal word by word: "fails" and "failed" are different words here, and
+ * no stemming is attempted. A restatement that re-inflects every content word falls through
+ * to `unmatched`, which callers must SURFACE — being told the audit named a gap we could not
+ * place is recoverable, quietly ticking the wrong criterion is not.
+ *
+ * Step 3 is what the exact-equality version could not do. Measured case: the harness's own
+ * bugfix criterion, "A reproduction (script or test) demonstrably FAILED before the fix —
+ * its red run is in the conversation — and passes after it", audited back as "Reproduction
+ * test failed before and passes after." Under `===` that reported gap matched no criterion
+ * at all, so all three criteria were written into `checkedState` as met and promoted into
+ * message 0 as "Last audit: 1,2,3 met" at every later swap, while the fix round for it was
+ * still running.
+ */
+function matchCriterionIndex(criteria: readonly string[], reported: string): number | null {
+  const want = matchWords(reported)
+  if (want.length === 0) return null
+  const all = criteria.map((c) => matchWords(c))
+  // Padded on both sides so the containment test lands on WORD boundaries: without the
+  // pad, "test" would be a run inside "testing the fixture".
+  const runOf = (hay: string[], needle: string[]): boolean =>
+    needle.length > 0 && needle.length <= hay.length &&
+    ` ${hay.join(' ')} `.includes(` ${needle.join(' ')} `)
+
+  const exact = all.findIndex((c) => c.join(' ') === want.join(' '))
+  if (exact !== -1) return exact
+
+  // Containment resolves to the MOST SPECIFIC criterion, not the first one that fits: with
+  // criteria "tests pass" and "all tests pass on Windows", a report of the second contains
+  // the first as a run as well, and taking the first hit would tick the wrong line. A tie
+  // at the longest length is genuinely ambiguous and matches nothing.
+  const contained = all.flatMap((c, i) => (runOf(c, want) || runOf(want, c) ? [i] : []))
+  if (contained.length > 0) {
+    const longest = Math.max(...contained.map((i) => all[i]!.length))
+    const best = contained.filter((i) => all[i]!.length === longest)
+    return best.length === 1 ? best[0]! : null
+  }
+
+  const distinctive = [...new Set(want)].filter((w) => !MATCH_STOPWORDS.has(w))
+  if (distinctive.length < 2) return null
+  const swallows = all.flatMap((c, i) => {
+    const words = new Set(c)
+    return distinctive.every((w) => words.has(w)) ? [i] : []
+  })
+  return swallows.length === 1 ? swallows[0]! : null
+}
+
+/**
+ * The report's gaps, resolved to criterion positions — the one place that decides what
+ * "the audit says criterion N is unmet" means. Shared by `renderCheckedState` and by the
+ * session's plan sync so the contract note and the user's Plan card can never disagree
+ * about which items the audit affirmed.
+ *
+ * `unmatched` is the honest remainder: a reported gap that names no recognisable criterion
+ * is still a gap, and swallowing it silently is exactly how a contract came to read
+ * "1,2,3 met" while a fix round ran. Callers must surface it, not drop it.
+ */
+export function resolveReportedCriteria(
+  criteria: readonly string[], report: AcceptanceReport,
+): { unmetByIndex: Map<number, string>; unmatched: { criterion: string; why: string }[] } {
+  const unmetByIndex = new Map<number, string>()
+  const unmatched: { criterion: string; why: string }[] = []
+  for (const item of report.unmet) {
+    const i = matchCriterionIndex(criteria, item.criterion)
+    if (i === null) unmatched.push(item)
+    else if (!unmetByIndex.has(i)) unmetByIndex.set(i, item.why)
+  }
+  return { unmetByIndex, unmatched }
+}
+
+/** Bounded for message 0, and it says when it cut: an audit note that quietly ends
+ * mid-sentence reads as the model having stopped mid-thought. */
+function clipReason(text: string, cap: number): string {
+  const t = text.trim()
+  return t.length <= cap ? t : `${t.slice(0, cap - 1)}…`
+}
+
 /**
  * The one-line audit trail `TaskContract.checkedState` holds, built from a report:
  * met criteria by NUMBER (they need no explanation), unmet ones by number WITH the reason
- * (the reason is the pointer the model acts on).
+ * (the reason is the pointer the model acts on), and last any gap that named no criterion
+ * we could place — spelled out in full rather than dropped, because that gap is the one
+ * the numbering cannot carry.
  */
 export function renderCheckedState(contract: TaskContract, report: AcceptanceReport): string {
+  const criteria = Array.isArray(contract.criteria) ? contract.criteria : []
+  const { unmetByIndex, unmatched } = resolveReportedCriteria(criteria, report)
   const met: number[] = []
   const unmet: string[] = []
-  contract.criteria.forEach((criterion, i) => {
-    const miss = report.unmet.find((u) => u.criterion === criterion)
-    if (miss === undefined) met.push(i + 1)
-    else unmet.push(`${i + 1} UNMET (${miss.why.slice(0, 120)})`)
-  })
+  for (let i = 0; i < criteria.length; i++) {
+    const why = unmetByIndex.get(i)
+    if (why === undefined) met.push(i + 1)
+    else unmet.push(`${i + 1} UNMET (${clipReason(why, 120)})`)
+  }
   const parts: string[] = []
   if (met.length > 0) parts.push(`${met.join(',')} met`)
   parts.push(...unmet)
+  for (const u of unmatched) {
+    parts.push(`UNMET, not matched to a criterion: "${clipReason(u.criterion, 120)}" ` +
+      `(${clipReason(u.why, 120)})`)
+  }
   return parts.length === 0 ? 'no criteria matched the report' : parts.join('; ')
 }
 

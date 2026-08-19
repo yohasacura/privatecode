@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatItem } from '../lib/state'
-import { agentCommands } from './terminal-tab'
+import { agentCommands, commandsKey } from './terminal-tab'
 
 /**
  * The console must not claim a command ran when it did not.
@@ -44,5 +44,48 @@ describe('a command the step never executed', () => {
       args: JSON.stringify({ command: 'npm run build' }),
     }
     expect(agentCommands([running]).map((l) => l.state)).toEqual(['running'])
+  })
+})
+
+/**
+ * What makes the console re-read the transcript.
+ *
+ * The console is memoised because `items` is a new array on every streamed token; the key has
+ * to be exact in both directions — cheap enough not to re-derive per token, and never so
+ * coarse that it holds a list belonging to a different conversation.
+ */
+describe('commandsKey', () => {
+  const say = (id: number, text: string): ChatItem => ({ kind: 'user', id, text })
+
+  it('does not move while a step streams tokens into the newest item', () => {
+    // The whole reason the key exists: same items, one of them growing a character at a time.
+    const before: ChatItem[] = [say(1, 'build it'), { kind: 'assistant', id: 2, text: 'wo', interrupted: false }]
+    const after: ChatItem[] = [say(1, 'build it'), { kind: 'assistant', id: 2, text: 'work', interrupted: false }]
+    expect(commandsKey(after)).toEqual(commandsKey(before))
+  })
+
+  it('moves when a command finishes, which changes no count but the resolved one', () => {
+    const running: ChatItem = {
+      kind: 'tool', id: 2, name: 'run_command', startedAtMs: 2,
+      args: JSON.stringify({ command: 'npm test' }),
+    }
+    const done = command(2, 'npm test', true, '$ npm test\nall good')
+    expect(commandsKey([say(1, 'test it'), done])).not.toEqual(commandsKey([say(1, 'test it'), running]))
+  })
+
+  it('moves when a resumed session replaces a transcript of exactly the same shape', () => {
+    // Two short sessions with equal item counts and equal resolved-tool counts is not an
+    // exotic coincidence — both are small integers. Keyed on the counts alone, the Terminal
+    // tab went on listing the PREVIOUS session's commands, output and all, under the new one.
+    const wasOpen: ChatItem[] = [say(1, 'run the tests'), command(2, 'npm test', true, 'ok')]
+    // `nextId` is carried across the switch, so the resumed session's items are numbered from
+    // where the previous one stopped — never reusing an id it already spent.
+    const resumed: ChatItem[] = [say(3, 'run the build'), command(4, 'npm run build', true, 'ok')]
+    expect(resumed).toHaveLength(wasOpen.length)
+    expect(commandsKey(resumed)).not.toEqual(commandsKey(wasOpen))
+  })
+
+  it('is stable for an empty conversation, which two empty sessions share', () => {
+    expect(commandsKey([])).toEqual(commandsKey([]))
   })
 })

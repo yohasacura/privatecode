@@ -112,6 +112,38 @@ describe('a call abandoned mid-write', () => {
     expect(card && card.kind === 'tool' && card.result?.ok).toBe(false)
     expect(card && card.kind === 'tool' && card.result?.content.startsWith('Not run:')).toBe(true)
   })
+
+  it('is the card the continuation left behind, not the call it re-issued', () => {
+    // The continuation's single `tool.call` used to complete the FIRST card of that name in
+    // document order — which is the dead one — and the result then followed it there. The
+    // edit showed as finished above the reasoning that produced it, while the call actually
+    // running stayed `writing` until the turn ended and appeared below it as "never ran".
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
+      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts","old' },
+      // Out of room mid-argument: the core drops the partial call and re-asks with
+      // tool_choice 'required'.
+      { type: 'step.continuation', atMs: 1_000 },
+      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts","old":"x","new":"y"}' },
+      { type: 'tool.call', name: 'edit_file', args: '{"path":"a.ts","old":"x","new":"y"}' },
+      { type: 'tool.result', name: 'edit_file', ok: true, content: 'a.ts edited' },
+    ])
+    const cards = state.items.filter((i) => i.kind === 'tool')
+    expect(cards).toHaveLength(2)
+    const [dead, live] = cards
+    // The abandoned card keeps its half-written arguments and is closed with the prefix
+    // `collectChanges`, `commandsFrom` and the Terminal tab all read as "did not execute".
+    expect(dead?.kind === 'tool' && dead.args).toBe('{"path":"a.ts","old')
+    expect(dead?.kind === 'tool' && dead.result?.ok).toBe(false)
+    expect(dead?.kind === 'tool' && dead.result?.content.startsWith('Not run:')).toBe(true)
+    // The re-issued call is the one that carries the authoritative arguments and the result.
+    expect(live?.kind === 'tool' && live.args).toBe('{"path":"a.ts","old":"x","new":"y"}')
+    expect(live?.kind === 'tool' && live.result?.ok).toBe(true)
+    expect(live?.kind === 'tool' && live.result?.content).toBe('a.ts edited')
+  })
 })
 
 describe('what a restored transcript makes of its assistant entries', () => {
@@ -150,6 +182,52 @@ describe('what a restored transcript makes of its assistant entries', () => {
       { type: 'assistant.text', text: 'весь ответ целиком' },
     ])
     expect(state.items.filter((i) => i.kind === 'assistant')).toHaveLength(1)
+  })
+
+  it('drops it too when a tool call rode along with the prose', () => {
+    // The order the events really arrive in when a step writes prose AND calls a tool: the
+    // card opens while the generation is still running, so it — not the prose — is the last
+    // item when the whole string is announced, and the sentence was appended a second time
+    // under the tool row.
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
+      { type: 'thinking.delta', text: 'which file holds the config' },
+      { type: 'text.delta', text: 'Let me read the config file.' },
+      { type: 'tool.call.delta', index: 0, name: 'read_file' },
+      { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts"}' },
+      // step.done lands before the whole-string event: the core announces the prose only
+      // once the generation has resolved, and resolving is what ends the step.
+      { type: 'step.done', step: 1, seconds: 2 },
+      { type: 'assistant.text', text: 'Let me read the config file.' },
+      { type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' },
+      { type: 'tool.result', name: 'read_file', ok: true, content: 'export const x = 1' },
+    ])
+    const said = state.items.flatMap((i) => (i.kind === 'assistant' ? [i.text] : []))
+    expect(said).toEqual(['Let me read the config file.'])
+    // And the prose stays ABOVE the call it introduced, which is the order it was written in.
+    expect(state.items.map((i) => i.kind)).toEqual(['thinking', 'assistant', 'tool'])
+  })
+
+  it('keeps the same sentence said again in a later step', () => {
+    // Recency is scoped to the generation, not to the whole transcript: a settled card is a
+    // message boundary, so prose repeated after one is a second real message and stays.
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
+      { type: 'text.delta', text: 'Checking the tests.' },
+      { type: 'tool.call.delta', index: 0, name: 'read_file' },
+      { type: 'step.done', step: 1, seconds: 1 },
+      { type: 'assistant.text', text: 'Checking the tests.' },
+      { type: 'tool.call', name: 'read_file', args: '{"path":"a.test.ts"}' },
+      { type: 'tool.result', name: 'read_file', ok: true, content: 'it(...)' },
+      { type: 'step.start', step: 2, timeoutMs: 90_000, startedAtMs: 5_000 },
+      { type: 'tool.call.delta', index: 0, name: 'read_file' },
+      { type: 'step.done', step: 2, seconds: 1 },
+      { type: 'assistant.text', text: 'Checking the tests.' },
+    ])
+    expect(state.items.flatMap((i) => (i.kind === 'assistant' ? [i.text] : [])))
+      .toEqual(['Checking the tests.', 'Checking the tests.'])
   })
 })
 

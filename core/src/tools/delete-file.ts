@@ -1,5 +1,5 @@
+import { navProcess, noteWorkspaceWrite } from '../csharp/nav-process.js'
 import { rm, stat } from 'node:fs/promises'
-import { opensAsWorkspaceRoot } from '../workspace.js'
 import { fsErrorReason } from './atomic-write.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
 
@@ -52,20 +52,13 @@ export const deleteFileTool: Tool<DeleteFileArgs> = {
   async execute(args, ctx) {
     let abs: string
     try {
+      // The jail refuses more than an escape here: a path that opens as a workspace FOLDER's
+      // own root comes back as a violation too, so `path: "engine"` cannot remove an attached
+      // project. The check this tool used to carry itself compared against the primary root
+      // only, which no attached folder is.
       abs = ctx.workspace.resolveForWrite(args.path)
     } catch (e) {
       return { ok: false, content: (e as Error).message }
-    }
-
-    // The workspace root is not a file or directory this tool may remove, whether or not
-    // it exists on disk. Same idiom as edit_file/write_file/move_file.
-    if (opensAsWorkspaceRoot(abs, ctx.workspace.root)) {
-      return {
-        ok: false,
-        content:
-          `${args.path} resolves to the workspace root, not a file; delete_file cannot ` +
-          'delete the workspace itself',
-      }
     }
 
     // Stat first: whether the target is a file or a directory decides which refusal (if
@@ -98,6 +91,21 @@ export const deleteFileTool: Tool<DeleteFileArgs> = {
       await rm(abs, { recursive: true, force: false })
     } catch (e) {
       return { ok: false, content: `Could not delete ${args.path}: ${fsErrorReason(abs, e)}` }
+    }
+
+    // The C# index is loaded once per workspace and nothing but this call clears it, so
+    // without it `csharp_nav` keeps answering about the file that was just removed — with
+    // ok:true, pointing the model at a definition in a path `read_file` can no longer open.
+    // edit_file, write_file and move_file all report their writes; deleting a .cs file is the
+    // largest invalidation of the lot and was the one that did not.
+    if (isDirectory) {
+      // `noteWorkspaceWrite` decides on the extension it is handed, and a directory has none
+      // — yet a recursive delete may have taken every .cs file in a subtree with it. What was
+      // inside cannot be inspected after the fact, so the reload is unconditional; it costs
+      // only if a navigation question actually follows.
+      navProcess()?.invalidate()
+    } else {
+      noteWorkspaceWrite(args.path)
     }
 
     return {

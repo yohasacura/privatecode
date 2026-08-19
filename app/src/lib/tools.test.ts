@@ -49,6 +49,41 @@ describe('the browser tool', () => {
   })
 })
 
+describe('the search family', () => {
+  it('shows the glob a find_files call searched for', () => {
+    // `glob` is find_files' only argument; the presenter used to look for pattern/query/path
+    // and find none of them, so every Find row was a bare verb with nothing after it.
+    const p = presentTool('find_files', '{"glob":"src/**/*.ts"}')
+    expect(p).toMatchObject({ verb: 'Find', target: 'src/**/*.ts', path: null })
+  })
+
+  it('shows the regex a scoped search ran, and where it ran', () => {
+    const p = presentTool('search_code', '{"pattern":"presentTool","path":"app/src/panels"}')
+    // The pattern first: the scope alone (what `path ?? pattern` produced) never said what
+    // was being looked for.
+    expect(p.target).toBe('presentTool in app/src/panels')
+    expect(presentTool('search_code', '{"pattern":"presentTool"}').target).toBe('presentTool')
+  })
+
+  it('offers no file to open for the tools whose path is a directory', () => {
+    // The transcript renders its "Open file" button on any non-null path, and opening a
+    // directory as a file answers "… is a directory; use fs.tree" — a tab whose only content
+    // is that error.
+    expect(presentTool('list_dir', '{"path":"app/src/panels"}'))
+      .toMatchObject({ verb: 'List', target: 'app/src/panels', path: null })
+    expect(presentTool('search_code', '{"pattern":"x","path":"app/src"}').path).toBeNull()
+    // A file the model asked to READ is still openable — that is the button's real case.
+    expect(presentTool('read_file', '{"path":"app/src/lib/tools.ts"}').path)
+      .toBe('app/src/lib/tools.ts')
+  })
+
+  it('names the row even when the arguments never finished streaming', () => {
+    // A card opens on the tool NAME, mid-generation, with args that are not yet valid JSON.
+    expect(presentTool('find_files', '{"glob":"src/**').target).toBe('')
+    expect(presentTool('list_dir', '{"pa').verb).toBe('List')
+  })
+})
+
 describe('screenshotPathOf', () => {
   it('recognises exactly what the screenshot action writes', () => {
     expect(screenshotPathOf('browser', '.privatecode/state/browser/shot-001.png'))

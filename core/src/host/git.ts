@@ -33,30 +33,61 @@ async function git(cwd: string, args: string[], timeout = 15_000) {
   return execa('git', args, { cwd, reject: false, timeout, windowsHide: true })
 }
 
-/** Splits porcelain v1 output. The first two characters are the status pair; a rename
- * carries `old -> new` and is reported by its NEW path, which is the one on disk. */
+/**
+ * The branch out of porcelain's `## ` header, which has three shapes and not one:
+ * `## main...origin/main [ahead 1]`, `## HEAD (no branch)` while detached, and — before the
+ * first commit — `## No commits yet on main` (git before 2.16 spelled that `## Initial
+ * commit on main`). Taking the first word read the unborn header as a branch literally named
+ * "No", so every folder someone had just `git init`ed showed a branch chip reading "No".
+ */
+function parseBranchHeader(header: string): string | null {
+  const unborn = /^(?:No commits yet on|Initial commit on) (.+)$/.exec(header)
+  const named = (unborn?.[1] ?? header).split('...')[0]!.split(' ')[0] ?? ''
+  return named === '' ? null : named
+}
+
+/**
+ * Splits porcelain v1 `-z` output. The first two characters of a record are the status pair;
+ * a rename is reported by its NEW path, which is the one on disk, with the old name in the
+ * record straight after it.
+ *
+ * `-z` and not the default line format because it is the only form git emits VERBATIM. With
+ * `core.quotePath` on — the default — any name outside ASCII arrives C-escaped: a Cyrillic
+ * eight-letter filename came through as `"\321\202\320\265\321\201\321\202.txt"`, and those
+ * backslashes are directory separators to Windows, so the panel grew a phantom `321/202/...`
+ * tree whose rows git then refused to stage or diff because the pathspec matched nothing.
+ * Un-escaping that by hand would mean re-implementing git's C quoting; asking git not to
+ * quote is one flag.
+ *
+ * Callers MUST pass `-z`. Without it the entire output arrives as a single record and only
+ * the branch header is recognisable at all.
+ */
 export function parsePorcelain(stdout: string): { branch: string | null; files: GitFileChange[] } {
   let branch: string | null = null
   const files: GitFileChange[] = []
 
-  for (const line of stdout.split('\n')) {
-    if (line === '') continue
-    if (line.startsWith('## ')) {
-      // `## main...origin/main [ahead 1]` or `## HEAD (no branch)`
-      branch = line.slice(3).split('...')[0]!.split(' ')[0] ?? null
+  const records = stdout.split('\0')
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i]!
+    if (record === '') continue
+    if (record.startsWith('## ')) {
+      branch = parseBranchHeader(record.slice(3))
       continue
     }
-    const code = line.slice(0, 2)
-    const rest = line.slice(3)
-    const arrow = rest.indexOf(' -> ')
-    const path = arrow === -1 ? rest : rest.slice(arrow + 4)
-    const oldPath = arrow === -1 ? undefined : rest.slice(0, arrow).replace(/^"|"$/g, '')
+    const code = record.slice(0, 2)
+    // A rename or a copy names its source in the NEXT record, which is what retires the
+    // ` -> ` search — that was a guess about a separator a filename may legally contain.
+    // Either half of the pair can carry it (`R `, `RM`, and porcelain's ` R`), so both
+    // letters are tested; measured against git 2.54, which emits the new path first.
+    const hasSource = code.includes('R') || code.includes('C')
+    const oldPath = hasSource ? records[i + 1] : undefined
+    if (hasSource) i += 1
     files.push({
-      path: path.replace(/^"|"$/g, ''),
+      path: record.slice(3),
       code,
       staged: code[0] !== ' ' && code[0] !== '?',
       untracked: code === '??',
-      ...(oldPath !== undefined ? { oldPath } : {}),
+      ...(oldPath !== undefined && oldPath !== '' ? { oldPath } : {}),
     })
   }
   return { branch, files }
@@ -114,9 +145,16 @@ export async function gitUnstage(cwd: string, paths: readonly string[]): Promise
  * rather than `diff --cached` because porcelain also behaves on a repository whose HEAD
  * is unborn — the empty-repo case the panel must not crash on. */
 export async function stagedPaths(cwd: string): Promise<string[]> {
-  const result = await git(cwd, ['status', '--porcelain=v1'])
+  const result = await git(cwd, ['status', '--porcelain=v1', '-z'])
   if (result.exitCode !== 0) return []
-  return parsePorcelain(result.stdout).files.filter((f) => f.staged).map((f) => f.path)
+  // BOTH halves of a rename. The index holds a rename as the deletion of the old name plus
+  // the addition of the new one, and the caller checking that the index holds nothing from
+  // outside the workspace can only see what is returned here: with the old name dropped,
+  // `git mv packages/web/util.ts packages/api/util.ts` run in a terminal passed that check
+  // on the new path alone and committed the removal of a file this window never showed.
+  return parsePorcelain(result.stdout).files
+    .filter((f) => f.staged)
+    .flatMap((f) => (f.oldPath !== undefined ? [f.path, f.oldPath] : [f.path]))
 }
 
 export interface GitCommitResult {

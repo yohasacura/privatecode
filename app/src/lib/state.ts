@@ -464,6 +464,35 @@ function lastAssistantItem(items: ChatItem[]): (ChatItem & { kind: 'assistant' }
 }
 
 /**
+ * The assistant item THIS generation streamed, if it streamed one -- the item `assistant.text`
+ * has to compare itself against before appending.
+ *
+ * Not `items[items.length - 1]`. The core announces prose the moment the generation resolves
+ * (loop.ts: "Prose that rides along with a tool call is still the model talking to the user"),
+ * which is AFTER the `tool.call.delta` carrying a tool name has already opened a card for the
+ * call that rode along with it. A step that wrote both therefore held `[assistant, tool]` by
+ * the time the whole-string event landed, the last-item check saw the card instead of the
+ * prose, and the same sentence was appended a second time BELOW the tool row -- rendered
+ * twice live and exported twice, while the same conversation restored from disk rendered it
+ * once.
+ *
+ * So the scan steps over cards still being WRITTEN, and stops at anything else. A writing card
+ * is the only thing that can sit between prose and its own echo: `tool.call`, the approval
+ * record and the result all arrive after this event. Everything else is a message boundary --
+ * and on replay it is the boundary that matters, because a restored `tool-call` settles its
+ * card immediately, so two assistant entries either side of a tool are two real messages and
+ * both have to stay.
+ */
+function streamedAssistantItem(items: ChatItem[]): (ChatItem & { kind: 'assistant' }) | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    if (item?.kind === 'tool' && item.writing === true) continue
+    return item?.kind === 'assistant' ? item : undefined
+  }
+  return undefined
+}
+
+/**
  * The most recent tool item still awaiting its result, found by scanning BACKWARDS rather
  * than by looking only at the last item.
  *
@@ -494,12 +523,12 @@ function lastAssistantItem(items: ChatItem[]): (ChatItem & { kind: 'assistant' }
  * announces them too, so this is the remaining case: the ones cut off before the step even
  * finished, which no event can describe because the step produced none.
  */
-function closeWritingCalls(items: ChatItem[]): ChatItem[] {
+function closeWritingCalls(items: ChatItem[], reason: string = ABANDONED): ChatItem[] {
   if (!items.some((i) => i.kind === 'tool' && i.writing === true)) return items
   return items.map((item): ChatItem => {
     if (item.kind !== 'tool' || item.writing !== true) return item
     const { writing: _w, callIndex: _c, ...rest } = item
-    return { ...rest, result: { ok: false, preview: 'never ran', content: ABANDONED, display: ABANDONED } }
+    return { ...rest, result: { ok: false, preview: 'never ran', content: reason, display: reason } }
   })
 }
 
@@ -512,13 +541,29 @@ function closeWritingCalls(items: ChatItem[]): ChatItem[] {
  * Written any other way, this text reads to all three as a call that ran and failed.
  *
  * The case that made it matter: a generation that truncates leaves its half-written card
- * behind, and the forced continuation opens a SECOND card for the same call. The first is
- * closed by this function — and, holding a path and a `write_file` name, it went into the
- * Changes tab as the newest write to that path, taking the real write's diff and its
- * "Put back" button with it.
+ * behind, and the forced continuation opens a SECOND card for the same call. That one is
+ * closed the moment the continuation starts, with `TRUNCATED_BEFORE_CALL` below — and, while
+ * it was closed with plain prose, it went into the Changes tab as the newest write to that
+ * path, holding a path and a `write_file` name, taking the real write's diff and its
+ * "Put back" button with it. What is left for this text is the turn that simply ended on top
+ * of an open card: aborted, timed out, or truncated twice.
  */
 const ABANDONED =
   'Not run: the turn ended while this call was still being written, so it never ran.'
+
+/**
+ * The same closure, for the case the comment above describes — said accurately, because the
+ * turn has NOT ended here: the generation ran out of room and a forced continuation is about
+ * to take over.
+ *
+ * It carries the identical `Not run:` prefix, which is the load-bearing half: `collectChanges`
+ * drops the row, `commandsFrom` keeps it out of the work log's "Ran" line, and the Terminal
+ * tab keeps it out of the console. Only the sentence differs, so a reader is told which of the
+ * two things happened rather than being told the turn ended when it is still running.
+ */
+const TRUNCATED_BEFORE_CALL =
+  'Not run: the model ran out of room while this call was still being written, and the ' +
+  'forced continuation re-issued it below, so this one never ran.'
 
 export function pendingTool(items: ChatItem[]): (ChatItem & { kind: 'tool' }) | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -608,6 +653,18 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       if (state.currentStep === null) return state
       return {
         ...state,
+        // The truncated generation's half-written cards are closed HERE, where it is already
+        // known they can never be completed: the core drops the partial `tool_calls` from the
+        // message it carries back (loop.ts appendTruncated) and the continuation re-issues the
+        // call from scratch, opening a second card for it.
+        //
+        // Left open until `turn.done`, that dead card was the one the continuation's single
+        // `tool.call` completed — the match there walks OLDEST first, for the parallel-call
+        // ordering it exists for — and `pendingTool` then attached the result to it too. One
+        // edit rendered as a finished call with a diff ABOVE the reasoning that produced it,
+        // plus a phantom row of the same tool name reading "never ran" below, and the live
+        // call never resolved.
+        items: closeWritingCalls(state.items, TRUNCATED_BEFORE_CALL),
         currentStep: {
           ...state.currentStep,
           // A fresh silent-prefill stretch starts NOW: the anchor moves so the countdown
@@ -752,9 +809,11 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       // transcript folds through this same case, and there two consecutive assistant
       // entries are two real messages (a truncated reply and its continuation, an
       // interrupted partial and the next answer) — the old any-last check silently
-      // swallowed the second one every time an old chat was opened.
-      const last = lastAssistantItem(state.items)
-      if (last && last.text === action.text) return state
+      // swallowed the second one every time an old chat was opened. And against the item
+      // this generation streamed rather than against the last one in the list, which by now
+      // is the card of the tool call the prose rode along with (see streamedAssistantItem).
+      const streamed = streamedAssistantItem(state.items)
+      if (streamed && streamed.text === action.text) return state
       const items = closeThinking(state.items, action.atMs)
       const item: ChatItem = {
         kind: 'assistant', id: state.nextId, text: action.text,

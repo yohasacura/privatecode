@@ -1,7 +1,6 @@
 import { noteWorkspaceWrite } from '../csharp/nav-process.js'
 import { mkdir, stat } from 'node:fs/promises'
 import { dirname, sep } from 'node:path'
-import { opensAsWorkspaceRoot } from '../workspace.js'
 import { fsErrorReason, renameWithRetry } from './atomic-write.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
 
@@ -57,6 +56,11 @@ export const moveFileTool: Tool<MoveFileArgs> = {
     }
   },
   async execute(args, ctx) {
+    // Neither endpoint may be a workspace FOLDER's own root: it is not a file or directory
+    // entry that can be renamed away from or onto, whether or not it currently exists on
+    // disk. The jail refuses that for both endpoints (see workspace.ts's `resolveForWrite`);
+    // the copy of the check this tool used to carry compared against the primary root only,
+    // so `from: "engine"` renamed an attached project away.
     let fromAbs: string
     try {
       fromAbs = ctx.workspace.resolveForWrite(args.from)
@@ -68,26 +72,6 @@ export const moveFileTool: Tool<MoveFileArgs> = {
       toAbs = ctx.workspace.resolveForWrite(args.to)
     } catch (e) {
       return { ok: false, content: (e as Error).message }
-    }
-
-    // Neither endpoint may be the workspace root itself: it is not a file or directory
-    // entry that can be renamed away from or onto, whether or not it currently exists on
-    // disk. Same idiom as edit_file/write_file (see workspace.ts's opensAsWorkspaceRoot).
-    if (opensAsWorkspaceRoot(fromAbs, ctx.workspace.root)) {
-      return {
-        ok: false,
-        content:
-          `${args.from} resolves to the workspace root, not a file; move_file cannot move ` +
-          'the workspace itself',
-      }
-    }
-    if (opensAsWorkspaceRoot(toAbs, ctx.workspace.root)) {
-      return {
-        ok: false,
-        content:
-          `${args.to} resolves to the workspace root, not a file; move_file cannot replace ` +
-          'the workspace itself',
-      }
     }
 
     try {

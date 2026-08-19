@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { VISIBLE_TAIL, visibleWindow } from './transcript'
+import { VISIBLE_TAIL, chatReturnScrollTop, visibleWindow } from './transcript'
 
 /**
  * How much of a very long conversation is mounted.
@@ -56,5 +56,30 @@ describe('visibleWindow', () => {
 
   it('is a no-op on an empty conversation', () => {
     expect(visibleWindow([], false)).toEqual({ shown: [], hidden: 0 })
+  })
+})
+
+/**
+ * Coming back to the chat from a file tab.
+ *
+ * The chat face is hidden with `display: none`, so the transcript's scroll offset is thrown
+ * away by the browser and comes back as 0. Opening a file to read a diff and pressing Esc
+ * therefore landed at the very top of the conversation — and because the sticky-scroll hook
+ * still believed it was pinned, the jump-to-latest button was not offered either.
+ */
+describe('chatReturnScrollTop', () => {
+  it('comes back to the exact offset a reader scrolled away from', () => {
+    expect(chatReturnScrollTop({ parked: 4_180, stuck: false, scrollHeight: 26_000 })).toBe(4_180)
+  })
+
+  it('lands on the NEW bottom for a reader who was pinned there', () => {
+    // The turn keeps streaming while a file tab is fronted and every re-pin attempted
+    // meanwhile was discarded by a container with no layout box, so the offset that was
+    // "the bottom" on the way out is hundreds of rows short on the way back.
+    expect(chatReturnScrollTop({ parked: 4_180, stuck: true, scrollHeight: 26_000 })).toBe(26_000)
+  })
+
+  it('leaves the top alone when the top is where the conversation was', () => {
+    expect(chatReturnScrollTop({ parked: 0, stuck: false, scrollHeight: 900 })).toBe(0)
   })
 })

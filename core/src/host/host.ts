@@ -22,7 +22,7 @@ import { loadProjectNotes } from '../memory/project-notes.js'
 import { loadSkills, projectSkillsDir, userSkillsDir } from '../skills/skills.js'
 import { stopNavProcess } from '../csharp/nav-process.js'
 import { expandCommand, listCommands } from '../commands/custom.js'
-import { Session, type SessionOptions } from '../session/session.js'
+import { DEFAULT_TRIGGER_TOKENS, Session, type SessionOptions } from '../session/session.js'
 import { SessionStore } from '../session/store.js'
 import { createToolset, type Toolset } from '../tools/default-set.js'
 import { loadBrowserSettings } from '../browser/settings.js'
@@ -124,7 +124,7 @@ import { attachFiles } from './attachments.js'
 import { indexRepo, renderIndex, type ReferenceEdges, type RepoIndex } from '../outline/repo-map.js'
 import { harvestReferenceEdges } from '../csharp/reference-edges.js'
 import { gitCommitStaged, gitDiff, gitStage, gitUnstage, stagedPaths, suggestCommitMessage } from './git.js'
-import { describeFolder, discoverRepos, repoRootFor, toRepoPaths } from './repos.js'
+import { describeFolder, discoverRepos, repoRootFor, resolvePanelPath, toRepoPaths } from './repos.js'
 import { searchSessions } from './session-search.js'
 
 /**
@@ -907,8 +907,13 @@ export class SessionHost {
       attempt: info.round,
     })
     if (resumeId !== undefined) sessionOpts.resume = resumeId
+    // The configured trigger is passed whether or not the window is known yet. A session
+    // built while the model is still loading has no `compaction` at all — `setContextLength`
+    // builds it later, and without these defaults to merge it would fall back to the
+    // built-in threshold and silently ignore the user's own `compaction.triggerTokens`.
+    const triggerTokens = loadTriggerTokens(workspaceRoot)
+    if (triggerTokens !== undefined) sessionOpts.compactionDefaults = { triggerTokens }
     if (this.contextLength !== null) {
-      const triggerTokens = loadTriggerTokens(workspaceRoot)
       sessionOpts.compaction = {
         contextLength: this.contextLength,
         ...(triggerTokens !== undefined ? { triggerTokens } : {}),
@@ -1051,7 +1056,10 @@ export class SessionHost {
     this.sending = true
     this.currentAbort = new AbortController()
     try {
-      const work = session.forceCompact()
+      // The signal is what makes the bookkeeping above real: without it Escape fired a
+      // controller nothing listened to, a session switch blocked on the whole summary
+      // generation, and shutdown() returned while the request still held the single slot.
+      const work = session.forceCompact(this.currentAbort.signal)
       this.currentTurn = work
       await work
       return { applied: this.lastCompactionApplied }
@@ -1427,8 +1435,11 @@ export class SessionHost {
    * asking git which repository owns it is one process and cannot disagree with itself. */
   private async gitDiffFor(params: GitDiffParams): Promise<GitDiffResult> {
     const { workspace } = this.requireInitialized()
-    // Resolved through the jail before it reaches git, like every other path the UI sends.
-    const abs = workspace.resolve(params.path)
+    // Contained to the workspace's folders before it reaches git, but NOT through the model's
+    // jail: that also refuses `.env*`, `.npmrc` and `*.pem` by name, and this panel lists
+    // those files, so a row the user is looking at answered with "access denied" where its
+    // diff belongs. See `resolvePanelPath`.
+    const abs = resolvePanelPath(workspace, params.path)
     const repoRoot = await repoRootFor(abs)
     if (repoRoot === null) return { diff: '' }
     const within = relative(repoRoot, abs).split(sep).join('/')
@@ -1446,7 +1457,15 @@ export class SessionHost {
     const { workspace } = this.requireInitialized()
     const first = params.paths[0]
     if (first === undefined) return { ok: false, problem: `nothing to ${action}` }
-    const repoRoot = await repoRootFor(workspace.resolve(first))
+    // Reported, not thrown: an unresolvable first path used to escape the handler as a raw
+    // error reply, so the panel showed a transport failure instead of the refusal the rest
+    // of the set already produces through `toRepoPaths`.
+    let repoRoot: string | null
+    try {
+      repoRoot = await repoRootFor(resolvePanelPath(workspace, first))
+    } catch (e) {
+      return { ok: false, problem: (e as Error).message }
+    }
     if (repoRoot === null) {
       return { ok: false, problem: `${first} is not inside a git repository` }
     }
@@ -2074,5 +2093,7 @@ function loadTriggerTokens(workspaceRoot: string): number | undefined {
   // the server's default --cache-ram is 8192 MiB → the cliff sits at ~157k tokens.
   // Compacting at 140k keeps the whole session on the working side of it, with margin
   // for mid-turn growth; settings.json `compaction.triggerTokens` still overrides.
-  return 140_000
+  // The number itself lives in session.ts, which needs it for the same reason when the
+  // window arrives late — one constant, so the two cannot drift apart.
+  return DEFAULT_TRIGGER_TOKENS
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import type { FsReadResult, GitRepoView } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
 import { highlight } from '../lib/highlight'
@@ -24,7 +25,23 @@ import type { ChangeEntry } from './changes-tab'
 type Loaded =
   | { kind: 'loading' }
   | { kind: 'loaded'; lines: string[]; truncated: boolean }
+  | { kind: 'image'; dataUrl: string; bytes: number }
   | { kind: 'error'; message: string }
+
+/**
+ * What one `fs.read` answer becomes on screen.
+ *
+ * `fs.read` answers for a PNG/JPG/GIF/WebP/BMP/SVG with `lines: []` and an `image` payload
+ * (host.ts's `IMAGE_TYPES`), and the tab used to keep only the lines: clicking any image in
+ * the tree — the agent's own browser screenshots included, whose entire audience is the
+ * person, since the model has no vision tower — opened a tab named after the file with a
+ * completely blank body, no image and no explanation. Pure and exported for its test.
+ */
+export function loadedFrom(result: FsReadResult): Loaded {
+  return result.image !== undefined
+    ? { kind: 'image', dataUrl: result.image.dataUrl, bytes: result.image.bytes }
+    : { kind: 'loaded', lines: result.lines, truncated: result.truncated }
+}
 
 function extensionOf(path: string): string {
   const dot = path.lastIndexOf('.')
@@ -68,6 +85,24 @@ function PathLabel({ path }: { path: string }): VNode {
 }
 
 /**
+ * Something a Put back attempt left on screen, tagged with the change it was about.
+ *
+ * The tag is the whole point. `collectChanges` keys one entry per path and replaces it —
+ * new `id`, new diff — every time the agent writes that path again, so a tab left open on a
+ * reverted file gets handed a NEW change in place of the one that was put back. Judging
+ * "already reverted" by a bare string then left the old "src/a.ts restored" line sitting
+ * above the newer diff with Put back — gated on that same string — hidden, so the newer
+ * change could not be put back from the tab at all until the tab was switched away and back.
+ */
+interface RevertNote { entryId: number; text: string }
+
+/** The note, if it still describes the change currently on screen. Pure and exported for
+ * its test. */
+export function noteFor(entry: ChangeEntry, note: RevertNote | null): string | null {
+  return note !== null && note.entryId === entry.id ? note.text : null
+}
+
+/**
  * The DIFF face of a file this session changed: what the session did, with the two things
  * you can do about it. Put back restores EVERY path the change touched (for a move that is
  * the source and the destination); Reviewed dims the badge on the tree.
@@ -84,12 +119,17 @@ function DiffFace({
   const [asking, setAsking] = useState(false)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState<string | null>(null)
-  const [outcome, setOutcome] = useState<string | null>(null)
+  const [failed, setFailed] = useState<RevertNote | null>(null)
+  const [outcome, setOutcome] = useState<RevertNote | null>(null)
+  // Both notes are about ONE version of the change; a newer write to the same path is a
+  // different change, and neither its outcome line nor its failure belongs to it.
+  const shownOutcome = noteFor(entry, outcome)
+  const shownFailure = noteFor(entry, failed)
 
   async function revert(): Promise<void> {
     setBusy(true)
     const results: string[] = []
+    const entryId = entry.id
     try {
       for (const path of entry.restorePaths) {
         const r = await client.call('checkpoints.restoreFile', {
@@ -102,15 +142,18 @@ function DiffFace({
       setAsking(false)
       setNote('')
       setFailed(null)
-      setOutcome(results.join(' · '))
+      setOutcome({ entryId, text: results.join(' · ') })
       onReverted?.()
     } catch (e) {
       // A failure halfway is not a clean failure: whatever restored before it is already
       // on disk. Say both halves, and refresh the git status for the part that happened.
       const message = e instanceof Error ? e.message : String(e)
-      setFailed(results.length > 0
-        ? `${message} — already put back before the failure: ${results.join(' · ')}`
-        : message)
+      setFailed({
+        entryId,
+        text: results.length > 0
+          ? `${message} — already put back before the failure: ${results.join(' · ')}`
+          : message,
+      })
       if (results.length > 0) onReverted?.()
     } finally {
       setBusy(false)
@@ -120,7 +163,7 @@ function DiffFace({
   return (
     <div class="diff-face">
       <div class="diff-face-actions">
-        {entry.ok && outcome === null && (
+        {entry.ok && shownOutcome === null && (
           <button class="btn btn-small" disabled={asking || busy} onClick={() => setAsking(true)}>
             Put back
           </button>
@@ -136,7 +179,7 @@ function DiffFace({
         )}
         {reviewed && <span class="tag">reviewed</span>}
       </div>
-      {outcome !== null && <div class="revert-outcome">{outcome}</div>}
+      {shownOutcome !== null && <div class="revert-outcome">{shownOutcome}</div>}
       {asking && (
         <div class="revert-box">
           <p>
@@ -144,7 +187,7 @@ function DiffFace({
             tell the agent why. A file that did not exist then is <b>deleted</b>. Nothing
             else is touched.
           </p>
-          {failed !== null && <div class="panel-error">{failed}</div>}
+          {shownFailure !== null && <div class="panel-error">{shownFailure}</div>}
           <div class="revert-actions">
             <input
               class="input"
@@ -169,9 +212,45 @@ function DiffFace({
 }
 
 /**
+ * Whether an empty `git diff HEAD` answer for this path means "the file is NEW" rather than
+ * "the file is clean" — the only case where asking for the untracked diff is honest.
+ *
+ * Two shapes qualify, and both come from git status rather than from the empty diff itself:
+ * an untracked file (`??`), which has no HEAD side at all; and a file with an `A` in its
+ * status pair in a repository that has no commits yet, where `git diff HEAD` fails outright
+ * (no HEAD to name) and so also answers with nothing. A staged add in a repository that
+ * DOES have commits never reaches here — its HEAD diff is the whole file already.
+ *
+ * Matching is on the workspace-addressed path git reports, with a case-insensitive second
+ * pass: git names the file as it sits on disk, while a tab opened from a tool card carries
+ * whatever spelling the model typed, and on Windows `src/App.tsx` and `src/app.tsx` are one
+ * file. Pure and exported for its test.
+ */
+export function wantsUntrackedDiff(repos: readonly GitRepoView[], path: string): boolean {
+  const lower = path.toLowerCase()
+  let loose: { code: string; untracked: boolean } | undefined
+  for (const repo of repos) {
+    for (const file of repo.files) {
+      if (file.path === path) return file.untracked || file.code.includes('A')
+      if (loose === undefined && file.path.toLowerCase() === lower) loose = file
+    }
+  }
+  return loose !== undefined && (loose.untracked || loose.code.includes('A'))
+}
+
+/**
  * The DIFF face of a file the session did NOT touch: whatever is uncommitted in git.
- * Fetched against HEAD first; an empty answer retries as untracked (`--no-index`), which
- * is how a brand-new file shows every line instead of nothing.
+ *
+ * Two questions, not one. `git diff HEAD -- path` is the answer for a tracked file, but an
+ * untracked file has no HEAD side, so git says nothing about it and a brand-new file would
+ * read as unchanged. Its answer is `git diff --no-index -- /dev/null path`, which ignores
+ * the index entirely and renders EVERY line as an addition — true for a new file, and a
+ * flat lie for a clean tracked one. Asking for it on ANY empty HEAD diff, as this used to,
+ * meant opening a file nobody had touched and being shown the whole thing painted green
+ * under a control titled "show what is uncommitted in this file"; the placeholder below was
+ * unreachable for every non-empty file in a repository. So the retry is gated on git status
+ * calling the path new (`wantsUntrackedDiff`) — anything else with an empty HEAD diff has
+ * nothing uncommitted, and says so.
  */
 function GitDiffFace({ client, path }: { client: ProtocolClient; path: string }): VNode {
   const [diff, setDiff] = useState<string | null>(null)
@@ -184,6 +263,8 @@ function GitDiffFace({ client, path }: { client: ProtocolClient; path: string })
     client.call('git.diff', { path, untracked: false })
       .then(async (r) => {
         if (r.diff.trim() !== '') return r.diff
+        const status = await client.call('git.status', {})
+        if (!wantsUntrackedDiff(status.repos, path)) return ''
         const u = await client.call('git.diff', { path, untracked: true })
         return u.diff
       })
@@ -224,7 +305,7 @@ export function FileView({
     let cancelled = false
     client.call('fs.read', { path })
       .then((r) => {
-        if (!cancelled) setLoaded({ kind: 'loaded', lines: r.lines, truncated: r.truncated })
+        if (!cancelled) setLoaded(loadedFrom(r))
       })
       .catch((e: unknown) => {
         if (!cancelled) {
@@ -290,6 +371,18 @@ export function FileView({
             {loaded.kind === 'error' && <PanelError message={loaded.message} />}
             {loaded.kind === 'loaded' && (
               <PreviewBody lines={loaded.lines} ext={extensionOf(path)} wrap={wrap} />
+            )}
+            {/* The image itself, at its own size inside the same scroller the text face
+                uses — `.shot img` caps it at the pane's width. The caption carries the byte
+                size because that is the one thing about an image the picture cannot say,
+                and it is what tells a screenshot apart from a 4 MB asset. */}
+            {loaded.kind === 'image' && (
+              <div class="preview-scroll">
+                <figure class="shot">
+                  <img src={loaded.dataUrl} alt={path} />
+                  <figcaption>{Math.max(1, Math.round(loaded.bytes / 1024))} KB</figcaption>
+                </figure>
+              </div>
             )}
           </>
           )}

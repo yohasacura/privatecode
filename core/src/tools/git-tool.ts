@@ -113,7 +113,11 @@ export const gitStatusTool: Tool<GitArgs> = {
     if (gitPath !== undefined) resolved.path = gitPath
     if (args.base !== undefined) resolved.base = args.base
 
-    const argv = ACTIONS[args.action](resolved)
+    // `core.quotePath=false` ahead of every action: git otherwise C-escapes any path byte
+    // outside ASCII, so a file named in Cyrillic, or with an accent, reaches the model as
+    // "\321\202\320\265..." — a string it cannot match against anything it has read, and
+    // cannot pass back to a tool. The flag changes only how paths are PRINTED.
+    const argv = ['-c', 'core.quotePath=false', ...ACTIONS[args.action](resolved)]
     const result = await execa('git', argv, {
       cwd: ctx.workspace.root,
       reject: false,

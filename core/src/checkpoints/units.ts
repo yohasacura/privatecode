@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readdir } from 'node:fs/promises'
-import { basename, join, relative, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { Mount } from '../mounts.js'
 import { PRIVATE_DIR, statePath } from '../private-dir.js'
 
@@ -88,10 +88,18 @@ export async function findNestedRepos(root: string): Promise<string[]> {
   return found
 }
 
-/** Whether `child` is `parent` or below it. */
+/**
+ * Whether `child` is `parent` or below it.
+ *
+ * `isAbsolute`, not `!rel.includes(':')`: on Windows `relative` answers with an ABSOLUTE
+ * path when the two are on different drives, and while such an answer does contain a colon
+ * today, the colon is incidental — the property that actually disqualifies it is that it is
+ * not a relative path at all. The same test in `Workspace.mountFor` and in
+ * `CheckpointSet.inside`, so all three agree about what containment means.
+ */
 function contains(parent: string, child: string): boolean {
   const rel = relative(parent, child)
-  return rel === '' || (!rel.startsWith('..') && !rel.includes(':'))
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
 /**

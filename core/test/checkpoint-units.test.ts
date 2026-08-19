@@ -1,10 +1,10 @@
 import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { CheckpointSet } from '../src/checkpoints/set.js'
-import { discoverUnits, findNestedRepos } from '../src/checkpoints/units.js'
+import { discoverUnits, findNestedRepos, type SnapshotUnit } from '../src/checkpoints/units.js'
 import type { Mount } from '../src/mounts.js'
 
 /**
@@ -18,6 +18,9 @@ import type { Mount } from '../src/mounts.js'
  */
 
 let base: string
+
+/** Drive letters only disagree on Windows, and that disagreement is a whole defect class. */
+const onWindows = process.platform === 'win32'
 
 function git(cwd: string, args: string): void {
   execSync(`git -c user.email=t@t -c user.name=t ${args}`, { cwd, stdio: 'ignore' })
@@ -219,6 +222,71 @@ describe('putting one file back', () => {
     expect(readFileSync(join(engine, 'e.txt'), 'utf8')).toBe('e v1')
     // Only that one file: the other folder's edit is left exactly alone.
     expect(readFileSync(join(app, 'a.txt'), 'utf8')).toBe('a CHANGED')
+  })
+
+  test.skipIf(!onWindows)('a file on another drive is not claimed by a folder on this one', async () => {
+    // Windows only, and not for convenience: `path.posix.relative` has no way to return an
+    // absolute path, so the answer that causes this defect does not exist there.
+    //
+    // The units are paths rather than directories because the decision under test is made by
+    // `path.relative` alone, and a test cannot require the machine to have two volumes — two
+    // folders under one tmpdir provably cannot reproduce it. The offending answer is asserted
+    // first, so this cannot go quietly vacuous if node ever changes it.
+    expect(win32.relative('C:\\proj\\app', 'D:\\lib\\a.ts')).toBe('D:\\lib\\a.ts')
+
+    const unit = (id: string, root: string, label: string): SnapshotUnit => ({
+      id, root, label, gitDir: join(base, `${id}.git`), stateRoot: base, excluded: [],
+    })
+    // The C: root is the LONGER one, so the deepest-first ordering reaches it first — which is
+    // exactly how a D: file ended up in the C: shadow repository.
+    const units = [unit('app', 'C:\\proj\\app', 'app'), unit('engine', 'D:\\lib', 'engine')]
+    // A checkpoint from before the engine folder was attached, so the unit the file belongs to
+    // NAMES ITSELF in the refusal — which is how this test can say which unit was picked
+    // without needing either drive to exist.
+    mkdirSync(join(base, '.privatecode', 'state', 'checkpoints'), { recursive: true })
+    writeFileSync(
+      join(base, '.privatecode', 'state', 'checkpoints', 'sets.jsonl'),
+      `${JSON.stringify({
+        id: 'cp-0001', at: new Date().toISOString(), summary: 'baseline', units: { app: 'aaaaaaa' },
+      })}\n`,
+      'utf8',
+    )
+    const checkpoints = new CheckpointSet(units, base)
+
+    // The engine unit, and no git run at all. What this replaces was silent: the C: unit took
+    // the file, its shadow repository missed `aaaaaaa:D:/lib/a.ts`, took the "new since the
+    // checkpoint" branch and answered `{ removed: true }` — which Session.restoreFile writes
+    // into the transcript as "it did not exist then, so it is now deleted", a statement about
+    // the disk that was never true.
+    await expect(checkpoints.restoreFile('cp-0001', 'D:\\lib\\a.ts'))
+      .rejects.toThrow(/is in "engine"/)
+  })
+
+  test('a file outside the only snapshotted folder is refused, not deleted', async () => {
+    // One writable folder and one read-only one is a single UNIT — read-only folders get no
+    // unit at all — so "put back" on a file over there arrives on the single-unit path with a
+    // path outside the only root. `relative` answered `../elsewhere/keep.txt`, the store took
+    // the "not in that checkpoint" branch, and `rmSync(join(root, '../elsewhere/keep.txt'))`
+    // deleted a file in a folder this store has never snapshotted.
+    const app = join(base, 'app')
+    const elsewhere = join(base, 'elsewhere')
+    mkdirSync(app, { recursive: true })
+    mkdirSync(elsewhere, { recursive: true })
+    writeFileSync(join(app, 'a.txt'), 'a v1', 'utf8')
+    writeFileSync(join(elsewhere, 'keep.txt'), 'not ours to touch', 'utf8')
+
+    const units = await discoverUnits(
+      [{ name: 'app', root: app, access: 'write', primary: true }], app,
+    )
+    expect(units).toHaveLength(1)
+    const checkpoints = new CheckpointSet(units, app)
+    const baseline = await checkpoints.take({})
+    expect(baseline).not.toBeNull()
+
+    await expect(checkpoints.restoreFile(baseline!.id, join(elsewhere, 'keep.txt')))
+      .rejects.toThrow(/not inside any folder/)
+    expect(existsSync(join(elsewhere, 'keep.txt'))).toBe(true)
+    expect(readFileSync(join(elsewhere, 'keep.txt'), 'utf8')).toBe('not ours to touch')
   })
 })
 

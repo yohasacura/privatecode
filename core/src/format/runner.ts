@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises'
-import { execa } from 'execa'
 import { ruleFor, type FormatRule } from './config.js'
-import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
+import { runPowershell } from '../powershell.js'
 import type { Workspace } from '../workspace.js'
 
 /**
@@ -60,18 +59,12 @@ export function createFormatRunner(rules: FormatRule[], workspace: Workspace): F
       const command = rule.command.split('$FILE').join(relativePath)
 
       try {
-        const result = await execa(
-          POWERSHELL_EXE,
-          powershellArgs(command),
-          {
-            cwd: workspace.root,
-            timeout: TIMEOUT_MS,
-            reject: false,
-            windowsHide: true,
-            all: true,
-            ...(signal ? { cancelSignal: signal } : {}),
-          },
-        )
+        // Through runPowershell so a timeout or an abort takes the whole tree down: a
+        // formatter is `powershell.exe -Command <prettier|dotnet format|...>`, and killing
+        // the shell alone leaves the formatter itself running on the file being edited.
+        const { result } = await runPowershell(command, {
+          cwd: workspace.root, timeoutMs: TIMEOUT_MS, signal,
+        })
         if (result.exitCode !== 0) {
           failures++
           // Named, not swallowed: a formatter that rejects the file usually means the edit

@@ -1,7 +1,6 @@
 import { noteWorkspaceWrite } from '../csharp/nav-process.js'
 import { readFile, stat } from 'node:fs/promises'
 import { applySearchReplace } from '../edit/search-replace.js'
-import { opensAsWorkspaceRoot } from '../workspace.js'
 import { writeFileAtomic, fsErrorReason } from './atomic-write.js'
 import { BOM, applyEndings, detectEndings, toLf } from './line-endings.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
@@ -191,26 +190,10 @@ export const editFileTool: Tool<EditFileArgs> = {
       return { ok: false, content: (e as Error).message }
     }
 
-    // The workspace root itself is not a file, whether or not it exists on disk. When the
-    // root exists, the isDirectory() check below happens to catch this anyway — but a root
-    // that does not exist yet throws ENOENT first, and that path used to be safe here only
-    // by accident (it happens to produce a "File not found" message rather than touching
-    // the disk). Naming the root explicitly means the refusal rests on containment, not on
-    // whichever accident of control flow the root's current existence happens to trigger.
+    // A folder root is not a file, whether or not it exists on disk — refused inside
+    // `resolveForWrite` above, for EVERY folder of the workspace rather than only the
+    // primary one, which is what a guard written here against `workspace.root` could see.
     //
-    // Compared against the path Windows would actually *open*, not the string that was
-    // typed: Windows strips trailing dots and spaces before opening, so `<root>\. ` is the
-    // root. Raw equality missed that, and `path: ". "` reached the disk (measured: it
-    // created a root-level entry literally named `. `). workspace.ts already owns this rule.
-    if (opensAsWorkspaceRoot(abs, ctx.workspace.root)) {
-      return {
-        ok: false,
-        content:
-          `${args.path} resolves to the workspace root, not a file; edit_file changes ` +
-          'files, not the workspace itself',
-      }
-    }
-
     // Stat first: the size has to be known before the bytes are in memory, and a directory
     // has to be named as one rather than surfacing as an errno from the read.
     let size: number

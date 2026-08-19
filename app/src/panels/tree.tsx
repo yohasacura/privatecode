@@ -462,7 +462,10 @@ function DirChildren({
               entry.dir ? 'tree-dir' : 'tree-file',
               mount !== undefined ? 'tree-mount-main' : '',
               // Staged = selected for the commit — the row itself says so (the owner
-              // asked for staged files highlighted, not a checkbox column).
+              // asked for staged files highlighted, not a checkbox column). Conflicts
+              // are excluded by `gitMarks`, not by a test here: the highlight and the
+              // commit box's count must be the same judgement, and when the row made its
+              // own, a `UU` file wore the accent bar while the box said "Nothing staged".
               mark?.staged === true ? 'tree-row-staged' : '',
             ].filter(Boolean).join(' ')}
             style={{ paddingLeft: `${depth * 12 + 6}px` }}

@@ -1,3 +1,5 @@
+import { lookup } from 'node:dns/promises'
+import { BlockList, isIP } from 'node:net'
 import { Readability } from '@mozilla/readability'
 import { parseHTML } from 'linkedom'
 
@@ -90,20 +92,51 @@ export interface FetchedPage {
 export const MAX_BODY_BYTES = 4_000_000
 const MAX_REDIRECTS = 5
 
-/** Loopback, RFC1918, link-local, and the localhost name family. */
+/**
+ * The address blocks that nothing on the public web may steer a fetch into: loopback,
+ * RFC1918, link-local, the IPv6 unique-local and link-local ranges, and the unspecified
+ * addresses.
+ *
+ * `net.BlockList` rather than a hand-written matcher because it also decodes IPv4-mapped
+ * IPv6, and the hand-written one did not: `http://[::ffff:127.0.0.1]/` is serialised by
+ * WHATWG to the hostname `::ffff:7f00:1`, which no dotted-quad regexp recognises and which
+ * reaches 127.0.0.1 all the same. `[::]`, `fd00::/8` and `fe80::/10` were missed for the
+ * same reason.
+ */
+const PRIVATE_BLOCKS = new BlockList()
+for (const [block, bits] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['127.0.0.0', 8],
+  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16],
+] as const) {
+  PRIVATE_BLOCKS.addSubnet(block, bits, 'ipv4')
+}
+for (const [block, bits] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10]] as const) {
+  PRIVATE_BLOCKS.addSubnet(block, bits, 'ipv6')
+}
+
+/** Whether a literal IP address — as typed in a URL, or as a resolver handed it back —
+ * belongs to one of the blocks above. Anything that is not an IP address at all is not an
+ * address to judge, so it is false here; names go through `isPrivateHost`. */
+export function isPrivateAddress(address: string): boolean {
+  // `fe80::1%eth0`: the zone id names a local interface and is not part of the address.
+  const bare = address.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0] ?? ''
+  const family = isIP(bare)
+  if (family === 0) return false
+  return PRIVATE_BLOCKS.check(bare, family === 6 ? 'ipv6' : 'ipv4')
+}
+
+/** Loopback, RFC1918, link-local, and the localhost name family. Lexical only: a name that
+ * is not spelled like a private host can still RESOLVE to one, which is what
+ * `redirectRefusalResolved` is for. */
 export function isPrivateHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  if (h === 'localhost' || h.endsWith('.localhost') || h === '0.0.0.0' || h === '::1') return true
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h)
-  if (m === null) return false
-  const a = Number(m[1])
-  const b = Number(m[2])
-  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) || (a === 169 && b === 254)
+  if (h === 'localhost' || h.endsWith('.localhost')) return true
+  return isPrivateAddress(h)
 }
 
 /**
- * Whether a redirect hop may be followed: the refusal reason, or null for "go ahead".
+ * Whether a redirect hop may be followed on its SPELLING alone: the refusal reason, or null
+ * for "nothing lexical against it".
  *
  * The approval the user gave named the STARTING origin, and `redirect: 'follow'` would
  * have quietly carried that approval anywhere — including into loopback, where this
@@ -111,6 +144,9 @@ export function isPrivateHost(hostname: string): boolean {
  * private address is refused; everything else (www→apex, link shorteners, a private dev
  * server redirecting within itself) stays ordinary. Pure, so the policy is testable
  * without a network.
+ *
+ * This is the fast half. A hostname that is not spelled privately can still resolve
+ * privately, and `redirectRefusalResolved` is what fetchPage actually calls.
  */
 export function redirectRefusal(start: URL, next: URL): string | null {
   if (next.protocol !== 'http:' && next.protocol !== 'https:') {
@@ -120,6 +156,63 @@ export function redirectRefusal(start: URL, next: URL): string | null {
     return `redirect to ${next.href} refused — a public page redirected into a private address`
   }
   return null
+}
+
+/** Hostname → the addresses it stands for. A parameter so the policy below can be proved
+ * without a network and without a DNS server that answers the way a test needs. */
+export type HostLookup = (hostname: string) => Promise<string[]>
+
+const systemLookup: HostLookup = async (hostname) => {
+  const records = await lookup(hostname, { all: true })
+  return records.map((r) => r.address)
+}
+
+/**
+ * The same policy, after asking what the name actually points at.
+ *
+ * Why it is not enough to read the URL: `lvh.me`, `127.0.0.1.nip.io` and any domain whose
+ * A record an attacker controls are ordinary public names that resolve to 127.0.0.1. A
+ * page the user approved as a public origin could answer `302 Location:
+ * http://lvh.me:8080/props`, and the lexical check above sees a public hostname, follows
+ * the hop, and hands the model whatever this machine's llama server said — the exact hop
+ * `redirectRefusal` exists to refuse.
+ *
+ * The resolver is asked as rarely as possible, and never on the path that has no redirect
+ * at all: a hop that stays inside the approved origin, a start that is already private,
+ * and an address literal (which the lexical pass judged exactly) are all settled without
+ * it. What remains is one getaddrinfo per cross-origin hop, against an OS cache the fetch
+ * that follows is about to hit anyway.
+ *
+ * What this does NOT close, deliberately: the name is resolved here and resolved again by
+ * the connect, so a record that changes between the two (DNS rebinding) still lands where
+ * it likes. Closing that needs a custom undici dispatcher pinning the checked address, and
+ * that is a bigger change than this gate. This turns a one-request trick into a race.
+ */
+export async function redirectRefusalResolved(
+  start: URL, next: URL, resolveHost: HostLookup = systemLookup,
+): Promise<string | null> {
+  const lexical = redirectRefusal(start, next)
+  if (lexical !== null) return lexical
+  // Nothing new is being reached, or private space was already the approved starting point.
+  if (next.origin === start.origin || isPrivateHost(start.hostname)) return null
+  // An address literal was judged exactly above; resolving one asks a question already
+  // answered.
+  const bare = next.hostname.replace(/^\[|\]$/g, '')
+  if (isIP(bare) !== 0) return null
+
+  let addresses: string[]
+  try {
+    addresses = await resolveHost(next.hostname)
+  } catch {
+    // A name this machine cannot resolve is a name the fetch below cannot connect to
+    // either, so the hop fails on its own. Refusing here would turn a flaky resolver into
+    // an accusation against an innocent redirect.
+    return null
+  }
+  const priv = addresses.find((a) => isPrivateAddress(a))
+  if (priv === undefined) return null
+  return `redirect to ${next.href} refused — a public page redirected into a private address ` +
+    `(${next.hostname} resolves to ${priv})`
 }
 
 /** Reads the body up to the byte cap, decoding by the content-type charset — the Russian
@@ -154,9 +247,12 @@ async function readBody(response: Response, contentType: string): Promise<{ body
   return { body: decoder.decode(Buffer.concat(chunks).subarray(0, MAX_BODY_BYTES)), truncated }
 }
 
-/** The fetch half: redirects followed by hand so each hop passes `redirectRefusal`,
- * binaries refused by content type, the body capped by bytes. */
-export async function fetchPage(url: string, signal?: AbortSignal): Promise<FetchedPage> {
+/** The fetch half: redirects followed by hand so each hop passes `redirectRefusalResolved`,
+ * binaries refused by content type, the body capped by bytes. `resolveHost` is here for the
+ * tests; production always wants the system resolver. */
+export async function fetchPage(
+  url: string, signal?: AbortSignal, resolveHost: HostLookup = systemLookup,
+): Promise<FetchedPage> {
   const start = new URL(url)
   let current = start
   for (let hop = 0; ; hop++) {
@@ -172,7 +268,7 @@ export async function fetchPage(url: string, signal?: AbortSignal): Promise<Fetc
       if (location === null) throw new Error(`HTTP ${response.status} with no Location header`)
       if (hop >= MAX_REDIRECTS) throw new Error(`more than ${MAX_REDIRECTS} redirects`)
       const next = new URL(location, current)
-      const refusal = redirectRefusal(start, next)
+      const refusal = await redirectRefusalResolved(start, next, resolveHost)
       if (refusal !== null) throw new Error(refusal)
       current = next
       continue

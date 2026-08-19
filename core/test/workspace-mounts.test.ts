@@ -1,8 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import type { Mount } from '../src/mounts.js'
+import { deleteFileTool } from '../src/tools/delete-file.js'
+import { moveFileTool } from '../src/tools/move-file.js'
 import { writeFileTool } from '../src/tools/write-file.js'
 import { Workspace, WorkspaceViolation } from '../src/workspace.js'
 
@@ -120,6 +122,86 @@ describe('read-only folders', () => {
       { path: 'engine/new.rs', content: 'fn ok() {}\n' }, { workspace: ws },
     )
     expect(allowed.ok).toBe(true)
+  })
+})
+
+describe('a folder root is not a file', () => {
+  /**
+   * `resolve('engine')` deliberately returns the engine folder's own root — reads need that,
+   * and they still get it. Writes are the other half: every write tool carried its own
+   * `opensAsWorkspaceRoot(abs, workspace.root)` guard, and `workspace.root` is `mounts[0]`,
+   * the PRIMARY folder. So the guard compared the attached D:\engine against C:\proj, said
+   * "not the root", and `delete_file({ path: 'engine', recursive: true })` removed the whole
+   * attached project — permanently, since delete_file writes no checkpoint, and with no
+   * approval card at all in autopilot.
+   */
+  test('a write to an attached folder root is refused, and the refusal names the folder', () => {
+    let message = ''
+    try { ws.resolveForWrite('engine') } catch (e) { message = (e as Error).message }
+    expect(message).toContain('root of the folder "engine"')
+  })
+
+  test('the primary folder root too, which is the only one the old guard covered', () => {
+    expect(() => ws.resolveForWrite('app')).toThrow(/root of the folder "app"/)
+  })
+
+  test('and the trailing-space spellings Windows opens as that same root', () => {
+    // `<root>\. ` opens the root: the same rule the single-folder guard already knew about,
+    // now applied to every folder.
+    expect(() => ws.resolveForWrite('engine/. ')).toThrow(/root of the folder "engine"/)
+    expect(() => ws.resolveForWrite('engine\\.')).toThrow(/root of the folder "engine"/)
+  })
+
+  test.skipIf(process.platform !== 'win32')('case alone does not get one past the check', () => {
+    // What reaches the tools is whatever `resolveIn` returns, and for an absolute path with a
+    // trailing space that is the caller's own casing — which a raw string comparison against
+    // the recorded root does not match, on a filesystem where the two are the same directory.
+    expect(() => ws.resolveForWrite(`${mounts[1]!.root.toUpperCase()}${sep}. `))
+      .toThrow(/root of the folder "engine"/)
+  })
+
+  test('a single-folder workspace still refuses its own root, in words that name it', () => {
+    // The write tools' own tests match on "workspace root"; a multi-folder wording that lost
+    // that phrase would leave those refusals unrecognisable.
+    const single = new Workspace(mounts[0]!.root)
+    expect(() => single.resolveForWrite('.')).toThrow(/workspace root/i)
+    expect(() => single.resolveForWrite('. ')).toThrow(/workspace root/i)
+  })
+
+  test('delete_file cannot remove an attached folder', async () => {
+    const r = await deleteFileTool.execute({ path: 'engine', recursive: true }, { workspace: ws })
+    expect(r.ok).toBe(false)
+    expect(r.content).toContain('root of the folder "engine"')
+    // The part that actually matters: the attached project is still on disk.
+    expect(readFileSync(join(mounts[1]!.root, 'lib.rs'), 'utf8')).toBe('fn main() {}\n')
+  })
+
+  test('move_file cannot rename an attached folder away, nor onto one', async () => {
+    const away = await moveFileTool.execute(
+      { from: 'engine', to: 'app/engine-was-here' }, { workspace: ws },
+    )
+    expect(away.ok).toBe(false)
+    expect(away.content).toContain('root of the folder "engine"')
+    expect(existsSync(join(mounts[1]!.root, 'lib.rs'))).toBe(true)
+    expect(existsSync(join(mounts[0]!.root, 'engine-was-here'))).toBe(false)
+
+    // The destination end used to be refused only incidentally, by the "already a directory"
+    // check — which says nothing about folders and would not have applied to a folder root
+    // that did not exist on disk.
+    const onto = await moveFileTool.execute(
+      { from: 'app/src/main.ts', to: 'engine', overwrite: true }, { workspace: ws },
+    )
+    expect(onto.ok).toBe(false)
+    expect(onto.content).toContain('root of the folder "engine"')
+    expect(existsSync(join(mounts[0]!.root, 'src', 'main.ts'))).toBe(true)
+  })
+
+  test('ordinary paths inside a folder are untouched', async () => {
+    const r = await deleteFileTool.execute({ path: 'engine/lib.rs' }, { workspace: ws })
+    expect(r.ok).toBe(true)
+    expect(existsSync(join(mounts[1]!.root, 'lib.rs'))).toBe(false)
+    // And the folder itself survived its own file being deleted.
+    expect(existsSync(mounts[1]!.root)).toBe(true)
   })
 })
 

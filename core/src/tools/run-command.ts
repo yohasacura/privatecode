@@ -107,19 +107,64 @@ export const runCommandTool: Tool<RunCommandArgs> = {
     const started = performance.now()
     // reject: false — a non-zero exit is a result, not an exception. windowsHide keeps
     // PowerShell from flashing a console window once this runs under a UI shell.
+    //
+    // No `timeout` and no `cancelSignal`: both of execa's own stop paths end in
+    // `subprocess.kill()`, which on Windows is TerminateProcess on the DIRECT child, and
+    // the direct child here is always powershell.exe (see powershellArgs) while the thing
+    // actually doing the work — node, dotnet, npm — is its grandchild. Both paths are
+    // therefore run by hand below, so the tree can be taken down parent-first.
     const child = execa(
       POWERSHELL_EXE,
       powershellArgs(args.command),
       {
         cwd,
-        timeout: timeoutS * 1000,
         forceKillAfterDelay: 2_000,
         reject: false,
         windowsHide: true,
         all: true,
-        ...(ctx.signal ? { cancelSignal: ctx.signal } : {}),
       },
     )
+
+    /**
+     * Stop the job AND everything it started, then remember which of the two reasons it
+     * was — execa is no longer the one killing, so `isCanceled`/`timedOut` no longer
+     * arrive on its result.
+     *
+     * The ORDER is the whole point, and it is the same order background-task.ts:213 and
+     * mcp/transport.ts:155 already use for the same reason. `taskkill /T` walks the tree
+     * by parent-child links as they stand when it runs, so it has to run while PowerShell
+     * is still alive; killing PowerShell first leaves the grandchild with a dead parent
+     * and nothing left to walk. What that cost, before this: Esc or the 120 s timeout
+     * reported the command stopped while node/dotnet kept running — holding its port, its
+     * build lock and its file handles — invisible in the Terminal panel, which lists only
+     * background_task entries, so the next run failed with EADDRINUSE for a process the
+     * user had no way to see or stop.
+     *
+     * `kill()` stays, after, for what taskkill cannot do: a pid we never learned, or a
+     * platform without it.
+     */
+    let stopped: 'cancelled' | 'timeout' | null = null
+    const stopTree = async (reason: 'cancelled' | 'timeout'): Promise<void> => {
+      if (stopped !== null) return
+      stopped = reason
+      const pid = child.pid
+      if (pid !== undefined && process.platform === 'win32') {
+        try {
+          await execa('taskkill', ['/PID', String(pid), '/T', '/F'],
+            { reject: false, windowsHide: true })
+        } catch { /* not on PATH, or the tree is already gone */ }
+      }
+      try {
+        child.kill()
+      } catch { /* already exited */ }
+    }
+
+    const timer = setTimeout(() => { void stopTree('timeout') }, timeoutS * 1000)
+    const onAbort = (): void => { void stopTree('cancelled') }
+    if (ctx.signal) {
+      if (ctx.signal.aborted) onAbort()
+      else ctx.signal.addEventListener('abort', onAbort, { once: true })
+    }
     // The same bytes the buffered result will contain, forwarded as they appear: a long
     // command used to be a frozen card until exit, and "is it working or wedged" was
     // unanswerable from the window. Streaming changes nothing about the result below.
@@ -135,7 +180,14 @@ export const runCommandTool: Tool<RunCommandArgs> = {
         } catch { /* display-only */ }
       })
     }
-    const result = await child
+    // Both stop paths are detached the moment the process is gone. The listener especially:
+    // ctx.signal belongs to the whole turn, so one left behind would fire stopTree for a
+    // later Esc — and taskkill an exited pid that Windows may by then have handed to
+    // someone else.
+    const result = await child.finally(() => {
+      clearTimeout(timer)
+      ctx.signal?.removeEventListener('abort', onAbort)
+    })
     const seconds = ((performance.now() - started) / 1000).toFixed(1)
     const raw = (result.all ?? '').trim()
     // What a person sees. Still bounded -- a runaway build log must not be able to grow
@@ -155,10 +207,10 @@ export const runCommandTool: Tool<RunCommandArgs> = {
         : `${headLines(raw, HEAD_LINES)}${overflowNotice(log, Math.min(HEAD_LINES, countLines(raw)))}`
     }
 
-    if (result.isCanceled) {
+    if (stopped === 'cancelled') {
       return { ok: false, content: 'Command cancelled by the user before it finished.' }
     }
-    if (result.timedOut) {
+    if (stopped === 'timeout') {
       const head = `Command killed after ${timeoutS} s (timeout). Partial output:\n`
       const tail = '\nIf it legitimately needs longer, re-run with a larger ' +
         'timeout_seconds, or use background_task for something long-running.'

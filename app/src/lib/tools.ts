@@ -159,6 +159,32 @@ export function presentTool(name: string, argsJson: string): ToolPresentation {
   if (name === 'todo_write') {
     return { kind, verb, target: 'updated the task list', path: null }
   }
+  if (name === 'find_files') {
+    // `glob` is the tool's only argument and a required one (find-files.ts), so nothing in
+    // the generic chain at the bottom of this function ever matched it: every Find row in the
+    // transcript rendered as a bare verb with nothing after it — no glob in the header, none
+    // in the row's title attribute, and `!result.preview.includes(p.target)` is trivially
+    // false for the empty string, so the collapsed preview line was suppressed as well.
+    return { kind, verb, target: str(args, 'glob') ?? '', path: null }
+  }
+  // The two tools whose `path` names a DIRECTORY — always for `list_dir`, and for
+  // `search_code` whichever of the two the model chose (its schema documents the argument as
+  // "file or directory"). Returning it as `path` made the transcript render its "Open file"
+  // button, which calls `fs.read`, which answers `… is a directory; use fs.tree`: a permanent
+  // tab in the strip whose only content is that error. Neither offers a path rather than
+  // guessing which kind this one is.
+  if (name === 'list_dir') {
+    return { kind, verb, target: str(args, 'path') ?? '', path: null }
+  }
+  if (name === 'search_code') {
+    // The regex is what the row is about; `path` only scopes the search, and the generic
+    // `path ?? pattern` below showed the scope INSTEAD — a search narrowed to a subtree
+    // displayed the subtree and never said what was looked for. Both, in that order.
+    const pattern = str(args, 'pattern')
+    const scope = str(args, 'path')
+    const parts = [pattern, scope === null ? null : `in ${scope}`].filter((p) => p !== null)
+    return { kind, verb, target: parts.join(' '), path: null }
+  }
 
   const command = str(args, 'command')
   if (command !== null) return { kind, verb, target: command, path: null }

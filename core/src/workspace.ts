@@ -61,19 +61,30 @@ const DENIED_SEGMENTS: RegExp[] = [
 const TRAILING_DOTS_AND_SPACES = /[. ]+$/
 
 /**
- * Whether `abs` is a path the OS would open as the workspace root itself.
+ * Whether `abs` is a path the OS would open as `root` itself.
+ *
+ * Answers for ONE folder root. A caller holding a `Workspace` must ask it instead
+ * (`mountRootFor`): `Workspace.root` is the primary folder only, so a guard written against
+ * it says "no" for every attached folder — see the note on `mountRootFor`.
  *
  * `abs === root` is a string comparison, and Windows strips trailing dots and spaces
  * before it opens a path (see TRAILING_DOTS_AND_SPACES above), so `<root>\. ` opens the
  * root. Measured: `write_file` with `path: ". "` passed a raw-equality guard and created a
  * root-level entry literally named `. `; `edit_file` had the same hole.
  *
+ * Compared with `pathRelative(...) === ''` rather than `===` because a string comparison is
+ * also case-SENSITIVE, and Windows is not: an absolute `D:\ENGINE\. ` for a folder recorded
+ * as `D:\engine` strips to a path that differs from the root only in case, which raw
+ * equality passes as "not the root". `pathRelative` is the same test `mountFor` and
+ * `resolveIn` already use, so all three agree about what "is the root" means on each
+ * platform.
+ *
  * Deliberately slightly over-strict on POSIX, where `. ` is an ordinary filename and does
  * not address the parent: refusing to *write a file called `. `* costs nothing, and the
  * target platform is Windows.
  */
 export function opensAsWorkspaceRoot(abs: string, root: string): boolean {
-  return pathResolve(abs.replace(TRAILING_DOTS_AND_SPACES, '')) === root
+  return pathRelative(root, pathResolve(abs.replace(TRAILING_DOTS_AND_SPACES, ''))) === ''
 }
 
 /**
@@ -172,6 +183,23 @@ export class Workspace {
     return this.mounts.length > 1
   }
 
+  /**
+   * The folder whose own root this path opens as, if any — as opposed to `mountFor`, which
+   * answers for anything *inside* a folder.
+   *
+   * Every mount, not just the primary. `resolve('engine')` deliberately returns the engine
+   * folder's own root, and the write tools each carried their own
+   * `opensAsWorkspaceRoot(abs, workspace.root)` guard, where `root` is `mounts[0].root`. So
+   * with D:\engine attached to a workspace whose primary is C:\proj, that guard compared
+   * D:\engine against C:\proj, said "not the root", and `delete_file({ path: 'engine',
+   * recursive: true })` removed the entire attached project — permanently, delete_file
+   * having no checkpoint, and in autopilot with no approval card in the way. A workspace
+   * folder is never a file, whichever folder it is.
+   */
+  mountRootFor(absolutePath: string): Mount | undefined {
+    return this.mounts.find((m) => opensAsWorkspaceRoot(absolutePath, m.root))
+  }
+
   /** The folder a resolved absolute path belongs to. Mounts never overlap, so at most one. */
   mountFor(absolutePath: string): Mount | undefined {
     const abs = pathResolve(absolutePath)
@@ -239,11 +267,19 @@ export class Workspace {
   }
 
   /**
-   * `resolve`, and then a refusal if the folder was attached read-only.
+   * `resolve`, and then a refusal if the folder was attached read-only, or if the path
+   * addresses a folder's own root rather than something inside it.
    *
    * This sits in the jail rather than in the permission engine on purpose: a rule can be
    * written, remembered and granted, and a reference folder that a rule could open is not a
    * reference folder. Binds the file tools only — `run_command` was never contained here.
+   *
+   * The folder-root refusal is here rather than in each tool for the same reason it is not a
+   * rule: every write tool had its own copy of the check, every copy compared against the
+   * PRIMARY root, and an attached folder equals that root only in a single-folder workspace.
+   * One check at the chokepoint every write goes through (`edit_file`, `write_file`,
+   * `delete_file`, `move_file` both endpoints, and `writeFileAtomic`'s re-resolve) covers
+   * every folder, including for callers that never thought about mounts at all.
    */
   resolveForWrite(relativePath: string): string {
     const abs = this.resolve(relativePath)
@@ -252,6 +288,18 @@ export class Workspace {
       throw new WorkspaceViolation(
         `"${mount.name}" is attached read-only, so nothing can be written to ${relativePath}. ` +
         'Read it, quote it, copy from it — but the change has to land in a writable folder.',
+      )
+    }
+    const folder = this.mountRootFor(abs)
+    if (folder !== undefined) {
+      throw new WorkspaceViolation(
+        this.multi
+          ? `"${relativePath}" is the root of the folder "${folder.name}" itself, not a file in ` +
+            'it; a folder of this workspace cannot be written to, moved onto or deleted as if ' +
+            'it were a file. Name a path inside it.'
+          : `"${relativePath}" is the workspace root itself, not a file in it; the workspace ` +
+            'root cannot be written to, moved onto or deleted as if it were a file. Name a ' +
+            'path inside it.',
       )
     }
     return abs

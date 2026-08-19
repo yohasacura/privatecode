@@ -18,16 +18,20 @@ import type { Workspace } from '../workspace.js'
  * filters it. Nothing is lost, nothing is guessed, and paging costs one small tool call
  * per page instead of one whole command re-run.
  *
- * The directory is `.privatecode/logs/` — already ours (sessions live beside it), already
- * inside the jail so `read_file` accepts it, and conventionally ignored by tooling.
+ * The directory is `.privatecode/state/logs/` under the primary folder — already ours
+ * (sessions live beside it), already inside the jail so `read_file` accepts it, and
+ * conventionally ignored by tooling.
  */
 
-/** Where overflow logs live, workspace-relative. Used in messages to the model, so it is
- * spelled with forward slashes: that is what its tools accept on every platform. */
+/** Where overflow logs live, relative to the workspace's PRIMARY folder, spelled with
+ * forward slashes. The address handed to the model is not this string: a multi-folder
+ * workspace addresses the same file as `<folder>/.privatecode/state/logs/…`, so
+ * `spillToLog` derives it from the file it wrote. See the note there. */
 export const LOG_DIR = `${PRIVATE_DIR}/${STATE_DIR}/logs`
 
-/** How many log files to keep. Old ones are the least likely to be wanted and the most
- * likely to be forgotten, so the directory prunes itself rather than growing forever. */
+/** How many log files to keep PER PREFIX (see pruneLogs). Old ones are the least likely to
+ * be wanted and the most likely to be forgotten, so the directory prunes itself rather than
+ * growing forever. */
 const KEEP_LOGS = 20
 
 /** `run-20260804-013245-118`: sortable, unique per call, and readable in a directory
@@ -39,7 +43,8 @@ function logName(prefix: string, now: Date): string {
 }
 
 export interface SpilledLog {
-  /** Workspace-relative path, forward slashes — ready to paste into a `read_file` call. */
+  /** Workspace-relative path, forward slashes, carrying the folder name when the workspace
+   * has several — ready to paste into a `read_file` call. */
   path: string
   lines: number
 }
@@ -57,15 +62,22 @@ export async function spillToLog(
   text: string,
   now: Date = new Date(),
 ): Promise<SpilledLog | null> {
-  const relative = `${LOG_DIR}/${logName(prefix, now)}`
   try {
-    const abs = workspace.resolve(relative)
     // Creates the directory AND its self-ignore, so a workspace that is a git repository
     // never sees these logs in `git status`. See private-dir.ts.
     const dir = ensureStateDir(workspace.root, 'logs')
+    const abs = join(dir, logName(prefix, now))
     await writeFile(abs, text, 'utf8')
-    void prune(dir)
-    return { path: relative, lines: countLines(text) }
+    void pruneLogs(dir, prefix)
+    // The address is derived from the file, NOT assembled as `.privatecode/state/logs/…`.
+    // In a multi-folder workspace the first segment of a path has to name a mount, so the
+    // assembled form is not a path this workspace can resolve at all: `resolve` threw
+    // WorkspaceViolation, the catch below turned that into `null`, and every oversized
+    // output quietly reverted to the middle-elided dead end this module exists to
+    // prevent — with two folders attached, spilling never worked once. `display` spells
+    // the path the way the model's own read_file/search_code will accept it, in a
+    // single-folder workspace and a multi-folder one alike.
+    return { path: workspace.display(abs), lines: countLines(text) }
   } catch {
     return null
   }
@@ -79,12 +91,29 @@ export function countLines(text: string): number {
   return lines.length
 }
 
-/** Best-effort, fire-and-forget: a failed prune must never affect the call that triggered
- * it, and a log left behind costs a few kilobytes. */
-async function prune(dir: string): Promise<void> {
+/**
+ * Best-effort, fire-and-forget: a failed prune must never affect the call that triggered
+ * it, and a log left behind costs a few kilobytes.
+ *
+ * Prunes ONE prefix, never the directory as a whole. Every spiller shares this folder and
+ * they differ only by prefix (`run`, `web`, `browser`, `mcp-<server>`), so a plain
+ * lexicographic sort over the mix orders by prefix first and only then by time: with
+ * twenty `run-*.log` present, a freshly written `browser-*.log` sorted to the FRONT and
+ * was unlinked milliseconds after its path had been handed to the model — which had just
+ * been told, in as many words, not to re-run the command to see what was cut. Within one
+ * prefix the name is a fixed-width timestamp, so sorting names is sorting by age and the
+ * file just written is always last.
+ *
+ * The cost is that the folder now holds up to KEEP_LOGS per prefix instead of KEEP_LOGS in
+ * total. There are a handful of prefixes, each stream still sheds its oldest, and the
+ * alternative — one stream's chatter evicting another's advertised file — is the bug.
+ */
+export async function pruneLogs(dir: string, prefix: string): Promise<void> {
   try {
-    const entries = (await readdir(dir)).filter((n) => n.endsWith('.log')).sort()
-    for (const name of entries.slice(0, Math.max(0, entries.length - KEEP_LOGS))) {
+    const mine = (await readdir(dir))
+      .filter((n) => n.startsWith(`${prefix}-`) && n.endsWith('.log'))
+      .sort()
+    for (const name of mine.slice(0, Math.max(0, mine.length - KEEP_LOGS))) {
       await unlink(join(dir, name)).catch(() => {})
     }
   } catch { /* nothing to prune, or the directory vanished */ }

@@ -81,6 +81,30 @@ export function agentCommands(items: ChatItem[]): Line[] {
   return lines
 }
 
+/**
+ * The memo key for the derived command list.
+ *
+ * `items` is a new array on every streamed token, so keying on the array itself would never
+ * hit; the two counts are exact for everything a token can do (an item appended, a tool call
+ * resolving) and cost a loop instead of a JSON.parse per command per token.
+ *
+ * The third number is the identity of the transcript, and it is why this is a function rather
+ * than two inline expressions. A session switch REPLACES `items` wholesale, and both counts
+ * are small integers that collide readily between two short sessions — resuming a stored
+ * session whose item count and resolved-tool count happened to match the one you were in left
+ * the PREVIOUS conversation's commands on screen, with their output, under the new session's
+ * name. The oldest item's id settles it: ids are handed out by a counter that is deliberately
+ * carried ACROSS a switch (state.ts's `session-switched` keeps `nextId`), so a restored
+ * session can never reuse an id the previous one already spent.
+ */
+export function commandsKey(items: readonly ChatItem[]): [number, number, number] {
+  let resolved = 0
+  for (const item of items) {
+    if (item.kind === 'tool' && item.result !== undefined) resolved++
+  }
+  return [items.length, resolved, items[0]?.id ?? 0]
+}
+
 function jobLine(job: JobInfo, now: number): Line {
   return {
     key: job.id,
@@ -156,15 +180,13 @@ export function TerminalTab({
   const finished = jobs.filter((j) => !j.running)
 
   // The agent's commands are re-derived only when the transcript can actually have gained
-  // one — an item appended, or a tool resolving. `items` is a new array on every streamed
-  // token, so memoising on it directly would never hit; this is the same key the Changes tab
-  // uses, and for the same reason. Without it, every frame of a streaming step re-walked the
-  // whole transcript and re-JSON.parsed the arguments of every command the turn had ever run.
-  const resolvedTools = items.reduce((n, i) => n + (i.kind === 'tool' && i.result !== undefined ? 1 : 0), 0)
+  // one — an item appended, a tool resolving, or the whole transcript being replaced by a
+  // session switch. Without it, every frame of a streaming step re-walked the whole
+  // transcript and re-JSON.parsed the arguments of every command the turn had ever run.
   const agentLines = useMemo(
     () => agentCommands(items),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the two counts above
-    [items.length, resolvedTools],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see `commandsKey`
+    commandsKey(items),
   )
   const jobsKey = finished.map((j) => `${j.id}:${j.output.length}`).join(',')
   const allLines = useMemo(

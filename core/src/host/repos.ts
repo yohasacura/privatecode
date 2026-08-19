@@ -1,8 +1,9 @@
 import { execa } from 'execa'
 import { existsSync } from 'node:fs'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { findNestedRepos } from '../checkpoints/units.js'
-import type { Workspace } from '../workspace.js'
+import type { Mount } from '../mounts.js'
+import { type Workspace, WorkspaceViolation } from '../workspace.js'
 import { type GitFileChange, parsePorcelain } from './git.js'
 
 /**
@@ -168,8 +169,14 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
     // to the repository root whatever the cwd is, which is what makes the translation below
     // one rule instead of one per scope.
     const pathspecs = repo.scopes.map((s) => (s.prefix === '' ? '.' : s.prefix))
+    // `-uall` because git's default (`-unormal`) reports a directory whose files are all
+    // untracked as the single entry `newdir/`: the panel then had one row addressing a
+    // DIRECTORY, which the tree never decorates and never offers a `+` on, so the files in a
+    // folder created outside this session could be neither seen nor staged individually — and
+    // the changed-files strip counted a row its own filter then hid. `-z` because it is the
+    // only unquoted form (see parsePorcelain).
     const result = await git(repo.root, [
-      'status', '--porcelain=v1', '--branch', '--', ...pathspecs,
+      'status', '--porcelain=v1', '--branch', '-uall', '-z', '--', ...pathspecs,
     ])
     if (result.exitCode !== 0) {
       repo.problem = result.stderr.trim() || 'git status failed'
@@ -248,6 +255,51 @@ export async function repoRootFor(absolutePath: string): Promise<string | null> 
 }
 
 /**
+ * A path the CHANGES PANEL is showing, back to an absolute one.
+ *
+ * Deliberately not `workspace.resolve`. That is the MODEL's jail, and on top of containment
+ * it refuses a set of secret-shaped NAMES — `.env*`, `.npmrc`, `*.pem`, `credentials` — so
+ * that a turn cannot read them by accident. The panel is the person's own git client, and
+ * `discoverRepos` lists those files because git does: routing panel paths through the jail
+ * meant a project with a tracked, edited `.env.example` answered "Stage all" with "access
+ * denied" and staged NOTHING AT ALL, and showed the same refusal in place of that row's
+ * diff. The person is allowed to commit their own `.env.example`.
+ *
+ * The jail proper stays: a path outside every folder is refused, by the same lexical
+ * containment test `discoverRepos` and the commit guard already treat as the boundary.
+ */
+export function resolvePanelPath(workspace: Workspace, path: string): string {
+  let mount: Mount | undefined
+  let within: string
+  if (isAbsolute(path)) {
+    mount = workspace.mountFor(path)
+    within = path
+  } else if (!workspace.multi) {
+    mount = workspace.mounts[0]
+    within = path
+  } else {
+    // In a multi-folder workspace the leading segment is the folder name, exactly as
+    // `workspace.display` wrote it when the panel was built.
+    const cut = path.search(/[\\/]/)
+    const head = cut === -1 ? path : path.slice(0, cut)
+    within = cut === -1 ? '' : path.slice(cut + 1)
+    mount = workspace.mounts.find((m) => m.name.toLowerCase() === head.toLowerCase())
+  }
+  if (mount === undefined) {
+    throw new WorkspaceViolation(
+      `${path} is not inside any of this workspace's folders (${workspace.mounts.map((m) => m.name).join(', ')})`,
+    )
+  }
+  const abs = isAbsolute(within) ? resolve(within) : resolve(mount.root, within)
+  if (!isInside(abs, mount.root)) {
+    throw new WorkspaceViolation(
+      `path escapes the workspace: ${path} resolves outside ${mount.root}`,
+    )
+  }
+  return abs
+}
+
+/**
  * Turns workspace-addressed paths back into what git in `repoRoot` calls them.
  *
  * A path that is not inside this repository is REFUSED rather than skipped: the caller is
@@ -261,7 +313,7 @@ export function toRepoPaths(
   for (const path of paths) {
     let abs: string
     try {
-      abs = workspace.resolve(path)
+      abs = resolvePanelPath(workspace, path)
     } catch (e) {
       return { ok: false, problem: (e as Error).message }
     }

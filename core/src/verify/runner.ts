@@ -1,5 +1,4 @@
-import { execa } from 'execa'
-import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
+import { runPowershell } from '../powershell.js'
 import { clipOutput } from '../tools/run-command.js'
 import type { VerifySpec } from './config.js'
 
@@ -35,26 +34,26 @@ export async function runVerify(
   spec: VerifySpec, cwd: string, signal?: AbortSignal,
 ): Promise<VerifyOutcome> {
   try {
-    const result = await execa(
-      POWERSHELL_EXE,
-      powershellArgs(spec.command),
-      {
-        cwd,
-        timeout: spec.timeoutMs,
-        reject: false,
-        windowsHide: true,
-        all: true,
-        ...(signal ? { cancelSignal: signal } : {}),
-      },
-    )
+    // `runPowershell`, not execa's own timeout/cancelSignal: those kill the DIRECT child,
+    // which is always powershell.exe, while the build doing the work is its grandchild. A
+    // verify command is the likeliest of all of them to be a long dotnet or npm build, so
+    // an interrupted turn used to leave a compiler running — holding its lock and its
+    // cores — with nothing on screen saying so.
+    const { result, stopped } = await runPowershell(spec.command, {
+      cwd, timeoutMs: spec.timeoutMs, signal,
+    })
+
     const output = clipOutput((result.all ?? '').trim(), MAX_OUTPUT_CHARS)
-    if (result.timedOut === true) {
+    if (stopped === 'timeout') {
       return {
         ok: false,
         exitCode: null,
         output,
         problem: `it did not finish within ${Math.round(spec.timeoutMs / 1000)}s`,
       }
+    }
+    if (stopped === 'cancelled') {
+      return { ok: false, exitCode: null, output, problem: 'it was stopped' }
     }
     return { ok: result.exitCode === 0, exitCode: result.exitCode ?? null, output }
   } catch (e) {

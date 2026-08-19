@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs'
-import { execa } from 'execa'
 import { parseRule, ruleMatches, type ParsedRule } from '../permissions/rules.js'
-import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
+import { runPowershell } from '../powershell.js'
 import { localSettingsPath, projectSettingsPath, userSettingsPath, settingsText } from '../permissions/settings.js'
 import type { PermissionKey, ToolResult } from '../tools/types.js'
 import type { Workspace } from '../workspace.js'
@@ -123,18 +122,12 @@ export function createHookRunner(hooks: HookSpec[], workspace: Workspace): HookR
         if (hook.failures >= MAX_FAILURES) continue
         if (!ruleMatches(hook.rule, key)) continue
         try {
-          const run = await execa(
-            POWERSHELL_EXE,
-            powershellArgs(hook.command),
-            {
-              cwd: workspace.root,
-              timeout: TIMEOUT_MS,
-              reject: false,
-              windowsHide: true,
-              all: true,
-              ...(signal ? { cancelSignal: signal } : {}),
-            },
-          )
+          // Through runPowershell so a timeout or an abort takes the whole tree down —
+          // a hook is arbitrary user-configured shell, and killing the shell alone leaves
+          // whatever it started behind.
+          const { result: run } = await runPowershell(hook.command, {
+            cwd: workspace.root, timeoutMs: TIMEOUT_MS, signal,
+          })
           const out = (run.all ?? '').trim()
           const clipped = out.length > MAX_OUTPUT_CHARS
             ? `${out.slice(0, MAX_OUTPUT_CHARS)}\n... (hook output clipped)`

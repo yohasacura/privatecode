@@ -14,7 +14,9 @@ export type GitLetter = 'M' | 'A' | 'D' | 'R' | 'U' | '!'
 
 export interface GitMark {
   letter: GitLetter
-  /** In the index — this file is part of the next commit, and its row highlights. */
+  /** In the index — this file is part of the next commit, and its row highlights.
+   * NEVER true for a conflict (`!`), however porcelain's index column reads: see
+   * `gitMarks`. */
   staged: boolean
   /** The worktree still differs from the index — there is something left to stage.
    * `MM` is both: staged once, edited again since. */
@@ -53,9 +55,17 @@ export function gitMarks(repos: readonly GitRepoView[]): ReadonlyMap<string, Git
   const marks = new Map<string, GitMark>()
   for (const repo of repos) {
     for (const f of repo.files) {
+      const letter = letterOf(f.code)
       marks.set(f.path, {
-        letter: letterOf(f.code),
-        staged: f.staged,
+        letter,
+        // A conflict is its own state, never "staged" — decided HERE so every surface
+        // that reads a mark tells the same story. Porcelain gives `UU`/`AA`/`DD` a
+        // non-space index column, so the host reports them staged; the mark used to copy
+        // that through, and a single conflicted file got the "chosen for the commit"
+        // accent bar on its row while the commit box two inches above it — which filters
+        // conflicts out of its count, Stage all and Unstage all — read "Nothing staged
+        // yet" and refused to commit.
+        staged: f.staged && letter !== '!',
         dirty: f.untracked || (f.code[1] !== undefined && f.code[1] !== ' '),
         untracked: f.untracked,
         repoRoot: repo.root,
@@ -108,6 +118,11 @@ export function describeMark(mark: GitMark): string {
     M: 'modified', A: 'added', D: 'deleted', R: 'renamed', U: 'untracked — new file',
     '!': 'CONFLICT — resolve it before committing',
   }[mark.letter]
+  // No staged/not-staged clause for a conflict: neither word is true of it. It cannot be
+  // in the commit, and "not staged" would read as an invitation to press a `+` the row
+  // deliberately does not offer (staging a conflict declares it resolved with the markers
+  // still in the file). The letter's own words are the whole story.
+  if (mark.letter === '!') return what
   if (mark.staged && mark.dirty) return `${what} · staged, then edited again — the newer edit is not in the commit yet`
   if (mark.staged) return `${what} · staged for the next commit`
   return `${what} · not staged`

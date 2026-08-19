@@ -1,5 +1,5 @@
 import { appendFileSync, readFileSync } from 'node:fs'
-import { join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { ensureStateDir, statePath } from '../private-dir.js'
 import { type Checkpoint, CheckpointStore } from './store.js'
 import type { SnapshotUnit } from './units.js'
@@ -193,7 +193,15 @@ export class CheckpointSet {
   async restoreFile(id: string, absolutePath: string): Promise<{ removed: boolean }> {
     const abs = resolve(absolutePath)
     if (this.single) {
-      return this.single.restoreFile(id, relative(this.single.root, abs).split('\\').join('/'))
+      // The one-unit path needs the containment test just as much as the many-unit one: a
+      // read-only mount produces no unit at all, so a workspace with one writable folder and
+      // an attached reference folder lands HERE with a path that is outside the only root.
+      // `relative` then answered `../other/a.ts`, which the store happily turned into
+      // `rmSync(join(root, '../other/a.ts'), { force: true })` -- deleting a real file in a
+      // folder this store never snapshotted, and reporting it as a successful revert.
+      const rel = this.inside(this.single.root, abs)
+      if (rel === null) throw new Error(`${absolutePath} is not inside any folder this workspace snapshots`)
+      return this.single.restoreFile(id, rel)
     }
     const record = this.record(id)
     if (record === null) throw new Error(`no checkpoint "${id}"`)
@@ -202,19 +210,42 @@ export class CheckpointSet {
     // to the folder above it, and only the deepest match says so.
     const ordered = [...this.units].sort((a, b) => b.root.length - a.root.length)
     for (const unit of ordered) {
-      const rel = relative(unit.root, abs)
-      if (rel.startsWith('..') || rel === '') continue
+      const rel = this.inside(unit.root, abs)
+      if (rel === null) continue
       const sha = record.units[unit.id]
       if (sha === undefined) {
         throw new Error(`${absolutePath} is in "${unit.label}", which is not part of checkpoint ${id}`)
       }
       const store = this.stores[this.units.indexOf(unit)]!
-      return store.restoreFile(sha, rel.split('\\').join('/'))
+      return store.restoreFile(sha, rel)
     }
     throw new Error(`${absolutePath} is not inside any folder this workspace snapshots`)
   }
 
   // ---------------------------------------------------------------------------------------
+
+  /**
+   * Where `abs` sits inside `unitRoot` as a git-style path, or `null` when it is not in there
+   * at all.
+   *
+   * The `..` test alone is not enough, and on Windows the gap is a data-loss one: asked about
+   * two paths on DIFFERENT DRIVES, `path.win32.relative` cannot express the answer as a
+   * relative path and returns an ABSOLUTE one instead — `relative('C:\\proj', 'D:\\lib\\a.ts')`
+   * is `D:\lib\a.ts`, which starts with neither `..` nor nothing. So a `..`-only guard handed
+   * a D: file to the C: unit; its shadow repository then looked up `<sha>:D:/lib/a.ts`, missed,
+   * took the "new since the checkpoint" branch, and told the caller `{ removed: true }` — on
+   * which `Session.restoreFile` writes into the transcript that the file did not exist at the
+   * baseline and is now deleted, while on disk nothing was restored and nothing was removed.
+   * `Workspace.mountFor` and `isInside` have always carried the `isAbsolute` half of the test;
+   * this file did not.
+   *
+   * `rel === ''` — the unit root itself — is not a file and belongs to no restore.
+   */
+  private inside(unitRoot: string, abs: string): string | null {
+    const rel = relative(unitRoot, abs)
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
+    return rel.split('\\').join('/')
+  }
 
   private toCheckpoint(record: CheckpointSetRecord): Checkpoint {
     return {

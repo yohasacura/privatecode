@@ -5,9 +5,13 @@ import { join } from 'node:path'
 import { Agent, type AgentEvents, type AgentOptions } from '../src/agent/loop.js'
 import { LoopDetector } from '../src/agent/loop-detector.js'
 import { LlamaClient } from '../src/llama/client.js'
+import { PermissionEngine } from '../src/permissions/engine.js'
 import { ToolRegistry } from '../src/tools/registry.js'
+import { editFileTool } from '../src/tools/edit-file.js'
+import { runCommandTool } from '../src/tools/run-command.js'
 import { Workspace } from '../src/workspace.js'
 import { RawResponse, startFakeServer, TrickleResponse } from './fake-server.js'
+import type { InteractionPort } from '../src/interaction.js'
 import type { Tool } from '../src/tools/types.js'
 
 let stop: (() => Promise<void>) | undefined
@@ -225,6 +229,42 @@ test('a request the server died under is retried once health returns', async () 
   // The renderer is told the dead attempt's partials are superseded BEFORE the re-send —
   // without this the retry's stream appends onto the dead attempt's open cards.
   expect(rec.names()).toContain('stepRetry')
+})
+
+test('a cancel while that retry waits for the server ends the turn instead of throwing', async () => {
+  // The user's side of the same outage. The window has been frozen for however long the
+  // relaunch takes, so pressing Esc inside the wait is the likeliest cancel there is —
+  // and `waitHealthy` reports an abort as `false`, the same answer it gives for "the
+  // budget ran out". The turn used to fall through to a raw throw that escaped runStep,
+  // runTurn and Session.send: no `turn.done` was ever emitted and the window showed
+  // "stream read error (TypeError: terminated)" for a turn the user had cancelled.
+  const abort = new AbortController()
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/health') {
+      // Esc, mid-wait. The server is still down, so this probe fails as well.
+      abort.abort()
+      return new RawResponse(503, 'loading model', 'text/plain')
+    }
+    // A stream that dies mid-thought: one frame, then the connection ends without ever
+    // sending a finish_reason — what a llama.cpp process killed by a VRAM spike leaves.
+    return new TrickleResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'half a thought' } }] })}\n\n`,
+    ], 1)
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url, {
+    signal: abort.signal,
+    events: { onThinkingDelta: () => {} },
+  })
+
+  const result = await agent.runTurn('go')
+
+  expect(result.stoppedBecause).toBe('aborted')
+  // And the dead attempt's thinking is kept, exactly as on every other cancel path: the
+  // turn ends with what the model had said, marked as unfinished.
+  const last = agent.transcript.messages().at(-1)!
+  expect(last.reasoning_content).toBe('half a thought')
+  expect(last.content).toMatch(/interrupted by the user/)
 })
 
 test('executes a tool call, feeds the result back, then finishes', async () => {
@@ -1180,4 +1220,113 @@ test('every call of a step is announced, and never two calls at once', async () 
   expect(events.filter((e) => e[0] === 'toolResult').map((e) => (e[2] as any).content))
     .toEqual(['pong:a', 'pong:b'])
   expect(pingCalls).toBe(2)
+})
+
+// The second-decline escalation, and what counts as "the second decline of the same thing".
+//
+// The real tools are registered here rather than stand-ins, because the whole question is
+// which field of THEIR `PermissionKey` carries the thing being acted on: `command` for
+// run_command, `paths` for edit_file, and `target` for nothing the user declines often.
+
+/** Declines every approval, so a turn becomes a sequence of denials. */
+const declineEverything: InteractionPort = {
+  requestApproval: async () => ({ verdict: 'deny' as const }),
+  askUser: async () => '',
+}
+
+/** Normal mode asks about every command and every write, and the port says no to all of them. */
+function denyingAgent(url: string, extra: ExtraOptions = {}) {
+  const registry = new ToolRegistry()
+  registry.register(runCommandTool)
+  registry.register(editFileTool)
+  const root = mkdtempSync(join(tmpdir(), 'pc-deny-'))
+  workspaces.push(root)
+  return new Agent({
+    client: new LlamaClient({ baseUrl: url, model: 'm' }),
+    registry,
+    context: { workspace: new Workspace(root) },
+    maxSteps: 5,
+    mode: 'normal',
+    permissions: new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root }),
+    interaction: declineEverything,
+    ...extra,
+  })
+}
+
+/** One tool call per step, in order, then prose. */
+function callsThenDone(calls: [string, Record<string, unknown>][]) {
+  let n = 0
+  return () => {
+    const next = calls[n++]
+    return next ? toolCallResponse(next[0], JSON.stringify(next[1])) : textResponse('ok')
+  }
+}
+
+const resultContents = (rec: ReturnType<typeof recorder>): string[] =>
+  rec.events.filter((e) => e[0] === 'toolResult').map((e) => (e[2] as { content: string }).content)
+
+test('declining two unrelated commands is not reported to the model as declining one thing twice', async () => {
+  // The escalation tells the model to stop proposing variants of a change the user does not
+  // want — an instruction to abandon the work. Derived from two decisions about entirely
+  // different commands it is simply wrong, and `run_command` puts its command line in
+  // `command`, never in `target`, so counting on `target` alone collapsed every command in
+  // the turn into one bucket.
+  const fake = await startFakeServer(callsThenDone([
+    ['run_command', { command: 'npm install -g something' }],
+    ['run_command', { command: 'git clean -fdx' }],
+  ]))
+  stop = fake.close
+  const rec = recorder()
+  await denyingAgent(fake.url, { events: rec.handlers }).runTurn('go')
+
+  const contents = resultContents(rec)
+  expect(contents.length).toBe(2)
+  expect(contents[0]).toMatch(/adjust your approach/)
+  expect(contents[1]).not.toMatch(/decline #/)
+  expect(contents[1]).toMatch(/adjust your approach/)
+})
+
+test('declining two edits to unrelated files is not reported as declining one thing twice', async () => {
+  // The same collapse from the file side: edit_file keys on `paths`.
+  const fake = await startFakeServer(callsThenDone([
+    ['edit_file', { path: 'src/one.ts', search_text: 'a', replace_text: 'b' }],
+    ['edit_file', { path: 'src/two.ts', search_text: 'a', replace_text: 'b' }],
+  ]))
+  stop = fake.close
+  const rec = recorder()
+  await denyingAgent(fake.url, { events: rec.handlers }).runTurn('go')
+
+  expect(resultContents(rec)[1]).not.toMatch(/decline #/)
+})
+
+test('declining the same file twice still escalates, however the model spelled the path', async () => {
+  // The other half: the escalation exists because a denied edit came back as a fresh
+  // variant of the same edit, twice and three times, and it has to keep firing for that.
+  // Windows makes `src\App.ts` and `src/app.ts` one file, and the model writes both — a
+  // grouping that took the spelling literally would let variant number four through on a
+  // capital letter.
+  const fake = await startFakeServer(callsThenDone([
+    ['edit_file', { path: 'src/App.ts', search_text: 'a', replace_text: 'b' }],
+    ['edit_file', { path: 'src\\app.ts', search_text: 'a', replace_text: 'c' }],
+  ]))
+  stop = fake.close
+  const rec = recorder()
+  await denyingAgent(fake.url, { events: rec.handlers }).runTurn('go')
+
+  const contents = resultContents(rec)
+  expect(contents[0]).not.toMatch(/decline #/)
+  expect(contents[1]).toMatch(/decline #2/)
+  expect(contents[1]).toMatch(/STOP proposing further variants/)
+})
+
+test('declining the same command twice still escalates, whatever whitespace it arrived in', async () => {
+  const fake = await startFakeServer(callsThenDone([
+    ['run_command', { command: 'npm install -g something' }],
+    ['run_command', { command: 'npm  install   -g something' }],
+  ]))
+  stop = fake.close
+  const rec = recorder()
+  await denyingAgent(fake.url, { events: rec.handlers }).runTurn('go')
+
+  expect(resultContents(rec)[1]).toMatch(/decline #2/)
 })

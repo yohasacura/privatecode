@@ -40,10 +40,20 @@ export function WorkspaceSwitch({
       .catch(() => { /* recents are a convenience; Browse still works */ })
   }, [client])
 
+  // Capture phase AND stopped, the same shape the palette uses. This listener and the
+  // composer's Escape-to-abort are both on `window`, so a plain bubble-phase close let the
+  // one keypress travel on and call `abort`: dismissing this dialog killed a running turn —
+  // and this dialog is reachable, and never disabled, WHILE a turn or an unattended run is
+  // streaming. Settings escapes that only because App passes `modalOpen` to the composer for
+  // it; owning the key here means this dialog does not depend on being remembered there.
   useEffect(() => {
-    function onKey(e: KeyboardEvent): void { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    function onKey(e: KeyboardEvent): void {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      onClose()
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [onClose])
 
   // Same dialog behaviour Settings earned the hard way: focus moves in, Tab wraps,

@@ -67,6 +67,47 @@ const RAIL_DEFAULT = 232
  * and the bar fell back to icons for everything but the tab you were on. */
 const CONTEXT_DEFAULT = 420
 
+/**
+ * Surfaces that answer Escape themselves and must keep it while a file tab is fronted.
+ *
+ * The `:not()` is the whole point. The chat face stays MOUNTED behind a file tab —
+ * `.chat-face-hidden` is `display: none`, not an unmount — so a command picker left open by a
+ * stray `/`, or a run-config card left open, still matched a bare `.command-picker` /
+ * `.run-config` and made the Escape handler below bail. Esc then did nothing visible AND
+ * travelled on to the composer's window listener, which aborts the running turn.
+ */
+const ESCAPE_OWNERS =
+  '.modal-overlay, .chat-face:not(.chat-face-hidden) .command-picker,' +
+  ' .chat-face:not(.chat-face-hidden) .run-config'
+
+/**
+ * Inline edit boxes elsewhere in the window that cancel THEMSELVES on Escape: the workspace
+ * name, the add-folder path, a folder's rename box. The workspace column stays on screen
+ * while a file tab is fronted, so the capture-phase handler below was stopping the key before
+ * their own `onKeyDown` ever ran — the box stayed open with its draft in it and the window
+ * jumped back to the Chat tab instead.
+ *
+ * Listed by hand rather than asking "is the target a text field", because those are different
+ * questions: the terminal's input has no Escape of its own, and letting the key through there
+ * would reach the composer's abort listener instead of doing nothing.
+ */
+const INLINE_EDITS =
+  '.workspace-name-input, .workspace-add-input, .tree-mount-controls-open input'
+
+/**
+ * The recents list after opening `root` — newest first, no duplicate — mirroring what the
+ * host writes into `ui.json`. The length cap lives on disk (`saveUiConfig`) and is re-read at
+ * boot; this copy only has to be right for the welcome screen this run might reach.
+ *
+ * Case-insensitive, because Windows is the target and the two paths that arrive here come
+ * from a person typing and from the folder picker: `D:\proj` and `d:\proj` are one folder,
+ * and listing both would offer a stale entry that reopens the same place.
+ */
+export function withRecentFirst(recents: readonly string[], root: string): string[] {
+  const lowered = root.toLowerCase()
+  return [root, ...recents.filter((w) => w.toLowerCase() !== lowered)]
+}
+
 /** Column widths and collapse state live in localStorage: a layout you have to re-arrange
  * on every launch is one you stop arranging. */
 function loadLayout<T>(key: string, fallback: T): T {
@@ -212,11 +253,19 @@ export default function App() {
   // Esc on a file tab returns to the chat — it does NOT close the tab, and (capture
   // phase, same trick as everywhere) it must not fall through to the composer's abort
   // listener and silently stop a running turn. Modals keep their own Esc.
+  //
+  // Both guards are narrower than "is one of these anywhere in the document": see
+  // ESCAPE_OWNERS for why a picker in the hidden composer must not count, and INLINE_EDITS
+  // for the edit boxes whose own Escape this handler was eating. Capture phase is what makes
+  // the second guard a bail rather than a stop — stopping in capture means the event never
+  // reaches the target at all, so there is no way to both claim the key and let the box have
+  // it.
   useEffect(() => {
     if (activeTab === null) return
     function onKey(e: KeyboardEvent): void {
       if (e.key !== 'Escape') return
-      if (document.querySelector('.modal-overlay, .command-picker, .run-config') !== null) return
+      if (document.querySelector(ESCAPE_OWNERS) !== null) return
+      if (e.target instanceof Element && e.target.closest(INLINE_EDITS) !== null) return
       e.stopPropagation()
       setActiveTab(null)
     }
@@ -305,6 +354,53 @@ export default function App() {
       })
     }
   }, [dispatch])
+
+  /**
+   * Re-open the workspace that is already open, after a folder edit (rename, add a folder,
+   * toggle a folder's access) asked for it.
+   *
+   * The server URL is read from the HOST rather than from this component's `serverInput`,
+   * which is only ever written at boot and by the welcome form. Settings keeps its own copy
+   * of the URL, applies it with its own `init` + `config.set`, and never tells App — so a
+   * reopen used the URL from launch and `connect` then persisted that back over the one the
+   * user had just chosen: an unrelated folder edit silently undid the server change.
+   */
+  const reopenWorkspace = useCallback(async (c: ProtocolClient, workspace: string): Promise<void> => {
+    const saved = await c.call('config.get', {})
+      .then((cfg) => cfg.serverUrl ?? '')
+      // The reopen still has to happen; falling back to what this window last knew is the
+      // same answer it would have given anyway.
+      .catch(() => '')
+    const serverUrl = saved.trim() || serverInput.trim() || DEFAULT_SERVER_URL
+    setServerInput(serverUrl)
+    await connect(c, workspace, serverUrl)
+  }, [connect, serverInput])
+
+  /**
+   * A workspace opened by some OTHER surface — the switcher, or Settings applying a server
+   * change — adopted here.
+   *
+   * The session half is obvious; the other half is that this window's own memory of where it
+   * is (`workspaceInput`, `recents`) used to be written only at boot and by the welcome form.
+   * So: launch in A, switch to B, press Close workspace → the welcome screen came back with
+   * A's path in the folder field and A's recents, and Open workspace reopened A and wrote it
+   * back as the workspace to auto-connect to next launch. The user believes they are
+   * reopening the workspace they just closed.
+   */
+  function onWorkspaceOpened(
+    info: SessionSwitch & { workspaceRoot: string; workspaceName: string; folderCount: number },
+  ): void {
+    dispatch({ type: 'session-switched', ...info })
+    if (info.items.length > 0) dispatch({ type: 'transcript-restored', entries: info.items })
+    for (const text of info.problems) dispatch({ type: 'settings-problem', text })
+    setPhase({ kind: 'ready', workspace: info.workspaceRoot })
+    setWorkspaceLabel({ name: info.workspaceName, folders: info.folderCount })
+    setWorkspaceInput(info.workspaceRoot)
+    setRecents((r) => withRecentFirst(r, info.workspaceRoot))
+    setTabs([])
+    setActiveTab(null)
+    setSessionsKey((k) => k + 1)
+  }
 
   // Boot: learn the saved config, then auto-connect or show the welcome screen. The
   // timeout is what makes "the agent died" a screen you can act on instead of a spinner
@@ -609,6 +705,10 @@ export default function App() {
                   dispatch={dispatch}
                   onOpenFile={openFileFromTranscript}
                   onBackToLive={() => dispatch({ type: 'viewing-ended' })}
+                  // `.chat-face-hidden` is display:none, and an element with no layout box
+                  // has no scroll offset to keep — the transcript needs to know it is about
+                  // to lose one so it can put it back.
+                  offscreen={activeTab !== null}
                 />
                 {chatState.problems.length > 0 && (
                   <div class="problem-strip">
@@ -629,7 +729,11 @@ export default function App() {
                   client={client}
                   state={chatState}
                   dispatch={dispatch}
-                  modalOpen={settingsOpen}
+                  // Every dialog that owns Escape, not just Settings: the composer's
+                  // Escape-to-abort is on `window` too, so a dialog this flag forgets is a
+                  // dialog you cannot dismiss without killing the running turn. The switcher
+                  // stops its own Escape as well; this is the guard the composer documents.
+                  modalOpen={settingsOpen || switchOpen}
                   onAdoptViewed={adoptViewed}
                 />
               </div>
@@ -669,7 +773,7 @@ export default function App() {
                     workspaceName={workspaceLabel.name || baseName(workspaceRoot)}
                     folderCount={workspaceLabel.folders}
                     isDevBridge={isDevBridge}
-                    onReopenWorkspace={() => { if (client) void connect(client, workspaceRoot, serverInput.trim() || DEFAULT_SERVER_URL) }}
+                    onReopenWorkspace={() => { if (client) void reopenWorkspace(client, workspaceRoot) }}
                     onSwitchWorkspace={() => setSwitchOpen(true)}
                     // Back to the start screen; nothing on disk is touched, and boot's
                     // auto-connect still remembers this workspace for next launch.
@@ -768,17 +872,7 @@ export default function App() {
           isDevBridge={isDevBridge}
           currentRoot={workspaceRoot}
           onClose={() => setSwitchOpen(false)}
-          onSessionSwitched={(info) => {
-            dispatch({ type: 'session-switched', ...info })
-            if (info.items.length > 0) dispatch({ type: 'transcript-restored', entries: info.items })
-            for (const text of info.problems) dispatch({ type: 'settings-problem', text })
-            setPhase({ kind: 'ready', workspace: info.workspaceRoot })
-            setWorkspaceLabel({ name: info.workspaceName, folders: info.folderCount })
-            setTabs([])
-            setActiveTab(null)
-            setSessionsKey((k) => k + 1)
-            setSwitchOpen(false)
-          }}
+          onSessionSwitched={(info) => { onWorkspaceOpened(info); setSwitchOpen(false) }}
         />
       )}
 
@@ -787,17 +881,7 @@ export default function App() {
           client={client}
           {...(chatState.session !== null ? { liveMode: chatState.session.mode } : {})}
           onClose={() => setSettingsOpen(false)}
-          onSessionSwitched={(info) => {
-            dispatch({ type: 'session-switched', ...info })
-            if (info.items.length > 0) dispatch({ type: 'transcript-restored', entries: info.items })
-            for (const text of info.problems) dispatch({ type: 'settings-problem', text })
-            setPhase({ kind: 'ready', workspace: info.workspaceRoot })
-            setWorkspaceLabel({ name: info.workspaceName, folders: info.folderCount })
-            setTabs([])
-            setActiveTab(null)
-            setSessionsKey((k) => k + 1)
-            setSettingsOpen(false)
-          }}
+          onSessionSwitched={(info) => { onWorkspaceOpened(info); setSettingsOpen(false) }}
         />
       )}
     </div>

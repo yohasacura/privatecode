@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { memo } from 'preact/compat'
 import type { ComponentChildren, VNode } from 'preact'
 import type { StoppedBecause } from '@core/host/protocol'
@@ -47,6 +47,24 @@ export function visibleWindow<T>(
   return { shown: hidden === 0 ? items : items.slice(hidden), hidden }
 }
 
+/**
+ * Where the conversation lands when the chat comes back from behind a file tab.
+ *
+ * Exported and pure for the same reason `visibleWindow` is: this window has no render
+ * harness, and the decision worth holding is the rule, not the assignment.
+ *
+ * The two answers are genuinely different. A reader who had scrolled UP wants the offset they
+ * left, to the pixel — that is the paragraph they were in the middle of. A reader who was
+ * pinned to the bottom wants the bottom AS IT IS NOW: the turn keeps streaming while a file
+ * tab is fronted, and every re-pin the sticky-scroll hook attempted meanwhile was discarded
+ * by a container with no layout box, so the offset it left is hundreds of rows short.
+ */
+export function chatReturnScrollTop(
+  { parked, stuck, scrollHeight }: { parked: number; stuck: boolean; scrollHeight: number },
+): number {
+  return stuck ? scrollHeight : parked
+}
+
 /** The id of the newest item of a kind, without copying the array to find it. */
 function lastIdOfKind(items: readonly ChatItem[], kind: ChatItem['kind']): number {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -87,7 +105,7 @@ function lastIdOfKind(items: readonly ChatItem[], kind: ChatItem['kind']): numbe
  */
 
 export function Transcript({
-  client, state, dispatch, onOpenFile, onBackToLive,
+  client, state, dispatch, onOpenFile, onBackToLive, offscreen = false,
 }: {
   client: ProtocolClient
   state: ChatState
@@ -95,6 +113,8 @@ export function Transcript({
   onOpenFile: (path: string) => void
   /** Stop reading an earlier session and go back to the one that works. */
   onBackToLive: () => void
+  /** The chat face is hidden behind a file tab. Not unmounted — `display: none`. */
+  offscreen?: boolean
 }): VNode {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -102,6 +122,43 @@ export function Transcript({
   // No signal to compute: the hook watches the container itself, which is the only thing
   // that knows about a tool result arriving, a card being expanded, or "show more lines".
   const { stuck, scrollToBottom } = useStickToBottom(scrollRef)
+
+  // Carry the scroll offset across being hidden behind a file tab.
+  //
+  // `.chat-face-hidden` is `display: none`, and an element with no layout box has no scroll
+  // offset: the browser discards it and hands back 0 when the box returns. Nothing here
+  // noticed — the sticky-scroll hook's MutationObserver only watches mutations INSIDE this
+  // container, and hiding the face mutates an ancestor's class — so opening a file tab to
+  // read a diff and pressing Esc landed at the very TOP of the conversation, with `stuck`
+  // still true, i.e. without even the jump-to-latest button to get back.
+  //
+  // The offset is recorded from scroll events rather than read when `offscreen` flips,
+  // because by the time any effect runs the class is already committed and `scrollTop` reads
+  // 0. Every change to a scroll offset fires a scroll event, programmatic ones included, so
+  // this ref always holds the last offset the container genuinely had.
+  const parkedScroll = useRef(0)
+  const offscreenRef = useRef(offscreen)
+  offscreenRef.current = offscreen
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el === null) return
+    function onScroll(): void {
+      const node = scrollRef.current
+      if (node !== null && !offscreenRef.current) parkedScroll.current = node.scrollTop
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (offscreen || el === null) return
+    el.scrollTop = chatReturnScrollTop({
+      parked: parkedScroll.current, stuck, scrollHeight: el.scrollHeight,
+    })
+    // Only the transition matters: `stuck` is read at the moment the face comes back, and
+    // re-running this whenever it flips would fight the sticky-scroll hook for the offset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the hide/show flip
+  }, [offscreen])
 
   // Sending always returns you to the bottom. If you were reading back through the
   // transcript and then typed, you want to watch the answer, not stay where you were.

@@ -1,7 +1,6 @@
 import { noteWorkspaceWrite } from '../csharp/nav-process.js'
 import { mkdir, open, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { opensAsWorkspaceRoot } from '../workspace.js'
 import { writeFileAtomic, fsErrorReason } from './atomic-write.js'
 import { BOM, applyEndings, detectEndings, toLf } from './line-endings.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
@@ -124,25 +123,12 @@ export const writeFileTool: Tool<WriteFileArgs> = {
       return { ok: false, content: (e as Error).message }
     }
 
-    // The workspace root itself is not a file, whether or not it exists on disk yet.
-    // Without this, a root that does not exist yet slips past the ENOENT guard below with
-    // `replaced` still null, and `mkdir(dirname(abs), ...)` then creates directories at the
-    // root's own *parent* — outside the workspace — while the atomic temp file is opened
-    // there too, before ever being renamed onto the root path itself. Refusing this case up
-    // front means the guarantee rests on containment again, not on the root happening to
-    // already exist as a directory.
-    //
-    // Compared against the path Windows would actually *open*: it strips trailing dots and
-    // spaces first, so `<root>\. ` is the root. Raw equality missed that, and `path: ". "`
-    // reached the disk (measured: it created a root-level entry literally named `. `).
-    if (opensAsWorkspaceRoot(abs, ctx.workspace.root)) {
-      return {
-        ok: false,
-        content:
-          `${args.path} resolves to the workspace root, not a file; write_file cannot ` +
-          'replace the workspace itself',
-      }
-    }
+    // A folder root is not a file, whether or not it exists on disk yet — refused inside
+    // `resolveForWrite` above, for EVERY folder of the workspace rather than only the
+    // primary one. Without that refusal, a root that does not exist yet slips past the
+    // ENOENT guard below with `replaced` still null, and `mkdir(dirname(abs), ...)` then
+    // creates directories at the root's own *parent* — outside the workspace — with the
+    // atomic temp file opened there too.
 
     const bytes = Buffer.byteLength(args.content, 'utf8')
     if (bytes > MAX_FILE_BYTES) {

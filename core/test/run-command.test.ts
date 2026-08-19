@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -81,6 +81,69 @@ describe('execute', () => {
     expect(r.ok).toBe(false)
     expect(r.content).toMatch(/cancelled/i)
   }, 30_000)
+})
+
+/**
+ * The job is `powershell.exe -Command …`, so the process actually doing the work is
+ * PowerShell's CHILD. A kill that reaches only PowerShell reports the command stopped and
+ * leaves node/dotnet running — holding a port, a build lock and its file handles — with no
+ * entry in the Terminal panel (that lists background_task jobs only) to stop it from.
+ *
+ * The grandchild here appends to a file every 100 ms, so "did it really stop" is answered
+ * by the file's size holding still afterwards rather than by anything the tool reports
+ * about itself. It also exits on its own after 30 s: a regression here must not leave a
+ * ticking process behind on the machine running the suite.
+ */
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+function tickerCommand(marker: string): string {
+  const script = "const fs=require('fs');" +
+    'setTimeout(()=>process.exit(0),30000);' +
+    "setInterval(()=>fs.appendFileSync(process.argv[1],'.'),100)"
+  return `node -e "${script}" "${marker}"`
+}
+
+async function awaitTicking(marker: string): Promise<void> {
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    if (existsSync(marker) && statSync(marker).size > 0) return
+    await sleep(50)
+  }
+  throw new Error(`the grandchild never started writing ${marker}`)
+}
+
+async function expectStopped(marker: string): Promise<void> {
+  await sleep(400)
+  const settled = statSync(marker).size
+  await sleep(1_200)
+  expect(statSync(marker).size).toBe(settled)
+}
+
+describe('killing the process tree', () => {
+  it('cancel stops the grandchild, not only PowerShell', async () => {
+    const marker = join(root, 'cancel-ticker.txt')
+    const ac = new AbortController()
+    const p = runCommandTool.execute(
+      { command: tickerCommand(marker) },
+      { workspace: new Workspace(root), signal: ac.signal },
+    )
+    await awaitTicking(marker)
+    ac.abort()
+    const r = await p
+    expect(r.ok).toBe(false)
+    expect(r.content).toMatch(/cancelled/i)
+    await expectStopped(marker)
+  }, 60_000)
+
+  it('the timeout stops the grandchild too, and still says what it did', async () => {
+    const marker = join(root, 'timeout-ticker.txt')
+    const p = run({ command: tickerCommand(marker), timeout_seconds: 3 })
+    await awaitTicking(marker)
+    const r = await p
+    expect(r.ok).toBe(false)
+    expect(r.content).toMatch(/killed after 3 s/)
+    await expectStopped(marker)
+  }, 60_000)
 })
 
 describe('clipOutput', () => {

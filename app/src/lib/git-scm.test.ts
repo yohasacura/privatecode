@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { GitRepoView } from '@core/host/protocol'
-import { ghostRows, gitMarks, letterOf } from './git-scm'
+import { describeMark, ghostRows, gitMarks, letterOf } from './git-scm'
 
 /**
  * Git as the tree wears it: porcelain pairs → one letter, staged/dirty flags, and ghost
@@ -61,6 +61,42 @@ describe('gitMarks', () => {
   test('every mark carries the repository it answers to', () => {
     const marks = gitMarks([repo([{ path: 'src/a.ts', code: ' M' }])])
     expect(marks.get('src/a.ts')?.repoRoot).toBe('C:/repo')
+  })
+
+  // Every conflict pair has a non-space index column, so the host hands them over as
+  // `staged: true` (the `repo` helper above reproduces that parse exactly). The tree
+  // highlights a staged row as "chosen for the commit" while the commit box refuses to
+  // count a conflict — the mark is where the two are reconciled.
+  test('a conflict is never staged, whatever the index column says', () => {
+    const marks = gitMarks([repo([
+      { path: 'both.ts', code: 'UU' },
+      { path: 'added.ts', code: 'AA' },
+      { path: 'gone.ts', code: 'DD' },
+      { path: 'theirs.ts', code: 'DU' },
+      { path: 'ours.ts', code: 'UD' },
+    ])])
+    for (const path of ['both.ts', 'added.ts', 'gone.ts', 'theirs.ts', 'ours.ts']) {
+      expect(marks.get(path)).toMatchObject({ letter: '!', staged: false })
+    }
+  })
+})
+
+describe('describeMark', () => {
+  test('the ordinary states name their side of the index', () => {
+    const marks = gitMarks([repo([
+      { path: 'a.ts', code: 'M ' },
+      { path: 'b.ts', code: ' M' },
+      { path: 'c.ts', code: 'MM' },
+    ])])
+    expect(describeMark(marks.get('a.ts')!)).toBe('modified · staged for the next commit')
+    expect(describeMark(marks.get('b.ts')!)).toBe('modified · not staged')
+    expect(describeMark(marks.get('c.ts')!)).toContain('staged, then edited again')
+  })
+
+  test('a conflict is described without a staging verdict', () => {
+    const marks = gitMarks([repo([{ path: 'both.ts', code: 'UU' }])])
+    expect(describeMark(marks.get('both.ts')!)).toBe('CONFLICT — resolve it before committing')
+    expect(describeMark(marks.get('both.ts')!)).not.toContain('staged')
   })
 })
 

@@ -466,8 +466,39 @@ const SERVER_RESTART_WAIT_MS = 90_000
  * enough that a legitimate multi-minute re-prefill costs a handful of probes. */
 const PREFILL_RECHECK_MS = 20_000
 
+/**
+ * What a per-turn decline is counted against — the tool plus the thing it wanted to act on.
+ *
+ * `PermissionKey` carries that thing in a different field per tool family: `target` for
+ * browser/web/database/use_skill, `command` for run_command/background_task, `paths` for the
+ * file tools. Counting on `target` alone therefore collapsed to `run_command:` or
+ * `edit_file:` for exactly the tools that produce most approvals, and declining
+ * `npm install -g x` and then, ten steps later, an unrelated `git clean -fdx` reached two
+ * "for the same target" — handing the model the escalation that tells it to abandon the
+ * work, derived from two decisions about entirely different commands.
+ *
+ * Normalized the way the rule language normalizes the same fields (permissions/rules.ts):
+ * a command loses its whitespace runs and case, a path its backslashes and case. On Windows
+ * `src\App.ts` and `src/app.ts` are one file, so two declines for it are two declines for
+ * the same thing, whichever way the model spelled it.
+ *
+ * A key with none of the three — `remember`, `git_status`, `browser` close — still collapses
+ * to `tool:`, which is what those tools mean: every call of them asks the same question.
+ */
+function denialIdentity(key: PermissionKey): string {
+  const acted = [
+    ...(key.target !== undefined ? [key.target.trim().toLowerCase()] : []),
+    ...(key.command !== undefined ? [key.command.trim().replace(/\s+/g, ' ').toLowerCase()] : []),
+    ...(key.paths ?? []).map((p) => p.replace(/\\/g, '/').toLowerCase()),
+  ]
+  // Newline as the separator: the normalization above has already collapsed every
+  // whitespace run in a command to a single space, and neither a path nor a URL carries
+  // one, so no two different keys can join into the same string.
+  return `${key.tool}:${acted.join('\n')}`
+}
+
 export class Agent {
-  /** Declines per tool+path within this agent's one turn (a fresh Agent is built per
+  /** Declines per `denialIdentity` within this agent's one turn (a fresh Agent is built per
    * send), backing the second-decline escalation in the deny branch below. */
   private readonly denialsThisTurn = new Map<string, number>()
   private readonly opts: Required<
@@ -1001,14 +1032,24 @@ export class Agent {
         return { kind: 'aborted' }
       }
       if (deadline.aborted) return { kind: 'timeout' }
-      if (attempt === 0 && e instanceof LlamaRequestError &&
-          await this.opts.client.waitHealthy(SERVER_RESTART_WAIT_MS, this.opts.signal)) {
+      if (attempt === 0 && e instanceof LlamaRequestError) {
+        const healthy = await this.opts.client.waitHealthy(SERVER_RESTART_WAIT_MS, this.opts.signal)
+        // The cancel is re-checked on BOTH outcomes of the wait, not only when the server
+        // came back. `waitHealthy` answers `false` for two different things — the budget
+        // ran out, and the signal aborted (client.ts) — so pressing Esc during a 90 s wait
+        // for the watchdog used to fall straight through to `throw e`: the transport error
+        // escaped runStep, runTurn and Session.send, the host never emitted `turn.done`,
+        // and a cancelled turn surfaced in the window as "stream read error (TypeError:
+        // terminated)". Cancelling during the wait is the likeliest moment there is to
+        // cancel — the window has been frozen for however long the outage has lasted.
         if (this.opts.signal?.aborted) { this.appendInterrupted(e); return { kind: 'aborted' } }
-        if (deadline.aborted) return { kind: 'timeout' }
-        // Announced BEFORE the re-send: a renderer that keeps appending would show the
-        // dead attempt's partial reasoning with the retry's spliced onto it.
-        events?.onStepRetry?.()
-        continue
+        if (healthy) {
+          if (deadline.aborted) return { kind: 'timeout' }
+          // Announced BEFORE the re-send: a renderer that keeps appending would show the
+          // dead attempt's partial reasoning with the retry's spliced onto it.
+          events?.onStepRetry?.()
+          continue
+        }
       }
       throw e
     }
@@ -1127,9 +1168,9 @@ export class Agent {
             // One denial is feedback on the attempt; two on the same tool+target are
             // feedback on the GOAL, and the escalation says so instead of letting variant
             // number four arrive.
-            const target = `${key.tool}:${key.target ?? ''}`
-            const denials = (this.denialsThisTurn.get(target) ?? 0) + 1
-            this.denialsThisTurn.set(target, denials)
+            const identity = denialIdentity(key)
+            const denials = (this.denialsThisTurn.get(identity) ?? 0) + 1
+            this.denialsThisTurn.set(identity, denials)
             return {
               ok: false,
               content: denials >= 2
