@@ -82,7 +82,7 @@ export function HistoryTab({
   }
 
   if (error !== null) return <PanelError message={error} onRetry={load} />
-  if (checkpoints === null) return <div class="panel-placeholder">loading…</div>
+  if (checkpoints === null) return <div class="panel-placeholder loading-quiet">loading…</div>
 
   return (
     <div class="history">

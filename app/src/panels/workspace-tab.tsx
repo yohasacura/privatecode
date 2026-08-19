@@ -166,7 +166,7 @@ export function WorkspaceTab({
           aria-selected={view === 'changes'}
           onClick={() => setView('changes')}
         >
-          Changes{changes.length > 0 ? ` ${changes.length}` : ''}
+          Changes{changes.length > 0 && <span class="tab-badge">{changes.length}</span>}
         </button>
       </div>
       {view === 'files'

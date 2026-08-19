@@ -105,8 +105,8 @@ export function SessionsRail({
 
       <div class="rail-section">Sessions</div>
 
-      {error && <div class="rail-error" onClick={load} title="click to retry">{error}</div>}
-      {sessions === null && !error && <div class="rail-placeholder">loading…</div>}
+      {error && <button class="rail-error" onClick={load} title="click to retry">{error}</button>}
+      {sessions === null && !error && <div class="rail-placeholder loading-quiet">loading…</div>}
       {sessions?.length === 0 && <div class="rail-placeholder">nothing saved yet</div>}
 
       <div class="rail-list">

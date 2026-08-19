@@ -31,7 +31,7 @@ export function PathTreeLevel<T>({
           <Fragment key={dir.fullDir}>
             <button
               class="tree-row tree-dir changes-tree-dir"
-              style={{ paddingLeft: `${depth * 12 + 4}px` }}
+              style={{ paddingLeft: `${depth * 12 + 6}px` }}
               title={dir.fullDir}
               aria-expanded={!isCollapsed}
               onClick={() => onToggle(dir.fullDir)}

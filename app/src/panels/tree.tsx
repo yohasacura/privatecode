@@ -213,7 +213,7 @@ function MountControls({ mount, actions }: { mount: MountInfo; actions: MountAct
 
   if (mount.primary) {
     return (
-      <span class="tree-mount-controls">
+      <span class="tree-mount-controls tree-mount-controls-open">
         <span class="tag" title="The main folder — sessions, checkpoints and workspace settings live here">main</span>
       </span>
     )
@@ -304,8 +304,8 @@ function AddFolderRow({ actions }: { actions: MountActions }): VNode {
       title="Add a folder to the workspace — it appears right in this tree"
     >
       <span class="tree-chevron" />
-      <span class="tree-icon">{Icon.folder()}</span>
-      <span class="tree-name">{actions.busy ? 'Re-opening…' : '+ Add folder'}</span>
+      <span class="tree-icon">{Icon.plus()}</span>
+      <span class="tree-name">{actions.busy ? 'Re-opening…' : 'Add folder…'}</span>
     </button>
   )
 }
@@ -336,7 +336,7 @@ function DirChildren({
     return (
       <button
         class="tree-error"
-        style={{ paddingLeft: `${depth * 12 + 4}px` }}
+        style={{ paddingLeft: `${depth * 12 + 6}px` }}
         onClick={() => onRetry(path)}
         title="Click to retry"
       >
@@ -345,7 +345,10 @@ function DirChildren({
     )
   }
   if (state.entries === null) {
-    return state.loading ? <div class="tree-loading" style={{ paddingLeft: `${depth * 12 + 4}px` }}>loading…</div> : null
+    return state.loading ? <div class="tree-loading loading-quiet" style={{ paddingLeft: `${depth * 12 + 6}px` }}>loading…</div> : null
+  }
+  if (state.entries.length === 0 && path !== '') {
+    return <div class="tree-empty" style={{ paddingLeft: `${depth * 12 + 28}px` }}>empty</div>
   }
 
   return (

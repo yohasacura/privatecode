@@ -172,7 +172,7 @@ export function FilesTab({
               </button>
             )}
           </div>
-          {preview.kind === 'loading' && <div class="panel-placeholder">loading…</div>}
+          {preview.kind === 'loading' && <div class="panel-placeholder loading-quiet">loading…</div>}
           {preview.kind === 'error' && <PanelError message={preview.message} />}
           {preview.kind === 'loaded' && (
             <PreviewBody lines={preview.lines} ext={extensionOf(preview.path)} wrap={wrap} />

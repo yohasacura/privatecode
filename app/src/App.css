@@ -27,6 +27,7 @@
   --text: #ececee;
   --text-dim: #9a9aa4;
   --text-faint: #6b6b76;
+  --text-ghost: #4d4d57;
 
   --accent: #d97757;
   --accent-hover: #e08a6e;
@@ -36,6 +37,7 @@
   --green: #7ec98f;
   --green-soft: rgba(126, 201, 143, 0.13);
   --red: #e0696c;
+  --red-hover: #ea7a7d;
   --red-soft: rgba(224, 105, 108, 0.13);
   --blue: #6fa8dc;
   --yellow: #d9b25e;
@@ -43,7 +45,7 @@
   --mono: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', Consolas, 'Liberation Mono', monospace;
   --ui: -apple-system, 'Segoe UI Variable Text', 'Segoe UI', Inter, Roboto, system-ui, sans-serif;
 
-  --radius: 10px;
+  --radius: 12px;
   --radius-sm: 6px;
   /* Two elevations, not four ad-hoc shadows: things that float a little (jump-to-latest,
      the run-config popover) and things that own the screen (modal, palette). A surface
@@ -63,12 +65,34 @@
 
 * { box-sizing: border-box; }
 
-/* One speed for state changes on interactive things, matching the composer shell's 130ms.
-   Instant flips beside eased ones read as two different applications. Transform and layout
-   properties are deliberately absent: nothing here moves, it only changes shade. */
+/* One speed — 120ms — for state changes on interactive things, everywhere. Instant flips
+   beside eased ones read as two different applications. Transform and layout properties
+   are deliberately absent: nothing here moves, it only changes shade. */
 button, .btn, .icon-button, .mode-chip, .tab, .prow-label-button, .recent-item {
   transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
+
+/* Pressed: one shade deeper than hover. */
+.btn:active:not(:disabled),
+.icon-button:active:not(:disabled),
+.mode-chip:active:not(:disabled),
+.rail-workspace:active,
+.rail-item:active,
+.rail-settings:active,
+.tool-head:active:not(:disabled),
+.todos-head:active,
+.command-item:active,
+.jump-latest:active,
+.cmd-more:active,
+.composer-queue:active,
+.recent-item:active,
+.tree-row:active {
+  background: var(--bg-active);
+}
+/* Primary: hover lightens to --accent-hover, press drops back to base = depress. */
+.btn-primary:active:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+.composer-send:active:not(:disabled) { background: var(--accent); }
+.composer-send-stop:active { background: var(--red); }
 
 html, body, #root {
   height: 100%;
@@ -96,6 +120,7 @@ body {
   border-radius: 6px;
 }
 ::-webkit-scrollbar-thumb:hover { background: #45454f; background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
 
 kbd {
   font-family: var(--mono);
@@ -122,6 +147,16 @@ kbd {
 }
 .input:focus-visible, .composer-input:focus-visible, .terminal-input:focus-visible { outline: none; }
 
+/* Rows that fill a scroller: the ring must live inside the row or the clip box eats it. */
+.rail-item:focus-visible, .rail-workspace:focus-visible, .rail-settings:focus-visible,
+.tree-row:focus-visible, .tree-error:focus-visible,
+.command-item:focus-visible, .palette-item:focus-visible,
+.tool-head:focus-visible, .todos-head:focus-visible, .cmd-more:focus-visible,
+.tab:focus-visible, .mode-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 /* Motion here is never decorative -- every animation in this file means "this is happening
    right now" -- so switching it off must not switch off the MEANING. Each one is replaced
    by its own resting state at full strength rather than simply frozen mid-cycle. */
@@ -134,6 +169,10 @@ kbd {
   /* Its resting state, not a frozen frame: "working" still has to READ as working. */
   .rail-item-live-busy { animation: none; opacity: 1; }
 }
+
+/* Invisible for the first 250ms: loads that finish faster never show a flash. */
+.loading-quiet { animation: appear 180ms ease 250ms both; }
+@keyframes appear { from { opacity: 0; } to { opacity: 1; } }
 
 /* ---------------------------------------------------------------------- controls ----- */
 
@@ -151,10 +190,9 @@ kbd {
   font-size: 12.5px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 90ms ease, border-color 90ms ease;
 }
 .btn:hover:not(:disabled) { background: var(--bg-hover); border-color: #3a3a44; }
-.btn:disabled { opacity: 0.42; cursor: default; }
+.btn:disabled { opacity: 0.4; cursor: default; }
 
 .btn-primary {
   background: var(--accent);
@@ -175,7 +213,7 @@ kbd {
  * indent), full-width inside the panel column, with the recursive file count kept to the
  * right so a collapsed row still says what it is hiding. */
 .changes-tree-dir { width: 100%; }
-.changes-tree-meta { margin-left: auto; color: var(--text-dim); font-size: 11px; }
+.changes-tree-meta { margin-left: auto; color: var(--text-dim); font-size: 11.5px; }
 
 /* The prompt linter: quiet chips naming what a task-shaped draft is missing, with the
  * model-powered Improve action at the end of the same line — the free half and the paid
@@ -185,22 +223,22 @@ kbd {
   padding: 4px 10px 0;
 }
 .prompt-hint {
-  color: var(--text-dim); font-size: 11px;
-  border: 1px solid var(--border); border-radius: 9px; padding: 1px 8px;
+  color: var(--text-dim); font-size: 11.5px;
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
 }
 .prompt-hint-improve {
-  margin-left: auto; font-size: 11px; color: var(--accent);
+  margin-left: auto; font-size: 11.5px; color: var(--accent);
   background: none; border: none; cursor: pointer; padding: 1px 4px;
 }
 .prompt-hint-improve:hover:not(:disabled) { text-decoration: underline; }
-.prompt-hint-improve:disabled { opacity: 0.6; cursor: default; }
+.prompt-hint-improve:disabled { opacity: 0.4; cursor: default; }
 
 /* A running command's live output: a small terminal viewport pinned to the tail. Fixed
  * height on purpose — the card must not grow with the log, the log scrolls inside it. */
 .tool-live {
   margin: 4px 10px 8px; padding: 6px 8px; max-height: 180px; overflow-y: auto;
-  background: var(--bg-deep, #101014); border: 1px solid var(--border); border-radius: 6px;
-  font-size: 11px; line-height: 1.4; white-space: pre-wrap; word-break: break-all;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  font-size: 11.5px; line-height: 1.4; white-space: pre-wrap; word-break: break-all;
   color: var(--text-dim);
 }
 
@@ -212,14 +250,15 @@ kbd {
 }
 /* A button now — clicking the name renames the workspace in place. */
 .workspace-title {
+  flex: 0 1 auto; min-width: 0;
   font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   background: none; border: none; color: var(--text); cursor: pointer;
   padding: 0; font-size: inherit; text-align: left;
 }
 .workspace-title:hover { text-decoration: underline dotted; }
 .workspace-name-input { max-width: 220px; }
-.workspace-meta { color: var(--text-dim); font-size: 11px; }
-.workspace-error { color: var(--danger, #c66); font-size: 11px; padding: 2px 10px; }
+.workspace-meta { color: var(--text-dim); font-size: 11.5px; flex: none; white-space: nowrap; }
+.workspace-error { color: var(--red); font-size: 11.5px; padding: 2px 10px; }
 .workspace-manage { padding: 4px 10px; border-bottom: 1px solid var(--border); }
 
 /* Inline mount management: the controls live ON the folder's own row, revealed on
@@ -227,40 +266,46 @@ kbd {
 .tree-mount { display: flex; align-items: center; }
 .tree-mount .tree-mount-main { flex: 1; min-width: 0; }
 .tree-mount-controls {
-  display: flex; align-items: center; gap: 3px; padding-right: 6px;
-  opacity: 0; transition: opacity 0.12s;
+  display: flex; align-items: center; gap: 4px; padding-right: 6px;
+  opacity: 0; pointer-events: none; transition: opacity 120ms ease;
 }
 .tree-mount:hover .tree-mount-controls,
 .tree-mount-controls:focus-within,
-.tree-mount-controls-open { opacity: 1; }
+.tree-mount-controls-open { opacity: 1; pointer-events: auto; }
+.tree-mount:hover { background: var(--bg-raised); }
+.tree-mount:hover .tree-mount-main { color: var(--text); }
+.tree-mount-controls .input { height: 22px; padding: 0 7px; font-size: 11.5px; }
 .tree-mount-btn {
-  font-size: 10.5px; padding: 1px 6px; border-radius: 8px; cursor: pointer;
+  font-size: 10.5px; padding: 1px 6px; border-radius: 999px; cursor: pointer;
   background: none; border: 1px solid var(--border); color: var(--text-dim);
 }
 .tree-mount-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
-.tree-mount-btn:disabled { opacity: 0.5; cursor: default; }
-.tree-mount-danger { border-color: var(--danger, #c66); color: var(--danger, #c66); }
+.tree-mount-btn:disabled { opacity: 0.4; cursor: default; }
+.tree-mount-danger { border-color: var(--red); color: var(--red); }
 .tree-mount-ro {
-  font-size: 10px; color: var(--text-dim); border: 1px solid var(--border);
-  border-radius: 8px; padding: 0 5px; margin-left: 6px;
+  font-size: 10.5px; color: var(--text-dim); border: 1px solid var(--border);
+  border-radius: 999px; padding: 0 6px; margin-left: 6px;
 }
-.tree-add-folder { color: var(--text-dim); }
+.tree-add-folder { color: var(--text-faint); margin-top: 3px; }
 .tree-add-folder:hover:not(:disabled) { color: var(--text); }
 .tree-add-input { margin: 4px 10px; width: calc(100% - 20px); }
-.workspace-views { display: flex; gap: 4px; padding: 2px 10px 6px; }
+.workspace-views { display: flex; gap: 6px; padding: 2px 10px 8px; border-bottom: 1px solid var(--border-soft); }
 .ws-view {
-  font-size: 11.5px; padding: 2px 10px; border-radius: 10px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; padding: 3px 11px; border-radius: 999px; cursor: pointer;
   background: none; border: 1px solid var(--border); color: var(--text-dim);
 }
+.ws-view:hover:not(.ws-view-active) { color: var(--text); border-color: #3a3a44; background: var(--bg-hover); }
 .ws-view-active { border-color: var(--accent); color: var(--text); }
 
 /* The session's fingerprints on the tree: a diff shape on a changed file, a count of
  * changed files on a folder — visible even while the folder is collapsed. */
 .tree-change-count {
-  margin-left: auto; font-size: 10px; color: var(--accent);
-  border: 1px solid var(--accent-line); border-radius: 8px; padding: 0 5px;
+  flex: none;
+  margin-left: auto; font-size: 10.5px; color: var(--accent);
+  border: 1px solid var(--accent-line); border-radius: 999px; padding: 0 6px;
 }
-.tree-change-stat { margin-left: auto; font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+.tree-change-stat { flex: none; margin-left: auto; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tree-change-failed { color: var(--red); }
 
 /* The improver's suggestion chips: toggleable additions BELOW the draft — on travels with
@@ -270,21 +315,22 @@ kbd {
  * scrolling card like .tool-live — the composer must not grow with the model's answer. */
 .prompt-expand {
   margin: 4px 10px 0; padding: 6px 8px;
-  border: 1px solid var(--border); border-radius: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .prompt-expand-text {
   margin: 0 0 4px; white-space: pre-wrap; word-break: break-word;
   max-height: 180px; overflow-y: auto;
-  font: inherit; font-size: 12px; color: var(--text);
+  font: inherit; font-size: 12.5px; color: var(--text);
 }
 .prompt-expand-actions { display: flex; gap: 8px; align-items: center; }
 .prompt-expand-actions .prompt-hint-improve { margin-left: 0; }
 
 .prompt-suggest {
-  font-size: 11px; border-radius: 9px; padding: 1px 8px; cursor: pointer;
+  font-size: 11.5px; border-radius: 999px; padding: 1px 8px; cursor: pointer;
   background: none; border: 1px solid var(--border); color: var(--text-dim);
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.prompt-suggest:hover:not(.prompt-suggest-on) { color: var(--text); background: var(--bg-hover); }
 .prompt-suggest-on { border-color: var(--accent); color: var(--text); }
 .prompt-question { border-style: dashed; }
 .prompt-question-wrap { display: inline-flex; gap: 4px; align-items: center; max-width: 100%; }
@@ -301,10 +347,9 @@ kbd {
   background: transparent;
   color: var(--text-faint);
   cursor: pointer;
-  transition: background 90ms ease, color 90ms ease;
 }
 .icon-button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
-.icon-button:disabled { opacity: 0.35; cursor: default; }
+.icon-button:disabled { opacity: 0.4; cursor: default; }
 .icon-button-on { color: var(--text); }
 
 .input, .select {
@@ -318,6 +363,7 @@ kbd {
   font-size: 12.5px;
   outline: none;
   min-width: 0;
+  transition: border-color 120ms ease;
 }
 .input:focus, .select:focus { border-color: var(--accent-line); }
 .input::placeholder { color: var(--text-faint); }
@@ -336,7 +382,7 @@ kbd {
 .field-label {
   display: block;
   margin: 14px 0 5px;
-  font-size: 11px;
+  font-size: 10.5px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -391,10 +437,10 @@ kbd {
 .brand {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   flex: none;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 .brand-mark { color: var(--accent); display: flex; }
 /* "+2" beside the workspace name: a titlebar that showed only the primary folder would be
@@ -405,16 +451,16 @@ kbd {
   border-radius: 4px;
   background: var(--bg-active);
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: 10.5px;
 }
 .titlebar-workspace {
   flex: 0 1 auto;
   min-width: 0;
   padding: 2px 8px;
-  border-radius: 5px;
+  border-radius: 4px;
   background: var(--bg-raised);
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: 11.5px;
   font-family: var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -424,7 +470,7 @@ kbd {
   flex: 0 1 auto;
   min-width: 0;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: 12.5px;
   max-width: 340px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -453,6 +499,7 @@ kbd {
   transition: background 120ms ease;
 }
 .splitter:hover { background: var(--accent-line); }
+.splitter:active { background: var(--accent); }
 
 /* ------------------------------------------------------------------ sessions rail ---- */
 
@@ -461,7 +508,7 @@ kbd {
 .rail-workspace {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
   padding: 7px 9px;
   border: 1px solid var(--border-soft);
@@ -489,8 +536,13 @@ kbd {
 }
 
 .rail-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-.rail-placeholder { padding: 8px 4px; color: var(--text-faint); font-size: 12px; }
+.rail-placeholder { padding: 8px 4px; color: var(--text-faint); font-size: 11.5px; }
 .rail-error {
+  display: block;
+  width: 100%;
+  border: none;
+  font: inherit;
+  text-align: left;
   padding: 8px;
   border-radius: var(--radius-sm);
   background: var(--red-soft);
@@ -498,6 +550,7 @@ kbd {
   font-size: 11.5px;
   cursor: pointer;
 }
+.rail-error:hover { background: rgba(224, 105, 108, 0.2); }
 
 .rail-item {
   display: flex;
@@ -512,7 +565,6 @@ kbd {
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background 90ms ease;
 }
 .rail-item:hover { background: var(--bg-raised); color: var(--text); }
 .rail-item-active {
@@ -538,7 +590,7 @@ kbd {
 .rail-settings {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   padding: 7px 9px;
   border: none;
   border-radius: var(--radius-sm);
@@ -606,7 +658,7 @@ kbd {
 
 .marker-caret {
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: 13.5px;
   line-height: 1;
   color: var(--accent);
 }
@@ -633,10 +685,10 @@ kbd {
    `always: Bash(npm run …:*)` rule — and one such token wider than the read column gave
    the WHOLE conversation a horizontal scrollbar. */
 .notice-title { font-size: 12.5px; color: var(--text); word-break: break-word; }
-.notice-detail { margin-top: 2px; font-size: 12px; color: var(--text-faint); word-break: break-word; }
+.notice-detail { margin-top: 2px; font-size: 11.5px; color: var(--text-faint); word-break: break-word; }
 
 .row-record {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-faint);
   align-items: center;
 }
@@ -680,7 +732,7 @@ kbd {
   background: var(--bg-raised);
   color: var(--text-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: pointer;
   box-shadow: var(--shadow-pop);
 }
@@ -701,7 +753,7 @@ kbd {
 /* Sized on the svg, not via transform -- see .welcome-logo. */
 .empty-mark .icon { width: 34px; height: 34px; }
 .empty-state h2 { margin: 0 0 6px; font-size: 16px; font-weight: 550; color: var(--text); }
-.empty-state p { margin: 0; font-size: 13px; }
+.empty-state p { margin: 0; font-size: 12.5px; }
 .empty-keys {
   display: flex;
   justify-content: center;
@@ -720,7 +772,7 @@ kbd {
 .reasoning-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   padding: 0 0 4px;
   border: none;
   background: transparent;
@@ -730,7 +782,7 @@ kbd {
   text-align: left;
 }
 .reasoning-label {
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -738,7 +790,7 @@ kbd {
 }
 .reasoning-live .reasoning-label { color: var(--accent); }
 .reasoning-meta { font-family: var(--mono); font-size: 10.5px; }
-.reasoning-chevron { display: flex; opacity: 0; transition: opacity 100ms ease; }
+.reasoning-chevron { display: flex; opacity: 0; transition: opacity 120ms ease; }
 .reasoning-head:hover .reasoning-chevron { opacity: 1; }
 .reasoning-head:hover .reasoning-label { color: var(--text); }
 
@@ -823,7 +875,7 @@ kbd {
   border-radius: 6px;
   background: var(--bg-raised);
 }
-.earlier-text { flex: 1; min-width: 0; font-size: 12px; color: var(--text-dim); }
+.earlier-text { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-dim); }
 
 /* The console's own version of the same note. */
 .term-earlier {
@@ -837,7 +889,7 @@ kbd {
 .tool-head-writing:hover { background: transparent; }
 .tool-writing-note {
   flex: none;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-faint);
   white-space: nowrap;
 }
@@ -849,12 +901,12 @@ kbd {
   padding: 0 12px 8px 10px;
   align-items: flex-start;
 }
-.cmd-prompt { color: var(--accent); font-family: var(--mono); font-size: 12px; line-height: 1.55; }
+.cmd-prompt { color: var(--accent); font-family: var(--mono); font-size: 11.5px; line-height: 1.55; }
 .cmd-text {
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.55;
   color: var(--text);
   white-space: pre-wrap;
@@ -911,7 +963,7 @@ kbd {
   font-size: 10.5px;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 110ms ease;
+  transition: opacity 120ms ease;
 }
 .cmd-output-wrap:hover .cmd-copy { opacity: 1; }
 .cmd-copy:hover { color: var(--text); background: var(--bg-hover); }
@@ -925,7 +977,7 @@ kbd {
   background: var(--bg-raised);
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: 11.5px;
   text-align: left;
   cursor: pointer;
 }
@@ -948,7 +1000,7 @@ kbd {
   color: var(--text-faint);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 100ms ease, color 100ms ease;
+  transition: opacity 120ms ease, color 120ms ease;
 }
 .tool-card:hover .tool-open { opacity: 1; }
 .tool-open:hover { color: var(--accent); background: var(--bg-hover); }
@@ -969,7 +1021,7 @@ kbd {
 .tool-preview {
   padding: 0 10px 7px 31px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -993,7 +1045,7 @@ kbd {
   width: 38px;
   padding-right: 8px;
   text-align: right;
-  color: #4d4d57;
+  color: var(--text-ghost);
   user-select: none;
 }
 .diff-sign { flex: none; width: 16px; text-align: center; user-select: none; }
@@ -1004,7 +1056,7 @@ kbd {
 .diff-del { background: var(--red-soft); color: #efc0c1; }
 .diff-del .diff-sign { color: var(--red); }
 .diff-ctx { color: var(--text-faint); }
-.diff-meta { color: #4d4d57; padding-left: 12px; }
+.diff-meta { color: var(--text-ghost); padding-left: 12px; }
 
 .diff-more {
   margin: 4px 0 0 92px;
@@ -1014,12 +1066,12 @@ kbd {
   background: var(--bg-raised);
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: 11.5px;
   cursor: pointer;
 }
 .diff-more:hover { background: var(--bg-hover); color: var(--text); }
 
-.diff-stat { display: flex; gap: 6px; font-family: var(--mono); font-size: 11px; }
+.diff-stat { display: flex; gap: 6px; font-family: var(--mono); font-size: 10.5px; }
 .diff-stat-add { color: var(--green); }
 .diff-stat-del { color: var(--red); }
 
@@ -1097,7 +1149,7 @@ kbd {
   padding: 10px 12px;
   border-top: 1px solid var(--border-soft);
   background: var(--bg-raised);
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 .always-panel .select { max-width: 260px; }
@@ -1127,14 +1179,14 @@ kbd {
   background: transparent;
   color: var(--text-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: pointer;
   text-align: left;
 }
 .todos-head:hover { background: var(--bg-raised); }
 .todos-chevron { display: flex; color: var(--text-faint); }
 .todos-title { font-weight: 550; color: var(--text); }
-.todos-count { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.todos-count { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
 .todos-current {
   flex: 1;
   overflow: hidden;
@@ -1170,18 +1222,18 @@ kbd {
 .problem-strip {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
+  gap: 8px;
   max-width: var(--read);
   margin: 0 auto;
   padding: 8px 6px 8px 11px;
   border: 1px solid var(--yellow);
   border-radius: var(--radius-sm);
   background: rgba(217, 178, 94, 0.09);
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 .problem-icon { display: flex; color: var(--yellow); padding-top: 2px; }
-.problem-list { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; word-break: break-word; }
+.problem-list { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; word-break: break-word; }
 
 /* What a Put back actually did, spoken on the row — success used to be silent and the row
    unchanged, indistinguishable from nothing having happened. */
@@ -1207,10 +1259,10 @@ kbd {
 .composer-shell {
   position: relative;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius);
   background: var(--bg-panel);
   overflow: hidden;
-  transition: border-color 130ms ease, box-shadow 130ms ease;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 .composer-shell:focus-within {
   border-color: var(--accent-line);
@@ -1248,7 +1300,7 @@ kbd {
   display: inline-flex;
   flex: 0 1 auto;
   min-width: 0;
-  gap: 1px;
+  gap: 2px;
   padding: 2px;
   border-radius: 999px;
   background: var(--bg);
@@ -1262,13 +1314,13 @@ kbd {
   flex: 1;
   min-width: 0;
   text-align: right;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.composer-meta kbd { font-size: 9.5px; padding: 0 4px; }
+.composer-meta kbd { padding: 0 4px; }
 .status-live { color: var(--accent); font-family: var(--mono); }
 .status-idle { font-family: var(--mono); }
 
@@ -1307,31 +1359,31 @@ kbd {
 .picker-hint {
   padding: 5px 11px 6px;
   border-top: 1px solid var(--border-soft);
-  font-size: 10.5px;
+  font-size: 11.5px;
   color: var(--text-faint);
 }
-.picker-hint kbd { font-size: 9.5px; padding: 0 4px; }
+.picker-hint kbd { padding: 0 4px; }
 
 /* Files going with the next message. Present only while their `@mention` is still written
    in the box, so deleting the mention is how you take one back. */
 .attach-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 6px;
   max-width: var(--read);
   margin: 0 auto 7px;
 }
 .attach-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   padding: 3px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--bg-panel);
   color: var(--text-dim);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
 }
 .attach-chip .icon { width: 12px; height: 12px; color: var(--accent); }
 .attach-name { max-width: 42ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1346,11 +1398,11 @@ kbd {
   border-left: 2px solid var(--accent-line);
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 .queued-label {
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -1368,7 +1420,7 @@ kbd {
   background: transparent;
   color: var(--text-faint);
   font: inherit;
-  font-size: 11px;
+  font-size: 11.5px;
   padding: 2px 6px;
   border-radius: 4px;
   cursor: pointer;
@@ -1383,7 +1435,7 @@ kbd {
   height: 28px;
   flex: none;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--bg-raised);
   color: var(--text-dim);
   cursor: pointer;
@@ -1427,16 +1479,16 @@ kbd {
   height: 28px;
   flex: none;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--accent);
   color: #1a1207;
   cursor: pointer;
-  transition: background 100ms ease, opacity 100ms ease;
+  transition: background-color 120ms ease, opacity 120ms ease;
 }
 .composer-send:hover:not(:disabled) { background: var(--accent-hover); }
-.composer-send:disabled { opacity: 0.26; cursor: default; }
+.composer-send:disabled { opacity: 0.26; cursor: default; } /* deliberately dimmer than the 0.4 standard: this is the RESTING state whenever the box is empty, and a 0.4-strength accent square would spend the accent on nothing */
 .composer-send-stop { background: var(--red); color: #1a0708; }
-.composer-send-stop:hover { background: #ea7a7d; }
+.composer-send-stop:hover { background: var(--red-hover); }
 
 .mode-chip {
   padding: 3px 9px;
@@ -1445,12 +1497,11 @@ kbd {
   background: transparent;
   color: var(--text-faint);
   font: inherit;
-  font-size: 11px;
+  font-size: 11.5px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 90ms ease, color 90ms ease;
 }
-.mode-chip:hover:not(:disabled) { color: var(--text-dim); }
+.mode-chip:hover:not(:disabled):not(.mode-chip-active) { background: var(--bg-hover); color: var(--text); }
 .mode-chip-active { background: var(--bg-active); color: var(--text); }
 .mode-chip.mode-plan.mode-chip-active { color: var(--blue); }
 .mode-chip.mode-auto-edit.mode-chip-active { color: var(--yellow); }
@@ -1490,9 +1541,8 @@ kbd {
   background: transparent;
   color: var(--text-faint);
   font: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: pointer;
-  transition: color 90ms ease;
 }
 .tab:hover { color: var(--text-dim); }
 .tab-active { color: var(--text); border-bottom-color: var(--accent); }
@@ -1514,7 +1564,7 @@ kbd {
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 10px;
+  font-size: 10.5px;
   font-family: var(--mono);
 }
 
@@ -1531,7 +1581,7 @@ kbd {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: 8px;
   min-height: 150px;
   padding: 24px 26px;
   text-align: center;
@@ -1557,9 +1607,10 @@ kbd {
 .prow-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   min-height: 28px;
   padding: 4px var(--row-pad) 4px 4px;
+  transition: background-color 120ms ease;
 }
 .prow-head:hover { background: var(--bg-raised); }
 
@@ -1634,14 +1685,14 @@ kbd {
   text-transform: uppercase;
   color: var(--text-faint);
 }
-.psection-count { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+.psection-count { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
 /* The path every row in the section shares, said once. Takes the rest of the line and
    truncates from the LEFT, because the end of a path is what identifies it. */
 .psection-sub {
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1671,7 +1722,7 @@ kbd {
   direction: rtl;
   text-align: left;
 }
-.pgroup-meta { flex: none; font-size: 10px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.pgroup-meta { flex: none; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 
 /* files */
 .files-tab { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -1682,7 +1733,7 @@ kbd {
 .tree-row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   width: 100%;
   padding: 2px 8px 2px 0;
   border: none;
@@ -1694,13 +1745,12 @@ kbd {
   white-space: nowrap;
 }
 .tree-row:hover { background: var(--bg-raised); color: var(--text); }
-.tree-row:focus-visible { outline: 1px solid var(--accent-line); outline-offset: -1px; }
 .tree-chevron { display: flex; flex: none; width: 16px; color: var(--text-faint); }
 .tree-icon { display: flex; color: var(--text-faint); }
 .tree-dir .tree-icon { color: var(--blue); opacity: 0.75; }
 .tree-file .tree-icon { color: var(--text-faint); }
-.tree-name { overflow: hidden; text-overflow: ellipsis; }
-.tree-loading, .tree-error { padding: 3px 8px; font-size: 11.5px; color: var(--text-faint); }
+.tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tree-loading, .tree-error, .tree-empty { padding: 3px 8px; font-size: 11.5px; color: var(--text-faint); }
 .tree-error {
   display: block;
   width: 100%;
@@ -1711,7 +1761,7 @@ kbd {
   color: var(--red);
   cursor: pointer;
 }
-.tree-error:focus-visible { outline: 1px solid var(--accent-line); outline-offset: -1px; }
+.tree-error:hover { background: rgba(224, 105, 108, 0.12); }
 
 /* An overlay, not a second half. Splitting the column gave a three-entry tree 40% of the
    height and the file you wanted to read the rest -- with no line numbers, no wrapping and
@@ -1727,7 +1777,7 @@ kbd {
 .preview-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   flex: none;
   padding: 5px 8px 5px 4px;
   border-bottom: 1px solid var(--border-soft);
@@ -1754,7 +1804,7 @@ kbd {
   font-family: var(--mono);
   font-size: 11.5px;
   line-height: 1.55;
-  color: #4d4d57;
+  color: var(--text-ghost);
   background: var(--bg);
   user-select: none;
 }
@@ -1780,7 +1830,7 @@ kbd {
   justify-content: space-between;
   gap: 8px;
   padding: 8px var(--row-pad);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
   font-size: 11.5px;
   color: var(--text-dim);
 }
@@ -1805,8 +1855,8 @@ kbd {
 
 .term-origin {
   padding: 0 5px;
-  border-radius: 3px;
-  font-size: 9.5px;
+  border-radius: 4px;
+  font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -1820,7 +1870,7 @@ kbd {
   overflow: auto;
   border-left: 2px solid var(--border);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.5;
   color: var(--text-dim);
   white-space: pre-wrap;
@@ -1830,19 +1880,21 @@ kbd {
 .terminal-input-row {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   flex: none;
   padding: 7px 8px 7px 12px;
   border-top: 1px solid var(--border-soft);
   background: var(--bg);
+  transition: border-color 120ms ease;
 }
+.terminal-input-row:focus-within { border-top-color: var(--accent-line); }
 .terminal-input {
   flex: 1;
   border: none;
   background: transparent;
   color: var(--text);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11.5px;
   outline: none;
   min-width: 0;
 }
@@ -1858,7 +1910,7 @@ kbd {
   padding: 0 12px;
   background: var(--bg-panel);
   border-top: 1px solid var(--border-soft);
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-faint);
   user-select: none;
 }
@@ -1893,7 +1945,7 @@ kbd {
   white-space: nowrap;
 }
 .status-spacer { flex: 1; }
-.status-private { display: flex; align-items: center; gap: 5px; }
+.status-private { display: flex; align-items: center; gap: 6px; }
 .status-private .icon { width: 11px; height: 11px; }
 
 /* ------------------------------------------------------------- welcome and modal ----- */
@@ -1904,7 +1956,7 @@ kbd {
   max-width: 420px;
   padding: 28px 30px 30px;
   border: 1px solid var(--border-soft);
-  border-radius: 16px;
+  border-radius: var(--radius);
   background: var(--bg-panel);
 }
 /* `transform: scale()` on a block-level flex container scales the BOX, not just the glyph:
@@ -1914,7 +1966,7 @@ kbd {
 .welcome-logo .icon { width: 28px; height: 28px; }
 .welcome-logo-bad { color: var(--red); }
 .welcome-card h1 { margin: 0; font-size: 20px; font-weight: 600; }
-.welcome-sub { margin: 6px 0 8px; color: var(--text-dim); font-size: 13px; }
+.welcome-sub { margin: 6px 0 8px; color: var(--text-dim); font-size: 12.5px; }
 .welcome-wait { color: var(--text-faint); font-size: 12.5px; }
 
 .agent-stderr {
@@ -1926,7 +1978,7 @@ kbd {
   border-radius: var(--radius-sm);
   background: var(--bg);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.5;
   color: var(--red);
   white-space: pre-wrap;
@@ -1968,11 +2020,11 @@ kbd {
   overflow-y: auto;
   padding: 16px 20px 22px;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius);
   background: var(--bg-panel);
   box-shadow: var(--shadow-overlay);
 }
-.modal-head { display: flex; align-items: center; justify-content: space-between; font-size: 14px; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; font-size: 13.5px; }
 .modal-primary { width: 100%; justify-content: center; margin-top: 20px; height: 32px; }
 
 /* ----------------------------------------------------------------------- markdown ---- */
@@ -2003,13 +2055,13 @@ kbd {
 .md hr { border: none; border-top: 1px solid var(--border-soft); margin: 16px 0; }
 .md code {
   font-family: var(--mono);
-  font-size: 0.9em;
+  font-size: 0.85em;
   padding: 1px 5px;
   border-radius: 4px;
   background: var(--bg-raised);
   color: #e6c9b6;
 }
-.md-href { color: var(--text-faint); font-size: 0.9em; }
+.md-href { color: var(--text-faint); font-size: 11.5px; }
 
 .md table { border-collapse: collapse; margin: 0 0 12px; font-size: 12.5px; display: block; overflow-x: auto; }
 .md th, .md td { border: 1px solid var(--border-soft); padding: 5px 9px; text-align: left; }
@@ -2036,7 +2088,7 @@ kbd {
   background: transparent;
   color: var(--text-faint);
   font: inherit;
-  font-size: 11px;
+  font-size: 11.5px;
   padding: 2px 7px;
   border-radius: 4px;
   cursor: pointer;
@@ -2068,7 +2120,7 @@ kbd {
 }
 .shot figcaption {
   margin-top: 6px;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-dim);
 }
 
@@ -2091,14 +2143,14 @@ kbd {
   gap: 8px;
 }
 .mcp-name { font-weight: 600; }
-.mcp-state { font-size: 11px; color: var(--text-dim); }
+.mcp-state { font-size: 11.5px; color: var(--text-dim); }
 .mcp-failed { border-color: var(--red); }
 .mcp-failed .mcp-state { color: var(--red); }
 /* The reason a server failed is usually a missing token or a command that is not on PATH.
    Both are one edit away from fixed -- once you can read them, whole and unwrapped. */
 .mcp-problem {
   margin: 6px 0 0;
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.4;
   color: var(--text-dim);
   white-space: pre-wrap;
@@ -2115,7 +2167,7 @@ kbd {
   border: 1px solid var(--border-soft);
   border-radius: 6px;
   background: var(--bg-raised);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 .link-button {
   background: none;
@@ -2126,12 +2178,13 @@ kbd {
   text-decoration: underline;
   font: inherit;
 }
+.link-button:hover { color: var(--accent-hover); }
 
 .ckpt-when {
   margin-right: 8px;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-faint);
 }
 
@@ -2143,7 +2196,7 @@ kbd {
   padding: 8px;
   border: 1px solid var(--red);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.45;
 }
 .ckpt-confirm p { margin: 0 0 6px; }
@@ -2152,11 +2205,11 @@ kbd {
 /* `.btn-danger` is declared once, with the controls at the top of this file. A second
    declaration lived here and quietly won, which is how the one destructive button in the
    app lost its red. */
-.btn-small { padding: 2px 8px; font-size: 11px; height: 22px; }
+.btn-small { padding: 2px 8px; font-size: 11.5px; height: 22px; }
 
-.history-log-body { font-size: 12px; }
-.history-log-body h1 { font-size: 13px; }
-.history-log-body h2 { font-size: 12px; margin-top: 12px; }
+.history-log-body { font-size: 12.5px; }
+.history-log-body h1 { font-size: 13.5px; }
+.history-log-body h2 { font-size: 12.5px; margin-top: 12px; }
 
 /* --- parked decisions ----------------------------------------------------------------- */
 
@@ -2170,6 +2223,7 @@ kbd {
   color: inherit;
   text-align: left;
 }
+.decisions-head:hover { background: var(--bg-raised); }
 .decisions-body { display: flex; flex-direction: column; gap: 10px; padding: 8px 0 0; }
 .decision {
   border: 1px solid var(--border-soft);
@@ -2178,11 +2232,11 @@ kbd {
   background: var(--bg-raised);
 }
 .decision-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
-.decision-when { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 11px; }
-.decision-title { flex: 1; font-size: 12px; font-weight: 600; }
+.decision-when { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 11.5px; }
+.decision-title { flex: 1; font-size: 12.5px; font-weight: 600; }
 .decision-detail {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.4;
   color: var(--text-dim);
   white-space: pre-wrap;
@@ -2249,7 +2303,7 @@ kbd {
 
 /* The one place a session's own change can be undone on its own. Deliberately reached
    through a second click and never offered on a failed write, which changed nothing. */
-.revert-box { font-size: 12px; line-height: 1.45; }
+.revert-box { font-size: 12.5px; line-height: 1.45; }
 .revert-box p { margin: 0 0 8px; }
 .revert-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .revert-actions .input { flex: 1; min-width: 150px; }
@@ -2262,7 +2316,7 @@ kbd {
   margin-top: 12vh;
   align-self: flex-start;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius);
   background: var(--bg-panel);
   box-shadow: var(--shadow-overlay);
   overflow: hidden;
@@ -2276,7 +2330,7 @@ kbd {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 14px;
+  font-size: 13.5px;
   outline: none;
 }
 .palette-input::placeholder { color: var(--text-faint); }
@@ -2285,7 +2339,7 @@ kbd {
 .palette-item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
   padding: 7px 14px;
   border: none;
@@ -2315,7 +2369,7 @@ kbd {
   flex: none;
   margin-left: auto;
   padding-left: 10px;
-  font-size: 10px;
+  font-size: 10.5px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -2368,14 +2422,14 @@ kbd {
 }
 .folder-path {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .folder-git {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-dim);
 }
 .folder-add {
@@ -2386,7 +2440,7 @@ kbd {
 .folder-add .input { flex: 1; }
 .folder-note {
   margin: 0;
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.5;
   color: var(--text-dim);
 }
@@ -2405,7 +2459,7 @@ kbd {
   padding: 8px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-raised);
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 .viewing-icon { color: var(--accent); flex: none; display: flex; }
@@ -2419,7 +2473,7 @@ kbd {
   border-radius: 4px;
   background: var(--bg-active);
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: 10.5px;
   letter-spacing: 0.02em;
 }
 .rail-item-live-busy {
@@ -2460,7 +2514,7 @@ kbd {
 .compaction-toggle {
   flex: none;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 11.5px;
 }
 .compaction-head:hover .compaction-toggle { color: var(--accent); }
 .compaction-body {
@@ -2471,7 +2525,7 @@ kbd {
 .compaction-note {
   margin-bottom: 6px;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 11.5px;
 }
 .compaction-summary {
   margin: 0;
@@ -2497,7 +2551,7 @@ kbd {
    thing here — a mode grants far more than any rule does, and a list of three `allow` entries
    under autopilot would understate the answer badly.
    --------------------------------------------------------------------------------------- */
-.perms { display: flex; flex-direction: column; gap: 14px; }
+.perms { display: flex; flex-direction: column; gap: 12px; }
 
 .perms-mode {
   display: flex;
@@ -2513,13 +2567,13 @@ kbd {
 .perms-mode-warn { border-color: var(--accent-line); background: var(--accent-soft); }
 .perms-mode-icon { flex: none; display: flex; color: var(--text-dim); margin-top: 1px; }
 .perms-mode-warn .perms-mode-icon { color: var(--accent); }
-.perms-mode-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.perms-mode-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
 .perms-mode-detail { font-size: 11.5px; line-height: 1.5; color: var(--text-dim); margin-top: 2px; }
 
 .perms-layer { display: flex; flex-direction: column; }
 .perms-layer-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .perms-layer-title {
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -2541,7 +2595,7 @@ kbd {
   direction: rtl;
 }
 .perms-layer-detail {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-faint);
   margin: 2px 0 4px;
 }
@@ -2550,7 +2604,7 @@ kbd {
    entries interleave in one file and a reader must never have to count headings to tell a
    restriction from a grant. */
 .rule-tag {
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.03em;
   padding: 1px 6px;
@@ -2597,8 +2651,8 @@ kbd {
 
 .run-banner-body { flex: 1; min-width: 0; }
 .run-banner-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.run-banner-state { font-size: 12px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
-.run-banner-parked { font-size: 11px; color: var(--accent); }
+.run-banner-state { font-size: 12.5px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.run-banner-parked { font-size: 11.5px; color: var(--accent); }
 /* The task verbatim, clamped: it distinguishes "it is working" from "it is working on the
    wrong thing", and three lines is enough to tell. */
 .run-banner-task {
@@ -2641,8 +2695,8 @@ kbd {
 .run-config-fields { display: flex; gap: 8px; }
 .run-config-field { flex: 1; display: flex; flex-direction: column; gap: 4px; }
 .run-config-field span { font-size: 10.5px; font-weight: 600; color: var(--text-dim); }
-.input-small { height: 26px; padding: 2px 8px; font-size: 12px; }
-.run-config-hint { font-size: 10.5px; line-height: 1.5; color: var(--text-faint); margin-top: 8px; }
+.input-small { height: 26px; padding: 2px 8px; font-size: 12.5px; }
+.run-config-hint { font-size: 11.5px; line-height: 1.5; color: var(--text-faint); margin-top: 8px; }
 .run-config-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 
 /* ---------------------------------------------------------------------------------------
@@ -2692,7 +2746,7 @@ kbd {
 }
 .modal-tab {
   padding: 6px 12px 7px;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text-dim);
   border: none;
@@ -2716,12 +2770,12 @@ kbd {
 .skills { display: flex; flex-direction: column; gap: 4px; }
 .skills-scope {
   flex: none;
-  font-size: 10px;
+  font-size: 10.5px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-faint);
 }
-.skills-description { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+.skills-description { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
 .skills-path {
   min-width: 0;
   font-family: var(--mono);
@@ -2734,7 +2788,7 @@ kbd {
   direction: rtl;
   text-align: left;
 }
-.skills-files { margin-top: 3px; font-size: 11px; color: var(--text-faint); }
+.skills-files { margin-top: 3px; font-size: 11.5px; color: var(--text-faint); }
 .skills-dir { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 
 /* The MCP editor, VS Code's way: the JSON document itself. The textarea is the whole
@@ -2742,7 +2796,7 @@ kbd {
    anticipated. */
 .mcp-editor { display: flex; flex-direction: column; gap: 8px; }
 .mcp-editor-pathrow { display: flex; align-items: baseline; gap: 8px; }
-.mcp-editor-key { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+.mcp-editor-key { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
 .mcp-editor-path {
   flex: 1;
   min-width: 0;
@@ -2760,7 +2814,7 @@ kbd {
   min-height: 180px;
   resize: vertical;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.5;
   color: var(--text);
   background: var(--bg);
@@ -2776,7 +2830,7 @@ kbd {
 .mcp-editor-status {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2792,7 +2846,7 @@ kbd {
 }
 .changes-reviewed-toggle {
   align-self: flex-start;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-dim);
   background: none;
   border: none;

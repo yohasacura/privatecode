@@ -69,7 +69,7 @@ function FileRow({
       title={file.path}
       meta={label(file)}
     >
-      {diff === null ? <div class="panel-placeholder">loading…</div> : <DiffView content={diff} dense />}
+      {diff === null ? <div class="panel-placeholder loading-quiet">loading…</div> : <DiffView content={diff} dense />}
     </PanelRow>
   )
 }

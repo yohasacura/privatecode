@@ -707,7 +707,7 @@ function Screenshot({ path, client }: { path: string; client: ProtocolClient }):
     return () => { cancelled = true }
   }, [client, path])
 
-  if (state.kind === 'loading') return <div class="tool-preview">loading {path}…</div>
+  if (state.kind === 'loading') return <div class="tool-preview loading-quiet">loading {path}…</div>
   if (state.kind === 'error') return <div class="tool-preview">could not show {path}: {state.why}</div>
   return (
     <figure class="shot">
