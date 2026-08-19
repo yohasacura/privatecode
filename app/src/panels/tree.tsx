@@ -535,7 +535,9 @@ function DirChildren({
         return (
           <button
             key={`ghost:${g.path}`}
-            class="tree-row tree-file tree-ghost"
+            // A staged deletion is as much "chosen for the commit" as a staged edit —
+            // the ghost row wears the same highlight the living rows do.
+            class={`tree-row tree-file tree-ghost${mark?.staged === true ? ' tree-row-staged' : ''}`}
             style={{ paddingLeft: `${depth * 12 + 6}px` }}
             title={`${g.path} — deleted; click for the diff`}
             onClick={() => onOpenDiff?.(g.path)}
