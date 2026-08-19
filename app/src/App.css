@@ -1166,7 +1166,9 @@ kbd {
   border-bottom: 1px solid var(--border-soft);
   background: var(--bg-panel);
 }
-/* The card's dismiss, floated over the head's top-right corner. */
+/* The card's dismiss, floated over the head's top-right corner. The head reserves the
+ * corner for it — without the padding the progress bar ran underneath the ✕. */
+.todos .todos-head { padding-right: 34px; }
 .todos-clear {
   position: absolute; top: 5px; right: 8px;
   background: none; border: none; cursor: pointer;

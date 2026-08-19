@@ -114,6 +114,45 @@ describe('a call abandoned mid-write', () => {
   })
 })
 
+describe('what a restored transcript makes of its assistant entries', () => {
+  it('turns the interrupted marker back into the flag it stands for', () => {
+    const state = run([{
+      type: 'transcript-restored',
+      entries: [
+        { kind: 'user', text: 'сделай' },
+        { kind: 'assistant', text: 'Начал, но…\n[interrupted by the user before this reply finished]' },
+      ],
+    }])
+    const a = state.items.find((i) => i.kind === 'assistant')
+    expect(a?.kind === 'assistant' && a.text).toBe('Начал, но…')
+    expect(a?.kind === 'assistant' && a.interrupted).toBe(true)
+  })
+
+  it('keeps BOTH of two consecutive assistant messages — a continuation is not a duplicate', () => {
+    // The old dedup dropped the second the moment any assistant item was last, which on
+    // replay swallowed every truncated-then-continued reply while browsing old chats.
+    const state = run([{
+      type: 'transcript-restored',
+      entries: [
+        { kind: 'user', text: 'задача' },
+        { kind: 'assistant', text: 'первая половина ответа' },
+        { kind: 'assistant', text: 'и вторая половина' },
+      ],
+    }])
+    expect(state.items.filter((i) => i.kind === 'assistant').map((i) => i.kind === 'assistant' ? i.text : ''))
+      .toEqual(['первая половина ответа', 'и вторая половина'])
+  })
+
+  it('still drops the live path\'s genuine duplicate — same text, streamed then announced', () => {
+    const state = run([
+      { type: 'turn-started' },
+      { type: 'text.delta', text: 'весь ответ целиком' },
+      { type: 'assistant.text', text: 'весь ответ целиком' },
+    ])
+    expect(state.items.filter((i) => i.kind === 'assistant')).toHaveLength(1)
+  })
+})
+
 describe('a server-death retry inside the step', () => {
   // llama.cpp died mid-generation, the watchdog relaunched it, and the loop re-sends the
   // identical request. The retry re-streams the same generation from the start, so the

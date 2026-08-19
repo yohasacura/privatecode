@@ -354,7 +354,7 @@ export type ChatAction =
    * Optional throughout: a caller with no clock (a test) gets the same transcript, minus
    * the "thought for 12s" duration. */
   | { type: 'text.delta'; text: string; atMs?: number }
-  | { type: 'assistant.text'; text: string; atMs?: number }
+  | { type: 'assistant.text'; text: string; atMs?: number; interrupted?: boolean }
   /** A tool call arriving as it is written: `name` opens the card, `args` fragments fill it.
    * See the `tool` ChatItem's `writing`. */
   | { type: 'tool.call.delta'; index: number; name?: string; args?: string; atMs?: number }
@@ -536,7 +536,17 @@ function restoreAction(entry: TranscriptEntry): ChatAction {
     case 'tool-call': return { type: 'tool.call', name: entry.name, args: entry.args }
     case 'tool-result':
       return { type: 'tool.result', name: entry.name, ok: entry.ok, content: entry.content }
-    case 'assistant': return { type: 'assistant.text', text: entry.text }
+    case 'assistant': {
+      // The core glues this literal marker onto an aborted reply's partial text (see
+      // loop.ts appendInterrupted) — it is transcript DATA, not something the model
+      // wrote. Live, the abort marks the open item `interrupted` and the marker is never
+      // seen; on replay the flag was lost and the bracket text rendered as-is in the
+      // middle of the conversation. Stripped back into the flag it stands for.
+      const stripped = entry.text.replace(/\n?\[interrupted by the user before this reply finished\]$/, '')
+      return stripped === entry.text
+        ? { type: 'assistant.text', text: entry.text }
+        : { type: 'assistant.text', text: stripped, interrupted: true }
+    }
     case 'compaction':
       return {
         type: 'compaction-restored',
@@ -737,11 +747,19 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 
     case 'assistant.text': {
       // Mirrors render.ts's onAssistantText: if this step's content already streamed via
-      // text.delta (there is already an assistant item open), the whole-string event
-      // duplicates it -- ignored rather than appended again.
-      if (lastAssistantItem(state.items)) return state
+      // text.delta, the whole-string event duplicates it — ignored rather than appended
+      // again. By TEXT equality, not by "any assistant item is last": a restored
+      // transcript folds through this same case, and there two consecutive assistant
+      // entries are two real messages (a truncated reply and its continuation, an
+      // interrupted partial and the next answer) — the old any-last check silently
+      // swallowed the second one every time an old chat was opened.
+      const last = lastAssistantItem(state.items)
+      if (last && last.text === action.text) return state
       const items = closeThinking(state.items, action.atMs)
-      const item: ChatItem = { kind: 'assistant', id: state.nextId, text: action.text, interrupted: false }
+      const item: ChatItem = {
+        kind: 'assistant', id: state.nextId, text: action.text,
+        interrupted: action.interrupted ?? false,
+      }
       return { ...state, items: [...items, item], nextId: state.nextId + 1 }
     }
 
