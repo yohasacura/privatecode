@@ -7,37 +7,21 @@ const LONG_VAGUE =
   'порядок там где это возможно, чтобы дальше было проще жить и развивать этот код.'
 
 describe('commandShaped — the expander\'s input gate', () => {
-  it('matches a rough imperative command in either language', () => {
+  it('accepts commands, questions and rough phrases alike — the owner\'s order', () => {
     expect(commandShaped('сделай красную кнопку в шапке')).toBe(true)
-    expect(commandShaped('кнопку в шапке сделай красной')).toBe(true)
     expect(commandShaped('fix the login redirect loop')).toBe(true)
+    // The exact draft the first, stricter gate skipped — a question IS an improvable
+    // request: «такое тоже должно улучшаться, а не просто пропускать».
+    expect(commandShaped('Дай мне KQL сколько запросов мы делаем ?')).toBe(true)
+    expect(commandShaped('красная кнопка в шапке')).toBe(true)
   })
 
-  it('stays out of questions, reports and chatter', () => {
-    // «сделать» is not an imperative — a question about how is not an order to do.
-    expect(commandShaped('как сделать красную кнопку?')).toBe(false)
-    expect(commandShaped('я вчера добавил кнопку и всё сломалось')).toBe(false)
-    expect(commandShaped('спасибо, отличная работа')).toBe(false)
-    // A `?` anywhere is a question, whatever vocabulary it uses.
-    expect(commandShaped('сделай красную кнопку?')).toBe(false)
-  })
-
-  it('does not mistake English nouns and CLI names for orders', () => {
-    // English has no imperative form, so a verb counts only when it OPENS the draft
-    // and is followed by a Latin word — reports about fix/build/update stay out.
-    expect(commandShaped('how do I make a red button')).toBe(false)
-    expect(commandShaped('did the fix work')).toBe(false)
-    expect(commandShaped('npm run build падает с ошибкой')).toBe(false)
-    expect(commandShaped('этот fix не помог, стало хуже')).toBe(false)
-    expect(commandShaped('что делает git add -p ?')).toBe(false)
-    expect(commandShaped('fix-login.ts глянь пожалуйста')).toBe(false)
-    expect(commandShaped('make выдаёт ошибку линкера')).toBe(false)
-    expect(commandShaped('посмотри на add_user.py, почему падает')).toBe(false)
-  })
-
-  it('leaves the ends of the spectrum to their own tools', () => {
-    // Too short to mean anything; long enough that the chips distiller owns it.
+  it('leaves out only what cannot carry intent', () => {
+    // Too short to mean anything; a slash command is the window's, not the model's;
+    // a long task-shaped draft belongs to the chips distiller.
     expect(commandShaped('сделай')).toBe(false)
+    expect(commandShaped('ок, спасибо')).toBe(false)
+    expect(commandShaped('/compact пожалуйста')).toBe(false)
     expect(commandShaped(`сделай так: ${'подробности '.repeat(20)}`)).toBe(false)
   })
 })
@@ -51,16 +35,16 @@ describe('prompt lint', () => {
   it('a long vague draft earns all three hints', () => {
     const hints = lintPrompt(LONG_VAGUE)
     expect(hints).toHaveLength(3)
-    expect(hints[0]).toMatch(/файл/)
-    expect(hints[1]).toMatch(/готовности/)
-    expect(hints[2]).toMatch(/ограничени/)
+    expect(hints[0]).toMatch(/file/)
+    expect(hints[1]).toMatch(/done criterion/)
+    expect(hints[2]).toMatch(/constraints/)
   })
 
   it('each hint disappears the moment the draft covers the point', () => {
     expect(lintPrompt(`${LONG_VAGUE} Начни с src/boot.ts.`)).toHaveLength(2)
     expect(lintPrompt(`${LONG_VAGUE} Готово, когда все тесты проходят.`)).toEqual([
-      'Не назван ни один файл — агент будет искать сам',
-      'Нет ограничений — агент сам решит, что можно трогать',
+      'No file named — the agent will go looking on its own',
+      'No constraints — the agent decides what it may touch',
     ])
     expect(lintPrompt(`${LONG_VAGUE} Тесты в tests/app.test.ts должны проходить, не трогай публичный API.`))
       .toEqual([])

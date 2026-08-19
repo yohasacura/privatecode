@@ -27,35 +27,20 @@ export function lintShaped(text: string): boolean {
   return t.length >= 120 && t.split(/[.!?\n]+/).filter((s) => s.trim().length > 0).length >= 2
 }
 
-/** Imperative openers, the shape of a rough command. Russian carries the imperative in
- * the word form («сделай», never «сделать»), so those may sit anywhere near the start;
- * English has no such marker — bare `fix`/`build`/`update` are nouns all over bug
- * reports — so an English verb counts only when it OPENS the draft and is followed by a
- * Latin word («make выдаёт ошибку» is a report about make, not an order). Hand-rolled
- * boundaries, because `\b` is ASCII-only and never fires next to a Cyrillic letter;
- * digits, `_` and `-` count as word characters so `add_user.py` and `fix-login.ts` stay
- * file names, not orders. */
-const RU_IMPERATIVE =
-  /(?:^|[^0-9a-zа-яё_-])(сделай|добавь|поправь|почини|исправь|создай|напиши|убери|удали|переделай|обнови|замени|поменяй|вынеси|перенеси|настрой|подключи|запусти|покрась|отрефактори)(?=[^0-9a-zа-яё_-]|$)/i
-const EN_IMPERATIVE =
-  /^\s*(make|add|fix|create|write|update|remove|delete|refactor|implement|build|change|rename|move|wire|style)\s+["'`(]?[a-z]/i
-
 /**
- * The EXPANDER's input shape: a rough short command — «сделай красную кнопку» — that a
- * person could have briefed in detail but did not. Deliberately disjoint from
- * `taskShaped`: a draft that long already gets the chips, and running both would race
- * two model requests over one slot. The Russian verb must land within the opening
- * stretch of the FULL string (an index check, not a slice — cutting mid-word once turned
- * «обновит» into a match for «обнови»), and a draft containing `?` is never a command:
- * questions are the false positive every other heuristic here trips over.
+ * The EXPANDER's input shape — and by the owner's direct order it is WIDE: «улучшение
+ * промта должно быть даже на одном предложении или паре слов». A first cut matched only
+ * imperative verbs and rejected questions, and it skipped exactly the drafts the user
+ * wanted grown («Дай мне KQL сколько запросов мы делаем?»). So: anything long enough to
+ * carry intent qualifies, questions included — the model decides whether there is
+ * something to add, and the preview costs one click to ignore. Still disjoint from
+ * `taskShaped` (a long draft gets the chips instead), still never a slash command, and
+ * twelve characters keeps «ок», «спасибо» and their kin out.
  */
 export function commandShaped(text: string): boolean {
   const t = text.trim()
   if (t.length < 12 || taskShaped(t)) return false
-  if (t.includes('?')) return false
-  const ru = RU_IMPERATIVE.exec(t)
-  if (ru !== null && ru.index < 48) return true
-  return EN_IMPERATIVE.test(t)
+  return !/^\/[a-z0-9-]/i.test(t)
 }
 
 /**
@@ -124,17 +109,21 @@ export function glueSuggestions(
     .filter((x): x is string => x !== null)
   if (criteria.length === 0 && constraints.length === 0 && answered.length === 0) return draft
 
+  // The glued block is MESSAGE content, not window chrome: its headers follow the
+  // draft's language, because Russian criteria under English headers (or the reverse)
+  // read as a tool malfunction inside the user's own message.
+  const ru = /[а-яё]/i.test(draft)
   const parts: string[] = [draft.trimEnd()]
   if (criteria.length > 0) {
-    parts.push('', 'Критерии готовности:')
+    parts.push('', ru ? 'Критерии готовности:' : 'Done criteria:')
     criteria.forEach((c, i) => parts.push(`${i + 1}. ${c}`))
   }
   if (constraints.length > 0) {
-    parts.push('', 'Ограничения:')
+    parts.push('', ru ? 'Ограничения:' : 'Constraints:')
     for (const c of constraints) parts.push(`- ${c}`)
   }
   if (answered.length > 0) {
-    parts.push('', 'Уточнения:')
+    parts.push('', ru ? 'Уточнения:' : 'Clarifications:')
     for (const a of answered) parts.push(`- ${a}`)
   }
   return parts.join('\n')
@@ -144,13 +133,13 @@ export function lintPrompt(text: string): string[] {
   if (!lintShaped(text)) return []
   const hints: string[] = []
   if (!NAMES_A_FILE.test(text)) {
-    hints.push('Не назван ни один файл — агент будет искать сам')
+    hints.push('No file named — the agent will go looking on its own')
   }
   if (!NAMES_A_DONE_CRITERION.test(text)) {
-    hints.push('Нет критерия готовности — непонятно, когда задача сделана')
+    hints.push('No done criterion — unclear when the task is finished')
   }
   if (!NAMES_A_CONSTRAINT.test(text)) {
-    hints.push('Нет ограничений — агент сам решит, что можно трогать')
+    hints.push('No constraints — the agent decides what it may touch')
   }
   return hints
 }

@@ -617,7 +617,7 @@ export function Composer({
         } else if (!auto) {
           // A manual Ctrl+E deserves an answer even when it is "nothing": silence here
           // read as the button being broken. Auto stays quiet — that is its whole point.
-          setImproveNote('улучшателю нечего добавить')
+          setImproveNote('nothing to add')
           setTimeout(() => setImproveNote(null), 4_000)
         }
       })
@@ -657,7 +657,7 @@ export function Composer({
           setAnswers(new Map())
           setOpenQuestion(null)
         } else if (!auto) {
-          setImproveNote('модель не добавила деталей')
+          setImproveNote('the model added no detail')
           setTimeout(() => setImproveNote(null), 4_000)
         }
       })
@@ -1090,7 +1090,7 @@ export function Composer({
                 key={`c:${c}`}
                 class={accepted.has(`c:${c}`) ? 'prompt-suggest prompt-suggest-on' : 'prompt-suggest'}
                 aria-pressed={accepted.has(`c:${c}`)}
-                title={`Критерий готовности — уйдёт вместе с сообщением:
+                title={`Done criterion — travels with the message:
 ${c}`}
                 onClick={() => {
                   setAccepted((prev) => {
@@ -1110,7 +1110,7 @@ ${c}`}
                 key={`k:${c}`}
                 class={accepted.has(`k:${c}`) ? 'prompt-suggest prompt-suggest-on' : 'prompt-suggest'}
                 aria-pressed={accepted.has(`k:${c}`)}
-                title={`Ограничение — уйдёт вместе с сообщением:
+                title={`Constraint — travels with the message:
 ${c}`}
                 onClick={() => {
                   setAccepted((prev) => {
@@ -1130,9 +1130,9 @@ ${c}`}
                 <button
                   class={answers.get(q)?.trim() ? 'prompt-suggest prompt-suggest-on' : 'prompt-suggest prompt-question'}
                   title={answers.get(q)?.trim()
-                    ? `Уйдёт как уточнение:
+                    ? `Travels as a clarification:
 ${q} — ${answers.get(q)}`
-                    : `Вопрос улучшателя — уйдёт только вместе с твоим ответом:
+                    : `The improver's question — travels only with your answer:
 ${q}`}
                   onClick={() => setOpenQuestion((cur) => cur === q ? null : q)}
                 >
@@ -1142,7 +1142,7 @@ ${q}`}
                   <input
                     class="input input-small prompt-question-input"
                     value={answers.get(q) ?? ''}
-                    placeholder="ответ…"
+                    placeholder="answer…"
                     // eslint-disable-next-line jsx-a11y/no-autofocus
                     autoFocus
                     onInput={(e) => {
@@ -1156,7 +1156,7 @@ ${q}`}
             ))}
             <button
               class="prompt-hint-improve"
-              title="Скрыть предложения — черновик уйдёт как есть"
+              title="Dismiss the suggestions — the draft goes as typed"
               onClick={() => { setSuggested(null); setOpenQuestion(null); textareaRef.current?.focus() }}
             >
               {Icon.x()}
@@ -1184,11 +1184,11 @@ ${q}`}
                   textareaRef.current?.focus()
                 }}
               >
-                Принять — заменить черновик
+                Accept — replace the draft
               </button>
               <button
                 class="prompt-hint-improve"
-                title="Скрыть — черновик уйдёт как есть"
+                title="Dismiss — the draft goes as typed"
                 onClick={() => { setExpandPreview(null); textareaRef.current?.focus() }}
               >
                 {Icon.x()}
@@ -1206,10 +1206,10 @@ ${q}`}
               onClick={() => improveOrExpand()}
               disabled={improving}
               title={taskShaped(input)
-                ? 'Предложить критерии и ограничения к черновику (Ctrl+E)'
-                : 'Развернуть команду в детальный промпт по материалам проекта (Ctrl+E)'}
+                ? 'Suggest criteria and constraints for the draft (Ctrl+E)'
+                : 'Expand into a detailed prompt grounded in this project (Ctrl+E)'}
             >
-              {improving ? 'Думаю…' : taskShaped(input) ? 'Improve (Ctrl+E)' : 'Развернуть (Ctrl+E)'}
+              {improving ? 'Thinking…' : taskShaped(input) ? 'Improve (Ctrl+E)' : 'Expand (Ctrl+E)'}
             </button>
           </div>
         )}

@@ -905,6 +905,15 @@ export class Session {
     if (clean && current.stoppedBecause === 'done' && this.lastUnmetCount === 0) {
       contract.satisfied = true
       this.opts.store?.saveMeta(this.meta)
+      // The plan retires WITH the task — watched live: a finished task left a 6/6 card
+      // on screen with no way to dismiss it, over a plan the model had no reason to
+      // touch again. The store empties (plan.json included) so the card disappears and
+      // the next task seeds a fresh plan instead of refusing to clobber a dead one.
+      const todoStore = this.opts.toolset.todos
+      if (todoStore !== undefined && todoStore.list().length > 0) {
+        todoStore.set([])
+        this.opts.interaction?.todosChanged?.(todoStore.list())
+      }
     }
     return current
   }

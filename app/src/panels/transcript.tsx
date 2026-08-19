@@ -184,7 +184,12 @@ export function Transcript({
         </div>
       )}
 
-      {viewing === null && <TodosCard todos={state.todos} />}
+      {viewing === null && (
+        <TodosCard
+          todos={state.todos}
+          onClear={() => { void client.call('todos.clear', {}).catch(() => { /* already gone */ }) }}
+        />
+      )}
 
       <div class="transcript" ref={scrollRef}>
         {hidden > 0 && (

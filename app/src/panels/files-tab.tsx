@@ -6,7 +6,7 @@ import type { ChatItem } from '../lib/state'
 import { highlight } from '../lib/highlight'
 import { Icon } from '../components/icons'
 import { PanelError } from '../components/panel'
-import { TreePanel } from './tree'
+import { TreePanel, type MountActions, type MountInfo } from './tree'
 
 /**
  * Files tab: the workspace tree, and — over the whole of it — whatever file you opened.
@@ -75,7 +75,7 @@ function PathLabel({ path }: { path: string }): VNode {
 }
 
 export function FilesTab({
-  client, toolItems, openPath, onOpenFile, workspaceRoot, decor,
+  client, toolItems, openPath, onOpenFile, workspaceRoot, decor, mounts, mountActions,
 }: {
   client: ProtocolClient
   toolItems: ChatItem[]
@@ -85,6 +85,9 @@ export function FilesTab({
   workspaceRoot: string
   /** Session-change badges for the unified Workspace view; absent = plain Files. */
   decor?: ChangeDecor
+  /** Inline workspace management on the tree's own rows; absent = read-only tree. */
+  mounts?: MountInfo[]
+  mountActions?: MountActions
 }): VNode {
   const [preview, setPreview] = useState<Preview | null>(null)
   const [wrap, setWrap] = useState(false)
@@ -146,6 +149,8 @@ export function FilesTab({
           onOpenFile={onOpenFile}
           workspaceRoot={workspaceRoot}
           decor={decor}
+          {...(mounts !== undefined ? { mounts } : {})}
+          {...(mountActions !== undefined ? { mountActions } : {})}
         />
       </div>
 

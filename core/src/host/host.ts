@@ -450,6 +450,7 @@ export class SessionHost {
       case 'jobs.list': return this.jobsList()
       case 'jobs.stop': return this.jobsStop(params as JobsStopParams)
       case 'terminal.run': return this.terminalRun(params as TerminalRunParams)
+      case 'todos.clear': return this.todosClear()
       case 'config.get': return this.configGet()
       case 'config.set': return this.configSet(params as ConfigSetParams)
       case 'checkpoints.list': return this.checkpointsList(params as CheckpointsListParams)
@@ -588,7 +589,7 @@ export class SessionHost {
       // when the init reply lands and re-delivers only `result.problems`, so an event
       // emitted before the reply is wiped before anyone can read it (App.tsx documents the
       // same wipe for every other init-time problem).
-      result.problems.push(`Workspace открывался медленно: ${detail}. Это диагностика, не ошибка.`)
+      result.problems.push(`The workspace opened slowly: ${detail}. Diagnostics, not an error.`)
       process.stderr.write(`host: slow init phases: ${detail}
 `)
     }
@@ -1892,6 +1893,18 @@ export class SessionHost {
    * growing a second process manager, which also means `shutdown()`'s `stopAll()` already
    * covers it -- a terminal command cannot outlive the app.
    */
+  /** The Plan card's dismiss: the USER retiring a plan the harness had no reason to —
+   * watched live, a finished-but-ungated task left an unclosable 6/6 card. Empties the
+   * store (plan.json included) and announces it, so the card disappears everywhere. */
+  private todosClear(): Record<string, never> {
+    const { toolset } = this.requireInitialized()
+    if (toolset.todos.list().length > 0) {
+      toolset.todos.set([])
+      this.emit('todos', { items: [] })
+    }
+    return {}
+  }
+
   private terminalRun(params: TerminalRunParams): TerminalRunResult {
     const { toolset, workspaceRoot } = this.requireInitialized()
     const command = params.command.trim()

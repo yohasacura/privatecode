@@ -226,7 +226,7 @@ export function QuestionCard({
  * The current task list, pinned above the transcript. Renders nothing at all when the model
  * never called `todo_write`, so a one-shot question costs no layout.
  */
-export function TodosCard({ todos }: { todos: TodoItem[] }): VNode | null {
+export function TodosCard({ todos, onClear }: { todos: TodoItem[]; onClear?: () => void }): VNode | null {
   const [open, setOpen] = useState(true)
   if (todos.length === 0) return null
   const done = todos.filter((t) => t.status === 'completed').length
@@ -241,6 +241,17 @@ export function TodosCard({ todos }: { todos: TodoItem[] }): VNode | null {
         {!open && current && <span class="todos-current">{current.text}</span>}
         <span class="todos-bar"><span class="todos-bar-fill" style={{ width: `${(done / todos.length) * 100}%` }} /></span>
       </button>
+      {/* The dismiss the finished-but-ungated task was missing: the harness retires the
+          plan when the gate passes, this is the user's hand for every other ending. */}
+      {onClear !== undefined && (
+        <button
+          class="todos-clear"
+          title="Close the plan — the list is cleared"
+          onClick={(e) => { e.stopPropagation(); onClear() }}
+        >
+          {Icon.x()}
+        </button>
+      )}
       {open && (
         <ul class="todos-list">
           {todos.map((t, i) => (

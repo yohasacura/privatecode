@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
+import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChangeDecor } from '../lib/path-tree'
 import type { ChatItem } from '../lib/state'
@@ -61,8 +62,31 @@ export function affectedDirectories(name: string, argsJson: string): string[] {
   return []
 }
 
+/** A workspace mount, as the tree's top-level row knows it. */
+export interface MountInfo {
+  name: string
+  primary: boolean
+  access: 'write' | 'read'
+  git: string
+}
+
+/** What the inline management can DO — wired by the workspace tab, which owns the
+ * workspace.set + re-open flow. Every action applies immediately: the folders on the
+ * tree ARE the workspace, and a draft/save layer over them read as a second, redundant
+ * panel (the user's word was «костыльно»). */
+export interface MountActions {
+  toggleAccess(name: string): void
+  remove(name: string): void
+  rename(name: string, next: string): void
+  addFolder(path: string): void
+  /** The native folder picker is a Tauri plugin; the dev bridge runs in a browser. */
+  isDevBridge: boolean
+  /** True while a change is applying (the workspace re-opens); controls disable. */
+  busy: boolean
+}
+
 export function TreePanel({
-  client, toolItems, onOpenFile, workspaceRoot, decor,
+  client, toolItems, onOpenFile, workspaceRoot, decor, mounts, mountActions,
 }: {
   client: ProtocolClient
   toolItems: ChatItem[]
@@ -81,6 +105,10 @@ export function TreePanel({
   /** Session-change overlay for the unified Workspace view: badges on changed files and
    * change counts on the directories that contain them. Absent = the plain Files tree. */
   decor: ChangeDecor | undefined
+  /** The workspace's folder set, for inline management ON the top-level rows. Absent =
+   * a plain read-only tree (the standalone Files context). */
+  mounts?: MountInfo[]
+  mountActions?: MountActions
 }) {
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']))
@@ -160,13 +188,130 @@ export function TreePanel({
       <DirChildren
         path="" dirs={dirs} expanded={expanded} onToggle={toggle} onOpenFile={onOpenFile}
         onRetry={loadDir} depth={0} decor={decor}
+        {...(mounts !== undefined ? { mounts } : {})}
+        {...(mountActions !== undefined ? { mountActions } : {})}
       />
+      {mountActions !== undefined && <AddFolderRow actions={mountActions} />}
     </div>
   )
 }
 
+/**
+ * The management cluster on a mount's own row. Hidden until the row is hovered — the
+ * tree stays a tree — and the remove is a two-click arm ("Remove?") rather than a
+ * confirm dialog: a stray click must not silently unmount a project, and a dialog for
+ * an action this reversible would be ceremony.
+ */
+function MountControls({ mount, actions }: { mount: MountInfo; actions: MountActions }): VNode {
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [armed, setArmed] = useState(false)
+  useEffect(() => {
+    if (!armed) return
+    const id = setTimeout(() => setArmed(false), 3_000)
+    return () => clearTimeout(id)
+  }, [armed])
+
+  if (mount.primary) {
+    return (
+      <span class="tree-mount-controls">
+        <span class="tag" title="The main folder — sessions, checkpoints and workspace settings live here">main</span>
+      </span>
+    )
+  }
+  if (renaming !== null) {
+    return (
+      <span class="tree-mount-controls tree-mount-controls-open">
+        <input
+          class="input input-small"
+          value={renaming}
+          // eslint-disable-next-line jsx-a11y/no-autofocus
+          autoFocus
+          onInput={(e) => setRenaming(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && renaming.trim() !== '') { actions.rename(mount.name, renaming.trim()); setRenaming(null) }
+            if (e.key === 'Escape') { e.stopPropagation(); setRenaming(null) }
+          }}
+        />
+      </span>
+    )
+  }
+  return (
+    <span class={armed ? 'tree-mount-controls tree-mount-controls-open' : 'tree-mount-controls'}>
+      <button
+        class="tree-mount-btn"
+        disabled={actions.busy}
+        title={mount.access === 'read'
+          ? 'Read-only: the agent reads and searches here, and cannot write. Click to allow writes.'
+          : 'Writable. Click to make this folder read-only.'}
+        onClick={() => actions.toggleAccess(mount.name)}
+      >
+        {mount.access === 'read' ? 'read-only' : 'writable'}
+      </button>
+      <button
+        class="tree-mount-btn"
+        disabled={actions.busy}
+        title="Rename — this is the name the agent sees the folder under"
+        onClick={() => setRenaming(mount.name)}
+      >
+        ✎
+      </button>
+      <button
+        class={armed ? 'tree-mount-btn tree-mount-danger' : 'tree-mount-btn'}
+        disabled={actions.busy}
+        title="Remove the folder from the workspace — files on disk are untouched"
+        onClick={() => {
+          if (armed) { setArmed(false); actions.remove(mount.name) } else setArmed(true)
+        }}
+      >
+        {armed ? 'Remove?' : Icon.x()}
+      </button>
+    </span>
+  )
+}
+
+/** The add-folder affordance, living where the folders live: the last row of the tree. */
+function AddFolderRow({ actions }: { actions: MountActions }): VNode {
+  const [typing, setTyping] = useState(false)
+  const [path, setPath] = useState('')
+
+  async function pick(): Promise<void> {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const result = await open({ directory: true, multiple: false })
+    if (typeof result === 'string') actions.addFolder(result)
+  }
+
+  if (actions.isDevBridge && typing) {
+    return (
+      <input
+        class="input input-small tree-add-input"
+        value={path}
+        placeholder="paste a folder path — Enter adds it"
+        // eslint-disable-next-line jsx-a11y/no-autofocus
+        autoFocus
+        onInput={(e) => setPath(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && path.trim() !== '') { actions.addFolder(path.trim()); setPath(''); setTyping(false) }
+          if (e.key === 'Escape') { e.stopPropagation(); setTyping(false) }
+        }}
+      />
+    )
+  }
+  return (
+    <button
+      class="tree-row tree-add-folder"
+      disabled={actions.busy}
+      onClick={() => (actions.isDevBridge ? setTyping(true) : void pick())}
+      title="Add a folder to the workspace — it appears right in this tree"
+    >
+      <span class="tree-chevron" />
+      <span class="tree-icon">{Icon.folder()}</span>
+      <span class="tree-name">{actions.busy ? 'Re-opening…' : '+ Add folder'}</span>
+    </button>
+  )
+}
+
 function DirChildren({
-  path, dirs, expanded, onToggle, onOpenFile, onRetry, depth, decor,
+  path, dirs, expanded, onToggle, onOpenFile, onRetry, depth, decor, mounts, mountActions,
 }: {
   path: string
   dirs: Record<string, DirState>
@@ -182,6 +327,8 @@ function DirChildren({
   onRetry: (path: string) => void
   depth: number
   decor: ChangeDecor | undefined
+  mounts?: MountInfo[]
+  mountActions?: MountActions
 }) {
   const state = dirs[path]
   if (!state) return null
@@ -191,7 +338,7 @@ function DirChildren({
         class="tree-error"
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
         onClick={() => onRetry(path)}
-        title="click to retry"
+        title="Click to retry"
       >
         ⚠ {state.error} (click to retry)
       </button>
@@ -206,36 +353,49 @@ function DirChildren({
       {state.entries.map((entry) => {
         const childPath = path === '' ? entry.name : `${path}/${entry.name}`
         const isExpanded = expanded.has(childPath)
+        // The workspace's own folders, managed right where they are seen: a top-level
+        // row that IS a mount wears its controls, and the separate management panel is
+        // gone. Nested buttons are invalid HTML, so a mount row is a flex wrapper with
+        // the ordinary row-button beside the controls, not inside it.
+        const mount = depth === 0 && entry.dir ? mounts?.find((m) => m.name === entry.name) : undefined
+        const row = (
+          /* A button, not a div with onClick: bare divs cannot take focus, so the whole
+              tree was unreachable by keyboard — not one directory could be expanded, not
+              one file opened, without a mouse. A button gets Tab, Enter and Space for
+              free, and aria-expanded tells a screen reader which rows unfold. */
+          <button
+            class={`tree-row ${entry.dir ? 'tree-dir' : 'tree-file'}${mount !== undefined ? ' tree-mount-main' : ''}`}
+            style={{ paddingLeft: `${depth * 12 + 6}px` }}
+            onClick={() => (entry.dir ? onToggle(childPath) : onOpenFile(childPath))}
+            title={childPath}
+            aria-expanded={entry.dir ? isExpanded : undefined}
+          >
+            <span class="tree-chevron">
+              {entry.dir ? (isExpanded ? Icon.chevronDown() : Icon.chevronRight()) : null}
+            </span>
+            <span class="tree-icon">{entry.dir ? Icon.folder() : Icon.file()}</span>
+            <span class="tree-name">{entry.name}</span>
+            {mount !== undefined && mount.access === 'read' && (
+              <span class="tree-mount-ro" title="Read-only">read-only</span>
+            )}
+            {/* The session's fingerprints, right on the tree: a changed file carries its
+                diff shape, a folder carries how many changed files hide under it. */}
+            {entry.dir && decor !== undefined && (decor.dirs.get(childPath) ?? 0) > 0 && (
+              <span class="tree-change-count">{decor.dirs.get(childPath)}</span>
+            )}
+            {!entry.dir && decor?.files.has(childPath) && (
+              <span class={decor.files.get(childPath)!.lastFailed ? 'tree-change-stat tree-change-failed' : 'tree-change-stat'}>
+                {decor.files.get(childPath)!.revisions > 1 ? `${decor.files.get(childPath)!.revisions}× ` : ''}
+                +{decor.files.get(childPath)!.added} −{decor.files.get(childPath)!.removed}
+              </span>
+            )}
+          </button>
+        )
         return (
           <div key={childPath}>
-            {/* A button, not a div with onClick: bare divs cannot take focus, so the whole
-                tree was unreachable by keyboard — not one directory could be expanded, not
-                one file opened, without a mouse. A button gets Tab, Enter and Space for
-                free, and aria-expanded tells a screen reader which rows unfold. */}
-            <button
-              class={`tree-row ${entry.dir ? 'tree-dir' : 'tree-file'}`}
-              style={{ paddingLeft: `${depth * 12 + 6}px` }}
-              onClick={() => (entry.dir ? onToggle(childPath) : onOpenFile(childPath))}
-              title={childPath}
-              aria-expanded={entry.dir ? isExpanded : undefined}
-            >
-              <span class="tree-chevron">
-                {entry.dir ? (isExpanded ? Icon.chevronDown() : Icon.chevronRight()) : null}
-              </span>
-              <span class="tree-icon">{entry.dir ? Icon.folder() : Icon.file()}</span>
-              <span class="tree-name">{entry.name}</span>
-              {/* The session's fingerprints, right on the tree: a changed file carries its
-                  diff shape, a folder carries how many changed files hide under it. */}
-              {entry.dir && decor !== undefined && (decor.dirs.get(childPath) ?? 0) > 0 && (
-                <span class="tree-change-count">{decor.dirs.get(childPath)}</span>
-              )}
-              {!entry.dir && decor?.files.has(childPath) && (
-                <span class={decor.files.get(childPath)!.lastFailed ? 'tree-change-stat tree-change-failed' : 'tree-change-stat'}>
-                  {decor.files.get(childPath)!.revisions > 1 ? `${decor.files.get(childPath)!.revisions}× ` : ''}
-                  +{decor.files.get(childPath)!.added} −{decor.files.get(childPath)!.removed}
-                </span>
-              )}
-            </button>
+            {mount !== undefined && mountActions !== undefined
+              ? <div class="tree-mount">{row}<MountControls mount={mount} actions={mountActions} /></div>
+              : row}
             {entry.dir && isExpanded && (
               <DirChildren
                 path={childPath} dirs={dirs} expanded={expanded} onToggle={onToggle}

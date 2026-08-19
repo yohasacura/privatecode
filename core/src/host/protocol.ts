@@ -453,6 +453,7 @@ export interface HostMethodMap {
   'jobs.list': { params: JobsListParams; result: JobsListResult }
   'jobs.stop': { params: JobsStopParams; result: JobsStopResult }
   'terminal.run': { params: TerminalRunParams; result: TerminalRunResult }
+  'todos.clear': { params: Empty; result: Empty }
   'config.get': { params: ConfigGetParams; result: ConfigGetResult }
   'config.set': { params: ConfigSetParams; result: ConfigSetResult }
   'checkpoints.list': { params: CheckpointsListParams; result: CheckpointsListResult }
