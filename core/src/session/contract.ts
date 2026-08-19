@@ -1012,11 +1012,18 @@ const REVIEW_TOOL: ToolSchema = {
             type: 'object',
             required: ['where', 'what'],
             properties: {
-              where: { type: 'string', description: 'File and place, e.g. lib/stats.js percentile()' },
+              where: {
+                type: 'string',
+                description: 'File and place, e.g. lib/stats.js percentile(). This may be a ' +
+                  'file the diff never touched, when that is where the problem is.',
+              },
               what: {
                 type: 'string',
-                description: 'The defect and why it is one: a bug, a contract criterion ' +
-                  'the diff contradicts, a constraint it violates. Style is not a defect.',
+                description: 'The defect and why it is one: a bug, a criterion the change ' +
+                  'contradicts, a constraint it violates, or the goal still not being met ' +
+                  'because the same problem survives somewhere the change did not reach. ' +
+                  'Style is not a defect, and neither is anything this change is not ' +
+                  'responsible for.',
               },
             },
           },
@@ -1053,13 +1060,18 @@ const DIFF_REVIEW_MAX_CHARS = 160_000
 export const REVIEW_SYSTEM =
   'You are reviewing a change someone else made. You did not write it and you were not ' +
   'there for the conversation that produced it.\n\n' +
-  'You can open files: read the code AROUND the change, not just the lines in it. A diff ' +
-  'shows what moved and hides what it depends on, and most real defects live in that gap — ' +
-  'a call to the wrong helper, an invariant kept somewhere else, a caller this breaks.\n\n' +
-  'Judge it against what the person actually asked for and against correctness: off-by-one, ' +
-  'wrong formula, broken export, a violated constraint, a case the change forgets. Report ' +
-  'only defects you can point at. An empty list is a fine and common verdict, and style ' +
-  'preferences are not defects.'
+  'You can open files, and you should: read the code AROUND the change, not just the lines ' +
+  'in it. A diff shows what moved and hides what it depends on, and most real defects live ' +
+  'in that gap — a call to the wrong helper, an invariant kept somewhere else, a caller this ' +
+  'breaks.\n\n' +
+  'The question is not "are these lines correct". It is: DOES THIS ACTUALLY DO WHAT WAS ' +
+  'ASKED, given the rest of the code? A change that is flawless on its own and leaves the ' +
+  'goal unmet is the defect this review exists to find — the same broken invariant still ' +
+  'reachable through another path, a caller that was never updated, a second place doing the ' +
+  'old thing. Say so, and name the file, even when that file is nowhere in the diff.\n\n' +
+  'What does NOT count is everything the change is not responsible for. You are not auditing ' +
+  'the codebase and you are not reporting style. Pre-existing problems unrelated to this ' +
+  'goal belong to somebody else. An empty list is a fine and common verdict.'
 
 /**
  * What the reviewer is given, and the deliberate order of it.
@@ -1101,13 +1113,25 @@ export async function reviewVerdict(
         ...messages,
         {
           role: 'user',
-          content: '[Now the verdict. Report with review_verdict — only defects you can ' +
-            'point at in the change, and an empty list if you found none.]',
+          content: '[Now the verdict, with review_verdict.\n\n' +
+            'Before you answer: is the goal actually met once the rest of the code is taken ' +
+            'into account? If the same problem is still reachable somewhere the change did ' +
+            'not touch, that is a defect and it belongs in the list, with the file named — ' +
+            'not an aside, and not something to leave out because it is outside the diff.\n\n' +
+            'An empty list is fine if the change genuinely does the job.]',
         },
       ],
       tools: [REVIEW_TOOL],
       toolChoice: 'required',
       maxTokens: REVIEW_MAX_TOKENS,
+      // Thinking OFF, and this is a change from when the review was a single generation.
+      // Then it had to do the judging here, and 12k tokens of it was justified by measured
+      // reasoning lengths. Now the LOOKING does the judging — six steps of reading the code
+      // around the change, with thinking on throughout — and this call only has to report
+      // what that turn arrived at. Restating with thinking on is measured waste on this
+      // server, and here it was worse than waste: at ~40 tok/s a full budget of it is five
+      // minutes added to the end of every task, on top of the reading. Hit live.
+      disableThinking: true,
       ...(signal ? { signal } : {}),
     })
     const call = result.message.tool_calls?.[0]
