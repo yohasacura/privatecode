@@ -74,7 +74,7 @@ export interface MountInfo {
 /** What the inline management can DO — wired by the workspace tab, which owns the
  * workspace.set + re-open flow. Every action applies immediately: the folders on the
  * tree ARE the workspace, and a draft/save layer over them read as a second, redundant
- * panel (the user's word was «костыльно»). */
+ * panel (the user's verdict: clunky). */
 export interface MountActions {
   toggleAccess(name: string): void
   remove(name: string): void
@@ -461,8 +461,8 @@ function DirChildren({
               'tree-row',
               entry.dir ? 'tree-dir' : 'tree-file',
               mount !== undefined ? 'tree-mount-main' : '',
-              // Staged = selected for the commit — the row itself says so («подсвети
-              // файлы если я их выбрал для коммита»), not a checkbox column.
+              // Staged = selected for the commit — the row itself says so (the owner
+              // asked for staged files highlighted, not a checkbox column).
               mark?.staged === true ? 'tree-row-staged' : '',
             ].filter(Boolean).join(' ')}
             style={{ paddingLeft: `${depth * 12 + 6}px` }}

@@ -631,7 +631,7 @@ export function Composer({
   }
 
   /**
-   * The other model half: a short rough command («сделай красную кнопку») grown into a
+   * The other model half: a short rough command ("make a red button") grown into a
    * detailed brief out of what the session context already knows about the project —
    * repo map, notes, conversation. A PREVIEW: nothing replaces the draft without a
    * click. Same slot and stale-discard discipline as improve() above.

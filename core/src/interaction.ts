@@ -98,7 +98,8 @@ export class TodoStore {
    * A plan is a session's plan, not the workspace's: the store used to be a single
    * workspace-wide file, and because the toolset outlives every session switch, the plan
    * followed the user from session to session — finish a task, start a fresh session, and
-   * the old task's list is still on screen («план бегает между сессиями»). The host calls
+   * the old task's list is still on screen (the owner's bug report: the plan migrated
+   * between sessions). The host calls
    * this on every session build; each session reads and writes its own file.
    *
    * Migration: the FIRST session bound in a workspace that still has the old

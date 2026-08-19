@@ -58,13 +58,16 @@ describe('glueSuggestions', () => {
     questions: ['Какие файлы затронуть?', 'Что считается готовым?'],
   }
 
-  it('appends accepted structure below the draft, words untouched', () => {
+  it('appends accepted structure below the draft, words untouched — headers ALWAYS English', () => {
+    // The draft and items stay Russian on purpose: they prove a non-English draft still
+    // glues correctly. The headers are English regardless — the app speaks English only
+    // (owner directive 2026-08-19); the draft-language branch is gone.
     const out = glueSuggestions('Сделай greetMany.', s,
       new Set(['c:tests/a.test.ts проходит', 'k:не менять greet()']),
       new Map([['Какие файлы затронуть?', 'src/greet.js']]))
     expect(out).toBe(
-      'Сделай greetMany.\n\nКритерии готовности:\n1. tests/a.test.ts проходит\n\n' +
-      'Ограничения:\n- не менять greet()\n\nУточнения:\n- Какие файлы затронуть — src/greet.js')
+      'Сделай greetMany.\n\nDone criteria:\n1. tests/a.test.ts проходит\n\n' +
+      'Constraints:\n- не менять greet()\n\nClarifications:\n- Какие файлы затронуть — src/greet.js')
   })
 
   it('unchecked chips and unanswered questions do not travel', () => {

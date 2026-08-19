@@ -378,7 +378,7 @@ export interface TurnResult {
    * never reached the transcript (signal already aborted before runTurn appended it —
    * e.g. Esc during contract distillation). The loop never sets it: any turn that ran a
    * step was delivered. A front end seeing false must roll its optimistic message row
-   * back, or the next "продолжай" continues from a message the model never saw.
+   * back, or the next "continue" continues from a message the model never saw.
    */
   delivered?: false
 }

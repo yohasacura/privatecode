@@ -28,14 +28,14 @@ export function lintShaped(text: string): boolean {
 }
 
 /**
- * The EXPANDER's input shape — and by the owner's direct order it is WIDE: «улучшение
- * промта должно быть даже на одном предложении или паре слов». A first cut matched only
+ * The EXPANDER's input shape — and by the owner's direct order it is WIDE: improvement
+ * must fire even on a single sentence or a couple of words. A first cut matched only
  * imperative verbs and rejected questions, and it skipped exactly the drafts the user
- * wanted grown («Дай мне KQL сколько запросов мы делаем?»). So: anything long enough to
- * carry intent qualifies, questions included — the model decides whether there is
- * something to add, and the preview costs one click to ignore. Still disjoint from
+ * wanted grown (a one-line "give me a KQL for our request rate?"). So: anything long
+ * enough to carry intent qualifies, questions included — the model decides whether there
+ * is something to add, and the preview costs one click to ignore. Still disjoint from
  * `taskShaped` (a long draft gets the chips instead), still never a slash command, and
- * twelve characters keeps «ок», «спасибо» and their kin out.
+ * twelve characters keeps "ok", "thanks" and their kin out.
  */
 export function commandShaped(text: string): boolean {
   const t = text.trim()
@@ -109,21 +109,21 @@ export function glueSuggestions(
     .filter((x): x is string => x !== null)
   if (criteria.length === 0 && constraints.length === 0 && answered.length === 0) return draft
 
-  // The glued block is MESSAGE content, not window chrome: its headers follow the
-  // draft's language, because Russian criteria under English headers (or the reverse)
-  // read as a tool malfunction inside the user's own message.
-  const ru = /[а-яё]/i.test(draft)
+  // English headers, always — the owner works in English only, and the model reads
+  // structured headers fine whatever language the items themselves arrived in. (The
+  // headers used to follow the draft's language; that branch was removed by the
+  // English-only directive of 2026-08-19.)
   const parts: string[] = [draft.trimEnd()]
   if (criteria.length > 0) {
-    parts.push('', ru ? 'Критерии готовности:' : 'Done criteria:')
+    parts.push('', 'Done criteria:')
     criteria.forEach((c, i) => parts.push(`${i + 1}. ${c}`))
   }
   if (constraints.length > 0) {
-    parts.push('', ru ? 'Ограничения:' : 'Constraints:')
+    parts.push('', 'Constraints:')
     for (const c of constraints) parts.push(`- ${c}`)
   }
   if (answered.length > 0) {
-    parts.push('', ru ? 'Уточнения:' : 'Clarifications:')
+    parts.push('', 'Clarifications:')
     for (const a of answered) parts.push(`- ${a}`)
   }
   return parts.join('\n')

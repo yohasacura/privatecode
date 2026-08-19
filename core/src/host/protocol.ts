@@ -800,7 +800,7 @@ export interface PermissionsRemoveResult { removed: boolean }
 /**
  * Write one rule, from the permissions screen. The mirror of remove, and it closes the
  * asymmetry the screen shipped with: rules could be granted from an approval card, revoked
- * from the list, and never simply WRITTEN — the one thing "настраиваются" actually means.
+ * from the list, and never simply WRITTEN — the one thing "configurable" actually means.
  * A rule that fails validation comes back as `problem` and changes nothing anywhere.
  */
 export interface PermissionsAddParams {

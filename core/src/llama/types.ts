@@ -95,8 +95,8 @@ export interface StreamDelta {
    * These were accumulated and never reported, and on the median large edit that is most of
    * a step: the model spends its generation writing a file's new contents into an argument,
    * and the window has nothing to show until the whole call is assembled. Reported from the
-   * running app, diagnosed by the user: "я в чате увижу это только тогда когда полное
-   * изменение будет сгенерированно, а до этого у меня чат просто замирает."
+   * running app, diagnosed by the user: the chat showed the change only once it had been
+   * generated in full — until then the window simply froze.
    *
    * A fragment is a slice of a JSON document, so it is not parseable on its own -- consumers
    * concatenate and may only read it once the call completes. What it IS good for is showing

@@ -804,7 +804,7 @@ export class Session {
     if (result.stoppedBecause !== 'done') return result
     // A turn that wrote nothing cannot have broken the build — but it CAN be the turn
     // that claims the task finished. Found by the first giant unattended probe: turn 1
-    // did all the work, turn 3 said "задача полностью завершена" with zero writes, and
+    // did all the work, turn 3 claimed the task fully finished with zero writes, and
     // the writes guard silently skipped the contract gate on exactly the turn whose
     // claim it exists to audit. The gate carries its own saysFinished/satisfied guards.
     if (writesThisTurn === 0) return await this.acceptanceGate(result, turnStartIndex, signal)
@@ -1605,7 +1605,7 @@ export class Session {
       //
       // EVERY task-shaped message re-distills and REPLACES: a session outlives its first
       // task, and a second big request judged against the first request's criteria is a
-      // gate enforcing yesterday's goal. Short follow-ups ("и подправь отступы") are not
+      // gate enforcing yesterday's goal. Short follow-ups ("and fix the indent too") are not
       // task-shaped, so a running task's contract survives them. A failed or refused
       // distillation costs nothing: the task runs exactly as every task ran before
       // contracts existed.

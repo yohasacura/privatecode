@@ -66,7 +66,7 @@ export interface TaskContract {
 /**
  * Whether a user message warrants the up-front distillation generation at all.
  *
- * A one-line request ("поправь опечатку в README") does not: the contract would cost a
+ * A one-line request ("fix the typo in README") does not: the contract would cost a
  * generation and restate the request. The threshold is deliberately dumb — length and
  * structure, not comprehension — and TUNED LIVE: at the measured 40 tok/s a distillation
  * costs ~8–15 s, which is worth paying exactly when the task will run for many minutes.
@@ -346,11 +346,11 @@ export function parseExpanded(argsJson: string): string | null {
 }
 
 /**
- * The expander behind the composer's preview card: a rough command («сделай красную
- * кнопку») grown into the brief the user would have written with the project open in
- * their head. Same clipped context a send would get — message 0 carries the repo map and
- * the notes, which is exactly where the file names and tokens come from — so the request
- * rides the cached prefix. Null when the model declines or returns nothing usable.
+ * The expander behind the composer's preview card: a rough command ("make a red button")
+ * grown into the brief the user would have written with the project open in their head.
+ * Same clipped context a send would get — message 0 carries the repo map and the notes,
+ * which is exactly where the file names and tokens come from — so the request rides the
+ * cached prefix. Null when the model declines or returns nothing usable.
  */
 export async function expandDraft(
   client: LlamaClient,
@@ -371,7 +371,7 @@ export async function expandDraft(
         'this conversation). Never invent a path or a value the context does not ' +
         'support — anything essential it cannot answer, keep as a short open question ' +
         'inside the text. Keep the user\'s intent exactly, and write the brief in the ' +
-        'SAME LANGUAGE as the draft: русский черновик разворачивается по-русски.]',
+        'SAME LANGUAGE as the draft — a draft in another language expands in that language.]',
     },
   ]
   try {
@@ -529,7 +529,8 @@ export async function decomposeTodos(
         'for the contract above — each step with its own checkable done_when, and the ' +
         'files it touches where the contract names them. Steps are the PATH; the ' +
         'contract criteria stay the definition of done. Write the steps in the language ' +
-        'of the task: русская задача планируется по-русски. Do not begin the work.]',
+        'of the task — a task in another language is planned in that language. Do not ' +
+        'begin the work.]',
     },
   ]
   try {
@@ -596,22 +597,24 @@ export function renderCheckedState(contract: TaskContract, report: AcceptanceRep
  * whichever later turn finally claims it.
  *
  * Deliberately narrow, with hedge guards on the Russian half: a false "finished" ends a
- * run mid-work (or wastes an audit), and "почти готово"/"выполнена наполовину" are
- * continuations, not endings.
+ * run mid-work (or wastes an audit), and the Russian equivalents of "almost done" /
+ * "half-finished" are continuations, not endings. (The Russian patterns below are
+ * DETECTION MACHINERY for input in that language, kept on purpose — every word the app
+ * itself says is English.)
  *
  * Scans the head AND tail of the message, not just the tail: the model's live style is
- * often "Готово." as the first word followed by a long report, which a tail-only window
- * misses. The middle stays unscanned — that is where quoted text lives. `\b` cannot guard
- * the Russian words (JS word boundaries are ASCII-only, so `\bготово` never matches);
- * a Cyrillic lookbehind does the same job.
+ * often the finish word first followed by a long report, which a tail-only window
+ * misses. The middle stays unscanned — that is where quoted text lives. `\b` cannot
+ * guard the Russian words (JS word boundaries are ASCII-only and never match beside
+ * Cyrillic); a Cyrillic lookbehind does the same job.
  *
  * Both halves are sentence-scoped rather than one phrase regex: live answers decline
- * freely («Задача починки отчёта полностью завершена: …»), so a fixed word order keeps
- * losing to real morphology. A sentence carrying a finish phrase counts unless that SAME
- * sentence also carries a hedge or negation word («почти всё готово», "not all done
- * yet") — the veto stays sentence-local so an honest caveat elsewhere is not silenced.
- * The Russian idioms whose canonical form contains «не» («больше ничего не осталось»)
- * are matched before the veto, or they could never fire at all.
+ * freely through real morphology, so a fixed word order keeps losing. A sentence
+ * carrying a finish phrase counts unless that SAME sentence also carries a hedge or
+ * negation word ("not all done yet") — the veto stays sentence-local so an honest
+ * caveat elsewhere is not silenced. The Russian idioms whose canonical form contains
+ * the negation word ("nothing left to do") are matched before the veto, or they could
+ * never fire at all.
  */
 const EN_FINISH = /\b(all done|everything (is )?(now )?(done|finished|complete)|task (is )?complete|nothing (else|more) (left )?to do|no (further|more) (work|changes) (is |are )?(needed|required))\b/
 

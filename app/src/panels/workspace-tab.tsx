@@ -14,8 +14,8 @@ import { TreePanel, type GitRowActions, type MountActions, type MountInfo } from
  * The Workspace tab: ONE tree, wearing everything — including git.
  *
  * The working tree used to be its own section below the files: a second list of the same
- * files, with checkboxes. The owner's ruling was that git lives ON the tree («Working
- * tree должно быть сразу на файлах»): each changed file carries its letter, a staged
+ * files, with checkboxes. The owner's ruling was that git lives ON the tree — the working
+ * tree belongs on the files themselves: each changed file carries its letter, a staged
  * file's row highlights (staging IS the selection), `+`/`−` on the row move a file in and
  * out of the next commit, and the commit box sits above the tree where a message is
  * written after the changes were read.
@@ -150,7 +150,7 @@ export function WorkspaceTab({
    * A plain function, deliberately NOT useCallback: `onReopenWorkspace` is an inline
    * closure over App's CURRENT workspaceRoot, and memoising this on `[client]` froze the
    * first render's copy — proven live: switch workspaces, rename, and the re-open
-   * init'ed the PREVIOUS workspace ("нельзя переименовать", as the owner reported it). */
+   * init'ed the PREVIOUS workspace ("renaming does not work", as the owner reported it). */
   function apply(name: string, next: { path: string; name?: string; access: 'write' | 'read' }[]): void {
     setBusy(true)
     setError(null)

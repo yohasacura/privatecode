@@ -888,7 +888,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       // optimistic row is removed — not marked "stopped", which reads as "kept" — and its
       // text goes back to the composer through `restoreDraft`. Watched live: the old
       // banner promised "continues from here" over a message the model never received,
-      // and the next "продолжай" would have continued from nothing.
+      // and the next "continue" would have continued from nothing.
       if (action.delivered === false) {
         const lastUser = state.items.map((i) => i.kind).lastIndexOf('user')
         const row = lastUser === -1 ? null : state.items[lastUser]!
