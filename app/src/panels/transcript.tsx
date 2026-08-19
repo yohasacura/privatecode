@@ -173,11 +173,6 @@ export function Transcript({
 
   const waiting = state.turnRunning && isQuiet(lastItem) &&
     !state.pendingApproval && !state.pendingQuestion
-  /** The waiting row is shown exactly when nothing is streaming, which is exactly when the
-   * server's own progress is the only thing that can distinguish working from stuck. */
-  const waitingProgress = state.currentStep?.progress !== undefined
-    ? formatProgress(state.currentStep.progress)
-    : null
 
   // While an approval is open, the call it is asking about is already announced -- in more
   // detail, with the diff or the command text -- by the card itself. Rendering the bare
@@ -275,9 +270,15 @@ export function Transcript({
         {waiting && (
           <div class="row row-waiting">
             <div class="row-gutter" aria-hidden="true"><span class="pulse-dot" /></div>
+            {/* No measurement here, deliberately, though this row is exactly when one is
+                available: the composer's status line carries every other live reading (the
+                step number, the elapsed time, the timeout countdown) and is on screen at the
+                same moment. Watched live, the two rendered the identical
+                "reading 4.9k / 4.9k · none cached" one above the other for the whole of a
+                prefill. This row's job is that something is happening HERE, in the
+                conversation; the number belongs where the other numbers are. */}
             <div class="row-body">
               working{state.currentStep ? ` · step ${state.currentStep.step}` : ''}
-              {waitingProgress !== null && <span class="record-quiet"> · {waitingProgress}</span>}
             </div>
           </div>
         )}

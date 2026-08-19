@@ -24,6 +24,9 @@ describe('formatProgress', () => {
   it('reads generation as tokens and a rate', () => {
     expect(formatProgress({ generated: { tokens: 1_240, perSecond: 61.4 } })).toBe('1.2k tokens · 61 tok/s')
     expect(formatProgress({ generated: { tokens: 7 } })).toBe('7 tokens')
+    // Seen on every fast step: the first frame carries one token and no rate, because a rate
+    // over one token is the server dividing by very nearly zero.
+    expect(formatProgress({ generated: { tokens: 1 } })).toBe('1 token')
   })
 
   it('says nothing when there is nothing measured to say', () => {

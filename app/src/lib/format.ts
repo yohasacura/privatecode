@@ -34,7 +34,11 @@ export function formatProgress(progress: {
     const rate = generated.perSecond !== undefined && generated.perSecond > 0
       ? ` · ${Math.round(generated.perSecond)} tok/s`
       : ''
-    return `${formatTokenCount(generated.tokens)} tokens${rate}`
+    // The first frame after a warm prefill really does arrive at one token, and it carries no
+    // rate (one token is not a rate), so "1 tokens" with nothing after it is what a person
+    // actually sees at the start of every fast step.
+    const noun = generated.tokens === 1 ? 'token' : 'tokens'
+    return `${formatTokenCount(generated.tokens)} ${noun}${rate}`
   }
   if (prompt !== undefined && prompt.total > 0) {
     const cached = prompt.cache > 0 ? `${formatTokenCount(prompt.cache)} cached` : 'none cached'
