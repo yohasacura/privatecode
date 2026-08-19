@@ -469,7 +469,6 @@ export default function App() {
                 <aside class="column column-rail" style={{ width: `${columns.rail}px` }}>
                   <SessionsRail
                     client={client}
-                    workspaceRoot={workspaceRoot}
                     activeSessionId={chatState.session?.sessionId ?? null}
                     viewingSessionId={chatState.viewing?.sessionId ?? null}
                     turnRunning={chatState.turnRunning}
@@ -530,6 +529,10 @@ export default function App() {
                     folderCount={workspaceLabel.folders}
                     isDevBridge={isDevBridge}
                     onReopenWorkspace={() => { if (client) void connect(client, workspaceRoot, serverInput.trim() || DEFAULT_SERVER_URL) }}
+                    onSwitchWorkspace={() => setSettingsOpen(true)}
+                    // Back to the start screen; nothing on disk is touched, and boot's
+                    // auto-connect still remembers this workspace for next launch.
+                    onCloseWorkspace={() => setPhase({ kind: 'welcome', error: null })}
                     sessionKey={chatState.session?.sessionId ?? ''}
                   />
                 </aside>

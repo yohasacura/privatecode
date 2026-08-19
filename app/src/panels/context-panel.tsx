@@ -32,7 +32,7 @@ export type ContextTab = 'workspace' | 'history' | 'terminal'
 
 export function ContextPanel({
   client, items, openPath, onOpenFile, hasSession, workspaceRoot, workspaceName,
-  folderCount, isDevBridge, onReopenWorkspace, sessionKey,
+  folderCount, isDevBridge, onReopenWorkspace, onSwitchWorkspace, onCloseWorkspace, sessionKey,
 }: {
   client: ProtocolClient
   items: ChatItem[]
@@ -46,6 +46,9 @@ export function ContextPanel({
   isDevBridge: boolean
   /** Re-opens the workspace after its folder set was edited inline. */
   onReopenWorkspace: () => void
+  /** The workspace lifecycle controls the tab's header carries — see WorkspaceTab. */
+  onSwitchWorkspace: () => void
+  onCloseWorkspace: () => void
   /** The live session's id. Keys the Changes tab, so its reviewed-state — a per-session
    * judgement — resets when the session does instead of leaking across. */
   sessionKey: string
@@ -105,6 +108,8 @@ export function ContextPanel({
             reloadKey={resolvedTools}
             isDevBridge={isDevBridge}
             onReopenWorkspace={onReopenWorkspace}
+            onSwitchWorkspace={onSwitchWorkspace}
+            onCloseWorkspace={onCloseWorkspace}
             sessionKey={sessionKey}
           />
         )}

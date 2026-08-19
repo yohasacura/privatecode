@@ -3,6 +3,7 @@ import type { VNode } from 'preact'
 import type { WorkspaceFolderView } from '@core/host/protocol'
 import type { ChatItem } from '../lib/state'
 import type { ProtocolClient } from '../lib/client'
+import { Icon } from '../components/icons'
 import { decorateChanges } from '../lib/path-tree'
 import { diffStat } from '../lib/diff'
 import { ChangesTab, type ChangeEntry } from './changes-tab'
@@ -27,7 +28,7 @@ import type { MountActions, MountInfo } from './tree'
  */
 export function WorkspaceTab({
   client, items, changes, openPath, onOpenFile, workspaceRoot, workspaceName, folderCount,
-  reloadKey, isDevBridge, onReopenWorkspace, sessionKey,
+  reloadKey, isDevBridge, onReopenWorkspace, onSwitchWorkspace, onCloseWorkspace, sessionKey,
 }: {
   client: ProtocolClient
   items: ChatItem[]
@@ -42,6 +43,11 @@ export function WorkspaceTab({
   /** Re-opens the workspace after the folder set was edited — the same full init a
    * launch does, wired by App because only it owns the connect flow. */
   onReopenWorkspace: () => void
+  /** Opens the settings dialog on its workspace section — recents and the folder picker.
+   * Lives HERE because this tab is where the owner went looking for it. */
+  onSwitchWorkspace: () => void
+  /** Back to the start screen. The workspace's sessions and files are untouched. */
+  onCloseWorkspace: () => void
   sessionKey: string
 }): VNode {
   const [view, setView] = useState<'files' | 'changes'>('files')
@@ -148,6 +154,22 @@ export function WorkspaceTab({
             )}
         <span class="workspace-meta">
           {folderCount} {folderCount === 1 ? 'folder' : 'folders'}
+        </span>
+        <span class="workspace-head-actions">
+          <button
+            class="icon-button"
+            onClick={onSwitchWorkspace}
+            title="Switch workspace — recents and the folder picker"
+          >
+            {Icon.folder()}
+          </button>
+          <button
+            class="icon-button"
+            onClick={onCloseWorkspace}
+            title="Close the workspace — back to the start screen (sessions and files stay)"
+          >
+            {Icon.x()}
+          </button>
         </span>
       </div>
       {error !== null && <div class="workspace-error">{error}</div>}

@@ -3,7 +3,7 @@ import type { VNode } from 'preact'
 import type { AgentMode } from '@core/permissions/engine'
 import type { TranscriptEntry } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
-import { baseName, relativeTime } from '../lib/format'
+import { relativeTime } from '../lib/format'
 import { Icon } from '../components/icons'
 
 /**
@@ -41,11 +41,10 @@ type SessionMeta = {
 }
 
 export function SessionsRail({
-  client, workspaceRoot, activeSessionId, viewingSessionId, turnRunning,
+  client, activeSessionId, viewingSessionId, turnRunning,
   onSessionSwitched, onView, onOpenSettings, reloadKey,
 }: {
   client: ProtocolClient
-  workspaceRoot: string
   /** The session the composer talks to — the one that is, or can be, working. */
   activeSessionId: string | null
   /** The session being READ, when that is not the active one. */
@@ -93,12 +92,9 @@ export function SessionsRail({
 
   return (
     <div class="rail">
-      <button class="rail-workspace" onClick={onOpenSettings} title={`${workspaceRoot}\nclick to switch workspace`}>
-        {Icon.folder()}
-        <span class="rail-workspace-name">{baseName(workspaceRoot)}</span>
-        {Icon.chevronDown()}
-      </button>
-
+      {/* The workspace switcher used to sit here, above the sessions — the owner looked
+          for it in the Workspace tab and found a duplicate here instead. It lives on the
+          tab now; this rail is sessions, full stop. */}
       <button class="rail-new btn btn-primary" onClick={startNew} disabled={busy}>
         {Icon.plus()} New session
       </button>
