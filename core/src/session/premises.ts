@@ -1,0 +1,286 @@
+import { readFileSync } from 'node:fs'
+import type { LlamaClient } from '../llama/client.js'
+import type { ChatMessage, ToolSchema } from '../llama/types.js'
+
+/**
+ * The other half of "the model thought wrong", and the half with a hard oracle.
+ *
+ * The understanding check covers a misread REQUEST, and it works by disagreement: three
+ * readings, and where they differ the model is guessing. That method is blind to the second
+ * failure, because there the readings all agree — the model is confidently wrong about the
+ * CODE. It believes a method validates its input, or takes a different argument, or that a
+ * helper exists at all, and every reading of the request inherits the same false belief.
+ *
+ * There is no disagreement to measure there. There is something better: the code is sitting
+ * on disk, and it is the ground truth. So the model is made to state the facts its change
+ * depends on and to QUOTE each one from the file it came from — and the harness checks the
+ * quote is actually there.
+ *
+ * That check is a string search, which is the point. It is not a judgement, cannot be talked
+ * out of, and costs nothing. It is the same move the repro red-gate makes on a symptom
+ * ("prove it fails before you fix it") applied to a belief ("show me the line you are relying
+ * on"). A premise that cannot be found is, every time, one of the small set of things that
+ * produce working code with wrong logic: a hallucinated API, an imagined signature, a
+ * remembered validation that is not in the file.
+ *
+ * Whitespace is normalised on both sides before the search, and nothing else is. The model
+ * reindents and rewraps what it quotes and that is not a false belief; if it changes an
+ * identifier or an operator, that is exactly the failure this exists to catch, and the quote
+ * will not be found.
+ */
+
+export interface Premise {
+  file: string
+  quote: string
+  why: string
+}
+
+/** How the model's path is turned into something readable — the workspace itself in the
+ * app, which is the only thing that knows about attached folders and their name prefixes.
+ * Getting this wrong is not hypothetical: the project-notes feature spent its whole life
+ * silently refusing every note because it used `join(root, path)` instead. */
+export interface FileReader {
+  resolve(relativePath: string): string
+}
+
+const PREMISE_TOOL: ToolSchema = {
+  type: 'function',
+  function: {
+    name: 'record_premises',
+    description: 'State the facts about this codebase your change relies on, with the lines they come from.',
+    parameters: {
+      type: 'object',
+      required: ['premises'],
+      properties: {
+        premises: {
+          type: 'array',
+          description: 'Two to five. Only the things that would BREAK your change if they ' +
+            'turned out to be false — not a tour of the codebase.',
+          items: {
+            type: 'object',
+            required: ['file', 'quote', 'why'],
+            properties: {
+              file: {
+                type: 'string',
+                description: 'The file the quote is from, named exactly as the tools show ' +
+                  'it to you — including the folder prefix when the workspace has several.',
+              },
+              quote: {
+                type: 'string',
+                description: 'The lines themselves, copied out of the file. Word for word: ' +
+                  'this is checked against the file, so a remembered or tidied-up version ' +
+                  'will not match. One to five lines from ONE place — if you are relying on ' +
+                  'two different parts of the file, that is two premises, not one quote ' +
+                  'stitched together. Do not paraphrase and do not elide with "...".',
+              },
+              why: {
+                type: 'string',
+                description: 'One short line: what your change relies on this for.',
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+}
+
+/** Sized several times over the worst healthy answer, per this project's cap rule: a cap a
+ * good generation can reach fails SILENTLY, because a `length` finish carries no tool call. */
+const PREMISE_MAX_TOKENS = 2_000
+
+/** Long enough for a small function, short enough that "quote the file" cannot become
+ * "paste the file" — a quote that is the whole file proves nothing about the belief. */
+const MAX_QUOTE_CHARS = 600
+
+/** Past this the model is touring the codebase rather than naming what it depends on. */
+const MAX_PREMISES = 5
+
+/** A file this big is not being quoted from memory, and reading it into a string per premise
+ * would be the check costing more than the turn. */
+const MAX_FILE_BYTES = 2_000_000
+
+export interface PremiseCheck {
+  verified: Premise[]
+  /** Each with the reason it could not be confirmed, in the model's own terms. */
+  unverified: { premise: Premise; problem: string }[]
+}
+
+/**
+ * Whitespace folded flat, and nothing else touched.
+ *
+ * Indentation, line breaks and trailing spaces are the model's formatting, not its belief —
+ * it will rewrap a quote to fit its answer and reindent it out of a nested block, and calling
+ * either a false premise would make the check cry wolf until it was switched off. Everything
+ * that carries meaning — identifiers, operators, punctuation, case — is left exactly as it
+ * is, so a changed argument name or a flipped comparison still fails to match.
+ */
+export function normaliseCode(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+/** A quoted line short enough to appear in any file — a lone brace, a `})`, an `else`. Not
+ * evidence of anything, so it is neither required to match nor allowed to carry a premise. */
+const MIN_EVIDENCE_LINE_CHARS = 8
+
+/**
+ * Whether the quote is really in the file, checked twice and for two different things.
+ *
+ * The whole block first: that is the strict reading and it is what a copied span satisfies.
+ * Then, if that fails, LINE BY LINE — every line long enough to mean anything has to be in
+ * the file, though not next to each other.
+ *
+ * The second pass exists because of a live failure that was not a false belief. Asked for the
+ * lines it was relying on, the model returned `import { db } from "./db" export class
+ * InvoiceService { async allocate(...)` — three real lines from three different places, with
+ * the method between them elided, joined into one quote. Nothing in it was invented; it had
+ * simply summarised the file's shape. Refusing that would have the check crying wolf on a
+ * perfectly healthy turn, which is how a check like this ends up switched off.
+ *
+ * What the looser pass gives up is the claim that the lines are ADJACENT, which nothing was
+ * relying on. What it keeps is the only thing that matters: every line the model says it is
+ * going by has to exist. A hallucinated method, an imagined signature, a remembered
+ * validation — none of those are in the file on any line, and none of them survive this.
+ */
+export function quoteIsInFile(quote: string, normalisedContent: string): boolean {
+  if (normalisedContent.includes(normaliseCode(quote))) return true
+  const lines = quote
+    .split('\n')
+    .map(normaliseCode)
+    .filter((l) => l.length >= MIN_EVIDENCE_LINE_CHARS)
+  if (lines.length === 0) return false
+  return lines.every((l) => normalisedContent.includes(l))
+}
+
+export function parsePremises(argsJson: string): Premise[] | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(argsJson)
+  } catch {
+    return null
+  }
+  const raw = (parsed as { premises?: unknown } | null)?.premises
+  if (!Array.isArray(raw)) return null
+  const out: Premise[] = []
+  for (const entry of raw.slice(0, MAX_PREMISES)) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const o = entry as Record<string, unknown>
+    const file = typeof o['file'] === 'string' ? o['file'].trim() : ''
+    const quote = typeof o['quote'] === 'string' ? o['quote'].trim() : ''
+    const why = typeof o['why'] === 'string' ? o['why'].trim() : ''
+    // A quote of a few characters matches half of any file and proves nothing.
+    if (file === '' || quote.length < 8) continue
+    out.push({ file, quote: quote.slice(0, MAX_QUOTE_CHARS), why })
+  }
+  return out.length > 0 ? out : null
+}
+
+/**
+ * Each premise against the file it claims to come from.
+ *
+ * Failures are separated by KIND because they mean different things to the model and one of
+ * them is not its fault: a path that does not resolve is usually a naming mistake (the
+ * folder prefix in a multi-folder workspace), while a quote that is absent from a file that
+ * does exist is the belief itself being wrong. Told the wrong one, the model fixes the wrong
+ * thing.
+ */
+export function verifyPremises(premises: readonly Premise[], where: FileReader): PremiseCheck {
+  const verified: Premise[] = []
+  const unverified: { premise: Premise; problem: string }[] = []
+  const cache = new Map<string, string | null>()
+
+  for (const premise of premises) {
+    let content = cache.get(premise.file)
+    if (content === undefined) {
+      content = null
+      try {
+        const absolute = where.resolve(premise.file)
+        const raw = readFileSync(absolute)
+        content = raw.byteLength > MAX_FILE_BYTES ? null : normaliseCode(raw.toString('utf8'))
+      } catch {
+        content = null
+      }
+      cache.set(premise.file, content)
+    }
+    if (content === null) {
+      unverified.push({
+        premise,
+        problem: 'that file could not be read here — check the path is exactly what the ' +
+          'tools showed you, folder prefix included',
+      })
+      continue
+    }
+    if (quoteIsInFile(premise.quote, content)) verified.push(premise)
+    else {
+      unverified.push({
+        premise,
+        problem: 'those lines are not in that file — indentation and line breaks are ' +
+          'ignored, so this is not a formatting difference',
+      })
+    }
+  }
+  return { verified, unverified }
+}
+
+/**
+ * The forced generation, run over the live transcript at the moment before the first write.
+ *
+ * The transcript is where the reading already happened, so this costs one generation and no
+ * new prefill worth counting. Thinking is off: naming what you just read and copying a line
+ * out of it is restating, and restating with thinking on is measured waste on this server.
+ */
+export async function statePremises(
+  client: LlamaClient,
+  transcript: readonly ChatMessage[],
+  signal?: AbortSignal,
+): Promise<Premise[] | null> {
+  const messages: ChatMessage[] = [
+    ...transcript,
+    {
+      role: 'user',
+      content:
+        '[One more thing before you write. What are you ASSUMING about this codebase — the ' +
+        'things that, if they turned out to be different, would make your change wrong?\n\n' +
+        'For each one, paste the actual lines you are going by and say which file they came ' +
+        'from. Copy them, do not retype them from memory: I am going to look them up, and a ' +
+        'tidied-up version will not match. If you cannot find the lines for something you ' +
+        'were about to rely on, that is worth knowing now.\n\n' +
+        'Call record_premises. Do not start the work.]',
+    },
+  ]
+  try {
+    const result = await client.chat({
+      messages,
+      tools: [PREMISE_TOOL],
+      toolChoice: 'required',
+      maxTokens: PREMISE_MAX_TOKENS,
+      disableThinking: true,
+      ...(signal ? { signal } : {}),
+    })
+    const call = result.message.tool_calls?.[0]
+    if (!call || call.function.name !== 'record_premises') return null
+    return parsePremises(call.function.arguments)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * What the model is told when a premise does not check out.
+ *
+ * Names the confirmed ones too, briefly. Without that the message reads as "everything you
+ * believe is wrong", which sends a model rewriting code that was fine — the same failure the
+ * verify runner's message is worded around. The instruction is narrow on purpose: go and
+ * look, then continue. Not "start over".
+ */
+export function premiseFailureMessage(check: PremiseCheck): string {
+  const bad = check.unverified
+    .map((u) => `- ${u.premise.file}: ${u.premise.why}\n  you quoted: ${u.premise.quote.split('\n')[0]}\n  ${u.problem}`)
+    .join('\n')
+  const good = check.verified.length > 0
+    ? `\n${check.verified.length} of your other assumptions did check out and are fine.\n`
+    : ''
+  return 'Not run: some of what you are relying on is not in the files.\n\n' + bad + '\n' + good +
+    '\nRead those places again before you change anything — what is actually there may not ' +
+    'need the change you were about to make, or may need a different one. Nothing was written.'
+}

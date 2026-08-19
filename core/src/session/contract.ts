@@ -40,6 +40,10 @@ export interface TaskContract {
   /** Set once the understanding check has run for this task, so it runs once and not before
    * every write. Absent means it has not run; a new task replaces the whole contract. */
   understood?: boolean
+  /** Same, for the premise check. Its own flag rather than one shared with `understood`
+   * because the two run at the same moment but answer different questions, and a premise
+   * failure sends the model back to the files BEFORE anyone is asked what they meant. */
+  premisesChecked?: boolean
   /** Set once the gate has seen every criterion met (and the diff review, when it ran,
    * raise nothing). A satisfied contract stops gating and stops being promoted — small
    * follow-up turns must not keep paying an audit for a task that is finished. Only a new
@@ -1046,33 +1050,63 @@ const DIFF_REVIEW_MAX_CHARS = 160_000
  * conversation's server cache — the caller marks the cache cold, exactly as a compaction
  * generation does.
  */
-export async function reviewDiff(
-  client: LlamaClient,
-  contract: TaskContract,
-  diffText: string,
-  signal?: AbortSignal,
-): Promise<ReviewIssue[] | null> {
+export const REVIEW_SYSTEM =
+  'You are reviewing a change someone else made. You did not write it and you were not ' +
+  'there for the conversation that produced it.\n\n' +
+  'You can open files: read the code AROUND the change, not just the lines in it. A diff ' +
+  'shows what moved and hides what it depends on, and most real defects live in that gap — ' +
+  'a call to the wrong helper, an invariant kept somewhere else, a caller this breaks.\n\n' +
+  'Judge it against what the person actually asked for and against correctness: off-by-one, ' +
+  'wrong formula, broken export, a violated constraint, a case the change forgets. Report ' +
+  'only defects you can point at. An empty list is a fine and common verdict, and style ' +
+  'preferences are not defects.'
+
+/**
+ * What the reviewer is given, and the deliberate order of it.
+ *
+ * The USER'S OWN WORDS come first, above the contract. That is the fix for a blindness the
+ * review had by construction: the contract is a distillation of the request, so a reading
+ * error that happened during the distillation is baked into it, and a reviewer checking the
+ * diff against the contract will happily confirm work that answers the wrong question. Only
+ * the original words can catch that, and they cost nothing to carry.
+ */
+export function buildReviewBrief(contract: TaskContract, diffText: string, request?: string): string {
   const clipped = diffText.length > DIFF_REVIEW_MAX_CHARS
     ? `${diffText.slice(0, DIFF_REVIEW_MAX_CHARS)}\n[... diff clipped at ${DIFF_REVIEW_MAX_CHARS} characters]`
     : diffText
-  const messages: ChatMessage[] = [
-    {
-      role: 'system',
-      content:
-        'You are reviewing a change someone else made to a codebase you have not seen. ' +
-        'You have exactly two inputs: the task contract and the diff. Judge the diff ' +
-        'against the contract and against correctness — off-by-one, wrong formula, broken ' +
-        'export, violated constraint. Report only defects you can point at in the diff; ' +
-        'an empty list is a fine and common verdict. Style preferences are not defects.',
-    },
-    {
-      role: 'user',
-      content: `${renderContract(contract)}\n\nThe diff:\n\n${clipped}\n\nReport with review_verdict.`,
-    },
-  ]
+  const asked = request !== undefined && request.trim() !== ''
+    ? `What the person actually asked for, in their words:\n\n    ${request.trim()}\n\n` +
+      'That is what the change has to answer. What follows is somebody\'s summary of it — ' +
+      'useful, but if the two disagree, the words above win.\n\n'
+    : ''
+  return `${asked}${renderContract(contract)}\n\nThe diff:\n\n${clipped}`
+}
+
+/**
+ * The verdict itself: one forced generation over whatever the reviewer has looked at.
+ *
+ * Separate from the looking, because they want different things — the looking is a normal
+ * agent turn with read-only tools, and this is a structured answer that must arrive whatever
+ * happened during it. Same reason the understanding check splits its readings from its
+ * grouping.
+ */
+export async function reviewVerdict(
+  client: LlamaClient,
+  messages: readonly ChatMessage[],
+  signal?: AbortSignal,
+): Promise<ReviewIssue[] | null> {
   try {
     const result = await client.chat({
-      messages, tools: [REVIEW_TOOL], toolChoice: 'required',
+      messages: [
+        ...messages,
+        {
+          role: 'user',
+          content: '[Now the verdict. Report with review_verdict — only defects you can ' +
+            'point at in the change, and an empty list if you found none.]',
+        },
+      ],
+      tools: [REVIEW_TOOL],
+      toolChoice: 'required',
       maxTokens: REVIEW_MAX_TOKENS,
       ...(signal ? { signal } : {}),
     })

@@ -39,14 +39,17 @@ import {
   DIFF_REVIEW_MIN_CHARS, acceptanceFailureMessage, checkAcceptance, clipTodoText,
   decomposeTodos, distillContract,
   expandDraft, improveDraft, looksLikeTask, renderCheckedState, renderContract,
-  resolveReportedCriteria, reviewDiff,
+  resolveReportedCriteria, buildReviewBrief, reviewVerdict, REVIEW_SYSTEM,
 } from './contract.js'
 import {
   buildQuestion, foldAnswer, readThroughLenses, type Understanding,
 } from './understanding.js'
 import {
+  premiseFailureMessage, statePremises, verifyPremises, type Premise,
+} from './premises.js'
+import {
   reviewFailureMessage, type AcceptanceReport, type DraftSuggestions, type TaskContract,
-  saysFinished,
+  type ReviewIssue, saysFinished,
 } from './contract.js'
 import { SessionStore, type CompactionMarker, type SessionMeta } from './store.js'
 
@@ -409,6 +412,11 @@ const SLOW_VERIFY_SECONDS = 8
  * honestly says what is still open.
  */
 const MAX_ACCEPTANCE_ROUNDS = 2
+
+/** How far the independent reader may look before it must deliver a verdict. Enough to open
+ * the files the diff touched and follow one thread out of them; past that it is re-reading
+ * the repository at the end of every task, and each step is a generation. */
+const REVIEW_MAX_STEPS = 6
 
 /**
  * The escalated retry's sampling: temperature up from the frozen 0.6, everything else
@@ -984,7 +992,7 @@ export class Session {
     if (diff.length < DIFF_REVIEW_MIN_CHARS) return result
     this.compactionDisplacedCache = true
     this.promptCacheCold = true
-    const issues = await reviewDiff(this.opts.client, contract, diff, signal)
+    const issues = await this.runReviewer(contract, diff, signal)
     if (issues !== null) {
       this.lastUnmetCount = Math.max(this.lastUnmetCount, issues.length)
       this.opts.onAcceptance?.({ met: 0, unmet: issues.length, round: 1, kind: 'review' })
@@ -1003,6 +1011,61 @@ export class Session {
       }
     }
     return current
+  }
+
+  /**
+   * The independent reader, with its eyes open.
+   *
+   * It used to receive the contract and the diff and nothing else, which let it catch an
+   * off-by-one and made a whole class of defect invisible: a diff shows what MOVED and hides
+   * what it depends on, so "this calls the wrong helper" or "this breaks a caller" cannot be
+   * seen from inside one. Now it can open files — a bounded read-only turn first, then the
+   * forced verdict over whatever it looked at.
+   *
+   * `mode: 'plan'` is doing real work here rather than being a label: the Agent constructor
+   * narrows the tool list to the registry's own `readOnlyNames()` regardless of what is
+   * passed, so a reviewer physically cannot edit the change it is reviewing.
+   *
+   * Its transcript is FRESH. That is the whole value of the second opinion and the reason it
+   * is worth a cold prefill: the writing context believes its own work, and no amount of
+   * prompting talks it out of that — it is what holding a plan in context IS.
+   */
+  private async runReviewer(
+    contract: NonNullable<SessionMeta['contract']>,
+    diff: string,
+    signal?: AbortSignal,
+  ): Promise<ReviewIssue[] | null> {
+    // The role arrives in the BRIEF rather than as a system prompt of its own: the Agent
+    // builds message 0 itself, and that message is where the workspace rules and the
+    // prompt-injection guard live. A reviewer that opens files needs those exactly as much
+    // as the writer did.
+    const brief = `${REVIEW_SYSTEM}\n\n${buildReviewBrief(contract, diff, contract.request)}`
+    const transcript = new Transcript()
+    const agentOpts: AgentOptions = {
+      client: this.opts.client,
+      registry: this.opts.toolset.registry,
+      context: {
+        workspace: this.workspace,
+        reads: this.opts.toolset.reads,
+      },
+      transcript,
+      mode: 'plan',
+      // Enough to open the touched files and follow one thread out of them; past that it is
+      // re-reading the repository on every finished task, and the verdict is a generation
+      // away either side of it.
+      maxSteps: REVIEW_MAX_STEPS,
+      ...(signal ? { signal } : {}),
+    }
+    try {
+      const reader = new Agent(agentOpts)
+      await reader.runTurn(brief)
+    } catch {
+      // A reader that fell over still leaves a transcript worth asking for a verdict over —
+      // and if it does not, the verdict call returns null and the turn is unreviewed, which
+      // is exactly where it stood before any of this existed.
+    }
+    if (signal?.aborted) return null
+    return await reviewVerdict(this.opts.client, transcript.messages(), signal)
   }
 
   /**
@@ -1041,6 +1104,38 @@ export class Session {
   }
 
   /**
+   * The premise check: what the model believes about the code, settled against the code.
+   *
+   * Returns the veto text when something it was relying on is not in the files, and
+   * `undefined` in every other case — including when it could not run, which must never cost
+   * the turn. Runs once per task: the point is to be told before the first write, and a model
+   * told twice starts arguing with the check instead of reading.
+   */
+  private async premiseGate(
+    contract: NonNullable<SessionMeta['contract']>, signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    if (contract.premisesChecked === true) return undefined
+    // Marked before the generation, like the understanding check and for the same reason: an
+    // attempt that is aborted or throws has still been spent, and re-firing it on the next
+    // write would pay for it again.
+    contract.premisesChecked = true
+    this.opts.store?.saveMeta(this.meta)
+    this.compactionDisplacedCache = true
+    this.promptCacheCold = true
+
+    let premises: Premise[] | null
+    try {
+      premises = await statePremises(this.opts.client, this.transcript.messages(), signal)
+    } catch {
+      return undefined
+    }
+    if (premises === null || signal?.aborted) return undefined
+    const check = verifyPremises(premises, this.workspace)
+    if (check.unverified.length === 0) return undefined
+    return premiseFailureMessage(check)
+  }
+
+  /**
    * The understanding check, at the last moment it is still free.
    *
    * Fires once per task, on the FIRST write. Everything before a write is reading — cheap,
@@ -1064,8 +1159,17 @@ export class Session {
   ): Promise<string | undefined> {
     if (!WRITE_TOOLS.has(tool)) return undefined
     const contract = this.meta.contract
-    if (contract === undefined || contract.understood === true) return undefined
-    if (contract.satisfied === true) return undefined
+    if (contract === undefined || contract.satisfied === true) return undefined
+
+    // The premise check first, and both of these run at the same moment for the same reason:
+    // it is the last one that is free. They answer different questions in a deliberate order,
+    // though — what the model believes about the CODE is settled against the files before
+    // anybody is asked what they meant, because a premise failure often changes what the
+    // right question even is.
+    const premiseVeto = await this.premiseGate(contract, signal)
+    if (premiseVeto !== undefined) return premiseVeto
+
+    if (contract.understood === true) return undefined
     const request = contract.request
     if (request === undefined || request.trim() === '') return undefined
 
