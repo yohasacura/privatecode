@@ -77,7 +77,10 @@ export const rememberTool: Tool<RememberArgs> = {
     }
   },
   async execute(args, ctx) {
-    const result = addProjectNote(ctx.workspace.root, args.note, args.files)
+    // The workspace itself locates the evidence: the paths the model writes here are the
+    // ones it was shown, which in a multi-folder workspace carry a folder prefix that
+    // means nothing when joined onto the primary folder.
+    const result = addProjectNote(ctx.workspace.root, args.note, args.files, ctx.workspace)
     if (!result.ok) return { ok: false, content: result.problem ?? 'the note was not stored' }
     const caveat = result.problem !== undefined ? ` (${result.problem})` : ''
     return {

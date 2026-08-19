@@ -75,6 +75,37 @@ export function hashFile(absolute: string): string | null {
   }
 }
 
+/**
+ * How an evidence path becomes a file on disk. The `Workspace` in production — and it has
+ * to be, because a workspace-addressed path is NOT a path relative to the primary folder.
+ *
+ * This was the whole of the "none of those files could be read" bug. Evidence was located
+ * with `join(workspaceRoot, path)`, and `workspaceRoot` is the FIRST folder; in a
+ * multi-folder workspace every path the model has ever seen carries its folder's name
+ * (`api/src/server.ts`), because that is how `Workspace.display` writes them. Joining that
+ * onto the primary folder produced `…/primary/api/src/server.ts`, which exists nowhere —
+ * so every note naming a real file was refused, in exactly the workspaces where notes are
+ * worth most. An absolute path failed the same way. `Workspace.resolve` is the one thing
+ * that already knows all of this, jail included.
+ */
+export interface EvidenceLocator {
+  /** Throws for a path outside the workspace, which is a miss, not a crash. */
+  resolve(relativePath: string): string
+}
+
+function locate(
+  workspaceRoot: string, rel: string, where: EvidenceLocator | undefined,
+): string | null {
+  // No locator is the CLI's one-shot mode and the tests that predate this: one folder,
+  // where a plain join is the same answer.
+  if (where === undefined) return join(workspaceRoot, rel)
+  try {
+    return where.resolve(rel)
+  } catch {
+    return null
+  }
+}
+
 const EVIDENCE = /^<!-- from: (.+) -->$/
 
 /**
@@ -133,7 +164,7 @@ function parseNotes(text: string): ProjectNote[] {
  * no notes and a problem, because the alternative — guessing at half a parse — is how a
  * note ends up in the prompt with the wrong evidence attached.
  */
-export function loadProjectNotes(workspaceRoot: string): LoadedNotes {
+export function loadProjectNotes(workspaceRoot: string, where?: EvidenceLocator): LoadedNotes {
   const problems: string[] = []
   const path = notesPath(workspaceRoot)
   if (!existsSync(path)) return { fresh: [], stale: [], problems, text: '' }
@@ -149,7 +180,12 @@ export function loadProjectNotes(workspaceRoot: string): LoadedNotes {
   const fresh: ProjectNote[] = []
   const stale: ProjectNote[] = []
   for (const note of parsed) {
-    const unchanged = note.evidence.every((e) => hashFile(join(workspaceRoot, e.path)) === e.hash)
+    // Located the same way it was stored. Locating it differently is how a note that is
+    // perfectly fresh reads as stale and silently stops being loaded.
+    const unchanged = note.evidence.every((e) => {
+      const abs = locate(workspaceRoot, e.path, where)
+      return abs !== null && hashFile(abs) === e.hash
+    })
     ;(unchanged ? fresh : stale).push(note)
   }
 
@@ -206,7 +242,7 @@ export interface AddResult { ok: boolean; problem?: string; note?: ProjectNote }
  * being trusted. Better to lose the note than to keep an immortal one.
  */
 export function addProjectNote(
-  workspaceRoot: string, text: string, files: readonly string[],
+  workspaceRoot: string, text: string, files: readonly string[], where?: EvidenceLocator,
 ): AddResult {
   // A leading space neutralises the one sequence the file format reserves (`^## ` starts
   // the next note's block) while staying invisible in markdown. Long notes legitimately
@@ -224,18 +260,26 @@ export function addProjectNote(
   const missing: string[] = []
   for (const raw of files.slice(0, MAX_FILES_PER_NOTE)) {
     const rel = raw.replace(/\\/g, '/').trim()
-    const hash = hashFile(join(workspaceRoot, rel))
+    const abs = locate(workspaceRoot, rel, where)
+    const hash = abs === null ? null : hashFile(abs)
     if (hash === null) missing.push(rel)
     else evidence.push({ path: rel, hash })
   }
   if (evidence.length === 0) {
     return {
       ok: false,
-      problem: `none of those files could be read (${missing.join(', ')}), so there is nothing to tie this note to`,
+      // Says what to do differently. The old wording named the files and stopped there,
+      // which left one repair available — try again with the same paths — and that is what
+      // it got, turn after turn.
+      problem:
+        `none of those files could be read (${missing.join(', ')}), so there is nothing to ` +
+        'tie this note to. Name each file exactly as the tools address it — the same ' +
+        'spelling read_file and search_code use, folder prefix included in a multi-folder ' +
+        'workspace — and only files that exist right now.',
     }
   }
 
-  const existing = loadProjectNotes(workspaceRoot)
+  const existing = loadProjectNotes(workspaceRoot, where)
   const all = [...existing.stale, ...existing.fresh]
   const note: ProjectNote = { text: body, evidence, learned: new Date().toISOString().slice(0, 10) }
   // Oldest first out. A stale note is evicted before a fresh one: it has already been

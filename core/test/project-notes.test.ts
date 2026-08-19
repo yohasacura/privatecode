@@ -30,6 +30,63 @@ afterEach(() => {
   for (const d of roots.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
+describe('evidence is located the way the model addresses it', () => {
+  /** A workspace of two folders, which is when paths grow a folder prefix. */
+  function twoFolders(): { ws: Workspace; libRoot: string } {
+    const libRoot = mkdtempSync(join(tmpdir(), 'pc-notes-lib-'))
+    roots.push(libRoot)
+    writeFileSync(join(libRoot, 'engine.ts'), 'export const version = 1\n', 'utf8')
+    const ws = new Workspace([
+      { name: 'app', root, access: 'write', primary: true },
+      { name: 'lib', root: libRoot, access: 'write', primary: false },
+    ])
+    return { ws, libRoot }
+  }
+
+  test('a note about a file in an ATTACHED folder is stored, not refused', () => {
+    // The reported failure, in the shape it actually reaches people: the model names the
+    // file the way every tool showed it to it — `lib/engine.ts` — and the note is refused
+    // because `join(primaryRoot, 'lib/engine.ts')` names nothing.
+    const { ws } = twoFolders()
+    const r = addProjectNote(root, 'The engine version is pinned in one place.', ['lib/engine.ts'], ws)
+    expect(r.problem).toBeUndefined()
+    expect(r.ok).toBe(true)
+    expect(r.note?.evidence[0]?.path).toBe('lib/engine.ts')
+  })
+
+  test('and it loads as fresh, then goes stale when that file changes', () => {
+    const { ws, libRoot } = twoFolders()
+    addProjectNote(root, 'The engine version is pinned in one place.', ['lib/engine.ts'], ws)
+    expect(loadProjectNotes(root, ws).fresh).toHaveLength(1)
+
+    writeFileSync(join(libRoot, 'engine.ts'), 'export const version = 2\n', 'utf8')
+    const after = loadProjectNotes(root, ws)
+    expect(after.fresh).toHaveLength(0)
+    expect(after.stale).toHaveLength(1)
+  })
+
+  test('the primary folder keeps working, prefix and all', () => {
+    const { ws } = twoFolders()
+    expect(addProjectNote(root, 'Acts come from a counter.', ['app/src/act.ts'], ws).ok).toBe(true)
+    expect(loadProjectNotes(root, ws).fresh).toHaveLength(1)
+  })
+
+  test('a path outside every folder is still refused, and says what to do', () => {
+    const { ws } = twoFolders()
+    const r = addProjectNote(root, 'Something about elsewhere.', ['../outside.ts'], ws)
+    expect(r.ok).toBe(false)
+    expect(r.problem).toMatch(/nothing to tie this note to/)
+    // The refusal has to be actionable, or the model repeats the same call forever.
+    expect(r.problem).toMatch(/exactly as the tools address it/)
+  })
+
+  test('without a locator the old single-folder behaviour is unchanged', () => {
+    // The CLI one-shot mode and every test that predates the locator take this path.
+    expect(addProjectNote(root, 'Acts come from a counter.', ['src/act.ts']).ok).toBe(true)
+    expect(loadProjectNotes(root).fresh).toHaveLength(1)
+  })
+})
+
 describe('a note dies with the code it describes', () => {
   test('it loads while its files are untouched', () => {
     expect(addProjectNote(root, 'Act numbers come from a row-locked counter.', ['src/act.ts']).ok).toBe(true)

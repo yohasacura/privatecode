@@ -814,7 +814,7 @@ export class SessionHost {
     const skills = loadSkills(workspaceRoot)
     // Re-checked against the code on every session build, which is what keeps it honest: a
     // note whose files moved since it was written is dropped here, not carried forward.
-    const notes = loadProjectNotes(workspaceRoot)
+    const notes = loadProjectNotes(workspaceRoot, this.workspace)
     const formatting = loadFormatRules(workspaceRoot)
     // Read per session build like the settings layers beside it, so a connection string
     // edited while the window is open arrives with the next New session.
