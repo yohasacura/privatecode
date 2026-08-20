@@ -1188,3 +1188,36 @@ test('a paraphrased audit gap leaves its plan item open instead of ticking it', 
   expect(items[0]!.status).toBe('pending')
   expect(items[1]!.status).toBe('completed')
 })
+
+/**
+ * The loop detector is OFF for sessions, and this is what keeps it off.
+ *
+ * It refused a third identical call, which is the right idea and was the wrong instrument:
+ * its "same result" test compared only the first 400 characters, so a file edited below that
+ * point — by the model, or by the owner in another editor — still looked like the same answer
+ * and the re-read was refused. Reported from use, and switched off by the owner's decision.
+ *
+ * Without a test the wiring is one line in `buildAgent` and comes back silently.
+ */
+test('a session never refuses a repeated call, however identical the answer', async () => {
+  let call = 0
+  const fake = await makeServer(() => {
+    call++
+    // Four identical reads of the same directory, which returns the same thing every time —
+    // exactly the shape the detector used to stop on the third.
+    return call <= 4
+      ? toolCallSSE('list_dir', JSON.stringify({ path: '.' }))
+      : textSSE('had a look')
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+
+  await host.handle({ id: 2, method: 'send', params: { text: 'look in there a few times' } })
+
+  const results = eventsNamed(transport, 'tool.result').map((e) => e.data as { name: string; content: string })
+  const listings = results.filter((r) => r.name === 'list_dir')
+  expect(listings.length).toBe(4)
+  expect(listings.some((r) => r.content.includes('already called'))).toBe(false)
+  expect(listings.some((r) => r.content.startsWith('Not run:'))).toBe(false)
+})

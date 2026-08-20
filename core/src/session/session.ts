@@ -5,7 +5,6 @@ import {
   type AgentEvents, type AgentOptions, type StepInfo, type StepPreamble, type TurnResult,
 } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
-import { LoopDetector } from '../agent/loop-detector.js'
 import type { Checkpoint } from '../checkpoints/store.js'
 import { CheckpointSet } from '../checkpoints/set.js'
 import { soleUnit, type SnapshotUnit } from '../checkpoints/units.js'
@@ -3022,12 +3021,26 @@ export class Session {
     }
   }
 
-  /**
-   * One per session, not one per turn: the loop worth catching spans turns. A model that
-   * re-runs the same failing command once per turn for an hour looks reasonable inside each
-   * turn and is the exact failure an overnight run has to survive.
+  /*
+   * THE LOOP DETECTOR IS OFF, by the owner's decision, and this is where it was switched on.
+   *
+   * What it was for is still real: a model that re-runs the same failing command once per
+   * turn for an hour looks reasonable inside each turn, and nothing else bounds a night.
+   * `LoopDetector` and its tests are untouched, and re-wiring it is this one line.
+   *
+   * Why it had to go, reported from use: it blocked re-reading a file that had genuinely
+   * changed. The class doc says the signal is the RESULT, not the call, precisely so that
+   * re-reading after an edit stays allowed — but `stableResult` compares only the first 400
+   * characters (`RESULT_PREFIX`). An edit below that point, whether the model made it or the
+   * owner made it in another editor, leaves the compared window identical, so a file that had
+   * really changed read as "the same answer again" and the third read was refused. Anything
+   * that returns a large result is affected the same way; `read_file` is simply where it
+   * shows, because re-reading is the correct move after any change.
+   *
+   * The narrow fix, if this is ever revisited: compare a hash of the WHOLE result rather than
+   * a prefix — the reason given for the prefix (cost) is a hash over a string already in
+   * memory, which is not a real cost — or exempt the read family outright.
    */
-  private readonly loopDetector = new LoopDetector()
 
   /** Built only for a long run; see `SessionOptions.longRun`. */
   private readonly checkpoints: CheckpointSet | null
@@ -3169,7 +3182,9 @@ export class Session {
       registry: this.opts.toolset.registry,
       context,
       transcript: this.transcript,
-      loopDetector: this.loopDetector,
+      // No `loopDetector` — see the note where it used to be constructed. Omitting it is how
+      // the Agent turns the check off: `AgentOptions.loopDetector` is optional and absent
+      // means the code never runs, rather than running with a limit nothing can reach.
     }
     // Only with somewhere to ask. Without a port the check could read the request three ways
     // and have nobody to put the disagreement to, which is a generation spent on nothing.
