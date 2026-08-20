@@ -21,11 +21,18 @@ const calls: { method: string; params: unknown }[] = []
  * what Settings does when it applies a new server URL without telling App. */
 let savedServerUrl = 'http://127.0.0.1:8080'
 
+/** What `/props` had said by the time the session was built. `null` is a session built while
+ * the model server was down — the state the context-readout test below is about. */
+let initContextLength: number | null = 262144
+
 function fakeResult(method: string): unknown {
   switch (method) {
     case 'config.get': return { serverUrl: savedServerUrl, recentWorkspaces: ['D:\\proj'] }
     case 'init': return {
-      sessionId: 's1', mode: 'normal', contextLength: 262144, title: '', contextUsed: 0,
+      sessionId: 's1', mode: 'normal', contextLength: initContextLength, title: '',
+      // The real shape: the server's own count (null until a step runs in this process) and
+      // the transcript's estimate, which is always available.
+      contextUsed: { promptTokens: null, approxTokens: 4200 },
       items: [], problems: [], workspaceName: 'proj', folderCount: 1,
     }
     case 'sessions.list': return { sessions: [], problems: [] }
@@ -76,6 +83,7 @@ let abortsSeen: number
 beforeEach(async () => {
   calls.length = 0
   savedServerUrl = 'http://127.0.0.1:8080'
+  initContextLength = 262144
   abortsSeen = 0
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -208,4 +216,43 @@ test('a reopen after a folder edit uses the server URL the HOST has, not the one
   expect(inits.length).toBeGreaterThan(1)
   const last = inits[inits.length - 1]!
   expect((last.params as { serverUrl: string }).serverUrl).toBe('http://127.0.0.1:9099')
+})
+
+/**
+ * The context readout, when the session was built before the model server was up.
+ *
+ * There are two copies of the window size: the session's, captured once when it is built,
+ * and the one the status bar polls every ten seconds. The bar used only the first, so
+ * starting the app with the server down left it null forever — nothing re-seeds it — and the
+ * whole readout, bar and figures alike, never rendered. It did not come back when the server
+ * did. Reported as "the context bar has disappeared and I cannot tell how full it is".
+ */
+test('the context readout appears once the server answers, even if it was down at first', async () => {
+  render(null, host)
+  // A session built while /props had nothing to say.
+  initContextLength = null
+  render(<App />, host)
+  await settle()
+
+  // The poll answers with a real window, and `contextUsed.approxTokens` was there all along,
+  // so there is a true reading to show.
+  const readout = host.querySelector('.status-context')
+  expect(readout).not.toBeNull()
+  expect(readout?.textContent).toContain('262.1k')
+  expect(host.querySelector('.ctx-fill')).not.toBeNull()
+})
+
+test('and the session\'s own window wins when it has one', async () => {
+  // The two copies can genuinely disagree — restart the server with a different -c and the
+  // poll moves while the session's does not. The session's is the number compaction is
+  // calibrated against, so it stays the honest denominator for "how close am I to one".
+  render(null, host)
+  initContextLength = 131_072
+  render(<App />, host)
+  await settle()
+
+  const readout = host.querySelector('.status-context')
+  expect(readout?.textContent).toContain('131.1k')
+  // Not the 262144 the poll reports.
+  expect(readout?.textContent).not.toContain('262.1k')
 })

@@ -77,7 +77,21 @@ export function StatusBar({
   const session = chatState.session
   const lastStep = chatState.lastStepDone
   const used = lastStep?.promptTokens
-  const total = session?.contextLength ?? null
+  /**
+   * The window size, from the session first and the live poll second — and the fallback is
+   * the whole point of this line.
+   *
+   * There are two copies of this number. The session's is captured once, when the session is
+   * built, from whatever `/props` said at that moment; the polled one above is refreshed
+   * every ten seconds. Start the app while the model server is down and the session's copy is
+   * null forever — nothing re-seeds it — so `fillPct` stayed null and the ENTIRE context
+   * readout, bar and figures alike, was never rendered. It did not come back when the server
+   * did. Reported as "the context bar has disappeared and I cannot tell how full it is".
+   *
+   * The session's own value still wins where it exists, because it is the number compaction
+   * is calibrated against and therefore the honest denominator for "how close am I to one".
+   */
+  const total = session?.contextLength ?? contextLength
   const fillPct = used !== undefined && total !== null && total > 0
     ? Math.min(100, Math.round((used / total) * 100))
     : null
