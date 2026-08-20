@@ -130,13 +130,18 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     '',
     'Prefer a targeted search over a broad one.',
     '',
-    // Qwen3.6 is trained predominantly on Chinese and, with no language pinned, drifts
-    // into it mid-sentence -- observed in a Russian answer that finished a clause in
-    // Chinese. The model has no way to know this is unwanted unless told; nothing else in
-    // this prompt mentions language at all.
-    'Reply in the same language the user writes in. Never switch languages inside an',
-    'answer, and never mix scripts in one sentence. Keep code, identifiers, paths and',
-    'command output exactly as they are, in whatever language they are already in.',
+    // ENGLISH, pinned, and not "whatever the user wrote in" — which is what this said until
+    // the owner reported Ctrl+E always coming back in Russian. This is an English-only tool
+    // by its owner's standing rule, and mirroring is how a stray Russian word anywhere in
+    // the context — a pasted comment, a commit message, an old note — flipped a whole answer.
+    //
+    // The reason a language is pinned at all is unchanged: Qwen3.6 is trained predominantly
+    // on Chinese and, with nothing said, drifts into it mid-sentence — observed finishing a
+    // clause in Chinese. The model has no way to know this is unwanted unless told, and
+    // nothing else in this prompt mentions language.
+    'Always reply in English, whatever language the user writes in. Never switch languages',
+    'inside an answer, and never mix scripts in one sentence. Keep code, identifiers, paths',
+    'and command output exactly as they are, in whatever language they are already in.',
   ]
 
   const parts = [...common]

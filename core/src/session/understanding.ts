@@ -95,7 +95,8 @@ const READING_TOOL: ToolSchema = {
             'BillingController.cs". Roll the call sites up into the outcome instead of ' +
             'listing them one by one. Two to six lines, each under about ten words — no ' +
             'examples, no brackets, and never the same outcome twice in different words. ' +
-            'Write them in the SAME LANGUAGE the request was written in.',
+            'Write them IN ENGLISH, whatever language the request is in — these lines are ' +
+            'shown to the user as they are.',
         },
       },
     },

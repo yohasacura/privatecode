@@ -337,8 +337,8 @@ const EXPAND_TOOL: ToolSchema = {
           type: 'string',
           description: 'The same request, written the way a careful colleague would brief ' +
             'it: name the concrete files, components, styles, tokens and conventions from ' +
-            'THIS project the work should build on. WRITTEN IN THE LANGUAGE OF THE DRAFT ' +
-            '— a Russian draft expands into Russian, never English. Only facts the ' +
+            'THIS project the work should build on. WRITTEN IN ENGLISH, always, whatever ' +
+            'language the draft is in. Only facts the ' +
             'context supports — anything essential it cannot answer stays a short open ' +
             'question inside the text. Plain prose, no headings.',
         },
@@ -386,8 +386,8 @@ export async function expandDraft(
         'build on from the project context you already have (repo map, project notes, ' +
         'this conversation). Never invent a path or a value the context does not ' +
         'support — anything essential it cannot answer, keep as a short open question ' +
-        'inside the text. Keep the user\'s intent exactly, and write the brief in the ' +
-        'SAME LANGUAGE as the draft — a draft in another language expands in that language.]',
+        'inside the text. Keep the user\'s intent exactly, and write the brief IN ENGLISH ' +
+        'whatever language the draft is in.]',
     },
   ]
   try {
@@ -467,7 +467,7 @@ const PLAN_TOOL: ToolSchema = {
       properties: {
         items: {
           type: 'array',
-          description: '2-12 steps, in execution order, IN THE LANGUAGE OF THE TASK.',
+          description: '2-12 steps, in execution order, IN ENGLISH.',
           items: {
             type: 'object',
             required: ['title', 'done_when'],
@@ -544,9 +544,8 @@ export async function decomposeTodos(
         '[Before any work starts: call plan_todos with the ordered implementation steps ' +
         'for the contract above — each step with its own checkable done_when, and the ' +
         'files it touches where the contract names them. Steps are the PATH; the ' +
-        'contract criteria stay the definition of done. Write the steps in the language ' +
-        'of the task — a task in another language is planned in that language. Do not ' +
-        'begin the work.]',
+        'contract criteria stay the definition of done. Write the steps IN ENGLISH, ' +
+        'whatever language the task is in. Do not begin the work.]',
     },
   ]
   try {
