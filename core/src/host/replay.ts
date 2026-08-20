@@ -127,6 +127,50 @@ function isCompactionAck(message: ChatMessage): boolean {
   return message.role === 'assistant' && message.content === COMPACTION_ACK_TEXT
 }
 
+/**
+ * Whether a user-role message was written by the HARNESS rather than by the person, and
+ * what the person actually said if both are in there.
+ *
+ * The two share a role because the chat template has nowhere else to put a plan-focus note,
+ * a mid-turn verify result or a contract preamble — the model has to read them as
+ * instructions. On screen they are not the same thing, and treating them as the same thing
+ * is why a resumed session showed four "your messages" where two had been sent.
+ *
+ * The convention is the harness's own and has been consistent since these notes existed:
+ * every one of them is wrapped in square brackets. That gives two shapes:
+ *
+ *   [note]                  — the whole message is the harness talking. Marked.
+ *   [note]\n\nwhat you said — a note PREFIXED to a real message, which is how a contract
+ *                             preamble rides along (session.ts folds them into one message
+ *                             because two adjacent user messages deviate from the template).
+ *                             The person's own words are what the row should show, so the
+ *                             preamble is stripped for display and the message stays theirs.
+ *
+ * Deliberately conservative: the bracket has to open at the very first character and the
+ * matching close has to be found by counting depth, so a message that merely CONTAINS
+ * brackets, or opens one and never closes it, is left alone and stays the person's. Being
+ * wrong in that direction shows a note as a message, which is where we started; being wrong
+ * the other way would hide something a person wrote, which is not recoverable by scrolling.
+ */
+export function splitUserMessage(content: string): { kind: 'user'; text: string; harness?: true } {
+  if (!content.startsWith('[')) return { kind: 'user', text: content }
+  let depth = 0
+  let end = -1
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i]
+    if (ch === '[') depth++
+    else if (ch === ']') {
+      depth--
+      if (depth === 0) { end = i; break }
+    }
+  }
+  if (end === -1) return { kind: 'user', text: content }
+  const rest = content.slice(end + 1).trim()
+  // Nothing after the bracket: the message IS the note.
+  if (rest === '') return { kind: 'user', text: content, harness: true }
+  return { kind: 'user', text: rest }
+}
+
 export function replayEntries(
   messages: readonly ChatMessage[],
   outcomes: ReadonlyMap<string, boolean> = new Map(),
@@ -186,7 +230,7 @@ export function replayEntries(
 
       case 'user':
         if (message.content !== null && message.content !== '') {
-          entries.push({ kind: 'user', text: message.content })
+          entries.push(splitUserMessage(message.content))
         }
         break
 

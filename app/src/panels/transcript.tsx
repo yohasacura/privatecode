@@ -511,8 +511,15 @@ const TranscriptRow = memo(function TranscriptRow({
       // Not a right-aligned bubble: a long instruction is the most important thing on the
       // screen and should get the full reading width, marked as input rather than boxed
       // off in a corner the way a messaging app would.
+      // A harness note wears the same role and none of the emphasis. It is here because the
+      // model read it as an instruction and the transcript should show what the model saw;
+      // it is not one of the person's messages, and marking it as one is what made a
+      // resumed session look like it had twice as many.
       return (
-        <Row kind="user" marker={<span class="marker-caret">›</span>}>
+        <Row
+          kind={item.harness === true ? 'user user-note' : 'user'}
+          marker={<span class="marker-caret">{item.harness === true ? '·' : '›'}</span>}
+        >
           <div class="user-text">{item.text}</div>
         </Row>
       )

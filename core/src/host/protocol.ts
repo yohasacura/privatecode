@@ -128,7 +128,16 @@ export interface InitResult {
  * history would be a second thing to keep in step, and it would drift.
  */
 export type TranscriptEntry =
-  | { kind: 'user'; text: string }
+  /**
+   * A user-role message. `harness: true` marks one the HARNESS wrote, not the person.
+   *
+   * The two share a role because the chat template has nowhere else to put them — a plan
+   * focus note, a mid-turn verify result and a contract preamble are all `role: 'user'` so
+   * the model reads them as instructions. On screen they are not the same thing at all, and
+   * conflating them is what made a resumed session show four "your messages" when the
+   * person had sent two.
+   */
+  | { kind: 'user'; text: string; harness?: true }
   | { kind: 'reasoning'; step: number; text: string }
   | { kind: 'tool-call'; name: string; args: string }
   /** `ok` for calls made before this feature existed is unknown and reported as `true`;

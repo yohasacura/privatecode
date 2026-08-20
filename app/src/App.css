@@ -738,22 +738,111 @@ kbd {
 /* One content edge for EVERY row, prose and cards alike. The rule is always there and
    only its colour changes, so nothing shifts sideways between a user message, an answer
    and a tool card -- that 11px wobble was the thing that still read as "assembled from
-   parts" once the gutter was in. */
+   parts" once the gutter was in.
+
+   ONE EXCEPTION, made deliberately and worth stating here rather than contradicting this
+   paragraph quietly further down: the user's own row replaces its hairline with a 3px bar
+   (see .row-user below). The text edge does not move -- the bar is out of flow and grows
+   LEFTWARDS into the grid gap -- so the promise this paragraph actually makes still holds.
+   What it gives up is that the user row is now the one row whose rule is not a hairline,
+   which is the price of being findable. */
 .row-body {
   min-width: 0;
   padding-left: 11px;
   border-left: 1px solid transparent;
 }
-.row-user .row-body { border-left-color: var(--accent-line); }
 .row-reasoning .row-body { border-left-color: var(--border); }
 
 /* Consecutive tool calls are one action, not several: tighten them into a group. */
 .row-tool + .row-tool { margin-top: -9px; }
 
-/* Extra air before each new instruction, so a long transcript reads as a sequence of
-   exchanges rather than one undifferentiated column. */
-.row-user { margin-top: 30px; }
+/* ---------------------------------------------------------------------------------
+   THE USER'S OWN ROW — the one you scroll back looking for.
+   ---------------------------------------------------------------------------------
+   Reported by the owner: "I often try to find my own messages and they get lost in the
+   general view." They had a caret and a 40%-opacity hairline, in a column where the
+   reasoning rows carry a hairline too — a difference you can see when you stop and look
+   at it, and cannot see at all while the column is moving.
+
+   So every cue here is structural and low-frequency, because that is what survives
+   scrolling: air, a solid shape in the margin, a solid shape in the gutter. Nothing
+   relies on reading a glyph or judging a 1px hue, and the message TEXT is untouched.
+
+   The idiom is not invented — `.tree-row-staged` already marks "you chose this one" with
+   a warm wash plus a solid left bar, and this is the same sentence said in the transcript.
+   Everything tunable lives in the two tokens below. */
+:root {
+  /* Matched to the file tree's staged wash, deliberately. */
+  --user-wash: rgba(217, 119, 87, 0.085);
+  --user-bar: 3px;
+}
+
+/* AIR, asymmetric on purpose: a wide gap ABOVE cuts the new instruction away from the
+   work that just finished, a tight one BELOW glues it to the work it causes. The message
+   becomes the heading of the block under it rather than one more row in a stack — and a
+   gap no other row produces is legible at any scroll speed.
+   No `:first-child` rule of its own: the existing one below already wins on specificity,
+   and adding a second would be a rule that silently never applies. */
+.row-user { margin-top: 42px; margin-bottom: 9px; }
 .transcript > .row:first-child { margin-top: 0; }
+
+/* A harness note rides the user ROLE — the model has to read it as an instruction — and
+   gets none of the marking, because the whole point of the marking is "you wrote this".
+   It keeps the old hairline and steps back to dim: present, readable, and never mistaken
+   for one of your own messages while you scroll looking for one. */
+.row-user.user-note { margin-top: 15px; margin-bottom: 15px; }
+.row-user.user-note .row-body {
+  border-left-color: var(--border);
+  background: none;
+}
+.row-user.user-note .row-body::before { content: none; }
+.row-user.user-note .user-text { color: var(--text-dim); }
+.row-user.user-note .marker-caret { background: none; color: var(--text-faint); width: auto; }
+
+.row-user .row-body {
+  position: relative;
+  /* The hairline is handed over to the bar below, which stands at the same x. */
+  border-left-color: transparent;
+  /* A warm ground that dies out before the column does. No right edge to align to
+     anything, so it cannot read as a card and cannot overflow a narrow window. */
+  background: linear-gradient(90deg, var(--user-wash), rgba(217, 119, 87, 0) 62%);
+}
+
+/* THE BAR. Absolutely positioned, so it is out of flow and cannot move a single glyph:
+   an abspos child is laid out against the padding box, so `left: calc(-1 * var(--user-bar))`
+   ends the bar exactly where the 1px border used to sit and grows the rest of the way
+   LEFTWARDS into the 10px grid gap. The text edge is untouched; the gap reads 3px tighter.
+
+   Bright head, quiet tail: what you are hunting for is where your message STARTS, so a
+   sixty-line paste marks its first ~28px and then fades rather than painting a sixty-line
+   orange stripe down the page. */
+.row-user .row-body::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--user-bar));
+  width: var(--user-bar);
+  /* Overhangs both ends, so even a one-word question gets a mark tall enough to aim at. */
+  top: -6px;
+  bottom: -3px;
+  border-radius: 1.5px;
+  background: linear-gradient(180deg, var(--accent) 0 28px, var(--accent-line) 76px);
+}
+
+/* THE MARKER, given a field to sit on: at speed a 13px glyph dissolves and a filled 18px
+   block does not, and this is the only filled block in the gutter column. Exactly
+   --gutter wide (18px), so it sits flush in the track and spills into nothing. */
+.row-user .row-gutter { padding-top: 1px; }
+.row-user .marker-caret {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  justify-content: center;
+  width: var(--gutter);
+  height: 18px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  font-size: 12px;
+}
 
 .marker-caret {
   font-family: var(--mono);

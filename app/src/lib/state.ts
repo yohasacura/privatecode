@@ -31,7 +31,12 @@ import type { AgentMode } from '@core/permissions/engine'
  */
 
 export type ChatItem =
-  | { kind: 'user'; id: number; text: string }
+  /** `harness` marks a user-ROLE message the harness wrote — a plan focus note, a mid-turn
+   * verify result, a contract preamble. It reads as an instruction to the model, which is
+   * why it has that role, and it is emphatically not one of the person's own messages. Only
+   * a replayed session can produce one: live, the composer is the only thing that dispatches
+   * `user-message`. */
+  | { kind: 'user'; id: number; text: string; harness?: boolean }
   | { kind: 'assistant'; id: number; text: string; interrupted: boolean }
   /** The model's reasoning for one step: the full text, plus whether it is still being
    * produced. `done` drives BOTH the live animation and the header wording, so a closed
@@ -349,7 +354,7 @@ export function initialChatState(): ChatState {
 }
 
 export type ChatAction =
-  | { type: 'user-message'; text: string }
+  | { type: 'user-message'; text: string; harness?: true }
   | { type: 'decisions.changed'; pending: number }
   /** Dispatched by the composer the moment `run.start` is called: the task and budgets are
    * known only there, and the first `run.turn` event may be a whole turn away. */
@@ -627,7 +632,8 @@ export function pendingTool(items: ChatItem[]): (ChatItem & { kind: 'tool' }) | 
 /** The live action each stored entry stands in for. See the `transcript-restored` case. */
 function restoreAction(entry: TranscriptEntry): ChatAction {
   switch (entry.kind) {
-    case 'user': return { type: 'user-message', text: entry.text }
+    case 'user':
+      return { type: 'user-message', text: entry.text, ...(entry.harness ? { harness: true as const } : {}) }
     case 'reasoning': return { type: 'thinking.delta', text: entry.text }
     case 'tool-call': return { type: 'tool.call', name: entry.name, args: entry.args }
     case 'tool-result':
@@ -655,7 +661,10 @@ function restoreAction(entry: TranscriptEntry): ChatAction {
 export function reduceChat(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case 'user-message': {
-      const item: ChatItem = { kind: 'user', id: state.nextId, text: action.text }
+      const item: ChatItem = {
+        kind: 'user', id: state.nextId, text: action.text,
+        ...(action.harness ? { harness: true } : {}),
+      }
       return { ...state, items: [...state.items, item], nextId: state.nextId + 1 }
     }
 
