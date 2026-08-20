@@ -198,6 +198,8 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         ...(d.tokensPerSecond !== undefined ? { tokensPerSecond: d.tokensPerSecond } : {}),
         ...(d.promptTokens !== undefined ? { promptTokens: d.promptTokens } : {}),
         ...(d.draftAcceptance !== undefined ? { draftAcceptance: d.draftAcceptance } : {}),
+        ...(d.contextUsed !== undefined ? { contextUsed: d.contextUsed } : {}),
+        ...(d.compactAt !== undefined ? { compactAt: d.compactAt } : {}),
       })),
       client.on('turn.done', (d) => {
         emit({

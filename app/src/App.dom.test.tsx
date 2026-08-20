@@ -242,17 +242,20 @@ test('the context readout appears once the server answers, even if it was down a
   expect(host.querySelector('.ctx-fill')).not.toBeNull()
 })
 
-test('and the session\'s own window wins when it has one', async () => {
-  // The two copies can genuinely disagree — restart the server with a different -c and the
-  // poll moves while the session's does not. The session's is the number compaction is
-  // calibrated against, so it stays the honest denominator for "how close am I to one".
+test('and when the two copies disagree, the FRESHER one wins', async () => {
+  // This test used to assert the opposite, on the reasoning that the session's copy was the
+  // number compaction was calibrated against. An audit refuted that: when the server comes
+  // back with a different -c, the host re-calibrates the live core session
+  // (`refreshServerProps` -> `setContextLength`) and the app's frozen copy is the ONLY thing
+  // still holding the dead number — nothing in the app rewrites it, there is no protocol
+  // event for a window change. Preferring it meant dividing by a window that no longer
+  // exists: "150.0k/131.1k", pinned red, while the engine sat at 57%.
   render(null, host)
   initContextLength = 131_072
   render(<App />, host)
   await settle()
 
   const readout = host.querySelector('.status-context')
-  expect(readout?.textContent).toContain('131.1k')
-  // Not the 262144 the poll reports.
-  expect(readout?.textContent).not.toContain('262.1k')
+  expect(readout?.textContent).toContain('262.1k')
+  expect(readout?.textContent).not.toContain('131.1k')
 })

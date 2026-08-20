@@ -1603,7 +1603,51 @@ export class Session {
    * (including before the first step) and never null.
    */
   contextUsage(): { promptTokens: number | null; approxTokens: number } {
-    return { promptTokens: this.latestPromptTokens, approxTokens: this.approxTokens() }
+    return {
+      // Both figures corrected the way `maybeCompact` corrects them, and that is the whole
+      // point of routing them through here: for a long time the status bar divided a RAW
+      // count by the window while the compaction gate divided a corrected one, so the bar
+      // could read comfortably while the gate was about to fire. Two numbers for one
+      // question, and the one on screen was the wrong one.
+      //
+      // A measured count is ground truth for the moment it was taken and blind to
+      // everything appended since — a batched step's tool results above all. An estimate
+      // over the transcript misses the tool schemas, which are sent with every request.
+      promptTokens: this.usedTokens(true),
+      approxTokens: this.usedTokens(false) ?? this.approxTokens() + TOOL_SCHEMA_TOKENS,
+    }
+  }
+
+  /**
+   * How full the window actually is, by the same arithmetic the compaction gate uses.
+   *
+   * `measuredOnly` picks which of the two answers is wanted: the server's count brought up
+   * to date (null before the first step), or the transcript estimate. Extracted so the gate
+   * and the readout cannot drift apart again — they had, and the drift was invisible because
+   * each looked right on its own.
+   */
+  private usedTokens(measuredOnly: boolean): number | null {
+    if (this.latestPromptTokens === null) {
+      return measuredOnly ? null : this.approxTokens() + TOOL_SCHEMA_TOKENS
+    }
+    const appendedSince = Math.max(0, this.transcriptChars() - this.charsAtPromptCount)
+    return this.latestPromptTokens + Math.ceil(appendedSince / 4)
+  }
+
+  /**
+   * The token count at which this session will compact, so the readout can colour by
+   * distance to the thing that is actually about to happen.
+   *
+   * Without it the bar's only warning is at 80% of the window, while the default absolute
+   * trigger fires at 140k — 53% of this machine's 262k. The bar read half full and calm and
+   * then the conversation compacted underneath it, which is precisely the surprise the
+   * readout exists to prevent. Null when nothing will trigger.
+   */
+  compactAt(): number | null {
+    const cfg = this.opts.compaction
+    if (!cfg) return null
+    const byRatio = (cfg.triggerRatio ?? 0.8) * cfg.contextLength
+    return cfg.triggerTokens === undefined ? byRatio : Math.min(byRatio, cfg.triggerTokens)
   }
 
   /**
@@ -2567,10 +2611,7 @@ export class Session {
     // above all — is exactly what it cannot see. Watched at the real window: one step
     // appended ~198k tokens, the check compared 3,552 against 131,072 and passed, and the
     // server refused the next request at 201,584.
-    const appendedSince = Math.max(0, this.transcriptChars() - this.charsAtPromptCount)
-    const used = this.latestPromptTokens !== null
-      ? this.latestPromptTokens + Math.ceil(appendedSince / 4)
-      : this.approxTokens() + TOOL_SCHEMA_TOKENS
+    const used = this.usedTokens(false) ?? 0
     if (used + PRE_TURN_HEADROOM < contextLength) return
     await this.compactNow(signal)
   }

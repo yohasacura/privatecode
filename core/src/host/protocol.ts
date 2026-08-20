@@ -535,6 +535,18 @@ export interface StepDoneEvent {
    * `host.ts`'s `onStepDone` handler.
    */
   draftAcceptance?: number
+  /**
+   * How full the window is NOW, by the same arithmetic the compaction gate uses, and
+   * `compactAt` is the count at which it will fire.
+   *
+   * `promptTokens` above is the raw server measurement for the moment the step's request was
+   * built, and it is blind to everything appended since — a batched step's tool results
+   * above all. The status bar divided that raw number by the window while the gate divided a
+   * corrected one, so the bar could read comfortably while compaction was about to happen.
+   * These two carry the gate's own numbers so there is one answer to one question.
+   */
+  contextUsed?: number
+  compactAt?: number
 }
 
 export interface ThinkingDeltaEvent { text: string }

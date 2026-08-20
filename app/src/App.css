@@ -2124,8 +2124,12 @@ kbd {
   white-space: nowrap;
 }
 .status-mode { font-family: var(--mono); }
-.status-context { display: flex; align-items: center; gap: 6px; font-family: var(--mono); }
-.ctx-bar { width: 54px; height: 3px; border-radius: 2px; background: var(--bg-active); overflow: hidden; }
+.status-context { display: flex; align-items: center; gap: 6px; font-family: var(--mono); flex: none; }
+/* `flex: none` on both, and it was missing here alone. Every other item in the status row
+   either has it or is text that resists shrinking; the bar is a flex item with a definite
+   width and nothing else, so under width pressure it is the first thing to be squeezed —
+   to nothing, silently, while the row around it still looks fine. */
+.ctx-bar { width: 54px; height: 3px; border-radius: 2px; background: var(--bg-active); overflow: hidden; flex: none; }
 .ctx-fill { display: block; height: 100%; background: var(--blue); }
 .ctx-high { background: var(--yellow); }
 .status-item { font-family: var(--mono); }

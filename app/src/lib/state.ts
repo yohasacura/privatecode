@@ -240,6 +240,17 @@ export interface LastStepStats {
    * true for a resumed session, and for a just-applied compaction swap, until the next
    * step lands. The status bar says so rather than presenting an estimate as a reading. */
   estimated?: boolean
+  /**
+   * What the readout should actually divide, and where compaction will fire.
+   *
+   * `promptTokens` above is the raw measurement for the moment the request was built. The
+   * core corrects it — everything appended since, plus the tool schemas on an estimate —
+   * before deciding whether to compact, and for a long time the bar did not, so the two
+   * disagreed and only one of them was on screen. These carry the core's own figures.
+   * Absent for a core too old to send them; the raw count is still there to fall back on.
+   */
+  contextUsed: number | undefined
+  compactAt: number | undefined
 }
 
 /**
@@ -394,7 +405,14 @@ export type ChatAction =
   | { type: 'tool.call.delta'; index: number; name?: string; args?: string; atMs?: number }
   | { type: 'tool.call'; name: string; args: string; atMs?: number }
   | { type: 'tool.result'; name: string; ok: boolean; content: string; display?: string }
-  | { type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number; promptTokens?: number; draftAcceptance?: number; atMs?: number }
+  | {
+    type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number
+    promptTokens?: number; draftAcceptance?: number; atMs?: number
+    /** The window fill and the compaction threshold, both by the core's own arithmetic —
+     * `promptTokens` is the raw measurement for the moment the request was built and is
+     * blind to everything appended since. See `StepDoneEvent`. */
+    contextUsed?: number; compactAt?: number
+  }
   | { type: 'turn.done'; stoppedBecause: StoppedBecause; atMs?: number; delivered?: false }
   | { type: 'draft-restored' }
   | { type: 'tool.output'; text: string }
@@ -1006,6 +1024,8 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           tokensPerSecond: action.tokensPerSecond ?? state.lastStepDone?.tokensPerSecond,
           promptTokens: action.promptTokens ?? state.lastStepDone?.promptTokens,
           draftAcceptance: action.draftAcceptance ?? state.lastStepDone?.draftAcceptance,
+          contextUsed: action.contextUsed ?? state.lastStepDone?.contextUsed,
+          compactAt: action.compactAt ?? state.lastStepDone?.compactAt,
           // The flag travels with the number it describes: when a step reports no count of
           // its own (aborted, timed out) and the carried-over count was an estimate, it is
           // STILL an estimate — dropping the flag here presented a compaction's or a restore's
@@ -1236,6 +1256,11 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           promptTokens: action.contextUsed.promptTokens ?? action.contextUsed.approxTokens,
           draftAcceptance: undefined,
           estimated: action.contextUsed.promptTokens === null,
+          // Already corrected by `Session.contextUsage()`, so the same number serves both.
+          // `compactAt` is not on this reply and arrives with the first step of the session;
+          // until then the bar falls back to a share of the window.
+          contextUsed: action.contextUsed.promptTokens ?? action.contextUsed.approxTokens,
+          compactAt: undefined,
         },
       }
 
@@ -1281,6 +1306,9 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
             promptTokens: action.detail.afterTokens,
             draftAcceptance: state.lastStepDone?.draftAcceptance,
             estimated: true,
+            contextUsed: action.detail.afterTokens,
+            // The threshold does not change when a compaction lands, so it survives.
+            compactAt: state.lastStepDone?.compactAt,
           },
         } : {}),
       }

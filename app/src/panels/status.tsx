@@ -61,7 +61,14 @@ export function StatusBar({
     poll()
     const id = setInterval(poll, 10_000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [client])
+    // `turnRunning` is in the deps so the effect re-runs at BOTH edges of a turn, which is
+    // what makes the poll above fire the moment one ends. Without it the dependency list was
+    // `[client]` alone: a turn begun before the server was ready suppressed every tick for
+    // its whole length — minutes — and then waited up to ten seconds more, with the readout
+    // absent the entire time because `status` is the app's only route to the window size.
+    // Re-running on the leading edge costs one call that returns immediately at the guard.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, chatState.turnRunning])
 
   // `seq`, not `state`, is the dependency: two 'postponed' events in a row carry the same
   // state string and must still re-flash.
@@ -76,22 +83,30 @@ export function StatusBar({
 
   const session = chatState.session
   const lastStep = chatState.lastStepDone
-  const used = lastStep?.promptTokens
+  const used = lastStep?.contextUsed ?? lastStep?.promptTokens
   /**
-   * The window size, from the session first and the live poll second — and the fallback is
-   * the whole point of this line.
+   * The window size, freshest first.
    *
-   * There are two copies of this number. The session's is captured once, when the session is
-   * built, from whatever `/props` said at that moment; the polled one above is refreshed
-   * every ten seconds. Start the app while the model server is down and the session's copy is
-   * null forever — nothing re-seeds it — so `fillPct` stayed null and the ENTIRE context
-   * readout, bar and figures alike, was never rendered. It did not come back when the server
-   * did. Reported as "the context bar has disappeared and I cannot tell how full it is".
+   * There are two copies. The session's is captured once, when the session is built, from
+   * whatever `/props` said at that moment, and NOTHING in the app ever rewrites it — there is
+   * no protocol event for a window change. The polled one is refreshed every ten seconds.
    *
-   * The session's own value still wins where it exists, because it is the number compaction
-   * is calibrated against and therefore the honest denominator for "how close am I to one".
+   * This line first read only the session's copy, so starting the app while the server was
+   * down left it null forever and the entire readout — bar and figures alike — was never
+   * rendered. Reported as "the context bar has disappeared".
+   *
+   * Then it preferred the session's copy, on the reasoning that it was the number compaction
+   * was calibrated against. That reasoning was wrong, and an audit caught it: when the server
+   * comes back with a different `-c`, `refreshServerProps` re-calibrates the LIVE core session
+   * (host.ts, `setContextLength`) and the app's frozen copy is the only thing still holding
+   * the dead number. Preferring it meant dividing by a window that no longer exists — reading
+   * "150.0k/131.1k", pinned red, while the engine sat at 57%.
+   *
+   * So: whichever was learned most recently, which is the polled one whenever it exists.
    */
-  const total = session?.contextLength ?? contextLength
+  const total = contextLength ?? session?.contextLength ?? null
+  /** Where compaction will actually fire, when the core has said. */
+  const compactAt = lastStep?.compactAt
   const fillPct = used !== undefined && total !== null && total > 0
     ? Math.min(100, Math.round((used / total) * 100))
     : null
@@ -128,7 +143,17 @@ export function StatusBar({
             ? 'context in use, estimated from the conversation — the exact figure arrives with the next step'
             : 'context used by the last step'}
         >
-          <span class="ctx-bar"><span class={`ctx-fill ${fillPct >= 80 ? 'ctx-high' : ''}`} style={{ width: `${fillPct}%` }} /></span>
+          {/* The warning is keyed to where compaction ACTUALLY fires, not to a share of the
+              window. The default absolute trigger is 140k, which on this machine's 262k
+              window is 53% — so a bar that only went yellow at 80% never warned at all, and
+              the conversation compacted underneath a readout that said half full and calm.
+              80% of the window stays the fallback for a core too old to send `compactAt`. */}
+          <span class="ctx-bar">
+            <span
+              class={`ctx-fill ${used >= (compactAt ?? total * 0.8) * 0.9 ? 'ctx-high' : ''}`}
+              style={{ width: `${Math.max(fillPct, used > 0 ? 2 : 0)}%` }}
+            />
+          </span>
           {formatTokenCount(used)}/{formatTokenCount(total)}
         </span>
       )}

@@ -544,8 +544,16 @@ export class SessionHost {
     phase('settings')
     const probed = await this.probeServer(params.serverUrl)
     phase('server probe')
-    this.contextLength = probed.contextLength
-    this.model = probed.model
+    // Only an ANSWERED probe overwrites what we hold — the same rule `buildSession` follows
+    // eleven lines of reasoning further down, and this line was the one place that did not.
+    // `init` runs on every window open, including a reopen against a server that happens to
+    // be restarting, and an unconditional assignment there ERASES a known-good window and
+    // replaces the real model name with the fallback constant. The window then has no size
+    // to divide by and shows no context readout at all.
+    if (probed.contextLength !== null) {
+      this.contextLength = probed.contextLength
+      this.model = probed.model
+    }
     // Built with the name we had a moment ago; rebuilt now that the server has told us. The
     // field is only a label to llama.cpp, but it appears in its logs, and a log that says
     // one model while another is loaded costs somebody an hour one day.
@@ -1254,6 +1262,9 @@ export class SessionHost {
         ...(info.promptTokens !== undefined ? { promptTokens: info.promptTokens } : {}),
         ...(info.completionTokens !== undefined ? { completionTokens: info.completionTokens } : {}),
         ...(info.draftAcceptance !== undefined ? { draftAcceptance: info.draftAcceptance } : {}),
+        // Asked of the session rather than derived from `info`: the corrected figure needs
+        // the transcript as it stands right now, which only the session has.
+        ...this.contextReadout(),
       }),
       onProgress: (progress) => this.emit('generation.progress', { scope: 'step', ...progress }),
       onThinkingDelta: (text) => this.emit('thinking.delta', { text }),
@@ -1272,6 +1283,17 @@ export class SessionHost {
       },
       onAssistantText: (text) => this.emit('assistant.text', { text }),
     }
+  }
+
+  /** The two figures the status bar's readout needs, or nothing when there is no session to
+   * ask. Kept beside the emit so every event that carries them carries the same pair. */
+  private contextReadout(): { contextUsed?: number; compactAt?: number } {
+    const session = this.session
+    if (session === undefined) return {}
+    const usage = session.contextUsage()
+    const used = usage.promptTokens ?? usage.approxTokens
+    const at = session.compactAt()
+    return { contextUsed: used, ...(at !== null ? { compactAt: at } : {}) }
   }
 
   private emit<K extends HostEventName>(event: K, data: HostEventMap[K]): void {
@@ -1931,7 +1953,16 @@ export class SessionHost {
     // hold. So that transition — and only it — re-reads them. Polling /props on every tick
     // would put a second request on a single-slot server ten times a minute for a value
     // that changes a few times a day; never re-reading it is the bug this fixes.
-    if (serverUp && this.serverWasUp === false) await this.refreshServerProps()
+    // ...and also whenever we simply do not have them. A probe can fail for reasons that
+    // never produce a down->up edge later: /props timed out on a cold start while /health
+    // was already answering, or the server answered 200 with a body this build could not
+    // read a window size out of. `serverWasUp` was true throughout, so the edge never
+    // arrived, and a null window size can never heal — the readout stays absent for the life
+    // of the process. Cheap to add: this only fires while the value is missing, so a healthy
+    // session pays for it exactly zero times.
+    if (serverUp && (this.serverWasUp === false || this.contextLength === null)) {
+      await this.refreshServerProps()
+    }
     this.serverWasUp = serverUp
     const result: StatusResult = { serverUp, model: this.model }
     if (this.contextLength !== null) result.contextLength = this.contextLength
