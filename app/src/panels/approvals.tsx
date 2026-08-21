@@ -4,6 +4,7 @@ import type { ApprovalDecision, RememberLayer, TodoItem } from '@core/interactio
 import type { ProtocolClient } from '../lib/client'
 import type { PendingApproval, PendingQuestion } from '../lib/state'
 import { DiffView } from '../lib/diff'
+import { FileRefText } from '../lib/file-refs'
 import { Icon } from '../components/icons'
 
 /**
@@ -226,7 +227,14 @@ export function QuestionCard({
  * The current task list, pinned above the transcript. Renders nothing at all when the model
  * never called `todo_write`, so a one-shot question costs no layout.
  */
-export function TodosCard({ todos, onClear }: { todos: TodoItem[]; onClear?: () => void }): VNode | null {
+export function TodosCard(
+  { todos, onClear, onOpenFile }: {
+    todos: TodoItem[]
+    onClear?: () => void
+    /** Absent renders the paths marked but inert — see `FileRefText`. */
+    onOpenFile?: (path: string) => void
+  },
+): VNode | null {
   const [open, setOpen] = useState(true)
   if (todos.length === 0) return null
   const done = todos.filter((t) => t.status === 'completed').length
@@ -238,7 +246,8 @@ export function TodosCard({ todos, onClear }: { todos: TodoItem[]; onClear?: () 
         <span class="todos-chevron">{open ? Icon.chevronDown() : Icon.chevronRight()}</span>
         <span class="todos-title">Plan</span>
         <span class="todos-count">{done}/{todos.length}</span>
-        {!open && current && <span class="todos-current">{current.text}</span>}
+        {/* Inert here on purpose: this line lives inside the head's own `<button>`. */}
+        {!open && current && <span class="todos-current"><FileRefText text={current.text} /></span>}
         <span class="todos-bar"><span class="todos-bar-fill" style={{ width: `${(done / todos.length) * 100}%` }} /></span>
       </button>
       {/* The dismiss the finished-but-ungated task was missing: the harness retires the
@@ -259,7 +268,11 @@ export function TodosCard({ todos, onClear }: { todos: TodoItem[]; onClear?: () 
               <span class="todo-mark">
                 {t.status === 'completed' ? Icon.check() : t.status === 'in_progress' ? Icon.play() : null}
               </span>
-              <span class="todo-text">{t.text}</span>
+              <span class="todo-text">
+                {onOpenFile === undefined
+                  ? <FileRefText text={t.text} />
+                  : <FileRefText text={t.text} onOpenFile={onOpenFile} />}
+              </span>
             </li>
           ))}
         </ul>

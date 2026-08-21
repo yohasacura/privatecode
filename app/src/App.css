@@ -1411,6 +1411,29 @@ kbd {
 .todo-in_progress { color: var(--text); }
 .todo-in_progress .todo-mark { color: var(--accent); }
 
+/* A path the model wrote inside a plan step (see lib/file-refs.tsx). Same treatment as an
+ * inline code span in the chat, so a path reads as a path wherever it appears, plus the
+ * affordance the chat's spans do not have: this one opens the file. */
+.file-ref {
+  padding: 1px 4px;
+  border: none;
+  border-radius: 3px;
+  /* One step brighter than the chat's inline code, which uses --bg-raised: that span sits
+   * on --bg, this one sits on the plan card's --bg-panel, and the same wash there is a
+   * five-point difference nobody can see — so the padding reads as a stray gap before the
+   * next comma instead of as the edge of a chip. */
+  background: var(--bg-hover);
+  color: #e6c9b6;
+  font-family: var(--mono);
+  font-size: 0.9em;
+  line-height: inherit;
+  vertical-align: baseline;
+}
+button.file-ref { cursor: pointer; }
+button.file-ref:hover { background: var(--bg-active); color: var(--text); }
+/* A finished step is struck through, and text-decoration does not cross into a button. */
+.todo-completed .file-ref { color: var(--text-faint); text-decoration: line-through; }
+
 /* ----------------------------------------------------------------------- composer ---- */
 
 /* Configuration went wrong and the agent is running anyway, with less policy than the

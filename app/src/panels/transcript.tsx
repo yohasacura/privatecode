@@ -245,6 +245,7 @@ export function Transcript({
         <TodosCard
           todos={state.todos}
           onClear={() => { void client.call('todos.clear', {}).catch(() => { /* already gone */ }) }}
+          onOpenFile={onOpenFile}
         />
       )}
 
