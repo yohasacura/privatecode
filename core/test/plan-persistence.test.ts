@@ -120,7 +120,7 @@ test('done_when is validated, normalised, and stray keys are dropped', () => {
   })
   expect(v.ok).toBe(true)
   if (!v.ok) return
-  expect(v.args.todos[0]).toEqual({ text: 'a step', status: 'pending', done_when: 'tests green' })
+  expect(v.args.todos?.[0]).toEqual({ text: 'a step', status: 'pending', done_when: 'tests green' })
 
   const tooLong = todoWriteTool.validate({
     todos: [{ text: 'a step', status: 'pending', done_when: 'x'.repeat(300) }],

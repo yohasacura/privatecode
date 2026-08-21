@@ -400,6 +400,15 @@ const VERIFY_BURST_CAP = 8
  * stretch of work, not a single edit — the note must stay rare enough to be read. */
 const UPKEEP_WRITES = 3
 
+/** The plan, numbered the way `todo_write` numbers it, so the indices the model is asked to
+ * send back are the ones sitting in front of it. Information in the prefix is the one channel
+ * this model is measured to follow; an instruction to "keep the plan current" is not. */
+function renderPlanLines(todos: readonly TodoItem[]): string {
+  return todos
+    .map((t, i) => `  ${i + 1}. [${t.status === 'completed' ? 'x' : t.status === 'in_progress' ? '>' : ' '}] ${t.text}`)
+    .join('\n')
+}
+
 /** Past this, a check cannot run per write without dominating the turn it protects. */
 const SLOW_VERIFY_SECONDS = 8
 
@@ -2268,9 +2277,10 @@ export class Session {
     this.transcript.append({
       role: 'user',
       content:
-        `[Plan focus — item ${position} of ${todos.length}: ${current.text}` +
+        `[Plan focus — step ${position} of ${todos.length}: ${current.text}` +
         (current.done_when !== undefined ? ` (done when: ${current.done_when})` : '') +
-        `. Open items: ${open}. Finish this one before touching the next.]`,
+        `. Open: ${open}. Finish this one before the next, and when it is done say so with ` +
+        `\`todo_write\` \`complete: [${position}]\` — that is the whole call.]`,
     })
   }
 
@@ -2362,8 +2372,11 @@ export class Session {
     this.transcript.append({
       role: 'user',
       content:
-        `[Plan upkeep: ${writes} files written since the plan was last updated. Call ` +
-        'todo_write NOW — mark finished steps completed, add steps this work uncovered. ' +
+        `[Plan upkeep: ${writes} files written since the plan was last updated.\n` +
+        `${renderPlanLines(store.list())}\n` +
+        'Bring it up to date now — `todo_write` with `complete: [n]` for the steps that are ' +
+        'finished, `start: n` for the one you are on, `add` for anything this work ' +
+        'uncovered. Send only what changed; do not re-send the list. ' +
         'The plan is what survives compaction; a stale plan is lost work.]',
     })
   }

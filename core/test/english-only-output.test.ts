@@ -37,7 +37,7 @@ async function capture(run: (client: LlamaClient) => Promise<unknown>): Promise<
 }
 
 test('the system prompt pins English rather than mirroring the user', () => {
-  const text = buildSystemPrompt({ workspaceRoot: 'D:\proj', mode: 'normal', external: [] })
+  const text = buildSystemPrompt({ workspaceRoot: 'D:\\proj', mode: 'normal', external: { browser: false, mcpServers: [] } })
   expect(text).toContain('Always reply in English')
   // The mirror that was there, in the exact words it used.
   expect(text).not.toContain('Reply in the same language the user writes in')
@@ -67,7 +67,7 @@ test('the understanding check asks for English lines, since they are shown as th
 test('the draft improver inherits the pin from message 0 rather than restating it', async () => {
   // It carries no language clause of its own and never did; what keeps it English is the
   // system message, which `distillContext` puts at the head of every one of these requests.
-  const system = { role: 'system' as const, content: buildSystemPrompt({ workspaceRoot: 'D:\p', mode: 'normal', external: [] }) }
+  const system = { role: 'system' as const, content: buildSystemPrompt({ workspaceRoot: 'D:\\p', mode: 'normal', external: { browser: false, mcpServers: [] } }) }
   const { sent } = await capture((c) => improveDraft(c, [system], 'сделай кнопку красной'))
   expect(sent).toContain('Always reply in English')
 })
