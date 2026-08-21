@@ -108,7 +108,17 @@ const CONTRACT_TOOL: ToolSchema = {
         criteria: {
           type: 'array', items: { type: 'string' },
           description: 'Two to six checkable done-criteria. Each answerable yes/no by ' +
-            'looking at a file or running a command. Never vague.',
+            'looking at a file or running a command. Never vague.\n' +
+            'Each one is a STATE OF THE WORLD once the work is finished, never an activity ' +
+            'along the way. "The counter cannot hand out the same number twice" is a ' +
+            'criterion; "the code is examined", "the root cause is identified", "a fix is ' +
+            'implemented" are not — every one of those is satisfied by a conversation in ' +
+            'which nothing was changed, which is exactly how a task passes its own audit ' +
+            'while the bug is still there.\n' +
+            'Every criterion must come from the REQUEST. Do not add work nobody asked for: ' +
+            'a criterion the request does not imply is not a higher standard, it is a ' +
+            'licence to go and do something else, and the audit will then hold the task open ' +
+            'until it is done.',
         },
         constraints: {
           type: 'array', items: { type: 'string' },
@@ -836,7 +846,18 @@ export function renderCheckedState(contract: TaskContract, report: AcceptanceRep
  * the negation word ("nothing left to do") are matched before the veto, or they could
  * never fire at all.
  */
-const EN_FINISH = /\b(all done|everything (is )?(now )?(done|finished|complete)|task (is )?complete|nothing (else|more) (left )?to do|no (further|more) (work|changes) (is |are )?(needed|required))\b/
+/**
+ * The shapes a finish claim actually takes, and the list grows from observation rather than
+ * imagination — every miss here silently disables the acceptance audit AND the diff review,
+ * because both hang off this one boolean.
+ *
+ * Added after a live run ended "All 7 steps complete. Here's the summary:" and neither gate
+ * fired: the task was finished, well, and nothing checked it. The plan-shaped endings are the
+ * common ones now that the model actually keeps a plan — "all 7 steps complete", "all steps
+ * done" — and the noun-phrase endings ("the fix is complete", "implementation finished") are
+ * the other half of the same habit.
+ */
+const EN_FINISH = /\b(all done|everything (is )?(now )?(done|finished|complete)|task (is )?complete|all \d+ steps? (are )?(complete|completed|done|finished)|all (the )?steps? (are )?(complete|completed|done|finished)|(the )?(work|implementation|fix|change|refactor)s? (is|are) (now )?(complete|completed|done|finished)|nothing (else|more) (left )?to do|no (further|more) (work|changes) (is |are )?(needed|required))\b/
 
 const RU_NEGATION_IDIOM = /(больше (ничего|нечего) (не осталось|делать)|ничего больше делать не (нужно|требуется))/
 const RU_FINISH = /((всё|все) готово|(?<![а-яё-])готово$)/

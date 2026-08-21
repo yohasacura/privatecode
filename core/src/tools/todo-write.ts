@@ -26,6 +26,10 @@ export interface TodoWriteArgs {
  * So the common edits are now index-sized. `complete: [2, 3]` is about ten tokens, which is
  * the size the action actually is.
  */
+/** The ceiling both forms share. Enforced in the patch path too, or `add` becomes the way
+ * around it and a plan can grow past the only form that could restructure it. */
+const MAX_TODOS = 50
+
 /** The plan as the model should see it: numbered, so the indices it is asked to send back
  * are the ones in front of it, and marked, so what is left is obvious at a glance. */
 function renderPlan(todos: readonly TodoItem[]): string {
@@ -67,14 +71,27 @@ function applyPatch(current: readonly TodoItem[], patch: TodoWriteArgs): TodoIte
   const advanced = patch.start !== undefined && wasInProgress > 0 && patch.start > wasInProgress
   const next = current.map((t, i) => {
     const n = i + 1
-    if (done.has(n)) return { ...t, status: 'completed' as const }
+    // `start` wins over `complete` for the SAME step, and the order matters. The plan-focus
+    // note tells the model to finish step N and say `complete: [N]`; doing exactly that and
+    // also naming N as the one in progress used to leave N completed and the plan with no
+    // cursor at all — after which the note picks the first pending step, which is BEHIND
+    // where the work is, and points the model backwards. A step you say you are on is a step
+    // you are on.
     if (patch.start === n) return { ...t, status: 'in_progress' as const }
+    if (done.has(n)) return { ...t, status: 'completed' as const }
     if (n === wasInProgress && patch.start !== undefined) {
       return { ...t, status: advanced ? ('completed' as const) : ('pending' as const) }
     }
     return t
   })
   for (const step of patch.add ?? []) next.push({ ...step, status: 'pending' as const })
+  // The same ceiling the whole-list form enforces. Without it `add` was the way round it:
+  // a plan could walk past fifty a step at a time and then be un-editable by the only form
+  // that can restructure it, because that one refuses more than fifty.
+  if (next.length > MAX_TODOS) {
+    return `that would make ${next.length} steps and the plan holds at most ${MAX_TODOS} — ` +
+      'complete or restructure what is there first'
+  }
   return next
 }
 
@@ -189,8 +206,8 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
     if (r.todos.length === 0) {
       return { ok: false, error: 'todos must have at least 1 item' }
     }
-    if (r.todos.length > 50) {
-      return { ok: false, error: 'todos must have at most 50 items' }
+    if (r.todos.length > MAX_TODOS) {
+      return { ok: false, error: `todos must have at most ${MAX_TODOS} items` }
     }
 
     const validStatuses = new Set(['pending', 'in_progress', 'completed'])
@@ -250,21 +267,11 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
 
     ctx.todos.set(args.todos)
     ctx.interaction?.todosChanged?.(ctx.todos.list())
-
-    const completed = args.todos.filter((t) => t.status === 'completed').length
-    const inProgress = args.todos.filter((t) => t.status === 'in_progress').length
-    const pending = args.todos.filter((t) => t.status === 'pending').length
-
-    let msg = `${args.todos.length} todos recorded`
-    const parts = []
-    if (inProgress > 0) parts.push(`${inProgress} in progress`)
-    if (completed > 0) parts.push(`${completed} completed`)
-    if (pending > 0) parts.push(`${pending} pending`)
-    if (parts.length > 0) {
-      msg += ` (${parts.join(', ')})`
-    }
-    msg += '.'
-
-    return { ok: true, content: msg }
+    // The numbered plan, on the CREATE path too. This was the one branch that answered with
+    // a count — "6 todos recorded, 1 in progress, 5 pending" — so the very first thing the
+    // model saw after writing a plan was the one view that does not show the indices every
+    // later update has to send back. It learned the numbering from the notes instead, one
+    // nudge later than it needed to.
+    return { ok: true, content: renderPlan(args.todos) }
   },
 }

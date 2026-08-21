@@ -123,8 +123,12 @@ export function StatusBar({
           32k model answers it immediately where a 131k one never raises it. */}
       <span
         class="status-model"
+        // `formatTokenCount`, not a hand-rolled /1024: the tooltip said "256k" while the bar
+        // two items along said "262.1k" for the same integer, which reads as two different
+        // numbers for the same thing and is the sort of small inconsistency that makes a
+        // person stop trusting a readout.
         title={contextLength !== null
-          ? `${model ?? 'no model'} — ${Math.round(contextLength / 1024)}k token context window`
+          ? `${model ?? 'no model'} — ${formatTokenCount(contextLength)} token context window`
           : 'the model server has not said what it is serving yet'}
       >
         {model ?? 'no model'}

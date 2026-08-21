@@ -112,6 +112,16 @@ export interface InitResult {
    * until you spoke — a number it could have computed the whole time.
    */
   contextUsed: { promptTokens: number | null; approxTokens: number }
+  /**
+   * Where compaction will fire, in tokens — the same figure `step.done` carries.
+   *
+   * Without it a resumed session colours its bar against 80% of the window until the first
+   * step lands, which on a default setup is 210k while compaction actually fires at 140k. So
+   * the reading that matters most — "am I about to be compacted" — was wrong for exactly the
+   * stretch where you have just reopened a long conversation and are looking at the bar to
+   * decide whether to keep going.
+   */
+  compactAt?: number
 }
 
 /**

@@ -329,7 +329,7 @@ export default function App() {
         mode: init.mode,
         contextLength: init.contextLength,
         title: init.title,
-        contextUsed: init.contextUsed,
+        contextUsed: init.contextUsed, ...(init.compactAt !== undefined ? { compactAt: init.compactAt } : {}),
       })
       // AFTER session-switched, never before: that action resets the transcript, and the
       // host emits its `settings.problem` events while BUILDING the session -- i.e. before
@@ -515,7 +515,7 @@ export default function App() {
     const r = await client.call('sessions.resume', { id })
     onSessionSwitched({
       sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
-      problems: r.problems, items: r.items, contextUsed: r.contextUsed,
+      problems: r.problems, items: r.items, contextUsed: r.contextUsed, ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
     })
     setSessionsKey((k) => k + 1)
   }
@@ -554,6 +554,7 @@ export default function App() {
             sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength,
             title: r.title, problems: r.problems, items: r.items,
             contextUsed: r.contextUsed,
+            ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
           }))
           .catch((e: Error) => dispatch({ type: 'error-note', message: e.message }))
         return
@@ -580,6 +581,7 @@ export default function App() {
             sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength,
             title: r.title, problems: r.problems, items: r.items,
             contextUsed: r.contextUsed,
+            ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
           }))
           .catch((e: Error) => dispatch({ type: 'error-note', message: e.message }))
     }

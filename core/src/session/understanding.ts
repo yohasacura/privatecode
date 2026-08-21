@@ -456,30 +456,36 @@ export function buildQuestion(u: Understanding): { question: string; options: st
 }
 
 /**
- * The answer, turned into the two things a contract can hold: what to do, and what not to.
+ * The answer, turned into criteria — and the unpicked half kept as a plain fact, never as a
+ * prohibition.
  *
- * Both halves matter and only one is obvious. The picked lines become criteria, so the
- * acceptance gate checks them at the end. The UNPICKED ones become constraints, because "no,
- * not that" is a decision a person made once and should not have to make again — left
- * unrecorded, the same scope creep arrives in the next turn with nothing to point at.
+ * The first version made every unpicked option a constraint reading "Do not: <option>". The
+ * reasoning was that "no, not that" is a decision worth recording once. What that ignores is
+ * where these options come from: they are readings of the REQUEST, so a contested line is
+ * often a restatement of the goal rather than optional extra scope. Caught in a live run, on
+ * a task about gap-free invoice numbers, the harness wrote itself:
+ *
+ *     Do not: Concurrent requests no longer produce duplicate invoice numbers
+ *             — the user was asked and did not pick it
+ *
+ * That is an instruction not to do the job, promoted into the contract, carried into message
+ * 0 at every compaction. A multi-select cannot express "no" at all: not ticking a box is a
+ * shrug, and reading a shrug as a prohibition is how a harness talks a model out of the work.
+ *
+ * So `notPicked` comes back as information for the caller to state once, in the moment, and
+ * nothing here becomes a constraint. Constraints are for what the USER said not to do.
  *
  * The answer is matched back to the options by the same alignment used to compare readings:
  * the host joins a multi-select with "; ", but a person may also type their own words, and a
  * typed answer that matches nothing is kept verbatim as a criterion rather than dropped.
  */
-export function foldAnswer(u: Understanding, answer: string): { criteria: string[]; constraints: string[] } {
+export function foldAnswer(u: Understanding, answer: string): { criteria: string[]; notPicked: string[] } {
   const picked = answer.split(';').map((p) => p.trim()).filter((p) => p.length > 0)
   const criteria: string[] = []
-  const constraints: string[] = []
-  const matched = new Set<string>()
+  const notPicked: string[] = []
   for (const option of u.contested) {
-    const chosen = picked.some((p) => alignReadings(p, option))
-    if (chosen) {
-      criteria.push(option)
-      matched.add(option)
-    } else {
-      constraints.push(`Do not: ${option} — the user was asked and did not pick it`)
-    }
+    if (picked.some((p) => alignReadings(p, option))) criteria.push(option)
+    else notPicked.push(option)
   }
   // Free text the person typed instead of picking: their own words outrank every reading,
   // so it is kept exactly as written.
@@ -488,5 +494,5 @@ export function foldAnswer(u: Understanding, answer: string): { criteria: string
       criteria.push(p)
     }
   }
-  return { criteria, constraints }
+  return { criteria, notPicked }
 }

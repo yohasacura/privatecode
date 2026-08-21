@@ -1006,6 +1006,7 @@ export class SessionHost {
       workspaceName: this.workspaceName,
       folderCount: this.mounts.length,
       contextUsed: session.contextUsage(),
+      ...(session.compactAt() !== null ? { compactAt: session.compactAt() as number } : {}),
       problems,
       title: session.meta.title,
       // Empty for a new session, and cheap to compute either way: this is a map over

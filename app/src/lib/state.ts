@@ -439,6 +439,9 @@ export type ChatAction =
      * without this the bar stayed blank until the first message — hiding a number the
      * host could compute from the transcript it just restored. */
     contextUsed?: { promptTokens: number | null; approxTokens: number }
+    /** Where compaction fires, so a resumed session's bar is coloured against the thing that
+     * is actually going to happen rather than against 80% of the window. */
+    compactAt?: number
   }
   /** The conversation a resumed session already had, dispatched right after the
    * `session-switched` that cleared the view. Folded through this same reducer one entry at
@@ -1257,10 +1260,12 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
           draftAcceptance: undefined,
           estimated: action.contextUsed.promptTokens === null,
           // Already corrected by `Session.contextUsage()`, so the same number serves both.
-          // `compactAt` is not on this reply and arrives with the first step of the session;
-          // until then the bar falls back to a share of the window.
+          // `compactAt` rides the same reply, so a resumed session colours its bar against
+          // the real threshold from the first paint rather than against 80% of the window —
+          // on a default setup those are 140k and 210k, and the gap is exactly the stretch
+          // where you reopen a long conversation and look at the bar to decide what to do.
           contextUsed: action.contextUsed.promptTokens ?? action.contextUsed.approxTokens,
-          compactAt: undefined,
+          compactAt: action.compactAt,
         },
       }
 

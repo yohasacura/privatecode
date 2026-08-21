@@ -88,32 +88,34 @@ test('the question states what was agreed and asks only about the rest', () => {
   expect(q?.question).toContain('will not do')
 })
 
-test('a picked line becomes a criterion; an unpicked one becomes a constraint', () => {
+test('a picked line becomes a criterion; an unpicked one is only reported back', () => {
   const u = {
     shared: ['rename the column'],
     contested: ['add a migration for the rename', 'update the API docs'],
   }
   const folded = foldAnswer(u, 'add a migration for the rename')
   expect(folded.criteria).toEqual(['add a migration for the rename'])
-  // The half that is easy to drop and expensive to lose: "no, not that" is a decision made
-  // once, and unrecorded it arrives again next turn with nothing to point at.
-  expect(folded.constraints).toHaveLength(1)
-  expect(folded.constraints[0]).toContain('update the API docs')
-  expect(folded.constraints[0]).toContain('Do not')
+  // Reported back as a fact, never as a prohibition. An unticked box is a shrug, and these
+  // options are readings of the REQUEST — so a contested line is often the goal restated.
+  // Live, on a task about gap-free invoice numbers, the constraint version wrote itself
+  // "Do not: Concurrent requests no longer produce duplicate invoice numbers", promoted it
+  // into the contract, and carried it into message 0 at every compaction.
+  expect(folded.notPicked).toEqual(['update the API docs'])
+  expect(JSON.stringify(folded)).not.toContain('Do not')
 })
 
 test('a multi-select answer is split the way the host joins it', () => {
   const u = { shared: [], contested: ['add a migration for the rename', 'update the API docs'] }
   const folded = foldAnswer(u, 'add a migration for the rename; update the API docs')
   expect(folded.criteria).toHaveLength(2)
-  expect(folded.constraints).toEqual([])
+  expect(folded.notPicked).toEqual([])
 })
 
 test('words the person typed themselves outrank every reading and are kept verbatim', () => {
   const u = { shared: [], contested: ['add a migration for the rename'] }
   const folded = foldAnswer(u, 'neither — just change the column and leave everything else')
   expect(folded.criteria).toEqual(['neither — just change the column and leave everything else'])
-  expect(folded.constraints[0]).toContain('add a migration for the rename')
+  expect(folded.notPicked).toEqual(['add a migration for the rename'])
 })
 
 test('the three lenses are three DIFFERENT questions, not three samples of one', async () => {

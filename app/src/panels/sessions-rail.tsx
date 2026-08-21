@@ -27,6 +27,7 @@ export interface SessionSwitch {
   /** How full the context already is, so the status bar has something true to show before
    * the first message rather than after it. */
   contextUsed: { promptTokens: number | null; approxTokens: number }
+  compactAt?: number
   /** The conversation this session already had. Empty for a new one. */
   items: readonly TranscriptEntry[]
 }
@@ -81,7 +82,7 @@ export function SessionsRail({
   function startNew(): void {
     switchTo(client.call('sessions.new', {}).then((r) => ({
       sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
-      problems: r.problems, items: r.items, contextUsed: r.contextUsed,
+      problems: r.problems, items: r.items, contextUsed: r.contextUsed, ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
     })))
   }
 

@@ -129,3 +129,27 @@ test('the description leads with the cheap form, since that is the call that was
   expect(d).toContain('Do not re-send the whole list to tick a box')
   expect(d.indexOf('complete')).toBeLessThan(d.indexOf('full list'))
 })
+
+test('naming the same step as finished AND current leaves it current, not cursorless', async () => {
+  // Obeying the plan-focus note literally: it says finish step N and send `complete: [N]`,
+  // and the model often adds `start: N` in the same breath. Completing it left the plan with
+  // no in-progress step at all, and the note then points at the first PENDING one — which is
+  // behind where the work is, so the next nudge pushes the model backwards.
+  const s = store('a', 'b', 'c')
+  await call(s, { start: 2 })
+  await call(s, { complete: [2], start: 2 })
+  expect(s.list().map((t) => t.status)).toEqual(['pending', 'in_progress', 'pending'])
+})
+
+test('add cannot walk the plan past the ceiling the whole-list form enforces', async () => {
+  const s = store(...Array.from({ length: 49 }, (_, i) => `step ${i + 1}`))
+  const ok = await call(s, { add: [{ text: 'one more that fits' }] })
+  expect(ok.ok).toBe(true)
+  expect(s.list()).toHaveLength(50)
+
+  const refused = await call(s, { add: [{ text: 'the one too many' }] })
+  expect(refused.ok).toBe(false)
+  expect(refused.content).toContain('at most 50')
+  // And it did not half-apply: the plan is exactly as it was.
+  expect(s.list()).toHaveLength(50)
+})

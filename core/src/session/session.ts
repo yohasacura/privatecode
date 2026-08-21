@@ -10,7 +10,8 @@ import { CheckpointSet } from '../checkpoints/set.js'
 import { soleUnit, type SnapshotUnit } from '../checkpoints/units.js'
 import { commandsFrom, WorkLog } from './worklog.js'
 import { recordToolOutcome } from '../host/replay.js'
-import { DecisionQueue, queueingPort } from './decisions.js'
+import { DecisionQueue, PARKED_ANSWER, queueingPort } from './decisions.js'
+import { ReadMemory } from '../tools/read-memory.js'
 import type { Mount } from '../mounts.js'
 import type { LoadedMemory } from '../memory/project-memory.js'
 import type { DatabaseSettings } from '../sql/settings.js'
@@ -914,13 +915,24 @@ export class Session {
     // not keep paying an audit (and a cache displacement) for criteria already met.
     if (contract === undefined || contract.satisfied === true) return result
     if (result.stoppedBecause !== 'done') return result
-    // The audit runs when the model CLAIMS the task is over, not on every intermediate
-    // done-turn of a long task: each check displaces the server cache (minutes of
-    // re-prefill on a fat session), and an intermediate turn's work is audited anyway by
-    // whichever later turn finally claims completion. A finished task whose closing prose
-    // never matches simply keeps its contract un-retired — the next task-shaped request
-    // replaces it, and nothing was silently skipped that a later turn would not cover.
-    if (!saysFinished(result.finalText)) return result
+    // The audit runs when the task looks OVER, not on every intermediate done-turn of a long
+    // one: each check displaces the server cache (minutes of re-prefill on a fat session),
+    // and an intermediate turn's work is audited anyway by whichever later turn ends it.
+    //
+    // Two signals, and the second one is why this is no longer a phrase match alone. Reading
+    // the closing prose is guesswork over free text, and it kept losing: three live runs in a
+    // row finished the work properly and ended "All 7 steps complete. Here's the summary:"
+    // and "Here's a summary of everything that was done:" — so the audit and the diff review
+    // both sat out the exact turns they exist for, silently, on a task that was done.
+    //
+    // A finished PLAN is the mechanical version of the same claim, and the plan is now
+    // reliably maintained (measured: seven of seven updates on a real task), so a plan with
+    // items and none of them open says the model thinks it is finished without anyone having
+    // to parse a sentence. Either signal opens the gate; the phrase match stays for the tasks
+    // small enough never to have grown a plan.
+    const todos = this.opts.toolset.todos?.list() ?? []
+    const planFinished = todos.length > 0 && todos.every((t) => t.status === 'completed')
+    if (!planFinished && !saysFinished(result.finalText)) return result
     let current = result
     let clean = false
     const writesAtGateStart = this.writeCount
@@ -1054,14 +1066,34 @@ export class Session {
       registry: this.opts.toolset.registry,
       context: {
         workspace: this.workspace,
-        reads: this.opts.toolset.reads,
+        // Its OWN read memory, not the writer's. That memory exists so a tool can answer "you
+        // already read this, unchanged" instead of repeating a file — which is right within
+        // one worker and wrong across two: the reviewer has read nothing, and being told it
+        // has by a memory of somebody else's reading is the fresh context leaking away
+        // through the one door left open. It is the whole reason this reader exists.
+        reads: new ReadMemory(),
       },
       transcript,
       mode: 'plan',
+      // Named explicitly rather than left to plan mode's default, which is the registry's
+      // WHOLE read-only set. That set includes `database` and `use_skill`, and the context
+      // above deliberately carries neither — so both were offered to the reviewer and both
+      // answer with a confident false statement about the workspace ("no database is
+      // configured") that it then reasons from. Plan mode still narrows whatever is passed,
+      // so this can only ever be a subset.
+      allowedTools: ['read_file', 'search_code', 'list_dir', 'find_files', 'symbol_outline'],
       // Enough to open the touched files and follow one thread out of them; past that it is
       // re-reading the repository on every finished task, and the verdict is a generation
       // away either side of it.
       maxSteps: REVIEW_MAX_STEPS,
+      // A delta callback, and it has to be here for a reason that is not about rendering.
+      // Streaming is opt-in on one of these being present, and the step clock measures
+      // SILENCE by re-arming on every delta — so an Agent with none of them gets its
+      // first-token budget applied to the entire request instead. The reviewer was the only
+      // Agent built without one: on a large diff its own reading turn would die on a
+      // deadline meant to catch a hung server. Watched once as a probe that ran past ten
+      // minutes and had to be killed.
+      events: { onTextDelta: () => {} },
       ...(signal ? { signal } : {}),
     }
     try {
@@ -1215,9 +1247,30 @@ export class Session {
       return undefined
     }
 
-    const { criteria, constraints } = foldAnswer(understanding, answer)
+    // THREE THINGS THAT ARE NOT AN ANSWER, and every one of them used to be folded into the
+    // contract as though a person had chosen it.
+    //
+    //  - the turn was cancelled while the card was open. Stop is not a decision about scope,
+    //    and `askUser` resolves rather than throwing on that path, so the catch above never
+    //    sees it.
+    //  - nobody was there. A queueing port answers with `PARKED_ANSWER`, which is prose about
+    //    the queue; split on ';' it matched no option and both halves were written in as
+    //    done-criteria, so an overnight run acquired "Nobody is available to answer right
+    //    now" as a condition of finishing.
+    //  - an empty answer, which no path should produce and every path should survive.
+    //
+    // In all three the honest state is the one this check started in: the model keeps the
+    // reading it already had, and the contract is untouched.
+    if (signal?.aborted || answer.trim() === '' || answer === PARKED_ANSWER) return undefined
+
+    const { criteria, notPicked } = foldAnswer(understanding, answer)
+    if (criteria.length === 0 && notPicked.length === understanding.contested.length) {
+      // Nothing matched and nothing was typed that we could keep — an answer we cannot read.
+      // Reporting every option as "they did not pick this" would be a confident summary of
+      // something we did not understand.
+      return undefined
+    }
     contract.criteria = [...contract.criteria, ...criteria].slice(0, 12)
-    contract.constraints = [...contract.constraints, ...constraints].slice(0, 12)
     // The audit's record of where the task stands is about the OLD criteria; leaving it
     // would promote "1,2,3 met" into message 0 over a contract that has grown since.
     delete contract.checkedState
@@ -1227,8 +1280,11 @@ export class Session {
     const wanted = criteria.length > 0
       ? `They want these, and they are now part of what "done" means:\n${criteria.map((c) => `- ${c}`).join('\n')}\n`
       : 'They did not want any of them.\n'
-    const refused = constraints.length > 0
-      ? `\nThey did NOT pick these, so leave them alone:\n${constraints.map((c) => `- ${c}`).join('\n')}\n`
+    // Stated once, here, and deliberately NOT written into the contract as constraints: not
+    // ticking a box is a shrug, not a prohibition, and a contract that carries it as one
+    // ends up ordering the model away from the work. See `foldAnswer`.
+    const refused = notPicked.length > 0
+      ? `\nThey did not pick these, so do not go out of your way to add them:\n${notPicked.map((c) => `- ${c}`).join('\n')}\n`
       : ''
     return 'Not run: before this change the user was asked what they actually meant, ' +
       `because your own readings of the request disagreed.\n\n${wanted}${refused}\n` +
@@ -3185,8 +3241,17 @@ export class Session {
 
   /** The transcript's current weight in characters, message content plus reasoning. */
   private transcriptChars(): number {
-    return this.transcript.messages().reduce(
-      (n, m) => n + (m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0), 0)
+    return this.transcript.messages().reduce((n, m) => {
+      // Tool-call ARGUMENTS count, and they are the reason this number exists. It measures
+      // what has been appended since the last server-measured prompt, and the biggest single
+      // append there is is a `write_file` whose argument is a whole file — invisible here
+      // while it was only `content` + `reasoning_content`, because a call's own message
+      // carries no content at all. `Transcript.approxTokens` and `approxTokensOf` have both
+      // counted them all along; this was the one place that did not, so the correction it
+      // feeds under-read exactly when the turn had done the most.
+      const calls = (m.tool_calls ?? []).reduce((c, t) => c + t.function.arguments.length + 20, 0)
+      return n + (m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0) + calls
+    }, 0)
   }
 
   /**

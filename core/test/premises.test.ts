@@ -208,3 +208,48 @@ test('a lone brace proves nothing and cannot carry a premise on its own', () => 
   expect(verifyPremises([premise('src/invoice.ts', 'format(n: number): string {\n}')], ws).verified)
     .toHaveLength(1)
 })
+
+test('a comment cannot stand as evidence for code', () => {
+  // The hole this closes: the check was a substring search over the whole file, so a
+  // commented-out old implementation — or a TODO naming a method somebody meant to add —
+  // confirmed a premise about a method that does not exist. That is the exact failure the
+  // premise check exists to catch, passing.
+  const ws = new Workspace(root)
+  writeFileSync(
+    join(root, 'src', 'invoice.ts'),
+    'export class InvoiceService {\n' +
+    '  // TODO: add validateInvoiceNumber(n: number): void\n' +
+    '  /** Callers rely on ensureSequential() being applied upstream. */\n' +
+    '  format(n: number): string { return String(n) }\n' +
+    '}\n',
+    'utf8',
+  )
+  const check = verifyPremises([
+    premise('src/invoice.ts', 'validateInvoiceNumber(n: number): void'),
+    premise('src/invoice.ts', 'ensureSequential()'),
+  ], ws)
+  expect(check.verified).toEqual([])
+  expect(check.unverified).toHaveLength(2)
+  // And it says WHICH kind of failure, because re-quoting another comment will not help.
+  for (const u of check.unverified) expect(u.problem).toContain('only in a COMMENT')
+})
+
+test('code that really is code still verifies, comments and all', () => {
+  const ws = new Workspace(root)
+  expect(verifyPremises([premise('src/invoice.ts', 'padStart(6, "0")')], ws).verified).toHaveLength(1)
+})
+
+test('the evidence floor applies to the strict pass too, not only the loose one', () => {
+  // A quote of `})` is a substring of nearly every file. The floor used to guard only the
+  // line-by-line pass, and the strict pass ran first — so the guarantee this project wrote a
+  // test for did not actually hold on the path that mattered.
+  expect(quoteIsInFile('})', 'const f = (a) => ({})')).toBe(false)
+  expect(quoteIsInFile('}', 'anything with a brace }')).toBe(false)
+})
+
+test('a quote that is mostly short scraps is not evidence', () => {
+  // The loose pass drops lines under the floor rather than checking them, so an invented
+  // seven-character line used to be skipped while its neighbours carried the premise.
+  const content = 'if (ready) { doTheThing() } else { bail() }'
+  expect(quoteIsInFile('if (ready) {\nnope()\n}\n}\n}', content)).toBe(false)
+})

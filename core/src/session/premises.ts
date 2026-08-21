@@ -96,9 +96,10 @@ const MAX_QUOTE_CHARS = 600
 /** Past this the model is touring the codebase rather than naming what it depends on. */
 const MAX_PREMISES = 5
 
-/** A file this big is not being quoted from memory, and reading it into a string per premise
- * would be the check costing more than the turn. */
-const MAX_FILE_BYTES = 2_000_000
+/** Matched to `read_file`'s own ceiling on purpose: below it, the model can open the file and
+ * quote from it, so anything this check refuses to read is a file it would then wrongly
+ * report as an unreadable PATH — sending the model to fix a name that was right. */
+const MAX_FILE_BYTES = 10 * 1024 * 1024
 
 export interface PremiseCheck {
   verified: Premise[]
@@ -117,6 +118,29 @@ export interface PremiseCheck {
  */
 export function normaliseCode(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * The file with its comments taken out, so a comment cannot stand as evidence for code.
+ *
+ * The hole this closes: the check was a substring search over the whole file, so
+ * `// TODO: add validateInvoiceNumber(n)` — or a commented-out old implementation, or a
+ * doc-comment describing a method that was removed — confirmed a premise about a method
+ * that does not exist. That is the exact failure the premise check is for, passing.
+ *
+ * A doc comment is still worth reading and the model is still welcome to rely on one; it is
+ * just not proof that the CODE does anything, and being told so sends it to look at the code,
+ * which is where the belief has to come from.
+ *
+ * Deliberately crude — `//` to end of line and `/* … *​/` blocks, which covers every language
+ * this project navigates. A `//` inside a string literal takes the rest of that line with it,
+ * and that only ever makes the check STRICTER: the worst case is a premise reported as
+ * unverified, which the model answers by quoting a different line.
+ */
+export function stripComments(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
 }
 
 /** A quoted line short enough to appear in any file — a lone brace, a `})`, an `else`. Not
@@ -143,13 +167,22 @@ const MIN_EVIDENCE_LINE_CHARS = 8
  * validation — none of those are in the file on any line, and none of them survive this.
  */
 export function quoteIsInFile(quote: string, normalisedContent: string): boolean {
-  if (normalisedContent.includes(normaliseCode(quote))) return true
-  const lines = quote
-    .split('\n')
-    .map(normaliseCode)
-    .filter((l) => l.length >= MIN_EVIDENCE_LINE_CHARS)
-  if (lines.length === 0) return false
-  return lines.every((l) => normalisedContent.includes(l))
+  // The evidence floor applies to BOTH passes. It used to guard only the loose one, so a
+  // quote of `}` or `})` sailed through the strict pass — which is a substring search over
+  // the whole file and matches a brace everywhere. The test that claimed otherwise was
+  // asserting the loose pass and never reached this.
+  const whole = normaliseCode(quote)
+  if (whole.length < MIN_EVIDENCE_LINE_CHARS) return false
+  if (normalisedContent.includes(whole)) return true
+  const lines = quote.split('\n').map(normaliseCode)
+  const evidence = lines.filter((l) => l.length >= MIN_EVIDENCE_LINE_CHARS)
+  if (evidence.length === 0) return false
+  // Every line that carries content has to be there — and a SHORT line is dropped from the
+  // requirement, which is the hole this closes: `if (!x)` is seven characters, so an invented
+  // one used to be skipped rather than checked while the premise still verified on its
+  // neighbours. A quote whose short lines outnumber its evidence is not evidence.
+  if (evidence.length * 2 < lines.filter((l) => l.length > 0).length) return false
+  return evidence.every((l) => normalisedContent.includes(l))
 }
 
 export function parsePremises(argsJson: string): Premise[] | null {
@@ -187,7 +220,7 @@ export function parsePremises(argsJson: string): Premise[] | null {
 export function verifyPremises(premises: readonly Premise[], where: FileReader): PremiseCheck {
   const verified: Premise[] = []
   const unverified: { premise: Premise; problem: string }[] = []
-  const cache = new Map<string, string | null>()
+  const cache = new Map<string, { code: string; full: string } | null>()
 
   for (const premise of premises) {
     let content = cache.get(premise.file)
@@ -196,7 +229,11 @@ export function verifyPremises(premises: readonly Premise[], where: FileReader):
       try {
         const absolute = where.resolve(premise.file)
         const raw = readFileSync(absolute)
-        content = raw.byteLength > MAX_FILE_BYTES ? null : normaliseCode(raw.toString('utf8'))
+        if (raw.byteLength <= MAX_FILE_BYTES) {
+          const text = raw.toString('utf8')
+          // Two views of the same file: what it says, and what it DOES. See `stripComments`.
+          content = { code: normaliseCode(stripComments(text)), full: normaliseCode(text) }
+        }
       } catch {
         content = null
       }
@@ -210,8 +247,18 @@ export function verifyPremises(premises: readonly Premise[], where: FileReader):
       })
       continue
     }
-    if (quoteIsInFile(premise.quote, content)) verified.push(premise)
-    else {
+    if (quoteIsInFile(premise.quote, content.code)) verified.push(premise)
+    else if (quoteIsInFile(premise.quote, content.full)) {
+      // Found, but only among the comments. Said precisely, because the difference decides
+      // what the model does next: re-quoting a different comment will not help, and reading
+      // the code will.
+      unverified.push({
+        premise,
+        problem: 'those lines are only in a COMMENT there, not in the code — a note about ' +
+          'what something does is not evidence that it does it. Quote the code you are ' +
+          'relying on, or check it still exists',
+      })
+    } else {
       unverified.push({
         premise,
         problem: 'those lines are not in that file — indentation and line breaks are ' +

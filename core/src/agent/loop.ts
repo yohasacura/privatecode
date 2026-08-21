@@ -760,6 +760,13 @@ export class Agent {
         if (instead !== undefined) {
           this.answer(call, { ok: false, content: instead })
           resultChars += instead.length
+          // And the REST of the step stops with it. A step may batch several calls, and the
+          // gate's message ends "Nothing was written" — true of the call it landed on and a
+          // lie about the three edits queued behind it, which would have run anyway while the
+          // model was being told to go and re-read the code first. Halting is the existing
+          // contract for a call stopped before it executed, and it answers the remaining
+          // calls rather than dropping them, so the transcript stays valid.
+          halted = 'the turn was interrupted to check something before writing'
           continue
         }
         const result = await this.runTool(call.function.name, call.function.arguments)
