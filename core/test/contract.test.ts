@@ -653,6 +653,111 @@ test('a mid-turn compaction leaves the diff review reading the turn it belongs t
   expect(reviewed[0]).toContain('export function clamp')
 })
 
+/**
+ * The independent read is skipped when the conversation has crept up on the window.
+ *
+ * Its prompt shares nothing with the conversation, so the server has to hold two prefixes.
+ * Measured against the live server, one foreign prompt after a warm conversation:
+ *
+ *    92,183 tokens -> cached 92,179    123,103 -> cached 123,099    160,023 -> cached 160,019
+ *   193,343 tokens -> cached 0         EVICTED, 841 s to rebuild
+ *
+ * Free for almost every session, fourteen minutes for one that is nearly full -- and the
+ * compaction trigger is 0.8, so there is a live band between it and the cliff. A numeric
+ * guard, because this is arithmetic and not a judgement.
+ */
+test('the diff review stands down when there is no room for a second prefix', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pc-reviewroom-'))
+  dirs.push(root)
+  const CONTEXT = 40_000
+  const CREATED = `export function clamp() {}
+${'z'.repeat(3_000)}`
+
+  const mkTool = (name: string, content: string, readOnly: boolean): Tool<Record<string, unknown>> => ({
+    name, readOnly, description: name,
+    parameters: { type: 'object', properties: {} },
+    validate: (args) => ({ ok: true, args: args as Record<string, unknown> }),
+    execute: async () => ({ ok: true, content }),
+  })
+  const registry = new ToolRegistry()
+  registry.register(mkTool('write_file', 'wrote', false))
+
+  const criteria = ['clamp exists']
+  let reviews = 0
+  let turnCall = 0
+  /** The prompt size the session believes it is at when the turn ends. */
+  let finalPromptTokens = 1_000
+
+  const fake = await startFakeServer((body, req) => {
+    if (req.url === '/props') return { default_generation_settings: { n_ctx: CONTEXT } }
+    if (req.url === '/health') return { status: 'ok' }
+    const schemaName = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
+    if (schemaName === 'contract') {
+      return {
+        choices: [{ message: { role: 'assistant', content: JSON.stringify({ goal: 'clamp exists', criteria, constraints: [] }) }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 900, completion_tokens: 20 },
+      }
+    }
+    if (schemaName === 'acceptance') {
+      return {
+        choices: [{ message: { role: 'assistant', content: JSON.stringify({ items: [{ index: 1, evidence: 'the write landed', met: true }] }) }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1_500, completion_tokens: 20 },
+      }
+    }
+    if (schemaName === 'review') {
+      reviews++
+      return {
+        choices: [{ message: { role: 'assistant', content: JSON.stringify({ goalMet: true, goalGap: '', issues: [] }) }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1_500, completion_tokens: 20 },
+      }
+    }
+    turnCall++
+    if (turnCall === 1) {
+      return {
+        choices: [{
+          message: {
+            role: 'assistant', content: null,
+            tool_calls: [{ id: 'w1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'clamp.ts', content: CREATED }) } }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: 1_000, completion_tokens: 20 },
+      }
+    }
+    return {
+      choices: [{ message: { role: 'assistant', content: 'All done, everything works.' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: finalPromptTokens, completion_tokens: 5 },
+    }
+  })
+  stop = fake.close
+
+  const run = async (): Promise<void> => {
+    const session = new Session({
+      client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+      toolset: { registry } as Toolset,
+      workspaceRoot: root,
+      mode: 'autopilot',
+      store: new SessionStore(root),
+      // No compaction trigger in the way: this test is about the reviewer's own guard.
+      compaction: { contextLength: CONTEXT, triggerRatio: 0.99 },
+    })
+    await session.send(BIG_TASK)
+  }
+
+  // Room to spare: the review runs, exactly as it always has.
+  finalPromptTokens = 1_000
+  turnCall = 0
+  await run()
+  expect(reviews).toBe(1)
+
+  // Nearly the whole window: it stands down rather than costing a second prefix.
+  reviews = 0
+  turnCall = 0
+  finalPromptTokens = CONTEXT - 2_000
+  await run()
+  expect(reviews).toBe(0)
+})
+
 describe('parseSuggestions', () => {
   test('caps lists, trims, and treats an empty answer as nothing to show', async () => {
     const { parseSuggestions } = await import('../src/session/contract.js')

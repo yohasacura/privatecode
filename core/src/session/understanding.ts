@@ -727,17 +727,78 @@ async function restatedCriterion(
   return out
 }
 
+/**
+ * The contested readings the contract does NOT already carry, and the mapping that decided it.
+ *
+ * A contested reading is a line one lens wrote and another did not. That makes it a candidate
+ * for a QUESTION -- but not every disagreement between lenses is a disagreement about the
+ * task: the contract was distilled from the same request, so a reading the contract already
+ * states is a question whose answer is written down two fields away.
+ *
+ * Measured in the running app. The card offered three readings:
+ *
+ *   Slugs contain only lowercase letters, digits, and single hyphens
+ *   No slug starts or ends with a hyphen
+ *   Punctuation is stripped before slug generation
+ *
+ * against a contract whose first two criteria were "slugs contain only lowercase letters,
+ * digits and single hyphens -- e.g. ..." and "no leading or trailing hyphen -- e.g. ...".
+ * All three were already required. The turn stopped, a person was interrupted, three boxes
+ * were ticked, and the contract came back byte-identical.
+ *
+ * `readThroughLenses` cannot see this: it compares readings with each other and never with
+ * the contract, even though `session.ts` holds both. This is that comparison.
+ *
+ * It costs nothing extra. The same question was already being asked AFTER the answer, to fold
+ * the ticks in; asking it here instead means one generation either way, and the returned
+ * mapping is handed to `foldAnswerWithModel` so it does not ask again.
+ *
+ * Fails OPEN: when the model cannot answer, every contested point survives and the question is
+ * asked exactly as before. Suppressing a question is the one direction that loses something.
+ */
+export async function contestedBeyondContract(
+  client: LlamaClient,
+  u: Understanding,
+  existing: readonly string[],
+  signal?: AbortSignal,
+): Promise<{ understanding: Understanding; known: Map<string, number> }> {
+  const known = new Map<string, number>()
+  if (u.contested.length === 0 || existing.length === 0) return { understanding: u, known }
+
+  const restates = await restatedCriterion(client, existing, u.contested, signal)
+  if (restates === null) return { understanding: u, known }
+
+  const contested: string[] = []
+  u.contested.forEach((reading, i) => {
+    const at = (restates[i] ?? 0) - 1
+    // The same floor the fold uses: two lines that are not about the same things are not the
+    // same requirement, whatever was answered. See `sharedContentWords`.
+    const covered = at >= 0 && sharedContentWords(reading, existing[at]!) >= MIN_SHARED_TO_MERGE
+    if (covered) known.set(reading, at + 1)
+    else contested.push(reading)
+  })
+  return { understanding: { ...u, contested }, known }
+}
+
+
 export async function foldAnswerWithModel(
   client: LlamaClient,
   u: Understanding,
   answer: string,
   existing: readonly string[],
   signal?: AbortSignal,
+  /** An answer to the same question, already obtained -- see `contestedBeyondContract`, which
+   * asks it BEFORE the person is interrupted so it can drop the readings the contract already
+   * carries. Passing it here is what keeps the whole path at ONE generation: the mapping is
+   * computed once and used twice, rather than asked for again after the answer comes back. */
+  known?: ReadonlyMap<string, number>,
 ): Promise<{ criteria: string[]; notPicked: string[]; nextCriteria: string[] }> {
   const folded = foldAnswer(u, answer, existing)
   if (folded.criteria.length === 0 || existing.length === 0) return folded
 
-  const restates = await restatedCriterion(client, existing, folded.criteria, signal)
+  const restates = known !== undefined
+    ? folded.criteria.map((tick) => known.get(tick) ?? 0)
+    : await restatedCriterion(client, existing, folded.criteria, signal)
   // `null` is "could not ask", and the string comparison is a real answer rather than a
   // guess -- so it stands, exactly as it did before this function existed.
   if (restates === null) return folded

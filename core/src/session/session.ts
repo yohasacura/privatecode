@@ -46,7 +46,8 @@ import {
   buildReviewBrief, reviewVerdict, REVIEW_SYSTEM,
 } from './contract.js'
 import {
-  buildQuestion, foldAnswerWithModel, readThroughLenses, type Understanding,
+  buildQuestion, contestedBeyondContract, foldAnswerWithModel, readThroughLenses,
+  type Understanding,
 } from './understanding.js'
 import {
   premiseFailureMessage, statePremises, verifyPremises, type Premise,
@@ -446,6 +447,23 @@ const REVIEWER_TOOLS = ['read_file', 'search_code', 'list_dir', 'find_files', 's
 /** How far the independent reader may look before it must deliver a verdict. Enough to open
  * the files the diff touched and follow one thread out of them; past that it is re-reading
  * the repository at the end of every task, and each step is a generation. */
+/**
+ * Room the reviewer's own prompt needs beside the conversation, in tokens.
+ *
+ * Its brief is the diff plus the contract, and it then reads files for up to
+ * `REVIEW_MAX_STEPS` steps. 24k is generous on purpose: over-reserving costs one skipped
+ * review on a session that was nearly full anyway, and under-reserving costs the
+ * 841-second re-prefill the guard in `freshReview` exists to avoid.
+ */
+/** Said in the transcript rather than skipped in silence -- the no-silent-truncation rule
+ * applies to gates too. Bracketed so `replay.ts` shows it as the harness talking. */
+const REVIEW_SKIPPED_NOTE =
+  '[The independent diff review was skipped: this conversation is close enough to the ' +
+  'context window that reading it a second time would cost minutes of re-processing. The ' +
+  'contract check above still ran.]'
+
+const REVIEW_PROMPT_ROOM = 24_000
+
 const REVIEW_MAX_STEPS = 6
 
 /**
@@ -1120,6 +1138,28 @@ export class Session {
     // this hazard for the OUTER turn; it applies just as much to the fixer's.
     const diff = this.turnDiffText(this.turnStartIndex)
     if (diff.length < DIFF_REVIEW_MIN_CHARS) return result
+    // Not when there is no room for both. The reviewer's prompt shares nothing with the
+    // conversation, so the server holds two prefixes at once -- and it does, for free, until
+    // the conversation is nearly the whole window. Measured, one foreign prompt against a
+    // warm conversation:
+    //
+    //    92,183 tokens -> cached 92,179    123,103 -> cached 123,099    160,023 -> 160,019
+    //   193,343 tokens -> cached 0         EVICTED, 841 s to rebuild
+    //
+    // So this gate is free for almost every session and costs FOURTEEN MINUTES on one that has
+    // crept up on the window -- and the compaction trigger is 0.8, which leaves a live band
+    // between it and the cliff whenever compaction postpones. A numeric guard, not a
+    // judgement: when the conversation plus a reviewer-sized brief does not fit, the
+    // independent read is skipped and SAID to be skipped, and the acceptance gate still ran.
+    const window = this.opts.compaction?.contextLength
+    const used = this.usedTokens(false)
+    if (window !== undefined && used !== null && used + REVIEW_PROMPT_ROOM > window) {
+      this.transcript.append({
+        role: 'user',
+        content: REVIEW_SKIPPED_NOTE,
+      })
+      return result
+    }
     this.compactionDisplacedCache = true
     this.promptCacheCold = true
     const issues = await this.runReviewer(contract, diff, signal)
@@ -1361,7 +1401,22 @@ export class Session {
       return undefined
     }
     if (understanding === null || signal?.aborted) return undefined
+
+    // Do not ask what the contract already answers. The lenses compare readings with each
+    // OTHER and never with the contract, so a reading the contract already states reaches the
+    // card as a question whose answer is written down two fields away -- measured live: three
+    // offered readings, all three already criteria, a person interrupted, and the contract
+    // came back byte-identical. `known` is the same mapping the fold below would have asked
+    // for after the answer, so this MOVES a generation rather than adding one.
+    const filtered = await contestedBeyondContract(
+      this.opts.client, understanding, contract.criteria, signal,
+    )
+    understanding = filtered.understanding
+    if (signal?.aborted) return undefined
+
     const question = buildQuestion(understanding)
+    // Nothing left that the contract does not already require: no question to ask, and the
+    // turn carries on rather than stopping a person for a formality.
     if (question === null) return undefined
 
     let answer: string
@@ -1394,7 +1449,7 @@ export class Session {
     // fallback -- measured in the running app, the string comparison alone matched none of
     // three ticks against any of eight criteria. See `foldAnswerWithModel`.
     const { criteria, notPicked, nextCriteria } = await foldAnswerWithModel(
-      this.opts.client, understanding, answer, contract.criteria, signal,
+      this.opts.client, understanding, answer, contract.criteria, signal, filtered.known,
     )
     if (criteria.length === 0 && notPicked.length === understanding.contested.length) {
       // Nothing matched and nothing was typed that we could keep — an answer we cannot read.

@@ -664,3 +664,106 @@ does not know. No wording of the ask changes that. What would: an input source t
 not choose — a property test, a fuzzer, a checker that derives cases from the rule's own
 character class rather than from the model's imagination.
 
+---
+
+# What the gates actually cost — and the number the code had wrong
+
+Asked whether anything in the harness should be removed. Measured before answering, because
+the harness's own cost model turned out to be wrong, and an audit that read the source
+inherited the error and built its top recommendation on it.
+
+## The claim that failed
+
+`session.ts` states, in a comment, that the independent diff review leaves the conversation
+cold so "196k tokens is another ~470s" on the next turn. A multi-lane read of the source
+quoted that and recommended deleting the review block as the single biggest win, worth
+"500-900 s per writing task, about 80% of it cold prefill".
+
+It does not reproduce. A reviewer-shaped request against a warm 77,783-token conversation,
+three times (`spike/reviewer-cache-probe.mts`):
+
+```
+round 1: convo 77783 tok -> reviewer 3229 tok -> convo again: cached 77779/77783  STILL CACHED
+round 2: ... STILL CACHED        round 3: ... STILL CACHED
+```
+
+And every gate SHAPE against a warm 89,762-token conversation
+(`spike/gate-chain-cache-probe.mts`) — including `groupLines`, which swaps the tools array,
+and the reviewer, which sends a fresh transcript:
+
+```
+after a gate that appends                      cached 89758/89762  SURVIVED
+after a lens reading                           cached 89758/89762  SURVIVED
+after groupLines (SWAPS the tools array)       cached 89758/89762  SURVIVED
+after restates merge (sends NO tools)          cached 89758/89762  SURVIVED
+after the diff reviewer (fresh transcript)     cached 89758/89762  SURVIVED
+```
+
+## What is true instead
+
+There IS a cliff. It is at the window, not at the gate (`spike/cache-cliff-probe.mts`):
+
+```
+ 92,183 tokens -> after one foreign prompt: cached  92,179  SURVIVED
+123,103                                     cached 123,099  SURVIVED
+160,023                                     cached 160,019  SURVIVED
+193,343                                     cached       0  EVICTED, 841s to rebuild
+```
+
+The comment had the mechanism right and the timing wrong: a foreign prompt is free until the
+conversation is nearly the whole 196,608-token window, and then it costs **fourteen minutes**.
+The compaction trigger is 0.8 — 157k — which leaves a live band between it and the cliff
+whenever compaction postpones. An earlier session recorded exactly that, at 179k.
+
+**Nothing is worth removing on cost grounds.** Every gate priced on a warm 38,709-token
+conversation (`spike/gate-price-probe.mts`):
+
+```
+contract distillation                20.1s  1 gen      acceptance audit      8.4s  1 gen
+understanding: 3 lenses + grouping   15.9s  4 gen      restates merge        2.8s  1 gen
+premise check                        11.7s  1 gen      diff review verdict  10.4s  1 gen
+```
+
+That is the whole bill, and it is generation — the model thinking, not the server re-reading.
+
+## The two things that were worth fixing
+
+**The reviewer had no window guard.** It fires on diff size alone. Added: when the
+conversation plus a reviewer-sized brief does not fit, the independent read stands down and
+says so in the transcript. Arithmetic, not a judgement. Tested both ways — room to spare, the
+review runs; nearly full, it does not.
+
+**The understanding check asked what the contract already answered.** Watched live: the card
+offered three readings, all three already criteria, the turn stopped, a person was
+interrupted, three boxes were ticked, and the contract came back byte-identical.
+`readThroughLenses` compares readings with each other and never with the contract, though
+`session.ts` holds both. The same question the fold was asking AFTER the answer is now asked
+BEFORE the card, and its answer handed to the fold — one generation either way, moved rather
+than added.
+
+Nine rounds against the live server:
+
+```
+safety    : both genuinely-new readings survived 9/9 rounds — no real question suppressed
+usefulness: the card shrank in ~40% of rounds, disappeared in 1 of 9
+```
+
+Partial, and honestly so: it cannot make things worse and costs nothing, but it does not
+reliably remove the interruption. The variance is the model's, not the code's.
+
+## What was NOT changed, and why
+
+- **The diff reviewer stays.** It found nothing in four recorded sessions, and in one spike it
+  noticed a planted defect and declined to report it. But it also received a structural fix
+  (`goalMet`) AFTER that spike, and found a planted cross-file defect once it had. Deleting a
+  gate on evidence gathered before its repair is the mistake this section exists to avoid.
+  What would decide it: plant a cross-file defect and run it, post-fix, several times.
+- **The second acceptance fixer round** has never caught anything — but "never observed" over
+  four sessions is not evidence of uselessness, and it costs a turn only when the first failed.
+- **`groupLines` still relies on `tool_choice: 'required'`**, measured today as accepted and
+  ignored. It is the last tools-swap in the codebase and belongs on `response_format` like
+  every other gate. Left alone here because that is a correctness change, not a cost one.
+- **No verify command is configured** in the workspace these sessions ran in. That is the
+  cheapest, most reliable check in the whole system, it costs zero generations, and it was
+  switched off the entire time. It is worth more than any gate discussed above.
+
