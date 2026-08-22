@@ -177,3 +177,37 @@ test('and a nested block inside the replacement keeps its own shape', () => {
     '        log()',
   ])
 })
+
+/**
+ * A replacement that OPENS with a newline.
+ *
+ * `reindent` took the block's own indentation from `lines[0]`, and a leading blank line has
+ * none — so the `had === ''` branch prepended the file's indent to EVERY line, including the
+ * ones that were already right. A correctly-indented four-space replacement came back at
+ * eight, `ok: true`, and python refused the file with "IndentationError: unindent does not
+ * match any outer indentation level". The anchor has to be the first line that carries
+ * indentation information, which a blank line does not.
+ */
+test('a replacement that starts with a newline is not shifted a level deeper', () => {
+  const src = 'def f(x):\n    if  x:\n        go()\n    return 1\n'
+  const out = applySearchReplace(src, '    if x:\n        go()', '\n    if y:\n        go()')
+  expect(out.ok).toBe(true)
+  // The fallback matched on whitespace, so it did reindent -- to the file's four, not eight.
+  if (out.ok) {
+    expect(out.matchedExactly).toBe(false)
+    expect(out.text).toBe('def f(x):\n\n    if y:\n        go()\n    return 1\n')
+  }
+})
+
+test('the ordinary shift still happens: a block moves to the indentation it landed in', () => {
+  const src = 'def f(x):\n        if  x:\n            go()\n'
+  const out = applySearchReplace(src, '    if x:\n        go()', '    if y:\n        go()')
+  expect(out.ok).toBe(true)
+  if (out.ok) expect(out.text).toBe('def f(x):\n        if y:\n            go()\n')
+})
+
+test('a replacement that is nothing but blank lines is left exactly as written', () => {
+  const out = applySearchReplace('a\n  b\n', '  b', '\n\n')
+  expect(out.ok).toBe(true)
+  if (out.ok) expect(out.text).toBe('a\n\n\n\n')
+})

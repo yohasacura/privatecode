@@ -1390,3 +1390,47 @@ test('plan mode sends exactly the registry read-only schemas, and nothing else',
   // `ping` declares readOnly, `boom` does not.
   expect(sentTools?.map((t) => t.function.name)).toEqual(['ping'])
 })
+
+/**
+ * `tool_choice: 'required'` is a request this server accepts and IGNORES.
+ *
+ * Measured live, 3/3, with a single read-only tool and "Say hello in one word. Do not use any
+ * tool.": prose from the first token, `finish_reason: stop`, no `tool_calls`. No grammar was
+ * applied. The truncation continuation rests on the opposite premise — it sends `'required'`
+ * precisely because by then talking has already failed — so a continuation that talked was
+ * returned as an ordinary message, `runTurn` saw zero calls, and a step that took NO ACTION
+ * AT ALL ended the turn `stoppedBecause: 'done'`.
+ */
+test('a continuation that talks instead of acting ends the turn truncated, not done', async () => {
+  let calls = 0
+  const fake = await startFakeServer(() => {
+    calls++
+    return calls === 1
+      // Step 1 runs out of room mid-thought.
+      ? {
+          choices: [{
+            finish_reason: 'length',
+            message: { role: 'assistant', content: null, reasoning_content: 'I should look at' },
+          }],
+          usage: { completion_tokens: 8 },
+        }
+      // The continuation ends cleanly and calls nothing -- what `required` was meant to stop.
+      : {
+          choices: [{
+            finish_reason: 'stop',
+            message: { role: 'assistant', content: 'I have finished reviewing the change; it looks correct.' },
+          }],
+          usage: { completion_tokens: 12 },
+        }
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url)
+  const result = await agent.runTurn('check the change')
+
+  expect(result.stoppedBecause).toBe('truncated')
+  expect(pingCalls).toBe(0)
+  // The words are not thrown away: the model produced them and the turn shows them.
+  expect(result.finalText).toContain('finished reviewing')
+  // `required` really was asked for, which is what makes this the server's answer and not ours.
+  expect(fake.requests.map((r: any) => r.body.tool_choice)).toEqual(['auto', 'required'])
+})

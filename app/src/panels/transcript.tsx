@@ -583,7 +583,8 @@ const TranscriptRow = memo(function TranscriptRow({
           marker={item.ok ? Icon.check() : Icon.alert()}
         >
           <span class="record-text">
-            verified with <b>{item.command}</b> — {item.detail}
+            verified with <b>{item.command}</b>
+            {item.folder !== undefined ? <> in <b>{item.folder}</b></> : null} — {item.detail}
           </span>
         </Row>
       )

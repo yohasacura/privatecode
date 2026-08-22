@@ -3,7 +3,7 @@ import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ChatResult, StreamProgress, Timings, ToolCall } from '../llama/types.js'
 import { BROWSER_TOOL, MCP_TOOL_PREFIX, type AgentMode, type PermissionEngine } from '../permissions/engine.js'
 import { suggestRules } from '../permissions/rules.js'
-import { Transcript } from '../transcript/transcript.js'
+import { Transcript, transcriptChars } from '../transcript/transcript.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } from '../tools/types.js'
 import { buildSystemPrompt } from './prompt.js'
@@ -32,18 +32,31 @@ export const DEFAULT_STEP_TIMEOUT_MS = 90_000
  * 15,393 new tokens → 36.3 s (2.36 ms/token), 15,409 → 58.8 s (3.82), 11,963 → 25.0 s (2.09).
  * 4 ms carried the slowest of those plus room for a GPU also driving a display.
  *
- * RETUNED 2026-08-22 to **2 ms**, after the served model changed. Prefill is now measured at
- * 726-739 tok/s (`docs/SPIKE-KAT-CODER.md` §2), i.e. ~1.37 ms/token, so 2 ms still carries a
- * ~46% margin over the measurement. This can only ever make a wait SHORTER, and no healthy
- * step is at risk: the whole 196k window at 730 tok/s is 269 s, comfortably inside
- * MAX_COLD_START_MS either way. What it buys is the other end — a server that has actually
- * wedged used to hold the window for the full nine minutes on an allowance sized for a
- * machine three times slower.
+ * RETUNED 2026-08-22 to 2 ms on a 726-739 tok/s reading (~1.37 ms/token) said to leave a
+ * ~46% margin. That reading does not reproduce. Ten cold prefills across three independent
+ * probes, all reading the server's own `prompt_progress.time_ms` on `return_progress`
+ * streams, and all with wall time equal to the server's reported time (so none of them
+ * queued behind another workload):
+ *
+ *   idle server : 4,007 tok / 8,157 ms = 2.04   14,087 / 28,213 = 2.00   32,087 / 65,341 = 2.04
+ *   under load  : 3,098 / 6,929 = 2.24   9,925 / 23,314 = 2.35   15,303 / 33,691 = 2.20
+ *                 15,305 / 33,801 = 2.21   19,683 / 47,192 = 2.40   46,007 / 107,120 = 2.33
+ *
+ * 2.00-2.40 ms/token, i.e. 417-499 tok/s. Nothing came near 730. So 2 ms sat exactly on the
+ * floor of the real range with no margin at all and BELOW it whenever the slot was busy —
+ * and the arithmetic that called that safe was wrong in the direction that matters: a full
+ * 196k-token cold prefill genuinely takes ~401 s at 2.04, against the 393 s the old constant
+ * would grant. The healthy step was the one at risk.
+ *
+ * **3 ms** carries ~25% over the idle rate and ~47% over the observed worst. The wedged-server
+ * end stays bounded by MAX_COLD_START_MS, which the full window now reaches (196k x 3 = 590 s,
+ * clamped to 540) — nine minutes for a wedged server, against ~401 s of real work.
  *
  * `Session` measured the same rate independently while warming a compacted session (393
  * tok/s) and had this constant privately; it now imports it, so the two cannot drift.
+ * Re-measure with `spike/prefill-rate-probe.mts`, never by arithmetic.
  */
-export const PREFILL_MS_PER_TOKEN = 2
+export const PREFILL_MS_PER_TOKEN = 3
 
 /** Ceiling on any single wait, below the client's ten-minute transport timeout so a server
  * that goes silent is still caught by something. */
@@ -68,8 +81,9 @@ function prefillAllowanceMs(newChars: number): number {
  *
  * This is not a licence to spiral: 8000 is a ceiling, not a target, and raising it further
  * was measured as buying a longer spiral rather than a better answer (`max_tokens=2000`
- * gave 1/5 completions, `8000` gave 2/5 — the lever is `tool_choice`, not the budget).
- * What the budget buys is that a step which *would* have finished is not cut off.
+ * gave 1/5 completions, `8000` gave 2/5). That measurement named `tool_choice` as the
+ * better lever; it is not one on this build, which accepts `'required'` and ignores it
+ * (see `AgentOptions.toolChoice`). The budget is what there is.
  */
 export const DEFAULT_MAX_TOKENS_PER_STEP = 8_000
 
@@ -367,20 +381,22 @@ export interface AgentOptions {
   /**
    * `tool_choice` for the first call of each step. Defaults to `'auto'`.
    *
-   * Measured on a hard edit at max_tokens=8000 (docs/DESIGN.md §7): `'auto'` completes
-   * 2/5 with 5591 median thinking tokens, `'required'` completes 4/5 with 1262 — denying
-   * the model the option of merely talking is the single strongest lever there is. It is
-   * not the default because a turn must be able to end with prose: a step that is always
-   * forced to call a tool can never terminate, so `'required'` belongs to a caller who
-   * knows this turn must end in an action. The truncation continuation always uses
-   * `'required'` regardless, since by then talking has already failed.
+   * **This build does not enforce it.** Measured live, 3/3: `tools=[read_file]`,
+   * `tool_choice:'required'`, "Say hello in one word. Do not use any tool." returned prose
+   * from the first token with no `tool_calls`. No grammar is applied, so the field is a
+   * request the server is free to ignore — and it does. The earlier DESIGN.md §7 numbers
+   * ('auto' 2/5 completions at 5591 median thinking tokens, 'required' 4/5 at 1262) were
+   * taken on a different server build and cannot be relied on here.
    *
-   * Known gap, deliberately left open here: the strongest measured lever is applied only
-   * as a per-*turn* setting, so a turn that is mostly actions and ends in one summary step
-   * cannot have `'required'` on the action steps and `'auto'` on the last one. Choosing
-   * per step — required while work remains, auto once it does not — needs a signal this
-   * loop does not have yet, and belongs to a later plan. Until then the default stays
-   * `'auto'` and DEFAULT_MAX_TOKENS_PER_STEP carries the cost.
+   * Nothing sets this option: `grep` over `core/src` and `app/src` finds `toolChoice`
+   * assigned nowhere outside this file. It is kept because it costs nothing to send and a
+   * later build may honour it — but no code may depend on it. The one caller that did (the
+   * truncation continuation, which sends `'required'` because by then talking has already
+   * failed) now checks the answer for itself, in `runStep`.
+   *
+   * If a real constraint is wanted, `response_format: json_schema` is the mechanism that
+   * demonstrably works on this model — the gates rely on it and it overrode an explicit
+   * contrary instruction about key order when tested.
    */
   toolChoice?: 'auto' | 'required'
   transcript?: Transcript
@@ -423,7 +439,13 @@ export interface TurnResult {
 /** What one step produced, once its model call(s) are over. */
 type StepOutcome =
   | { kind: 'message'; message: ChatMessage }
-  | { kind: 'truncated' }
+  /**
+   * The step produced two generations and no action. `message` is present when the second
+   * one ENDED normally but called nothing — see the note at the continuation's guard: the
+   * model spoke instead of acting, and its words are carried out so the turn can show them
+   * rather than silently discarding a generation the user paid for.
+   */
+  | { kind: 'truncated'; message?: ChatMessage }
   | { kind: 'timeout' }
   | { kind: 'aborted' }
 
@@ -432,7 +454,7 @@ type ChatOutcome =
   | { kind: 'timeout' }
   | { kind: 'aborted' }
 
-const CONTINUE_NUDGE =
+export const CONTINUE_NUDGE =
   'You ran out of room while thinking. Stop deliberating and take the next action now, ' +
   'using one tool call.'
 
@@ -467,10 +489,32 @@ export function looksRepetitive(text: string): boolean {
   return 1 - distinct / sentences.length >= LOOP_REPEAT_SHARE
 }
 
-const TRUNCATED_TWICE =
+export const TRUNCATED_TWICE =
   'You ran out of room while thinking twice in a row, so that step was abandoned and ' +
   'nothing was done. Do not restate your plan: choose the smallest possible next action ' +
   'and call one tool immediately.'
+
+/**
+ * The two messages below are written with a variable in them, so the whole string cannot be
+ * compared. Their fixed opening is exported instead — `replay.ts` matches openers with
+ * `startsWith`, and this is the part that never varies.
+ *
+ * They exist for the same reason `HARNESS_OPENERS` does: every one of these is the harness
+ * talking, and on resume they replayed in the person's caret row and exported under
+ * "## You". Driving four of them through the real replay produced four `## You` headings for
+ * things nobody typed — "You ran out of room while thinking...", "The previous step hit its
+ * 240 s time limit...". Live they never appear, because live nothing round-trips.
+ */
+export const STEP_TIMEOUT_PREFIX = 'The previous step hit its '
+/** See `STEP_TIMEOUT_PREFIX`. */
+export const MAX_STEPS_PREFIX = 'The turn was stopped after '
+
+/** The other way a continuation fails: it ended cleanly and called nothing. See the guard
+ * in `runStep` for why the server cannot be relied on to prevent that. */
+export const TALKED_INSTEAD_OF_ACTING =
+  'That step was abandoned: you had already run out of room once, and the continuation ' +
+  'answered in words instead of calling a tool, so nothing was done. Do not restate your ' +
+  'plan: choose the smallest possible next action and call one tool immediately.'
 
 /**
  * Which external surfaces this turn can actually reach, for the system prompt.
@@ -658,7 +702,7 @@ export class Agent {
           : `${this.opts.stepTimeoutMs} ms`
         this.transcript.append({
           role: 'user',
-          content: `The previous step hit its ${seconds} time limit before you replied, ` +
+          content: `${STEP_TIMEOUT_PREFIX}${seconds} time limit before you replied, ` +
                    'so it was abandoned and nothing was done. Take one small action next.',
         })
         return {
@@ -669,9 +713,18 @@ export class Agent {
         }
       }
       if (outcome.kind === 'truncated') {
-        // The forced continuation truncated as well: two generations, no action taken.
-        // Reported as a failure, never as a finished turn with empty text.
-        this.transcript.append({ role: 'user', content: TRUNCATED_TWICE })
+        // The forced continuation truncated as well, or ended by talking instead of acting:
+        // two generations, no action taken. Reported as a failure, never as a finished turn.
+        const spoken = outcome.message?.content ?? ''
+        if (spoken !== '') {
+          this.transcript.append(this.assistantMessage(outcome.message as ChatMessage))
+          lastText = spoken
+          this.opts.events?.onAssistantText?.(spoken)
+        }
+        this.transcript.append({
+          role: 'user',
+          content: spoken !== '' ? TALKED_INSTEAD_OF_ACTING : TRUNCATED_TWICE,
+        })
         return {
           steps: step,
           finalText: lastText ||
@@ -763,11 +816,11 @@ export class Agent {
           // failure — but nothing told a WATCHING window, and once arguments streamed there
           // was a card open for it. Every unanswered call left a row pulsing forever: seen in
           // a live run as `-> find_files -> find_files -> find_files` against one `(ok)`.
-          this.opts.events?.onToolCall?.(call.function.name, call.function.arguments)
+          this.announceCall(call)
           this.answer(call, { ok: false, content })
           continue
         }
-        this.opts.events?.onToolCall?.(call.function.name, call.function.arguments)
+        this.announceCall(call)
         // Before the call, not after: whatever this returns is meant to reach the model
         // INSTEAD of what the tool would have done.
         //
@@ -809,7 +862,7 @@ export class Agent {
 
     this.transcript.append({
       role: 'user',
-      content: `The turn was stopped after ${this.opts.maxSteps} steps without finishing. ` +
+      content: `${MAX_STEPS_PREFIX}${this.opts.maxSteps} steps without finishing. ` +
                'Nothing further was run. Say what you did and what is left.',
     })
     return {
@@ -905,6 +958,19 @@ export class Agent {
       last = again.result
       this.report(again.result.message)
       if (again.result.finishReason === 'length') return { kind: 'truncated' }
+      // `tool_choice: 'required'` is accepted and IGNORED by this build. Measured live, 3/3:
+      // `tools=[read_file]`, `tool_choice:'required'`, "Say hello in one word. Do not use any
+      // tool." came back as prose from the first token with no `tool_calls` — no grammar was
+      // applied. So the premise this continuation rests on (that the model cannot merely
+      // talk here) does not hold, and a continuation that talked was returned as an ordinary
+      // message: `runTurn` saw zero calls and ended the turn `stoppedBecause:'done'` on a
+      // step that took no action at all. Enforce in the loop what the server will not.
+      //
+      // The text is carried out rather than dropped: the model did produce it, and a turn
+      // that shows it alongside an honest "truncated" is better than one that shows nothing.
+      if ((again.result.message.tool_calls ?? []).length === 0) {
+        return { kind: 'truncated', message: again.result.message }
+      }
       return { kind: 'message', message: again.result.message }
     } finally {
       clock.stop()
@@ -1021,8 +1087,12 @@ export class Agent {
    * Taking the max composes the two rather than letting either override the other.
    */
   private firstTokenBudget(floorMs: number): number {
-    const chars = this.transcript.messages()
-      .reduce((n, m) => n + (m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0), 0)
+    // `transcriptChars`, not a local reduce. The local one summed `content` and
+    // `reasoning_content` only, so a step whose whole output was a `write_file` argument
+    // (content: null) measured as zero fresh characters and got the flat floor. Measured on
+    // a real transcript: a 69,774-char write moved the budget by 12 ms, where the same
+    // payload as a READ moved it by 34.9 s. Those bytes are prefilled either way.
+    const chars = transcriptChars(this.transcript.messages())
     const fresh = Math.max(0, chars - this.charsAtLastRequest)
     this.charsAtLastRequest = chars
     const budget = Math.max(floorMs, this.opts.stepTimeoutMs + prefillAllowanceMs(fresh))
@@ -1110,7 +1180,22 @@ export class Agent {
         return { kind: 'aborted' }
       }
       if (deadline.aborted) return { kind: 'timeout' }
-      if (attempt === 0 && e instanceof LlamaRequestError) {
+      // OUR OWN request ceiling, not the server going away. A healthy long step that outruns
+      // `requestTimeoutMs` used to take this branch: `waitHealthy` returned at once against
+      // a server that had never been down, the whole step re-ran from scratch, and the second
+      // failure escaped `runTurn` as a raw `LlamaRequestError`. Reproduced at a shrunk
+      // ceiling against a server streaming deltas 100 ms apart — 2 requests, 2x the ceiling
+      // in elapsed time. Ended as a timeout instead, which is what it is.
+      if (e instanceof LlamaRequestError && e.transportTimeout === true) return { kind: 'timeout' }
+      // A 4xx is the server ANSWERING. It will answer the same way to the identical bytes, so
+      // the retry buys one more refusal — measured by hashing every inbound body: the last
+      // four were two byte-identical pairs, i.e. four server refusals for two logical
+      // attempts, on both the acceptance-fixer and the overflow-retry paths. Cheap (a real
+      // 220k-token overflow is refused in 637 ms, before any prefill) but pointless, and it
+      // hides the real error behind a health check that always passes.
+      const answeredWithRefusal =
+        e instanceof LlamaRequestError && e.status !== undefined && e.status >= 400 && e.status < 500
+      if (attempt === 0 && !answeredWithRefusal && e instanceof LlamaRequestError) {
         const healthy = await this.opts.client.waitHealthy(SERVER_RESTART_WAIT_MS, this.opts.signal)
         // The cancel is re-checked on BOTH outcomes of the wait, not only when the server
         // came back. `waitHealthy` answers `false` for two different things — the budget
@@ -1392,6 +1477,26 @@ export class Agent {
 
   private report(m: ChatMessage): void {
     if (m.reasoning_content) this.opts.events?.onThinking?.(m.reasoning_content)
+  }
+
+  /**
+   * Tell the window a call is about to run, without letting the window take the turn down.
+   *
+   * Guarded for the reason `onBeforeTool` two statements later is guarded, spelled out in its
+   * own comment: this fires AFTER the assistant message carrying the calls has been appended
+   * and BEFORE any `role: 'tool'` reply, so a throw escapes `runTurn` leaving every call in
+   * the step unanswered. Measured with a throwing handler and two calls in one step:
+   * `announced: ['c1','c2']  answered: []  UNANSWERED: ['c1','c2']`, and the rejection
+   * surfaced as the transport error the handler happened to raise.
+   *
+   * The shipped app cannot reach it — `host.ts` routes events through `safeSend`, which
+   * swallows transport throws — but `cli/render.ts` and the spike harnesses call in
+   * unguarded, and "the caller happens to be careful" is not the same as safe.
+   */
+  private announceCall(call: { function: { name: string; arguments: string } }): void {
+    try {
+      this.opts.events?.onToolCall?.(call.function.name, call.function.arguments)
+    } catch { /* a window that cannot hear about a call still gets its result */ }
   }
 
   /**

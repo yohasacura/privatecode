@@ -231,16 +231,33 @@ function targetMatches(spec: string, target: string): boolean {
 // hits the split/join below -- which is exactly the bug this constant now avoids.
 const DOUBLE_STAR_PLACEHOLDER = '\u0000'
 
+/** The same trick for a `**` that begins a segment and is followed by `/`, which spans a
+ * DIFFERENT thing: zero or more WHOLE segments, the separator included. Kept distinct from
+ * the plain globstar placeholder so the two cannot be confused, and chosen for the same
+ * reason -- no glob anyone writes contains a control character. */
+const GLOBSTAR_SLASH_PLACEHOLDER = "\u0001"
+
 /**
  * Translates a glob (as used in path-rule specs) into an anchored, case-insensitive
  * RegExp. `*` matches within one path segment, `?` matches exactly one character (also
- * confined to a segment), and `**` matches across segments including zero segments --
- * except that the `/` flanking a `**` token in the source glob stays a literal `/` in
- * the output pattern, so `**` still needs an actual intermediate segment to match
- * anything: a glob of `src` + `/**` + `/*.ts` does NOT match `src/a.ts` (there's no
- * second `/` for the `**` to span). This is a deliberate deviation from minimatch,
- * where a trailing-slash `**` can also match zero segments. Adjacent `**` runs are
- * collapsed first (see `collapseDoubleStarRuns`).
+ * confined to a segment), and `**` matches across segments.
+ *
+ * A `**` that BEGINS a segment and is followed by `/` spans zero or more WHOLE segments,
+ * separator included — so a glob of `**` + `/*.pem` matches `key.pem` as well as
+ * `certs/key.pem`, and `src` + `/**` + `/*.ts` matches `src/a.ts`. That is minimatch's rule.
+ * It used to be a deliberate deviation from it: the flanking `/` stayed a literal `/`, so
+ * such a glob needed an actual intervening directory and missed every root-level file.
+ *
+ * The deviation was documented, but on the DENY side it failed OPEN — the one direction this
+ * engine otherwise refuses to fail in. Measured with the real engine in auto-edit, denying
+ * writes to `**` + `/*.pem` and `**` + `/secrets.json`: `certs/key.pem -> deny (rule)` but
+ * `key.pem -> allow (mode)`; `conf/secrets.json -> deny (rule)` but
+ * `secrets.json -> allow (mode)` — with `engine.problems` empty, so nothing told the rule's
+ * author that half of what they wrote did not apply. The `format` config's own worked
+ * example skipped every root-level file for the same reason.
+ *
+ * This necessarily widens ALLOW rules by the same rule, which is what the author of such a
+ * rule means by it. Adjacent `**` runs are collapsed first (see `collapseDoubleStarRuns`).
  *
  * NOT THE MATCHER: actual path matching goes through `tokenizeGlob`/`globMatch` below
  * (a token-wise DP walk, immune to backtracking) via `pathMatches`. This function
@@ -253,14 +270,29 @@ export function globToRegExp(glob: string): RegExp {
   const collapsed = collapseDoubleStarRuns(glob)
   // Escape every regex metacharacter except * and ?, which the glob syntax repurposes.
   const escaped = collapsed.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-  const doubleStarred = escaped.replace(/\*\*/g, DOUBLE_STAR_PLACEHOLDER)
+  // Segment-leading `**` + `/` first, and it swallows its own trailing slash: it stands for
+  // "zero or more whole segments", and leaving the `/` behind is exactly what made the
+  // zero-segment case impossible.
+  const spanning = escaped.replace(
+    /(^|\/)\*\*\//g, (_m, lead: string) => `${lead}${GLOBSTAR_SLASH_PLACEHOLDER}`,
+  )
+  const doubleStarred = spanning.replace(/\*\*/g, DOUBLE_STAR_PLACEHOLDER)
   const starred = doubleStarred.replace(/\*/g, '[^/]*')
   const questioned = starred.replace(/\?/g, '[^/]')
-  const pattern = questioned.split(DOUBLE_STAR_PLACEHOLDER).join('.*')
+  const pattern = questioned
+    .split(DOUBLE_STAR_PLACEHOLDER).join('.*')
+    .split(GLOBSTAR_SLASH_PLACEHOLDER).join('(?:.*/)?')
   return new RegExp(`^${pattern}$`, 'i')
 }
 
-type GlobToken = { kind: 'globstar' } | { kind: 'star' } | { kind: 'question' } | { kind: 'char'; ch: string }
+type GlobToken =
+  | { kind: 'globstar' }
+  /** `**` + `/`, at the start of the spec or directly after a `/`: zero or more whole
+   * segments INCLUDING the separator. See `globToRegExp` for why the zero case matters. */
+  | { kind: 'globstar-slash' }
+  | { kind: 'star' }
+  | { kind: 'question' }
+  | { kind: 'char'; ch: string }
 
 // Splits an (already `collapseDoubleStarRuns`-collapsed) glob into a token sequence for
 // `globMatch`. A run of two or more consecutive `*` characters (already reduced to
@@ -273,7 +305,16 @@ function tokenizeGlob(spec: string): GlobToken[] {
       if (spec[i + 1] === '*') {
         // collapse the whole run of consecutive stars (>= 2) into one globstar
         while (spec[i + 1] === '*') i++
-        tokens.push({ kind: 'globstar' })
+        const last = tokens[tokens.length - 1]
+        const startsSegment = last === undefined || (last.kind === 'char' && last.ch === '/')
+        if (spec[i + 1] === '/' && startsSegment) {
+          // Consume the separator too: the token stands for the segments AND the `/` that
+          // would follow them, which is the only way it can also stand for none of either.
+          i++
+          tokens.push({ kind: 'globstar-slash' })
+        } else {
+          tokens.push({ kind: 'globstar' })
+        }
       } else {
         tokens.push({ kind: 'star' })
       }
@@ -306,6 +347,15 @@ function globMatch(tokens: GlobToken[], path: string): boolean {
     if (t.kind === 'globstar') {
       next[0] = prev[0]!
       for (let j = 1; j <= n; j++) next[j] = prev[j]! || next[j - 1]!
+    } else if (t.kind === 'globstar-slash') {
+      // Match nothing at all (`prev[j]`), or any non-empty run that ENDS on a `/` — which is
+      // what "some whole number of segments, separator included" means. `started` carries
+      // "the run could have begun at or before j-1", so the scan stays O(pathLength).
+      let started = false
+      for (let j = 0; j <= n; j++) {
+        next[j] = prev[j]! || (started && path[j - 1] === '/')
+        if (prev[j]!) started = true
+      }
     } else if (t.kind === 'star') {
       next[0] = prev[0]!
       for (let j = 1; j <= n; j++) {

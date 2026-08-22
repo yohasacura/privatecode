@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from 'vitest'
 import { buildSystemPrompt } from '../src/agent/prompt.js'
-import { expandDraft, decomposeTodos, improveDraft } from '../src/session/contract.js'
+import { checkAcceptance, expandDraft, decomposeTodos, improveDraft } from '../src/session/contract.js'
+import { statePremises } from '../src/session/premises.js'
+import { buildCompactionRequest } from '../src/session/compaction.js'
 import { readThroughLenses } from '../src/session/understanding.js'
 import { LlamaClient } from '../src/llama/client.js'
 import { startFakeServer } from './fake-server.js'
@@ -83,4 +85,35 @@ test('the draft improver inherits the pin from message 0 rather than restating i
   const system = { role: 'system' as const, content: buildSystemPrompt({ workspaceRoot: 'D:\\p', mode: 'normal', external: { browser: false, mcpServers: [] } }) }
   const { sent } = await capture((c) => improveDraft(c, [system], 'сделай кнопку красной'))
   expect(sent).toContain('Always reply in English')
+})
+
+/**
+ * The three gates whose text reaches a PERSON and carried no pin at all.
+ *
+ * Found by asking the shipped `checkAcceptance` about a Russian transcript with Russian
+ * criteria: it answered in Russian, and that answer is not internal — it goes into
+ * `contract.checkedState`, which `renderContract` promotes into message 0 at every compaction
+ * swap, and `acceptanceFailureMessage` puts it on screen as a note row. The diff reviewer,
+ * over the same conversation, answered in English, because its brief is English. The pin is
+ * the whole difference.
+ */
+test('the acceptance audit asks for English, since its evidence reaches message 0 and the screen', async () => {
+  const contract = { goal: 'сделать нумерацию сплошной', criteria: ['номера не пропускаются'], constraints: [] }
+  const { sent } = await capture((c) => checkAcceptance(c, [], contract))
+  expect(sent).toContain('IN ENGLISH')
+})
+
+test('the premise check asks for English, since its `why` reaches the person', async () => {
+  const { sent } = await capture((c) => statePremises(c, [{ role: 'user', content: 'сделай нумерацию сплошной' }]))
+  expect(sent).toContain('IN ENGLISH')
+})
+
+test('the compaction briefing asks for English, since it becomes message 0', () => {
+  const request = buildCompactionRequest({
+    messages: [{ role: 'user', content: 'сделай нумерацию сплошной' }],
+    budgetTokens: 1000,
+    tools: [],
+    workspaceRoot: 'D:\proj',
+  })
+  expect(JSON.stringify(request.messages)).toContain('IN ENGLISH')
 })

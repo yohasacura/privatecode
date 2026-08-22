@@ -61,3 +61,56 @@ describe('conversationAsMarkdown', () => {
     expect(conversationAsMarkdown([], '')).toContain('# PrivateCode session')
   })
 })
+
+/**
+ * The harness talks in the `user` role too, and the export used to give every one of its
+ * messages a `## You` heading.
+ *
+ * `replay.ts` marks them for exactly this — its own comment names this export as what the
+ * flag exists to stop — and `transcript.tsx` branches on it, while this file never read it.
+ * One message the person sent came out as three headings saying they had asked for things
+ * they never asked for.
+ */
+describe('messages the harness wrote', () => {
+  const mixed: ChatItem[] = [
+    { kind: 'user', id: 1, text: 'make invoice numbers gap-free' },
+    { kind: 'user', id: 2, text: '[Plan focus — step 2 of 5: rename the column]', harness: true },
+    { kind: 'user', id: 3, text: 'Automatic verification failed.\nnpm test exited 1', harness: true },
+    { kind: 'assistant', id: 4, text: 'done', interrupted: false },
+  ]
+
+  it('are not exported as things the person said', () => {
+    const md = conversationAsMarkdown(mixed, 'T')
+    expect(md.match(/## You/g)).toHaveLength(1)
+    expect(md).toContain('make invoice numbers gap-free')
+  })
+
+  it('are still exported, because they drove what happened next', () => {
+    const md = conversationAsMarkdown(mixed, 'T')
+    expect(md).toContain('rename the column')
+    expect(md).toContain('npm test exited 1')
+  })
+})
+
+/**
+ * Which folder's check ran. `session.ts` emits it at all four `onVerify` sites and the
+ * protocol calls it "the answer to a question a person actually has"; it was dropped at the
+ * app boundary, so a multi-folder workspace exported two indistinguishable lines.
+ */
+describe('the verify record', () => {
+  it('names the folder when there is one', () => {
+    const md = conversationAsMarkdown([
+      { kind: 'verify-record', id: 1, command: 'npm test', ok: true, detail: 'passed', folder: 'api' },
+      { kind: 'verify-record', id: 2, command: 'npm test', ok: false, detail: 'exited 1', folder: 'web' },
+    ], 'T')
+    expect(md).toContain('in api')
+    expect(md).toContain('in web')
+  })
+
+  it('says nothing extra in a single-folder workspace', () => {
+    const md = conversationAsMarkdown([
+      { kind: 'verify-record', id: 1, command: 'npm test', ok: true, detail: 'passed' },
+    ], 'T')
+    expect(md).toContain('- verify `npm test` — passed')
+  })
+})

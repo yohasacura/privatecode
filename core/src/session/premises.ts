@@ -317,6 +317,10 @@ export async function statePremises(
         'of a file, that is two premises, not one quote stitched together. Do not paraphrase ' +
         'and do not elide with "...". Say in one short line what your change relies on each ' +
         'one for.\n\n' +
+        // Same pin, same reason as `checkAcceptance`: `statePremises`' `why` reaches the
+        // person through `premiseFailureMessage`, so it is output, not scratch.
+        'Write every word of your answer IN ENGLISH, whatever language the conversation ' +
+        'above is in. (Quoted source lines stay exactly as they are in the file.)\n\n' +
         'Answer with JSON only. Do not start the work.]',
     },
   ]

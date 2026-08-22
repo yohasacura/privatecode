@@ -102,7 +102,11 @@ export type ChatItem =
   | { kind: 'question-record'; id: number; question: string; answer: string }
   /** One run of the project's own verify command. Shown even when it passes: a check that
    * silently added thirty seconds to a writing turn would read as the app hanging. */
-  | { kind: 'verify-record'; id: number; command: string; ok: boolean; detail: string }
+  | {
+      kind: 'verify-record'; id: number; command: string; ok: boolean; detail: string
+      /** Which folder's check this was; absent in a single-folder workspace. */
+      folder?: string
+    }
   /** Why a turn ended, when it did NOT end by the model deciding it was finished.
    * Appended for every `stoppedBecause` other than `'done'`, because the alternative --
    * what this app used to do -- is that the agent simply goes quiet mid-task and the only
@@ -476,7 +480,12 @@ export type ChatAction =
   | { type: 'question.request'; requestId: string; question: string; options: string[]; multiSelect?: boolean }
   | { type: 'question.answered'; answer: string }
   | { type: 'todos'; items: TodoItem[] }
-  | { type: 'verify'; command: string; ok: boolean; attempt: number; exitCode?: number; problem?: string }
+  | {
+      type: 'verify'; command: string; ok: boolean; attempt: number
+      exitCode?: number; problem?: string
+      /** Which folder's check this was; absent in a single-folder workspace. */
+      folder?: string
+    }
   /** One configuration problem, from the `settings.problem` event OR forwarded out of an
    * init/new/resume result. Both arrive for the same session -- the host emits the events
    * while building it, BEFORE the reply that carries the same strings -- so this action
@@ -999,6 +1008,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         : `exited ${action.exitCode ?? '?'}${action.attempt > 1 ? ` (after ${action.attempt - 1} fix)` : ''}`
       const item: ChatItem = {
         kind: 'verify-record', id: state.nextId, command: action.command, ok: action.ok, detail,
+        ...(action.folder !== undefined ? { folder: action.folder } : {}),
       }
       return { ...state, items: [...state.items, item], nextId: state.nextId + 1 }
     }

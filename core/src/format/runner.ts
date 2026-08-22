@@ -86,9 +86,17 @@ function assignFile(relativePath: string): string {
  * only ever a defence against the substitution this no longer does. The forms that CANNOT be
  * rewritten safely (`$FILE.bak`, `$FILEX`) are refused when the rule is loaded, in
  * `format/config.ts`, where the message can name the rule and the file it came from.
+ *
+ * The BRACED spellings are here for the same reason, and they were the gap: `format`'s own
+ * config documentation recommends `${FILE}`, and the single-quoted braced form was the one
+ * spelling of six that still lost the path. Re-measured with a recorder logging argv, target
+ * `src/a b.ts`:
+ *
+ *   $FILE -> ["src\a b.ts"]   "$FILE" -> ok   '$FILE' -> ok   ${FILE} -> ok   "${FILE}" -> ok
+ *   '${FILE}' -> ["${FILE}"]     <- the literal string, every time, with problems: []
  */
 function normaliseFilePlaceholder(command: string): string {
-  return command.replace(/'\$FILE'|"\$FILE"/g, '$FILE')
+  return command.replace(/'\$FILE'|"\$FILE"|'\$\{FILE\}'|"\$\{FILE\}"/g, '${FILE}')
 }
 
 export function createFormatRunner(rules: FormatRule[], workspace: Workspace): FormatRunner {

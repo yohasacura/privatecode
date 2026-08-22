@@ -34,6 +34,22 @@ export interface LlamaRequestFailure {
    * already produced instead of discarding it.
    */
   partial?: { reasoning: string; content: string }
+  /**
+   * Whether OUR OWN `requestTimeoutMs` ended this request, rather than the server or the
+   * network.
+   *
+   * It reads as an ordinary transport failure and used to be retried as one: the loop's
+   * `attempt === 0 && e instanceof LlamaRequestError` branch waited for a server that was
+   * never down, then re-ran the whole step from scratch. Reproduced with `requestTimeoutMs`
+   * shrunk to 1,500 ms against a server streaming healthy deltas 100 ms apart, so no gap was
+   * ever silent: 2 chat requests, 3,020 ms elapsed, and the error escaped `runTurn` raw.
+   *
+   * A caller that knows this flag can end the turn honestly instead ('timeout'), which is
+   * what the step clock does for the interval IT measures. The two measure different things
+   * -- the step clock bounds SILENCE and only up to the first token, this bounds the whole
+   * request -- so neither one guarantees the other cannot fire.
+   */
+  transportTimeout?: true
 }
 
 export class LlamaRequestError extends Error {
@@ -42,6 +58,8 @@ export class LlamaRequestError extends Error {
   readonly answered: boolean
   /** See `LlamaRequestFailure.partial`. */
   readonly partial?: { reasoning: string; content: string }
+  /** See `LlamaRequestFailure.transportTimeout`. */
+  readonly transportTimeout?: true
 
   constructor(message: string, failure: LlamaRequestFailure) {
     super(message)
@@ -50,6 +68,7 @@ export class LlamaRequestError extends Error {
     if (failure.body !== undefined) this.body = failure.body
     this.answered = failure.answered
     if (failure.partial !== undefined) this.partial = failure.partial
+    if (failure.transportTimeout !== undefined) this.transportTimeout = failure.transportTimeout
   }
 }
 
@@ -75,7 +94,19 @@ export class LlamaClient {
   constructor(opts: LlamaClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '')
     this.model = opts.model
-    this.timeoutMs = opts.requestTimeoutMs ?? 600_000
+    // Above every budget the agent loop can legitimately spend inside ONE request, which the
+    // old ten minutes was not. The loop's `MAX_COLD_START_MS` alone allows 540 s of silence
+    // waiting for the first token, and a step may then generate up to
+    // `DEFAULT_MAX_TOKENS_PER_STEP` (8,000) at the measured ~42 tok/s — another ~190 s. Their
+    // sum is ~730 s, so a completely healthy step could outrun a 600 s ceiling and be
+    // reported as a transport failure.
+    //
+    // This is not the wedged-server detector and must not be sized as one: the STEP CLOCK is,
+    // and it measures silence rather than elapsed time, so it fires on a server that has
+    // stopped talking regardless of how long the request has been open. What this bounds is a
+    // socket nothing will ever close. See `LlamaRequestFailure.transportTimeout` for how a
+    // caller tells the two apart.
+    this.timeoutMs = opts.requestTimeoutMs ?? 900_000
   }
 
   /**
@@ -253,7 +284,9 @@ export class LlamaClient {
       // an abort before any byte arrives falls into (fetch rejects either way).
       throw new LlamaRequestError(
         `llama.cpp request failed: ${this.baseUrl + path} unreachable (${String(cause)})`,
-        { answered: false },
+        // OUR ceiling, told apart from the server being gone: `timeout` is the signal this
+        // class raised itself, and only it can say so. See `transportTimeout`.
+        { answered: false, ...(timeout.aborted ? { transportTimeout: true as const } : {}) },
       )
     }
 
@@ -457,7 +490,9 @@ export class LlamaClient {
       if (signal.aborted) {
         throw new LlamaRequestError(
           `llama.cpp request failed: stream aborted (${String(cause)})`,
-          { answered: false, partial },
+          // See above: a healthy long generation that outruns `requestTimeoutMs` lands here,
+          // and it is not the server having gone away.
+          { answered: false, partial, ...(timeout.aborted ? { transportTimeout: true as const } : {}) },
         )
       }
       // The response had already arrived (2xx, headers read) before the stream broke, so
@@ -561,7 +596,7 @@ export class LlamaClient {
       // The one genuine "the server is not there" case: nothing answered.
       throw new LlamaRequestError(
         `llama.cpp request failed: ${this.baseUrl + path} unreachable (${String(cause)})`,
-        { answered: false },
+        { answered: false, ...(timeout.aborted ? { transportTimeout: true as const } : {}) },
       )
     }
     const text = await res.text()

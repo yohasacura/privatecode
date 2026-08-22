@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { ATTACHMENT_PREAMBLE } from '../session/attachment-text.js'
 import type { Workspace } from '../workspace.js'
 
 /**
@@ -106,7 +107,10 @@ export async function attachFiles(
   })
 
   return {
-    text: `The user attached these files:\n\n${blocks.join('\n\n')}\n\n${text}`,
+    // The wrapper is a shared constant, not a literal: `replay.ts` has to recognise this
+    // shape to show the person's own words instead of the whole blob, and `session.ts` has to
+    // title from them. See `attachment-text.ts`.
+    text: `${ATTACHMENT_PREAMBLE}${blocks.join('\n\n')}\n\n${text}`,
     notes,
   }
 }

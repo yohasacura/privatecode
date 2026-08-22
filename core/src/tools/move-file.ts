@@ -1,8 +1,23 @@
 import { noteWorkspaceWrite } from '../csharp/nav-process.js'
-import { mkdir, stat } from 'node:fs/promises'
+import { cp, mkdir, rm, stat } from 'node:fs/promises'
 import { dirname, sep } from 'node:path'
 import { fsErrorReason, renameWithRetry } from './atomic-write.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
+
+/**
+ * Remove the directory chain a failed move created, deepest first.
+ *
+ * `mkdir(..., {recursive:true})` answers with the FIRST directory it had to create, so
+ * `rm(that, {recursive:true})` takes the whole chain back out and nothing else. `undefined`
+ * means the parent already existed and there is nothing to undo.
+ *
+ * Failure here is swallowed: the caller is already returning an error about the move, and
+ * "could not clean up after the thing that failed" is not the message that helps.
+ */
+async function undoCreatedDirs(created: string | undefined): Promise<void> {
+  if (created === undefined) return
+  await rm(created, { recursive: true, force: true }).catch(() => {})
+}
 
 export interface MoveFileArgs {
   from: string
@@ -125,10 +140,44 @@ export const moveFileTool: Tool<MoveFileArgs> = {
       }
     }
 
+    // `mkdir` returns the FIRST directory it had to create, or undefined when the parent
+    // already existed — which is exactly the record needed to undo it. Without that, a
+    // failed move left the destination tree behind: measured across two real volumes,
+    // `appC/src/a.ts -> appD/lib/deep/a.ts` came back
+    // `EXDEV: cross-device link not permitted` with the source still in place and
+    // `appD/lib/deep` newly created, breaking the invariant the comment fifteen lines above
+    // states in so many words. A multi-drive workspace is a DESIGNED shape (`FolderSpec`
+    // says "absolute otherwise"), so this is reachable by pointing at a second drive.
+    let created: string | undefined
     try {
-      await mkdir(dirname(toAbs), { recursive: true })
+      created = await mkdir(dirname(toAbs), { recursive: true })
+    } catch (e) {
+      return {
+        ok: false,
+        content: `Could not move ${args.from} to ${args.to}: ${fsErrorReason(toAbs, e)}`,
+      }
+    }
+    try {
       await renameWithRetry(fromAbs, toAbs)
     } catch (e) {
+      // Cross-device: rename cannot do it and never could, so copy the bytes and unlink the
+      // source. `cp` recurses, which matters because this tool moves directories too.
+      if ((e as NodeJS.ErrnoException).code === 'EXDEV') {
+        try {
+          await cp(fromAbs, toAbs, { recursive: true, force: true, errorOnExist: false })
+          await rm(fromAbs, { recursive: true, force: true })
+          noteWorkspaceWrite(args.from)
+          noteWorkspaceWrite(args.to)
+          return { ok: true, content: `Moved ${args.from} -> ${args.to}` }
+        } catch (copyError) {
+          await undoCreatedDirs(created)
+          return {
+            ok: false,
+            content: `Could not move ${args.from} to ${args.to}: ${fsErrorReason(toAbs, copyError)}`,
+          }
+        }
+      }
+      await undoCreatedDirs(created)
       return {
         ok: false,
         content: `Could not move ${args.from} to ${args.to}: ${fsErrorReason(toAbs, e)}`,

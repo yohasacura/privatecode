@@ -23,7 +23,16 @@ export function conversationAsMarkdown(items: ChatItem[], title: string): string
     switch (item.kind) {
       case 'user':
         blank()
-        lines.push('## You', '', item.text)
+        // The harness talks in this role too — plan-focus notes, the acceptance fixer's
+        // list, a build log, the rewind notice — and `replay.ts` marks which is which for
+        // exactly this reason. Ignoring the flag here put three `## You` headings under one
+        // message the person sent: an export that says a person asked for something they
+        // never asked for is worse than one that is merely incomplete.
+        if (item.harness === true) {
+          lines.push('*(PrivateCode note)*', '', item.text)
+        } else {
+          lines.push('## You', '', item.text)
+        }
         break
       case 'assistant':
         blank()
@@ -48,7 +57,10 @@ export function conversationAsMarkdown(items: ChatItem[], title: string): string
         lines.push(`- asked: ${JSON.stringify(item.question)} — answered: ${JSON.stringify(item.answer)}`)
         break
       case 'verify-record':
-        lines.push(`- verify \`${item.command}\` — ${item.ok ? 'passed' : item.detail}`)
+        lines.push(
+          `- verify \`${item.command}\`${item.folder !== undefined ? ` in ${item.folder}` : ''} — ` +
+          `${item.ok ? 'passed' : item.detail}`,
+        )
         break
       case 'stopped':
         blank()

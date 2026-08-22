@@ -71,7 +71,10 @@ Be concrete: exact file paths, exact function/variable names, exact remaining st
 nothing a continuation would need and add nothing it would not.
 
 Do NOT restate the todo list: it is appended after this briefing straight from the todo tool, \
-which is the version that is actually true.`
+which is the version that is actually true.
+
+Write every word of the briefing IN ENGLISH, whatever language the conversation above is in. \
+(Quoted file paths, identifiers and user wording stay exactly as they are.)`
 
 // There used to be a fifth section -- "Open todos: verbatim, in the user's or your own
 // original wording -- do not summarize or drop any of them" -- which asked the model to

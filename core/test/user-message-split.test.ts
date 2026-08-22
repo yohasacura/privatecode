@@ -1,5 +1,10 @@
 import { expect, test } from 'vitest'
+import {
+  CONTINUE_NUDGE, MAX_STEPS_PREFIX, STEP_TIMEOUT_PREFIX, TALKED_INSTEAD_OF_ACTING,
+  TRUNCATED_TWICE,
+} from '../src/agent/loop.js'
 import { splitUserMessage } from '../src/host/replay.js'
+import { REVERT_FILE_PREFIX, ROLLBACK_PREFIX } from '../src/session/checkpoint-notices.js'
 
 /**
  * Telling the person's messages apart from the harness's, when both wear the same role.
@@ -143,4 +148,82 @@ test('and something a person types that merely mentions one of them is still the
   expect(splitUserMessage('why does it say Automatic verification failed?'))
     .toEqual({ kind: 'user', text: 'why does it say Automatic verification failed?' })
   void typed
+})
+
+/**
+ * The agent loop's own messages, which wore the person's caret for as long as they existed.
+ *
+ * The bracket convention covers the notes and `HARNESS_OPENERS` covers the fixers; neither
+ * covered these six, because they are plain prose written from inside `loop.ts` and
+ * `session.ts` rather than from a gate. Driving four of them through the real replay produced
+ * four `## You` headings for sentences nobody typed. They are imported as constants rather
+ * than pasted, so a rewording cannot quietly drop one out of the list.
+ */
+test('every message the agent loop writes belongs to the harness', () => {
+  const written: [string, string][] = [
+    ['continue nudge', CONTINUE_NUDGE],
+    ['truncated twice', TRUNCATED_TWICE],
+    ['talked instead of acting', TALKED_INSTEAD_OF_ACTING],
+    ['step timeout', `${STEP_TIMEOUT_PREFIX}240 s time limit before you replied, so it was abandoned.`],
+    ['max steps', `${MAX_STEPS_PREFIX}40 steps without finishing. Say what you did.`],
+    ['file reverted', `${REVERT_FILE_PREFIX}src/a.ts to how it was before this session started.`],
+    ['workspace rolled back', `${ROLLBACK_PREFIX}cp-3 by the user. Re-read any file before editing.`],
+  ]
+  for (const [what, text] of written) {
+    expect(splitUserMessage(text), what).toMatchObject({ harness: true })
+  }
+})
+
+/**
+ * The folder prefix a multi-folder workspace puts in front of a verify failure.
+ *
+ * `HARNESS_OPENERS` matches with `startsWith`, so `In the "api" folder: ` in front of the
+ * build log defeated it and the whole log replayed as the person's message. Single-folder
+ * workspaces were fine, which is why it survived: there the prefix is the empty string.
+ */
+test('a folder prefix does not turn a build log into something the person typed', () => {
+  const single = splitUserMessage('Automatic verification failed. `npm test` exited 1.')
+  const multi = splitUserMessage('In the "api" folder: Automatic verification failed. `npm test` exited 1.')
+  expect(single).toMatchObject({ harness: true })
+  expect(multi).toMatchObject({ harness: true })
+})
+
+/**
+ * The verify ESCALATION, whose note is bracketed and whose body is a build log — both halves
+ * the harness's. The note used to be followed by ONE newline where the bracket rule needs a
+ * blank line, and even with the blank line the remainder had to be re-tested: it is not the
+ * person's message, which is what that shape usually carries.
+ */
+test('the verify escalation is the harness on both sides of its bracket', () => {
+  const escalation =
+    'In the "api" folder: [2 repair attempts left the check failing. STOP repairing the ' +
+    'previous attempt.]\n\nAutomatic verification failed. `npm test` exited 1.'
+  const r = splitUserMessage(escalation)
+  expect(r.harness).toBe(true)
+  // The bracketed instruction is stripped for display; what is shown is the failure itself.
+  expect(r.text).toBe('Automatic verification failed. `npm test` exited 1.')
+})
+
+/**
+ * A contract preamble in front of a REAL message still yields the person's words, which is
+ * what that shape exists for. Guards the test above from over-reaching.
+ */
+test('a note in front of the person\'s own message still leaves the message theirs', () => {
+  const r = splitUserMessage('[Task: gap-free invoice numbers. Done when: 1) no gaps]\n\nplease also add a test')
+  expect(r).toEqual({ kind: 'user', text: 'please also add a test' })
+})
+
+/**
+ * An attachment blob is the person's message with file bodies wrapped around it, because the
+ * model has to see them. The ROW is not: it showed the whole blob, and the session titled
+ * itself "The user attached these files: --- a.ts --- 1 export functio".
+ */
+test('an attachment blob shows the person\'s words, not the files', () => {
+  const blob =
+    'The user attached these files:\n\n' +
+    '--- src/a.ts ---\n1\texport function a() { return 1 }\n\n' +
+    '--- src/b.ts ---\n1\texport const b = 2\n\n' +
+    'fix the off-by-one in a()'
+  const r = splitUserMessage(blob)
+  expect(r).toEqual({ kind: 'user', text: 'fix the off-by-one in a()' })
 })

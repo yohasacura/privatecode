@@ -242,6 +242,11 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         type: 'verify', command: d.command, ok: d.ok, attempt: d.attempt,
         ...(d.exitCode !== undefined ? { exitCode: d.exitCode } : {}),
         ...(d.problem !== undefined ? { problem: d.problem } : {}),
+        // The folder the check ran in. `session.ts` emits it at all four onVerify sites and
+        // the protocol calls it "the answer to a question a person actually has" -- it was
+        // simply not forwarded, so in a multi-folder workspace two rows read
+        // `verify npm test -- passed` / `-- exited 1` with nothing saying which folder.
+        ...(d.folder !== undefined ? { folder: d.folder } : {}),
       })),
       client.on('decisions.changed', (d) => {
         dispatch({ type: 'decisions.changed', pending: d.pending })

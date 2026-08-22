@@ -1,6 +1,33 @@
 import type { ChatMessage } from '../llama/types.js'
 
 /**
+ * Every character of a message that the chat template renders into the prompt.
+ *
+ * Exported because four places need this number and each used to compute it inline — and
+ * three of them agreed while the fourth quietly did not. `tool_calls[].function.arguments`
+ * is the part that gets forgotten: a `write_file` message carries `content: null` and the
+ * whole file in its arguments, so a counter that reads only `content` scores the largest
+ * append a step can make as zero. Ground truth from the server: 956 prompt tokens for a
+ * 3,832-char argument, which is the usual chars/4 — those bytes are prefilled like any
+ * other.
+ *
+ * The `+ 20` per call is the id, name and JSON scaffolding the template wraps around each
+ * one. It is an estimate; the arguments are not.
+ */
+export function messageChars(m: ChatMessage): number {
+  let chars = (m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0)
+  for (const c of m.tool_calls ?? []) chars += c.function.arguments.length + 20
+  return chars
+}
+
+/** `messageChars` over a run of messages. */
+export function transcriptChars(messages: readonly ChatMessage[]): number {
+  let chars = 0
+  for (const m of messages) chars += messageChars(m)
+  return chars
+}
+
+/**
  * Deep-freezes an object graph in place. Recurses into every own enumerable
  * property (arrays included, since array indices are own enumerable
  * properties too), so nothing reachable from `value` stays mutable.
@@ -48,12 +75,7 @@ export class Transcript {
 
   /** Rough fill gauge for the status line; ~4 characters per token. */
   approxTokens(): number {
-    let chars = 0
-    for (const m of this.items) {
-      chars += (m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0)
-      for (const c of m.tool_calls ?? []) chars += c.function.arguments.length + 20
-    }
-    return Math.ceil(chars / 4)
+    return Math.ceil(transcriptChars(this.items) / 4)
   }
 
   toJSONL(): string {

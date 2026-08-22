@@ -29,7 +29,9 @@ import {
 } from '../permissions/engine.js'
 import type { Toolset } from '../tools/default-set.js'
 import type { ToolContext } from '../tools/types.js'
-import { Transcript } from '../transcript/transcript.js'
+import { attachmentUserText } from './attachment-text.js'
+import { REVERT_FILE_PREFIX, ROLLBACK_PREFIX } from './checkpoint-notices.js'
+import { Transcript, transcriptChars } from '../transcript/transcript.js'
 import { Workspace } from '../workspace.js'
 import {
   COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, approxTokensOf, collapseSupersededReads,
@@ -290,9 +292,15 @@ const PLAN_MODE_NOTE = '(mode is now plan: investigate and propose; do not edit)
 const MAX_VERIFY_ROUNDS = 2
 
 /**
- * Room kept clear in the window for a summary request: the ~4.5k tokens the generation may
- * produce (compaction.ts's RETRY_MAX_TOKENS) plus a margin for the chat template's own
- * scaffolding, which is not in any per-message estimate.
+ * Room kept clear in the window for a summary request's OUTPUT: the ~4.5k tokens the
+ * generation may produce (compaction.ts's RETRY_MAX_TOKENS) plus a margin for the chat
+ * template's own scaffolding and the briefing, neither of which is in any per-message
+ * estimate.
+ *
+ * Output only. The request's other fixed cost — the session's tool array — is subtracted
+ * separately in `summaryBudget`, because it is measured (TOOL_SCHEMA_TOKENS) rather than
+ * guessed and because folding it in here hid it: this reserve was 8,000 while the request
+ * needed ~9.5k beyond the transcript, and the shortfall landed precisely on the retry.
  *
  * Sized generously on purpose. Being wrong low costs a few hundred tokens of transcript in
  * one summary; being wrong high costs the whole remedy, which is the failure this exists to
@@ -480,11 +488,18 @@ const LOGGED_TOOLS = new Set(['run_command', 'background_task'])
  * fill estimate, which is one of the reasons the estimate read low enough to let an
  * over-long prompt through.
  */
-// RE-MEASURED 2026-08-22 (`spike/prefix-size-probe.mts`): the toolset registers 21 tools
-// now, not the 15 this was taken over, and the array serialises to 17,798 chars = ~4,450
-// tokens. Reading 1,850 tokens low on every single request is the wrong direction for the
-// one estimate that decides when to compact.
-const TOOL_SCHEMA_TOKENS = 4_450
+// RE-MEASURED 2026-08-22 (`spike/tool-block-tokens.mts`), against the server's own
+// tokenizer rather than by arithmetic. The array serialises to 17,798 chars, which chars/4
+// scores as 4,450 — but the template renders it and the tokenizer charges **4,783**:
+//
+//   /apply-template + /tokenize : with tools 4,794 tok, without 11  -> 4,783
+//   /v1/chat prompt_tokens      : with tools 4,794,     without 11  -> 4,783
+//
+// The two routes agree exactly, and a third (prompt_progress differencing) agreed during the
+// audit that found this. chars/4 is a rule for prose; it under-reads JSON schema like it
+// under-reads numbered source. Measure this constant, never derive it — a fill estimate that
+// reads low is how an over-long prompt got through in the first place.
+const TOOL_SCHEMA_TOKENS = 4_783
 
 /** What the retry says instead of repeating the user's message, which is already in the
  * compacted tail. */
@@ -525,9 +540,18 @@ function noteFor(mode: AgentMode): string {
   return mode === 'plan' ? PLAN_MODE_NOTE : `(mode is now ${mode})`
 }
 
-/** First user message, whitespace-collapsed and capped, used as the session's title. */
+/**
+ * First user message, whitespace-collapsed and capped, used as the session's title.
+ *
+ * `attachmentUserText` first, because the message it is handed may be an attachment blob:
+ * the file bodies are part of what the model sees, so they are part of the stored user
+ * message, and titling from that gave "The user attached these files: --- a.ts --- 1 export
+ * functio" for a session whose person typed "fix the off-by-one in a()". A title is one of
+ * the two things a session is found by later.
+ */
 function titleFrom(text: string): string {
-  const collapsed = text.replace(/\s+/g, ' ').trim()
+  const own = attachmentUserText(text) ?? text
+  const collapsed = own.replace(/\s+/g, ' ').trim()
   return collapsed.length > 60 ? collapsed.slice(0, 60) : collapsed
 }
 
@@ -629,6 +653,17 @@ export class Session {
    * across the session's whole life (not just the current turn). `null` until the first
    * step of the first turn completes. See `contextUsage()`. */
   private latestPromptTokens: number | null = null
+  /**
+   * Whether `latestPromptTokens` came from the server REFUSING the prompt, rather than from a
+   * completed request's usage.
+   *
+   * A refusal is the one measurement that cannot be re-taken: the request it came from will
+   * not be re-sent, and every other reading is an estimate over the same transcript. The
+   * nothing-to-gain branch of `compactNow` nulls the field so the trigger does not fire again
+   * on a transcript it just declined to compact — correct for an ordinary reading, and wrong
+   * for this one, which is the only proof the prompt does not fit at all.
+   */
+  private promptTokensFromRefusal = false
   /** Running total of `usage.completion_tokens` across every completed step this session
    * has ever run. Recorded per the Task 7 brief; not yet exposed on its own -- `fillRatio`
    * intentionally uses `latestPromptTokens` alone (the next step's prompt size already
@@ -888,7 +923,14 @@ export class Session {
     // did all the work, turn 3 claimed the task fully finished with zero writes, and
     // the writes guard silently skipped the contract gate on exactly the turn whose
     // claim it exists to audit. The gate carries its own saysFinished/satisfied guards.
-    if (writesThisTurn === 0) return await this.acceptanceGate(result, signal)
+    //
+    // "Wrote nothing" is about THIS turn; the build gate is about the workspace. A previous
+    // turn that wrote and was then aborted leaves writes nobody has checked, and this
+    // shortcut used to carry them straight past the build gate — so the second half of the
+    // test is "and there is nothing outstanding", not just "and I wrote nothing".
+    if (writesThisTurn === 0 && this.writeCount === this.writesAtLastVerify) {
+      return await this.acceptanceGate(result, signal)
+    }
 
     // Nothing has been written since the mid-turn check last ran, and it passed. Running the
     // same command again over the same bytes would ask a question that has already been
@@ -957,7 +999,14 @@ export class Session {
     const planFinished = todos.length > 0 && todos.every((t) => t.status === 'completed')
     if (!planFinished && !saysFinished(result.finalText)) return result
     let current = result
-    let clean = false
+    // Three outcomes, not two. "Clean" and "unmet" want opposite things from the diff review
+    // below, and "the audit could not run" wants what CLEAN wants rather than what unmet
+    // does: the review is an independent gate, and a gate that inherits another gate's
+    // transport failure is not independent. Collapsing the third case into either of the
+    // other two is what made a null audit silently cancel the review (measured: two runs
+    // with byte-identical traffic, `[contract, acceptance, review]` against
+    // `[contract, acceptance]`, both ending `done`).
+    let outcome: 'clean' | 'unmet' | 'could-not-run' = 'unmet'
     const writesAtGateStart = this.writeCount
     for (let round = 1; round <= MAX_ACCEPTANCE_ROUNDS; round++) {
       if (signal?.aborted) return current
@@ -981,7 +1030,11 @@ export class Session {
         // answer left it reading 0 — and the unattended runner ends a run 'done' on exactly
         // that number. A task whose audit never ran once could report itself finished.
         this.lastUnmetCount = null
-        return current
+        // BREAK, not return. Returning here walked out past the post-fixer verify below and
+        // past `freshReview` — so one gate failing to get an answer switched off a second,
+        // unrelated gate, and the turn still ended `done`.
+        outcome = 'could-not-run'
+        break
       }
       // A criterion the audit did not MENTION is a gap in the audit, not an affirmation —
       // and every reader below (the note, the plan, the failure message, the `unmet.length
@@ -997,7 +1050,7 @@ export class Session {
       // so what the audit affirmed the plan shows as done without asking the model.
       this.syncTodosWithAudit(contract, report)
       this.opts.onAcceptance?.({ met: report.met, unmet: report.unmet.length, round, kind: 'criteria' })
-      if (report.unmet.length === 0) { clean = true; break }
+      if (report.unmet.length === 0) { outcome = 'clean'; break }
       const fixed = await this.runHarnessTurn(acceptanceFailureMessage(report), signal)
       current = { ...fixed, steps: current.steps + fixed.steps }
       if (current.stoppedBecause !== 'done') return current
@@ -1011,10 +1064,20 @@ export class Session {
         if (current.stoppedBecause !== 'done') return current
       }
     }
-    current = await this.freshReview(contract, current, signal)
+    // Not on a turn the audit just handed back for more work. The reviewer costs up to
+    // REVIEW_MAX_STEPS reads plus REVIEW_MAX_TOKENS of generation (~286s at the measured 42
+    // tok/s) and sets `promptCacheCold`, so the NEXT turn re-prefills from scratch — 196k
+    // tokens is another ~470s at the 417-454 tok/s this server actually prefills at. Paying
+    // that to review a change the model is about to rewrite anyway is the worst turn to
+    // spend it on. `freshReview`'s own doc already said "after the contract gate is
+    // satisfied"; this is that sentence, enforced.
+    //
+    // 'could-not-run' runs it. See the tri-state note above: the review is not the audit's
+    // dependant.
+    if (outcome !== 'unmet') current = await this.freshReview(contract, current, signal)
     // `=== 0` and not merely falsy: `null` means the audit could not run, and a contract
     // must never retire on an audit that did not happen.
-    if (clean && current.stoppedBecause === 'done' && this.lastUnmetCount === 0) {
+    if (outcome === 'clean' && current.stoppedBecause === 'done' && this.lastUnmetCount === 0) {
       contract.satisfied = true
       this.opts.store?.saveMeta(this.meta)
       // The plan retires WITH the task — watched live: a finished task left a 6/6 card
@@ -1384,6 +1447,11 @@ export class Session {
     let current = result
     for (let attempt = 1; attempt <= MAX_VERIFY_ROUNDS; attempt++) {
       if (signal?.aborted) return current
+      // This check covers everything written up to now, so record that — the end-of-turn
+      // verify used to leave the counter where the mid-turn one had put it, which made
+      // "are there writes nobody has checked" answer yes forever once a mid-turn check was
+      // skipped. Re-captured each round because the fixer turn below writes too.
+      this.writesAtLastVerify = this.writeCount
       const outcome = await runVerify(job.spec, job.root, signal)
       this.opts.onVerify?.({
         command: job.spec.command,
@@ -1419,6 +1487,7 @@ export class Session {
     // curves are steepest in the first extra draws). One escalated turn, then one honest
     // final check; a workspace still red after that ends the turn red, said plainly.
     if (signal?.aborted) return current
+    this.writesAtLastVerify = this.writeCount
     const still = await runVerify(job.spec, job.root, signal)
     this.opts.onVerify?.({
       command: job.spec.command, ok: still.ok, attempt: MAX_VERIFY_ROUNDS + 1,
@@ -1432,7 +1501,11 @@ export class Session {
     const retried = await escalated.runTurn(
       `${where}[${MAX_VERIFY_ROUNDS} repair attempts left the check failing. STOP repairing ` +
       'the previous attempt — re-read the failing code from the file, pick a DIFFERENT ' +
-      `approach, and implement that instead.]\n${verifyFailureMessage(job.spec, still)}`,
+      // `]\n\n`, not `]\n`. `replay.ts` recognises "a bracketed note prefixed to a message"
+      // by a BLANK line after the bracket — that separator is the whole test, because
+      // `[HttpGet] is missing on the controller` is an ordinary thing to type. One newline
+      // failed it, so this escalation replayed as something the person had written.
+      `approach, and implement that instead.]\n\n${verifyFailureMessage(job.spec, still)}`,
     )
     current = { ...retried, steps: current.steps + retried.steps }
     if (current.stoppedBecause !== 'done' || signal?.aborted) return current
@@ -1528,8 +1601,19 @@ export class Session {
     // the session's own answer to that question and is already maintained for the step
     // clock. Being wrong here is bounded either way — wrong-warm costs one capped summary,
     // wrong-cold costs one slow one — and it decides nothing about correctness, only speed.
-    const cap = this.promptCacheCold ? SUMMARY_MAX_INPUT_TOKENS : contextLength - SUMMARY_OUTPUT_RESERVE
-    return Math.max(0, Math.min(contextLength - SUMMARY_OUTPUT_RESERVE, cap))
+    //
+    // The tool block comes off the top, separately from the output reserve. The warm branch
+    // fills the budget with TRANSCRIPT, and `buildCompactionRequest` then adds the session's
+    // 21-tool array to it — 4,783 tokens the budget never knew about. Measured end to end:
+    // `contextLength: 20000` with a warm cache reported a budget of 12,000, and the request
+    // built from a transcript filled to it came back at **15,879 real tokens** on the live
+    // server, leaving 4,121 of window. That covers compaction's MAX_TOKENS (3,000) but not
+    // its RETRY_MAX_TOKENS (4,500) — and the retry is the thing that exists for exactly the
+    // truncation this would cause. The overrun is window-independent, so no larger context
+    // fixes it: tools plus briefing are a fixed cost and have to be named as one.
+    const room = contextLength - SUMMARY_OUTPUT_RESERVE - TOOL_SCHEMA_TOKENS
+    const cap = this.promptCacheCold ? SUMMARY_MAX_INPUT_TOKENS : room
+    return Math.max(0, Math.min(room, cap))
   }
 
   /**
@@ -1638,7 +1722,7 @@ export class Session {
     this.transcript.append({
       role: 'user',
       content:
-        `The user reverted ${path} to how it was before this session started` +
+        `${REVERT_FILE_PREFIX}${path} to how it was before this session started` +
         `${result.removed ? ' (it did not exist then, so it is now deleted)' : ''}. ` +
         'Whatever earlier messages say about that file no longer describes what is on disk; ' +
         're-read it before editing it again.' +
@@ -1675,7 +1759,7 @@ export class Session {
     this.transcript.append({
       role: 'user',
       content:
-        `The workspace was rolled back to checkpoint ${result.restored.id} by the user. ` +
+        `${ROLLBACK_PREFIX}${result.restored.id} by the user. ` +
         'Any file changes you made after that point are gone from disk, whatever earlier ' +
         `messages say. Re-read any file before editing it. To undo this rollback the user ` +
         `can restore checkpoint ${result.undo.id}.`,
@@ -1863,6 +1947,7 @@ export class Session {
     const captureStepDone = (info: StepInfo): void => {
       if (info.promptTokens !== undefined) {
         this.latestPromptTokens = info.promptTokens
+        this.promptTokensFromRefusal = false
         // The moment the truth was measured, in transcript characters. Everything appended
         // after this — a batched step's tool results above all — is invisible to that
         // number, and the fill check has to carry the difference itself.
@@ -2088,7 +2173,14 @@ export class Session {
       // `writeCount` is cumulative across the session (the unattended idle check needs it
       // that way), so "did THIS turn change anything" is a difference, not a value.
       const writesBefore = this.writeCount
-      this.writtenMounts.clear()
+      // Cleared only when everything written so far HAS been verified. A turn that wrote and
+      // was then aborted never reaches `verifyAndFix` (it returns early on
+      // `stoppedBecause !== 'done'`), so an unconditional clear here dropped the folder on
+      // the floor: measured, turn 1 wrote and aborted, turn 2 wrote nothing and said "all
+      // done", and the project's check never ran over the file turn 1 left behind while the
+      // contract retired satisfied. `writesAtLastVerify` is the discipline `writeCount`
+      // already uses for exactly this; the folder set now follows it.
+      if (this.writeCount === this.writesAtLastVerify) this.writtenMounts.clear()
       let result: TurnResult
       try {
         result = await agent.runTurn(turnText)
@@ -2104,6 +2196,7 @@ export class Session {
         // Ground truth, recorded before anything else: the next check has a real number
         // instead of an estimate.
         this.latestPromptTokens = measured
+        this.promptTokensFromRefusal = true
         await this.compactNow(signal)
         // A continuation, not the same message again: `runTurn` already appended the user's
         // text before the request failed, so it is sitting in the compacted tail. Re-sending
@@ -2484,8 +2577,26 @@ export class Session {
       const measured = contextOverflowTokens(e)
       if (measured === null) throw e
       this.latestPromptTokens = measured
+      this.promptTokensFromRefusal = true
       await this.compactNow(signal)
-      return await this.buildAgent(signal).runTurn(OVERFLOW_RETRY_NOTE)
+      // The retry is wrapped, exactly as `send`'s is. It was not, so when compaction could
+      // not make room the second refusal escaped as a raw `HTTP 400` — the same failure
+      // `send` goes out of its way to name. Measured with the real 400 body on both turns:
+      // `onCompaction {"state":"postponed","reason":"nothing-to-gain"}` and then
+      // `SEND THREW: LlamaRequestError | llama.cpp request failed: HTTP 400`, with nothing
+      // persisted. The code's own comment calls this path normally unreachable; a session
+      // recorded before the per-step budget existed can still resume into it.
+      try {
+        return await this.buildAgent(signal).runTurn(OVERFLOW_RETRY_NOTE)
+      } catch (retryError) {
+        const still = contextOverflowTokens(retryError)
+        if (still === null) throw retryError
+        throw new Error(
+          `the conversation's most recent messages alone are ${still} tokens against a ` +
+          `${this.opts.compaction?.contextLength ?? 'smaller'}-token window, so compaction cannot make room. ` +
+          'Start a new session; this tail cannot be replayed.',
+        )
+      }
     }
   }
 
@@ -2752,7 +2863,10 @@ export class Session {
         // the same fill ratio and fired again — and the background path has no
         // MIN_COMPACTABLE_TOKENS guard of its own, so it went all the way to generating a
         // summary of a transcript this branch had just decided was not worth compacting.
-        this.latestPromptTokens = null
+        // Kept when it came from the server's own refusal: that number is the only proof
+        // there is that this prompt does not fit, and nothing can measure it again.
+        // `skipNextTrigger` alone already stops the immediate re-fire this null was for.
+        if (!this.promptTokensFromRefusal) this.latestPromptTokens = null
         this.skipNextTrigger = true
         this.opts.onCompaction?.({ state: 'postponed', reason: 'nothing-to-gain' })
         return
@@ -3092,6 +3206,7 @@ export class Session {
       // a step, that step's fresh number is what the next check sees, exactly as it
       // should.
       this.latestPromptTokens = null
+      this.promptTokensFromRefusal = false
       // same one-send back-off as the abort path: retrying immediately would regenerate the same unusable summary
       this.skipNextTrigger = true
       this.opts.onCompaction?.({ state: 'postponed' })
@@ -3158,6 +3273,8 @@ export class Session {
     // against the just-shrunk transcript and re-trigger a pointless compaction of the
     // transcript this very call just produced.
     this.latestPromptTokens = null
+    // A swap makes a different prompt, so a refusal of the OLD one says nothing about it.
+    this.promptTokensFromRefusal = false
     // The swap dropped whatever plan-focus note was in the middle; the next boundary
     // re-points the frame against the fresh transcript.
     this.lastPlanFocus = null
@@ -3411,17 +3528,10 @@ export class Session {
 
   /** The transcript's current weight in characters, message content plus reasoning. */
   private transcriptChars(): number {
-    return this.transcript.messages().reduce((n, m) => {
-      // Tool-call ARGUMENTS count, and they are the reason this number exists. It measures
-      // what has been appended since the last server-measured prompt, and the biggest single
-      // append there is is a `write_file` whose argument is a whole file — invisible here
-      // while it was only `content` + `reasoning_content`, because a call's own message
-      // carries no content at all. `Transcript.approxTokens` and `approxTokensOf` have both
-      // counted them all along; this was the one place that did not, so the correction it
-      // feeds under-read exactly when the turn had done the most.
-      const calls = (m.tool_calls ?? []).reduce((c, t) => c + t.function.arguments.length + 20, 0)
-      return n + (m.content?.length ?? 0) + (m.reasoning_content?.length ?? 0) + calls
-    }, 0)
+    // The shared counter, not a private copy. Tool-call ARGUMENTS are the reason this number
+    // exists and the part every private copy forgot; keeping one implementation is what stops
+    // the next one from forgetting them again. See `messageChars`.
+    return transcriptChars(this.transcript.messages())
   }
 
   /**

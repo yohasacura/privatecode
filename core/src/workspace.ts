@@ -61,6 +61,22 @@ const DENIED_SEGMENTS: RegExp[] = [
 const TRAILING_DOTS_AND_SPACES = /[. ]+$/
 
 /**
+ * `.privatecode/` holds the file the next session reads its `permissions`, `hooks` and
+ * `format` rules from — and hook and format commands run with no permission gate at all,
+ * so a write there is a write to the permission system itself.
+ *
+ * The permission engine denies those writes already, but it matches the path the model
+ * SPELLED after a purely lexical canonicalize. On NTFS the same directory also answers to
+ * its 8.3 alias: measured, `write_file({path:'PRIVAT~1/settings.json'})` was decided
+ * `allow (mode)` in auto-edit and replaced the real `.privatecode/settings.json`, whose
+ * planted `format` command then ran through powershell with no engine in the path.
+ *
+ * Deliberately NOT added to `DENIED_SEGMENTS`: that list guards reads too, and reading
+ * one's own settings is legitimate. This is the write chokepoint, and it denies writes.
+ */
+const ANY_PRIVATE_DIR_SEGMENT = /(^|[\\/])\.privatecode([\\/]|$)/i
+
+/**
  * Whether `abs` is a path the OS would open as `root` itself.
  *
  * Answers for ONE folder root. A caller holding a `Workspace` must ask it instead
@@ -284,6 +300,19 @@ export class Workspace {
   resolveForWrite(relativePath: string): string {
     const abs = this.resolve(relativePath)
     const mount = this.mountFor(abs)
+    // The name the filesystem reports, not the one the model typed -- see
+    // ANY_PRIVATE_DIR_SEGMENT. `resolve` has already canonicalized this path once to check
+    // for escapes; it did not check WHAT it landed on, because reads are allowed to land
+    // there. One extra realpath per write, against a write.
+    const canonicalRel =
+      mount === undefined ? abs : pathRelative(canonicalize(mount.root), canonicalize(abs))
+    if (ANY_PRIVATE_DIR_SEGMENT.test(canonicalRel)) {
+      throw new WorkspaceViolation(
+        `access denied to ${relativePath}: it is inside .privatecode, where this workspace ` +
+        'keeps its permission, hook and format settings. Those are the user\'s to change, ' +
+        'not yours — ask them, or use the settings UI.',
+      )
+    }
     if (mount?.access === 'read') {
       throw new WorkspaceViolation(
         `"${mount.name}" is attached read-only, so nothing can be written to ${relativePath}. ` +

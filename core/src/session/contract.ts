@@ -959,12 +959,20 @@ function acceptanceSchema(criteriaCount: number): Record<string, unknown> {
         type: 'array',
         items: {
           type: 'object',
-          required: ['index', 'met', 'evidence'],
+          // `evidence` BEFORE `met`, and the order is load-bearing rather than cosmetic:
+          // `response_format` compiles to a grammar that emits properties in the order the
+          // schema declares them, so `met` first made the model commit to a verdict and then
+          // write the justification for a verdict it had already given. The ask defines `met`
+          // IN TERMS OF the evidence, and `disableThinking` leaves no scratchpad to work it
+          // out in first. Verified that the grammar really does fix the order: asked
+          // explicitly, in the user message, to write the keys as evidence-then-met-then-index,
+          // the server returned index-then-met-then-evidence anyway.
+          required: ['index', 'evidence', 'met'],
           additionalProperties: false,
           properties: {
             index: { type: 'integer', minimum: 1, maximum: Math.max(1, criteriaCount) },
-            met: { type: 'boolean' },
             evidence: { type: 'string' },
+            met: { type: 'boolean' },
           },
         },
       },
@@ -1015,6 +1023,15 @@ export async function checkAcceptance(
         'command that ran and its result, a diff that landed, a file that was read back. ' +
         '"I implemented it" is not evidence; if nothing demonstrates it, met is false. ' +
         'Report one item per criterion, and report on EVERY criterion above.\n\n' +
+        // The pin every other gate carries. This one's `evidence` is not internal: it goes
+        // into `contract.checkedState`, which `renderContract` promotes into MESSAGE 0 at
+        // every compaction swap, and `acceptanceFailureMessage` puts it on screen as a note
+        // row. Measured against a Russian transcript, the shipped ask answered in Russian
+        // ("В сообщении прямо указано: «Тесты я не запускал.»") and that sentence reached
+        // both places — while the diff reviewer, whose brief is English, answered in English
+        // over the same conversation.
+        'Write every word of your answer IN ENGLISH, whatever language the conversation ' +
+        'above is in.\n\n' +
         'Answer with JSON only.]',
     },
   ]

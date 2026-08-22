@@ -1,7 +1,13 @@
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import {
+  CONTINUE_NUDGE, MAX_STEPS_PREFIX, STEP_TIMEOUT_PREFIX, TALKED_INSTEAD_OF_ACTING,
+  TRUNCATED_TWICE,
+} from '../agent/loop.js'
 import type { ChatMessage } from '../llama/types.js'
 import { statePath } from '../private-dir.js'
+import { attachmentUserText } from '../session/attachment-text.js'
+import { REVERT_FILE_PREFIX, ROLLBACK_PREFIX } from '../session/checkpoint-notices.js'
 import {
   COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, OVERFLOW_RETRY_NOTE,
 } from '../session/compaction.js'
@@ -179,17 +185,49 @@ const HARNESS_OPENERS: readonly string[] = [
   VERIFY_FAILED_PREFIX,
   VERIFY_PROBLEM_PREFIX,
   OVERFLOW_RETRY_NOTE,
+  // The agent loop's own six. Each was measured replaying as the person's message, under a
+  // `## You` heading, with no test covering any of them: the app suite is green and does not
+  // look at harness attribution at all.
+  CONTINUE_NUDGE,
+  TRUNCATED_TWICE,
+  TALKED_INSTEAD_OF_ACTING,
+  STEP_TIMEOUT_PREFIX,
+  MAX_STEPS_PREFIX,
+  REVERT_FILE_PREFIX,
+  ROLLBACK_PREFIX,
 ]
 
+/**
+ * The folder prefix a multi-folder workspace puts in front of a verify failure, as a matcher
+ * rather than a constant — the folder name is the user's.
+ *
+ * `HARNESS_OPENERS` matches with `startsWith`, so `In the "api" folder: Automatic
+ * verification failed...` did not match `VERIFY_FAILED_PREFIX` and the whole build log
+ * replayed as something a person had typed. Single-folder workspaces were fine, which is why
+ * this survived: the prefix is empty there.
+ */
+const FOLDER_PREFIX = /^In the "[^"]*" folder: /
+
 export function splitUserMessage(content: string): { kind: 'user'; text: string; harness?: true } {
-  if (HARNESS_OPENERS.some((opener) => content.startsWith(opener))) {
+  // Openers FIRST, and against the text with any folder prefix removed — the prefix is the
+  // harness's own, so it must not be able to hide the harness's own message.
+  const unprefixed = content.replace(FOLDER_PREFIX, '')
+  if (HARNESS_OPENERS.some((opener) => unprefixed.startsWith(opener))) {
     return { kind: 'user', text: content, harness: true }
   }
-  if (!content.startsWith('[')) return { kind: 'user', text: content }
+  // Then the attachment wrapper, which is the one case where the stored message legitimately
+  // contains more than the person wrote and the row should show LESS. Checked after the
+  // openers because an opener is never inside one.
+  const attached = attachmentUserText(content)
+  if (attached !== null) return { kind: 'user', text: attached }
+  // The bracket analysis runs on the unprefixed text for the same reason: the escalation turn
+  // writes a folder name, then a bracketed note, then a blank line, then the build log — and
+  // a leading folder name is not something the person put there.
+  if (!unprefixed.startsWith('[')) return { kind: 'user', text: content }
   let depth = 0
   let end = -1
-  for (let i = 0; i < content.length; i++) {
-    const ch = content[i]
+  for (let i = 0; i < unprefixed.length; i++) {
+    const ch = unprefixed[i]
     if (ch === '[') depth++
     else if (ch === ']') {
       depth--
@@ -197,7 +235,7 @@ export function splitUserMessage(content: string): { kind: 'user'; text: string;
     }
   }
   if (end === -1) return { kind: 'user', text: content }
-  const after = content.slice(end + 1)
+  const after = unprefixed.slice(end + 1)
   const rest = after.trim()
   // Nothing after the bracket: the message IS the note -- as long as the bracket holds a
   // SENTENCE. Every note the harness writes is one ("[Plan focus — step 2 of 5: ...]",
@@ -205,7 +243,7 @@ export function splitUserMessage(content: string): { kind: 'user'; text: string;
   // TOKEN is the shape of something a person types: `[HttpGet]`, `[Fact]`, `[TODO]`. Those
   // were being dimmed and marked as the harness talking.
   if (rest === '') {
-    const inside = content.slice(1, end)
+    const inside = unprefixed.slice(1, end)
     return /\s/.test(inside.trim())
       ? { kind: 'user', text: content, harness: true }
       : { kind: 'user', text: content }
@@ -218,6 +256,13 @@ export function splitUserMessage(content: string): { kind: 'user'; text: string;
   // both were silently losing their first token on every resume -- in the transcript, in
   // the row's title, and in the markdown export. Live was fine, so it only appeared later.
   if (!/^\r?\n\r?\n/.test(after)) return { kind: 'user', text: content }
+  // What the note was prefixed TO is usually the person's message — that is what this shape
+  // exists for. It is not always: the verify escalation writes a bracketed "pick a different
+  // approach" note in front of the build log, and both halves are the harness. Re-asking the
+  // opener question about the remainder is what tells the two apart.
+  if (HARNESS_OPENERS.some((opener) => rest.startsWith(opener))) {
+    return { kind: 'user', text: rest, harness: true }
+  }
   return { kind: 'user', text: rest }
 }
 

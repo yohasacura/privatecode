@@ -34,7 +34,16 @@ function indentOf(line: string): string {
 function reindent(replace: string, matchedFirstLine: string): string[] {
   const lines = replace.split('\n')
   const want = indentOf(matchedFirstLine)
-  const had = indentOf(lines[0] ?? '')
+  // The first NON-BLANK line, not `lines[0]`. A replacement that opens with a newline makes
+  // `lines[0]` the empty string, whose indent is '' -- which sent every line down the
+  // `had === ''` branch below and prepended the file's indent to lines that already carried
+  // their own. Measured: a correctly-indented 4-space replacement came back at 8 spaces with
+  // `ok:true`, and python then refused the file with "IndentationError: unindent does not
+  // match any outer indentation level". A blank line carries no indentation information and
+  // must not be asked for any.
+  const anchor = lines.find((line) => line.trim() !== '')
+  if (anchor === undefined) return lines
+  const had = indentOf(anchor)
   if (want === had) return lines
   return lines.map((line) => {
     if (line.trim() === '') return ''
