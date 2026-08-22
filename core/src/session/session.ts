@@ -46,7 +46,7 @@ import {
   buildReviewBrief, reviewVerdict, REVIEW_SYSTEM,
 } from './contract.js'
 import {
-  buildQuestion, foldAnswer, readThroughLenses, type Understanding,
+  buildQuestion, foldAnswerWithModel, readThroughLenses, type Understanding,
 } from './understanding.js'
 import {
   premiseFailureMessage, statePremises, verifyPremises, type Premise,
@@ -1390,8 +1390,11 @@ export class Session {
     // reading it already had, and the contract is untouched.
     if (signal?.aborted || answer.trim() === '' || answer === PARKED_ANSWER) return undefined
 
-    const { criteria, notPicked, nextCriteria } = foldAnswer(
-      understanding, answer, contract.criteria,
+    // The model decides what says the same thing, with the string comparison as the
+    // fallback -- measured in the running app, the string comparison alone matched none of
+    // three ticks against any of eight criteria. See `foldAnswerWithModel`.
+    const { criteria, notPicked, nextCriteria } = await foldAnswerWithModel(
+      this.opts.client, understanding, answer, contract.criteria, signal,
     )
     if (criteria.length === 0 && notPicked.length === understanding.contested.length) {
       // Nothing matched and nothing was typed that we could keep — an answer we cannot read.

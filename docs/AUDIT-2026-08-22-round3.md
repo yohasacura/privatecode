@@ -561,3 +561,63 @@ version of it asserted a merge the matcher never claimed.
 
 `existing` defaults to empty, so the fold is opt-in and every other caller is unchanged.
 
+## The string comparison was not enough, and the window said so
+
+Driven through the real app, the fold above did nothing: a contract reading "no leading or
+trailing hyphens in the slug — e.g. slug('---hello---') must not return '-hello-'" was
+answered with the tick "slug removes leading and trailing hyphens", and `alignReadings`
+matched NONE of three such ticks against ANY of eight criteria. **8 + 3 = 11.** Same
+requirement, different words, and lexical containment cannot see it.
+
+The two fixes had even worked against each other: putting the request's own rule into the
+contract made the criteria longer and more example-laden, which pushed them further from the
+terse lines a lens writes.
+
+So the model is asked — but the QUESTION had to be built for this, not borrowed. Reusing
+`groupLines`, which asks a symmetric "which of these lines mean the same thing" of three
+readings of one request, over-merged immediately: "concurrent requests never produce a
+duplicate number" was grouped into "invoice numbers are gap-free" and the tick would have
+been dropped. The shipped ask is asymmetric and is the question actually being decided — does
+the contract ALREADY require this — with a worked example of a criterion FORCING a line, a
+worked counter-example of two requirements that merely share a subject, and an instruction to
+answer 0 when it is genuinely different.
+
+One guard sits under the model's answer: a merge is refused when the two lines share no
+content word at all (`sharedContentWords`). That is the whole job — every correct merge
+observed shared at least one, and the one wrong merge observed ("totals are shown with a
+thousands separator" into "every amount is rounded half-up to two decimals before it is
+summed") shared none. A floor of two was tried and cost real merges for no extra safety.
+
+Measured over three runs of six real cases:
+
+```
+7 criteria + 3 near-verbatim ticks   -> 7    (string comparison also gets this one)
+8 + 3 differently-worded ticks       -> 8    (string comparison: 11)
+8 + 3 ticks from the live window     -> 8    (string comparison: 11)
+three genuinely separate requirements -> kept
+```
+
+8 of 9 either way. The failures are both soft and were chosen to be: a model that declines to
+merge leaves a duplicate, and a model that over-merges leaves the criterion in place while the
+tick still reaches the model verbatim through the "They want these" message.
+
+**Confirmed in the window**, which is where this started. Fresh session, same request, the
+three offered readings all restatements of criteria 1 and 2:
+
+```
+criteria BEFORE the answer : 8
+ticked                     : 3
+criteria AFTER the answer  : 8
+```
+
+and the model was still told, in so many words:
+
+```
+They want these, and they are now part of what "done" means:
+- Slugs contain only lowercase letters, digits, and single hyphens
+- No slug starts or ends with a hyphen
+- Punctuation is stripped before slug generation
+```
+
+Communicated, not duplicated.
+

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest'
 import { alignReadings } from '../src/session/contract.js'
 import {
-  buildQuestion, compareReadings, foldAnswer, readThroughLenses, type Reading,
+  buildQuestion, compareReadings, foldAnswer, foldAnswerWithModel, readThroughLenses, type Reading,
   fromGroups, parseGroups, NONE_OF_THESE,
 } from '../src/session/understanding.js'
 import { LlamaClient } from '../src/llama/client.js'
@@ -411,6 +411,109 @@ describe('folding an answer into criteria that already exist', () => {
     expect(alignReadings(a, b)).toBe(false)
     const folded = foldAnswer({ shared: [], contested: [a, b] }, [a, b].join('; '), [a])
     expect(folded.nextCriteria).toEqual([a, b])
+  })
+
+  /**
+   * The string comparison alone is not enough, and that was measured in the running app
+   * rather than argued: a contract reading "no leading or trailing hyphens in the slug — e.g.
+   * slug('---hello---') must not return '-hello-'" was answered with the tick "slug removes
+   * leading and trailing hyphens", and `alignReadings` matched NONE of three such ticks
+   * against ANY of eight criteria. 8 + 3 came out as 11.
+   *
+   * So the model is asked -- but the question matters. Reusing `groupLines`, which asks a
+   * symmetric "which of these lines mean the same thing" of three readings of one request,
+   * over-merged: "concurrent requests never produce a duplicate number" was grouped into
+   * "invoice numbers are gap-free" and the tick would have been dropped. The shipped question
+   * is asymmetric and is the one actually being decided -- does the contract ALREADY require
+   * this -- and it is told to answer 0 when unsure.
+   */
+  describe('when the wording is different but the requirement is not', () => {
+    /** Answers with one number per tick, the way the real gate does. */
+    async function withAnswer(
+      restates: number[],
+      existing: string[],
+      contested: string[],
+    ): Promise<string[]> {
+      const fake = await startFakeServer(() => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: { role: 'assistant', content: JSON.stringify({ restates }) },
+        }],
+      }))
+      try {
+        const folded = await foldAnswerWithModel(
+          new LlamaClient({ baseUrl: fake.url, model: 'test' }),
+          { shared: [], contested },
+          contested.join('; '),
+          existing,
+        )
+        return folded.nextCriteria
+      } finally {
+        await fake.close()
+      }
+    }
+
+    const CONTRACT = [
+      "slugs contain only lowercase letters, digits and single hyphens — e.g. slug('Hello, World!') must return 'hello-world'",
+      "no leading or trailing hyphens in the slug — e.g. slug('---hello---') must not return '-hello-'",
+    ]
+    const TICKS = [
+      'slug strips punctuation so only letters, digits and hyphens remain',
+      'slug removes leading and trailing hyphens',
+    ]
+
+    test('a tick the string comparison cannot see is still folded in', async () => {
+      // The premise, stated so this test cannot pass for the wrong reason.
+      for (const tick of TICKS) {
+        expect(CONTRACT.some((c) => alignReadings(c, tick))).toBe(false)
+      }
+      expect(await withAnswer([1, 2], CONTRACT, TICKS)).toEqual(CONTRACT)
+    })
+
+    test('0 means the contract does not already require it, and the tick is kept', async () => {
+      const next = await withAnswer([0], ['invoice numbers are gap-free'], [
+        'concurrent requests never produce a duplicate number',
+      ])
+      expect(next).toEqual([
+        'invoice numbers are gap-free',
+        'concurrent requests never produce a duplicate number',
+      ])
+    })
+
+    test('an unusable answer keeps the tick rather than dropping it', async () => {
+      // Out of range, the wrong type, a short array: every one reads as 0. A duplicate
+      // criterion is noise; a ticked line that quietly leaves the contract is scope the user
+      // asked for and will not get.
+      for (const restates of [[99], [-1], [], ['1' as unknown as number]]) {
+        const next = await withAnswer(restates, ['invoice numbers are gap-free'], [
+          'concurrent requests never produce a duplicate number',
+        ])
+        expect(next).toHaveLength(2)
+      }
+    })
+
+    test('a tick that says strictly more still sharpens, whatever the model answered', async () => {
+      const next = await withAnswer([1], ['invoice numbers are gap-free'], [
+        'invoice numbers are gap-free even when a transaction rolls back',
+      ])
+      expect(next).toEqual(['invoice numbers are gap-free even when a transaction rolls back'])
+    })
+
+    test('a server that cannot answer falls back to the string comparison', async () => {
+      const fake = await startFakeServer(() => { throw new Error('down') })
+      try {
+        const folded = await foldAnswerWithModel(
+          new LlamaClient({ baseUrl: fake.url, model: 'test' }),
+          { shared: [], contested: ['invoice numbers are gap-free'] },
+          'invoice numbers are gap-free',
+          ['invoice numbers are gap-free'],
+        )
+        // The lexical fold still merges this one -- it is byte-identical.
+        expect(folded.nextCriteria).toEqual(['invoice numbers are gap-free'])
+      } finally {
+        await fake.close()
+      }
+    })
   })
 
   test('with no contract passed it behaves exactly as it always did', () => {

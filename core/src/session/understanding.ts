@@ -1,7 +1,7 @@
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ToolSchema } from '../llama/types.js'
 import { forcedJson } from './forced-json.js'
-import { alignReadings, readingCovers } from './contract.js'
+import { alignReadings, readingCovers, sharedContentWords } from './contract.js'
 
 /**
  * The check that runs in the last quiet moment before the first write: **did I understand
@@ -606,4 +606,155 @@ export function foldAnswer(
     if (readingCovers(wanted, nextCriteria[at]!)) nextCriteria[at] = wanted
   }
   return { criteria, notPicked, nextCriteria }
+}
+
+/**
+ * The same fold, with the model deciding what says the same thing.
+ *
+ * `foldAnswer`'s own merge compares strings, and measured in the running app that is not
+ * enough. A session whose contract read "no leading or trailing hyphens in the slug — e.g.
+ * slug('---hello---') must not return '-hello-'" was answered with the tick "slug removes
+ * leading and trailing hyphens", and `alignReadings` matched NONE of three such ticks against
+ * ANY of eight criteria: 8 criteria + 3 ticks came out as 11. Same requirement, different
+ * words, and lexical containment cannot see it. The two fixes even worked against each other
+ * — putting the request's rule into the contract made the criteria longer and more
+ * example-laden, which pushed them further from the terse lines a lens writes.
+ *
+ * So this asks `groupLines`, which is what `compareReadings` already asks the same question
+ * of, and for the same stated reason: "same outcome = same group, even when the wording is
+ * nothing alike". `alignReadings` stays as the fallback for when the model cannot answer.
+ *
+ * Being wrong here is bounded, which is why delegating it is acceptable at all. A merged tick
+ * does not vanish: the criterion it merged into is still in the contract, and the caller's
+ * message names every ticked line verbatim, so the model reads the person's words either way.
+ * And a tick that says strictly MORE than the criterion still replaces it (`readingCovers`),
+ * so a wrong grouping cannot cost content — only a separate audit line for a sentence that
+ * meant the same thing.
+ */
+/** One number per ticked line: which criterion it merely restates, or 0 for "something the
+ * criteria do not already require". Numbers only, so the answer stays small however long the
+ * lines are. */
+const RESTATES_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['restates'],
+  additionalProperties: false,
+  properties: {
+    restates: { type: 'array', items: { type: 'integer', minimum: 0 } },
+  },
+}
+
+/**
+ * How many content words a ticked line and the criterion it supposedly restates must have in
+ * common before the merge is believed.
+ *
+ * ONE, and the job is deliberately that narrow: block a merge between lines that are not
+ * about the same things at all, and get out of the way otherwise. Measured -- the one wrong
+ * merge observed ("totals are shown with a thousands separator" into "every amount is rounded
+ * half-up to two decimals before it is summed") shared NOTHING, while a correct one can share
+ * as little as a single word: "slug collapses multiple consecutive hyphens into one" and
+ * "slugs contain only lowercase letters, digits and single hyphens" have only "hyphen" in
+ * common. A floor of two was tried and cost real merges for no extra safety.
+ */
+const MIN_SHARED_TO_MERGE = 1
+
+/** Room for one small integer per tick, several times over. */
+const RESTATES_MAX_TOKENS = 400
+
+/**
+ * For each ticked line, the criterion it merely restates -- or 0.
+ *
+ * A DIFFERENT question from `groupLines`, deliberately, and the difference is measurable.
+ * `groupLines` asks a symmetric "which of these jumbled lines mean the same thing" of lines
+ * that are all readings of one request; pointed at criteria-versus-ticks it over-merged, and
+ * "concurrent requests never produce a duplicate number" was grouped into "invoice numbers
+ * are gap-free" -- two different requirements, and the tick would have been dropped. This
+ * asks the asymmetric question that is actually being decided: does the contract ALREADY
+ * require this?
+ *
+ * Fails toward 0, i.e. toward keeping the tick. A duplicate criterion is noise; a ticked line
+ * that quietly leaves the contract is scope the user asked for and will not get.
+ */
+async function restatedCriterion(
+  client: LlamaClient,
+  criteria: readonly string[],
+  ticks: readonly string[],
+  signal?: AbortSignal,
+): Promise<number[] | null> {
+  const parsed = await forcedJson(client, {
+    messages: [{
+      role: 'user',
+      content: [
+        'A task already has these done-criteria:',
+        ...criteria.map((c, i) => `${i + 1}. ${c}`),
+        '',
+        'The user was asked what they meant and ticked these lines:',
+        ...ticks.map((t, i) => `${i + 1}. ${t}`),
+        '',
+        'For each ticked line IN ORDER, answer with one number: the number of the ' +
+        'criterion that ALREADY REQUIRES it, or 0 if none of them does.',
+        '',
+        'A criterion already requires a line when it says the same thing in other words, ' +
+        'and also when it FORCES it: \"slugs contain only lowercase letters, digits and ' +
+        'hyphens\" already requires \"slugs never contain punctuation\" and already ' +
+        'requires \"slug of Hi! is hi\" -- neither of those is new, so both ' +
+        'get that criterion number.',
+        '',
+        'Be careful in the other direction: \"numbers are never skipped\" and ' +
+        '\"numbers are never repeated\" are DIFFERENT requirements even though ' +
+        'both are about numbers, and neither one forces the other. Answering with a ' +
+        'criterion number for a line the criteria do not cover drops something the user ' +
+        'just asked for, so when it is genuinely a different requirement, answer 0.',
+        '',
+        `Give exactly ${ticks.length} number(s). Answer with JSON only.`,
+      ].join('\n'),
+    }],
+    name: 'restates',
+    schema: RESTATES_SCHEMA,
+    maxTokens: RESTATES_MAX_TOKENS,
+    disableThinking: true,
+    ...(signal ? { signal } : {}),
+  })
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const raw = (parsed as { restates?: unknown }).restates
+  if (!Array.isArray(raw)) return null
+  // Anything that is not a usable index reads as 0 -- keep the tick. A short answer is
+  // padded rather than treated as a failure, for the same reason.
+  const out: number[] = []
+  for (let i = 0; i < ticks.length; i++) {
+    const n = raw[i]
+    out.push(typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= criteria.length ? n : 0)
+  }
+  return out
+}
+
+export async function foldAnswerWithModel(
+  client: LlamaClient,
+  u: Understanding,
+  answer: string,
+  existing: readonly string[],
+  signal?: AbortSignal,
+): Promise<{ criteria: string[]; notPicked: string[]; nextCriteria: string[] }> {
+  const folded = foldAnswer(u, answer, existing)
+  if (folded.criteria.length === 0 || existing.length === 0) return folded
+
+  const restates = await restatedCriterion(client, existing, folded.criteria, signal)
+  // `null` is "could not ask", and the string comparison is a real answer rather than a
+  // guess -- so it stands, exactly as it did before this function existed.
+  if (restates === null) return folded
+
+  const next = [...existing]
+  const appended: string[] = []
+  folded.criteria.forEach((tick, i) => {
+    const at = (restates[i] ?? 0) - 1
+    // The floor the model's answer has to clear: see `sharedContentWords`. Two lines that are
+    // not even about the same things are not the same requirement, whatever was answered.
+    if (at < 0 || sharedContentWords(tick, existing[at]!) < MIN_SHARED_TO_MERGE) {
+      appended.push(tick)
+      return
+    }
+    // The criterion stands. A tick may still sharpen it, and only upwards -- a checkbox must
+    // never narrow what "done" means.
+    if (readingCovers(tick, next[at]!)) next[at] = tick
+  })
+  return { ...folded, nextCriteria: [...next, ...appended] }
 }

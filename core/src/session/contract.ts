@@ -743,6 +743,27 @@ function stem(word: string): string {
  * Written for `foldAnswer`, where a person ticking a reading of the request must be able to
  * SHARPEN a criterion without either duplicating it or quietly narrowing it.
  */
+/**
+ * How many content words two lines have in common, on the same stemming and stopword list as
+ * `alignReadings` and `readingCovers`.
+ *
+ * A floor rather than a verdict. Whether two lines say the same thing is a judgement this
+ * codebase delegates to the model (`foldAnswerWithModel`), and measured it is mostly right --
+ * but when it is wrong it is wrong in the direction that costs something, merging a ticked
+ * line the criteria do not cover. Observed: "totals are shown with a thousands separator" was
+ * merged into "every amount is rounded half-up to two decimals before it is summed", which
+ * share NO content words at all, while every correct merge observed shared at least two.
+ * Lines that are not even about the same things are not the same requirement.
+ */
+export function sharedContentWords(a: string, b: string): number {
+  const content = (text: string): Set<string> =>
+    new Set(matchWords(text).map(stem).filter((w) => !MATCH_STOPWORDS.has(w)))
+  const wa = content(a)
+  let shared = 0
+  for (const word of content(b)) if (wa.has(word)) shared++
+  return shared
+}
+
 export function readingCovers(wider: string, narrower: string): boolean {
   const content = (text: string): Set<string> =>
     new Set(matchWords(text).map(stem).filter((w) => !MATCH_STOPWORDS.has(w)))
