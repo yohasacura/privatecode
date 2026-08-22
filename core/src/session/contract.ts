@@ -98,12 +98,23 @@ export function looksLikeTask(text: string): boolean {
 
 /** Shape only — every word that has to reach the model is in `distillContract`'s ask, because
  * a `response_format` schema is never rendered. */
-const CONTRACT_SCHEMA: Record<string, unknown> = {
+export const CONTRACT_SCHEMA: Record<string, unknown> = {
   type: 'object',
-  required: ['goal', 'criteria', 'constraints', 'interfaces', 'kind'],
+  required: ['goal', 'rules', 'criteria', 'constraints', 'interfaces', 'kind'],
   additionalProperties: false,
   properties: {
     goal: { type: 'string' },
+    // BEFORE `criteria`, and the order is the whole point — the same lever `acceptanceSchema`
+    // uses to put evidence before a verdict. A `response_format` grammar emits properties in
+    // schema order, so by the time the model writes the criteria list it has already had to
+    // isolate the rules, and the ask can then tell it not to re-derive them.
+    //
+    // A required FIELD rather than a sentence in the ask, because the sentence was not
+    // enough. The ask names this failure verbatim — "do not split it into the parts you would
+    // implement (lowercases, strips punctuation, no leading hyphen)" — and a measured run
+    // produced exactly those three anyway. This session has the general lesson twice over:
+    // this model follows the grammar and negotiates with the prose.
+    rules: { type: 'array', items: { type: 'string' } },
     criteria: { type: 'array', items: { type: 'string' } },
     constraints: { type: 'array', items: { type: 'string' } },
     // Required-but-emptyable rather than optional: a strict schema is clearer about what
@@ -202,7 +213,16 @@ export async function distillContract(
         // tokens, so the move had to bring the prose with it — see forced-json.ts, and see
         // the regression it caused the one time it did not.
         'goal — one sentence: what must exist when this is done.\n\n' +
-        'criteria — two to six CHECKABLE done-criteria, each answerable yes/no by looking at ' +
+        'rules — every sentence in the request that must hold for EVERY input, or that bounds ' +
+        'the SET of what is allowed: "slugs contain only lowercase letters, digits and single ' +
+        'hyphens", "every amount is rounded before it is summed", "no endpoint may return a ' +
+        'raw stack trace". Copy each one from the request, in the request\'s own words. Add an ' +
+        'example after it only as evidence — "<rule> — e.g. <instance>". One entry per rule: ' +
+        'never the same rule twice in different words. Empty when the request states no such ' +
+        'sentence, which is common — a request to rename one function has no rules.\n\n' +
+        'criteria — the rest of the done-criteria. Two to six IN TOTAL counting the rules ' +
+        'above, so a request with two rules leaves room for about four. Each answerable ' +
+        'yes/no by looking at ' +
         'a file or running a command. Never vague. Each one is a STATE OF THE WORLD once the ' +
         'work is finished, never an activity along the way: "the counter cannot hand out the ' +
         'same number twice" is a criterion; "the code is examined", "the root cause is ' +
@@ -214,6 +234,23 @@ export async function distillContract(
         'the request\'s own specifics VERBATIM — "invalid status TRANSITION rejected" must ' +
         'not soften into "status is from the valid set", because a generalized criterion ' +
         'passes work the user did not ask for.\n\n' +
+        // The mirror of the sentence above, and it has to be said separately because it is
+        // the OPPOSITE error: that one guards a specific requirement from being widened,
+        // this one guards a general one from being narrowed. Measured on this server, twice
+        // out of two, "slugs contain only lowercase letters, digits and single hyphens" came
+        // back as seven criteria of which ZERO stated the rule — "converts all letters to
+        // lowercase", "strips all punctuation", "no leading hyphen". Every part held; the
+        // rule did not (`_` and `&` survived), and the audit affirmed all seven.
+        'A rule you already listed above is DONE. Do not restate it here in other words, do ' +
+        'not split it into the parts you would implement ("lowercases", "strips punctuation", ' +
+        '"no leading hyphen"), and do not list its cases: an input-and-expected-output pair ' +
+        'for a rule already listed ("slug(\'Hello World\') returns \'hello-world\'") is not a ' +
+        'criterion, it is one of the cases that rule\'s test will cover. Parts and cases can ' +
+        'all be true while the rule is false, and then the audit affirms a task that is not ' +
+        'finished. And an invented case costs more than a wasted line: every criterion is ' +
+        'audited on its own and has to be demonstrated by something that RAN in the ' +
+        'conversation, so a case you made up that nobody thought to try holds the task open ' +
+        'for work the user never asked for.\n\n' +
         'constraints — what must NOT change or be touched. Empty if the user named none.\n\n' +
         'interfaces — only when several files must agree: the signatures, types and names ' +
         'they agree ON, pinned now. Empty otherwise.\n\n' +
@@ -257,7 +294,20 @@ function readContract(parsed: unknown): TaskContract | null {
   const goal = typeof o['goal'] === 'string' ? o['goal'].trim() : ''
   const strings = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim()) : []
-  const criteria = strings(o['criteria']).slice(0, 8)
+  // Rules ARE criteria, and they go first: they are the headline requirement, and the audit
+  // reads the list in order. Merged here rather than kept as a second field so that nothing
+  // downstream — `renderContract`, `checkAcceptance`, `seedTodos`, `syncTodosWithAudit` —
+  // has to learn about a new shape, and so that a rule cannot be quietly skipped by a reader
+  // that only knows about criteria.
+  //
+  // Deduped against the criteria the model wrote anyway: it is told not to restate a rule,
+  // and it sometimes does. Comparison is on the words that carry meaning, because the
+  // restatement is rarely byte-identical.
+  const meaningful = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  const rules = strings(o['rules']).slice(0, 4)
+  const ruleKeys = new Set(rules.map(meaningful))
+  const rest = strings(o['criteria']).filter((c) => !ruleKeys.has(meaningful(c)))
+  const criteria = [...rules, ...rest].slice(0, 8)
   if (goal === '' || criteria.length === 0) return null
   const contract: TaskContract = { goal, criteria, constraints: strings(o['constraints']).slice(0, 8) }
   if (typeof o['interfaces'] === 'string' && o['interfaces'].trim() !== '') {
@@ -1022,6 +1072,18 @@ export async function checkAcceptance(
         'For each criterion give the evidence: what in THIS conversation demonstrates it — a ' +
         'command that ran and its result, a diff that landed, a file that was read back. ' +
         '"I implemented it" is not evidence; if nothing demonstrates it, met is false. ' +
+        // Added after measuring the failure it describes: with the rule finally present as a
+        // criterion, the audit still affirmed it 3 times out of 3 by READING the code and
+        // agreeing with it, while `slug('Hello, World!')` returned `'hello,-world!'`. Code
+        // that looks like it implements a rule is the assertion, not the demonstration.
+        'A criterion that states a rule over EVERY input needs the rule to have been ' +
+        'EXERCISED. Reading the implementation and agreeing with it is an assertion, not a ' +
+        'demonstration — you cannot run code in your head, and a rule that merely looks right ' +
+        'is how this audit affirmed a task while the rule was false. What met looks like is a ' +
+        'run over inputs that would BREAK the rule if it were wrong — a character nobody ' +
+        'listed, an empty string, something already in the target form — with its output ' +
+        'visible. Such a run is enough; it does not have to name every input. If the only ' +
+        'evidence is the code itself, met is false, and say which input is missing. ' +
         'Report one item per criterion, and report on EVERY criterion above.\n\n' +
         // The pin every other gate carries. This one's `evidence` is not internal: it goes
         // into `contract.checkedState`, which `renderContract` promotes into MESSAGE 0 at

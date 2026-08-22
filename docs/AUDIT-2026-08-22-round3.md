@@ -71,14 +71,12 @@ verified with independent diff review — passed
 `satisfied: True | checkedState: 1,2,3,4,5,6,7,8,9,10 met`. The agent's own work is correct
 and its test passes with exit 0, checked by hand outside the app.
 
-**One thing the run turned up that is not a bug in the gates.** The distilled contract
-rendered "slugs contain only lowercase letters, digits and single hyphens" as ten
-EXAMPLE-shaped criteria and none stating the rule, so `slug('Hello, World!')` still returns
-`'hello,-world!'` and the audit was right to pass all ten. The general rule became a list of
-instances, and the instances all held. Also: criteria 8-10 duplicate 2, 4 and 5 — the
-understanding check's answers were folded in as fresh criteria rather than merged, so three
-of the ten are audited twice. Both belong to distillation, not to the gate chain, and neither
-was in the audit's scope.
+**One thing the run turned up, chased down afterwards — and it WAS a bug, just not in the
+gates.** The distilled contract rendered "slugs contain only lowercase letters, digits and
+single hyphens" as ten EXAMPLE-shaped criteria and none stating the rule, so
+`slug('Hello, World!')` still returned `'hello,-world!'` and the audit was right to pass all
+ten. See the last section: the general rule became a list of instances, the instances all
+held, and nothing in the chain could notice.
 
 ---
 
@@ -430,3 +428,89 @@ The cost of (2) is bounded on purpose: three unknown probes at a shortened inter
 unreachable `/slots` buys well under a minute of grace and then the step ends. Three existing
 timeout tests had to be re-tuned because they exercise a hung server and that path is now
 genuinely longer — which is the honest price of not killing healthy prefills.
+
+---
+
+# The rule that became a list of examples
+
+Not from the audit — from driving the app afterwards. The request said *"make slugs contain
+only lowercase letters, digits and single hyphens"*. The contract came back as ten criteria,
+every one an instance, none the rule. The agent shipped code that passes all ten and violates
+the rule, and the audit correctly affirmed 10 of 10.
+
+Reproduced first, on three requests that each carry a general rule
+(`spike/distill-rule-probe.mts`). The slug case, twice out of two:
+
+```
+run 1: 7 criteria, 0 state the RULE
+   inst  The slug() function strips all punctuation characters from input.
+   inst  slug('Hello, World!') returns exactly 'hello-world'.
+   inst  The function never produces a leading hyphen in its output.
+   ...
+run 2: 7 criteria, 0 state the RULE
+   inst  The slug() function converts all letters to lowercase.
+   inst  The slug() function replaces multiple consecutive hyphens with a single hyphen.
+   ...
+```
+
+Note what the model does: not only examples, but **decomposition into the parts it would
+implement**. Every part is true of the shipped code. The closed set — "ONLY these characters"
+— is the one thing no part carries, which is exactly why `_` and `&` survived.
+
+**Prose did not fix it.** The ask already forbade generalizing a specific requirement; adding
+the mirror sentence naming this failure verbatim, down to the example
+`("lowercases", "strips punctuation", "no leading hyphen")`, still produced exactly those
+three in the next run. This session has the lesson twice already: **this model follows the
+grammar and negotiates with the prose.**
+
+So the fix is structural. `CONTRACT_SCHEMA` gains a required `rules` array, ordered BEFORE
+`criteria` — the same property-order lever `acceptanceSchema` uses to put evidence ahead of a
+verdict, and one this session verified is genuinely enforced. By the time the model writes the
+criteria list it has already had to isolate the rules, and the ask can then tell it not to
+re-derive them. `readContract` merges rules into `criteria` (rules first, deduped), so nothing
+downstream learns a new shape and no reader can skip a rule by only knowing about criteria.
+
+```
+rule survives into the contract:  0/2  ->  9/9 runs across three requests
+```
+
+and in the shape that was asked for:
+
+```
+RULE  slugs contain only lowercase letters, digits and single hyphens
+      — e.g. slug('Hello, World!') returns 'hello-world', not 'hello,-world!'
+```
+
+## The half that was not enough
+
+With the rule finally present, the audit **still affirmed it, 3 times out of 3**
+(`spike/rule-audit-probe.mts`). It read the implementation, agreed with it, and never
+evaluated `slug('Hello, World!')`. Worth being exact about what fixed that, because it is not
+what it looks like: the model cannot simulate a regex — in one run it read the chain and
+concluded, wrongly, that punctuation *was* stripped. What changed is that
+`checkAcceptance` now refuses to affirm a universal claim from code nobody ran:
+
+> A criterion that states a rule over EVERY input needs the rule to have been EXERCISED.
+> Reading the implementation and agreeing with it is an assertion, not a demonstration.
+
+Measured both directions, because the first attempt at this wording made the gate a wall —
+it demanded a specific breaking input and rejected honest work 3/3:
+
+```
+                                    before   first try   shipped
+broken work caught                    0/3        3/3        2/3
+honest work affirmed clean            n/a        0/3        3/3
+```
+
+The middle column is the trap: a gate nothing can pass is not a gate. The shipped wording
+accepts a run over inputs chosen to break the rule and does not insist on naming every one.
+
+One more thing the measurement forced: the distiller's invented cases are not merely
+redundant. `slug("It's a test!!!") returns 'it-s-a-test'` is a criterion the audit will demand
+evidence for, and it holds the task open for work nobody asked for — so the ask now says that
+consequence out loud rather than only calling the cases untidy.
+
+**Still 2/3, not 3/3.** One run in three still affirms the broken implementation. That is a
+large improvement on 0/3 and on the live 10-of-10, and it is not a solved problem; the
+remaining miss is the audit trusting a green run over cases that do not exercise the rule.
+

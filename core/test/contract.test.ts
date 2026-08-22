@@ -10,6 +10,7 @@ import { Toolset } from '../src/tools/default-set.js'
 import {
   looksLikeTask, parseAcceptance, parseContract, renderCheckedState, renderContract,
   withUnreportedCriteria, UNREPORTED_REASON, resolveReportedCriteria,
+  CONTRACT_SCHEMA, distillContract,
 } from '../src/session/contract.js'
 import { collapseSupersededReads } from '../src/session/compaction.js'
 import type { ChatMessage } from '../src/llama/types.js'
@@ -56,6 +57,64 @@ describe('parsing generated documents', () => {
     expect(renderContract(c!)).toContain('Done only when')
     expect(renderContract(c!)).toContain('do not touch x')
   })
+  /**
+   * A general RULE the request states must survive as a criterion, and it arrives in its own
+   * field so the grammar has to produce it.
+   *
+   * Watched live: "slugs contain only lowercase letters, digits and single hyphens" came back
+   * as ten example-shaped criteria with the rule stated nowhere, the agent shipped code that
+   * passed all ten, and the audit correctly affirmed 10 of 10 while
+   * `slug('Hello, World!')` still returned `'hello,-world!'`. Measured on this server, the
+   * prose telling the distiller not to do that was ignored 1 run in 2; a required field
+   * ordered ahead of `criteria` was not.
+   */
+  test('rules become criteria, and lead them', () => {
+    const c = parseContract(JSON.stringify({
+      goal: 'g',
+      rules: ['slugs contain only lowercase letters, digits and single hyphens'],
+      criteria: ['a test covers the rule'],
+      constraints: [],
+    }))
+    expect(c!.criteria).toEqual([
+      'slugs contain only lowercase letters, digits and single hyphens',
+      'a test covers the rule',
+    ])
+  })
+
+  test('a rule restated among the criteria is not audited twice', () => {
+    // It is told not to restate one, and it sometimes does. The comparison is on the words
+    // that carry meaning, because a restatement is rarely byte-identical.
+    const c = parseContract(JSON.stringify({
+      goal: 'g',
+      rules: ['every amount is rounded before it is summed'],
+      criteria: ['Every amount is rounded before it is summed.', 'a test covers the rule'],
+      constraints: [],
+    }))
+    expect(c!.criteria).toEqual([
+      'every amount is rounded before it is summed',
+      'a test covers the rule',
+    ])
+  })
+
+  test('a contract with no rules is unchanged — most requests state none', () => {
+    const c = parseContract(JSON.stringify({
+      goal: 'rename fetchUser to loadUser',
+      rules: [],
+      criteria: ['every call site uses loadUser', 'the suite passes'],
+      constraints: [],
+    }))
+    expect(c!.criteria).toEqual(['every call site uses loadUser', 'the suite passes'])
+  })
+
+  test('rules alone are enough to be a contract', () => {
+    // `criteria` empty is not "no contract" when the request stated a rule: the rule IS the
+    // done-criterion, and refusing the contract there would drop the strongest thing in it.
+    const c = parseContract(JSON.stringify({
+      goal: 'g', rules: ['no endpoint returns a raw stack trace'], criteria: [], constraints: [],
+    }))
+    expect(c!.criteria).toEqual(['no endpoint returns a raw stack trace'])
+  })
+
   test('no goal or no criteria is no contract', () => {
     expect(parseContract(JSON.stringify({ goal: '', criteria: ['a'], constraints: [] }))).toBeNull()
     expect(parseContract(JSON.stringify({ goal: 'g', criteria: [], constraints: [] }))).toBeNull()
@@ -222,6 +281,67 @@ describe('matching an audit report back to the contract criteria', () => {
     })
     expect(state).toContain('1,2 met')
     expect(state).toContain('not matched to a criterion')
+  })
+})
+
+/**
+ * The distiller's ask, read as text.
+ *
+ * Both halves have to be there, because they guard opposite errors and each was found the
+ * hard way. The VERBATIM half stops a specific requirement from being widened into something
+ * easier. The RULES half stops a general one from being narrowed into a list of instances —
+ * measured live: "slugs contain only lowercase letters, digits and single hyphens" came back
+ * as example-shaped criteria with the rule stated nowhere, and the audit then affirmed every
+ * one of them over an implementation that still returned `'hello,-world!'`.
+ *
+ * Read from the PROMPT, never from the schema: a `response_format` schema is compiled to a
+ * grammar and contributes zero prompt tokens, so a rule written into a `description` is
+ * declared, tested and invisible.
+ */
+describe('what the distiller is actually told', () => {
+  async function askText(): Promise<string> {
+    let body: any
+    const fake = await startFakeServer((b) => {
+      body = b
+      return { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{}' } }] }
+    })
+    try {
+      await distillContract(
+        new LlamaClient({ baseUrl: fake.url, model: 'test' }), [],
+        'make the invoice numbering gap-free, and add a test for it, and do not touch the schema',
+      )
+    } finally {
+      await fake.close()
+    }
+    const messages = (body?.messages ?? []) as { content?: string | null }[]
+    return messages.map((m) => m.content ?? '').join(' ')
+  }
+
+  test('it is told to keep a specific requirement VERBATIM', async () => {
+    expect(await askText()).toContain('VERBATIM')
+  })
+
+  test('it is told a rule stays a rule, with the failure named', async () => {
+    const sent = await askText()
+    // The field, and what goes in it.
+    expect(sent).toContain('rules —')
+    expect(sent).toMatch(/EVERY input/)
+    // The two ways a rule gets lost, both named so a reword cannot quietly drop one.
+    expect(sent).toMatch(/do not split it into the parts you would implement/)
+    expect(sent).toMatch(/is not a criterion/)
+  })
+
+  test('the rules field is declared, and ahead of criteria so it is generated first', () => {
+    // Property ORDER is enforced by the grammar -- verified against the live server when the
+    // acceptance schema was reordered -- so `rules` coming first is what makes the model
+    // isolate them before it writes the criteria list.
+    const shape = CONTRACT_SCHEMA as {
+      required: string[]
+      properties: Record<string, unknown>
+    }
+    expect(shape.required).toContain('rules')
+    const keys = Object.keys(shape.properties)
+    expect(keys.indexOf('rules')).toBeLessThan(keys.indexOf('criteria'))
   })
 })
 
