@@ -498,19 +498,26 @@ it demanded a specific breaking input and rejected honest work 3/3:
 
 ```
                                     before   first try   shipped
-broken work caught                    0/3        3/3        2/3
-honest work affirmed clean            n/a        0/3        3/3
+broken work caught                    0/3        3/3        2/3  then 5/5   -> 7/8
+honest work affirmed clean            n/a        0/3        3/3  then 4/5   -> 7/8
 ```
 
 The middle column is the trap: a gate nothing can pass is not a gate. The shipped wording
 accepts a run over inputs chosen to break the rule and does not insist on naming every one.
+
+Two separate invocations of the same shipped code, three runs then five, kept apart rather
+than pooled silently. Eight runs each way: the broken implementation is caught in seven, and
+honest work is affirmed clean in seven. The one honest miss left a single criterion unmet,
+which costs a fixer round rather than a wrong verdict.
 
 One more thing the measurement forced: the distiller's invented cases are not merely
 redundant. `slug("It's a test!!!") returns 'it-s-a-test'` is a criterion the audit will demand
 evidence for, and it holds the task open for work nobody asked for — so the ask now says that
 consequence out loud rather than only calling the cases untidy.
 
-**Still 2/3, not 3/3.** One run in three still affirms the broken implementation. That is a
-large improvement on 0/3 and on the live 10-of-10, and it is not a solved problem; the
-remaining miss is the audit trusting a green run over cases that do not exercise the rule.
+**Not solved, improved.** One run in eight still affirms the broken implementation, and one
+in eight holds up honest work for an extra round. Against a baseline of 0/3 caught and a live
+10-of-10 affirmation of a task that was not done, that is the trade worth having — but the
+remaining miss is real, and it is the audit trusting a green run over cases that do not
+exercise the rule.
 
