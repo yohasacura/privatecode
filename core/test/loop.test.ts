@@ -1330,3 +1330,63 @@ test('declining the same command twice still escalates, whatever whitespace it a
 
   expect(resultContents(rec)[1]).toMatch(/decline #2/)
 })
+
+test('a pre-write check that throws answers the call instead of orphaning it', async () => {
+  // `onBeforeTool` sits between the assistant tool-call message and the `role: 'tool'`
+  // reply that answers it, and it was awaited with no guard while the permission gate ten
+  // lines below wraps its host boundary for exactly this reason. The session wires it to
+  // the premise/understanding gates, whose `saveMeta` was a bare `writeFileSync` -- one
+  // OneDrive lock, AV hold or full disk and the throw escaped `runTurn`, `Session.send`
+  // rethrew it, `Host.send` never emitted `turn.done`, and the unanswered call was written
+  // to disk. It then survives resume: compaction deliberately leaves an unanswered call
+  // exactly as unanswered as it was, so every later request of the session is malformed.
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    return n === 1 ? toolCallResponse('ping', JSON.stringify({ value: 'x' })) : textResponse('done')
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url, {
+    onBeforeTool: async () => { throw new Error('EBUSY: settings.json is locked') },
+  })
+
+  const result = await agent.runTurn('go')
+
+  // The turn ends normally...
+  expect(result.stoppedBecause).toBe('done')
+  // ...the tool never ran...
+  expect(pingCalls).toBe(0)
+  // ...and every assistant tool_call has its matching tool reply, which is the invariant
+  // that keeps the session usable at all.
+  const messages = agent.transcript.messages()
+  const asked = messages
+    .filter((m) => m.role === 'assistant' && m.tool_calls !== undefined)
+    .flatMap((m) => m.tool_calls!.map((c) => c.id))
+  const answered = messages.filter((m) => m.role === 'tool').map((m) => m.tool_call_id!)
+  expect(asked.length).toBeGreaterThan(0)
+  expect([...asked].sort()).toEqual([...answered].sort())
+  // ...and the model is told why, in the vocabulary it already knows.
+  const reply = messages.find((m) => m.role === 'tool')!
+  expect(reply.content).toContain('Not run:')
+  expect(reply.content).toContain('EBUSY')
+})
+
+test('plan mode sends exactly the registry read-only schemas, and nothing else', async () => {
+  // Pins the rule the compaction prewarm has to mirror. `buildAgent` never passes
+  // `allowedTools`, so this narrowing happens HERE, inside Agent — which is why the prewarm
+  // (which sends the tool list itself) was warming a 21-schema prompt while the step that
+  // followed sent 11. The ~8.1k-char difference sits inside the system block at the very
+  // front of the prompt, so the prewarmed prefix matched nothing from token 0 and the full
+  // re-prefill was paid twice: once wasted, once on the user's clock.
+  let sentTools: { function: { name: string } }[] | undefined
+  const fake = await startFakeServer((body) => {
+    sentTools = (body as { tools?: { function: { name: string } }[] }).tools
+    return textResponse('ok')
+  })
+  stop = fake.close
+
+  await makeAgent(fake.url, { mode: 'plan' }).runTurn('have a look')
+
+  // `ping` declares readOnly, `boom` does not.
+  expect(sentTools?.map((t) => t.function.name)).toEqual(['ping'])
+})

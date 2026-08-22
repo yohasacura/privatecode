@@ -30,6 +30,28 @@ export interface ChatRequest {
   tools?: ToolSchema[]
   /** 'required' forces an action. See the global constraints. */
   toolChoice?: 'auto' | 'required' | 'none'
+  /**
+   * A JSON Schema the ANSWER must satisfy, enforced by the sampler rather than by the tool
+   * list — which is what makes a forced structured generation affordable.
+   *
+   * The harness's gates used to get their guarantee by sending a ONE-TOOL `tools` array
+   * with `toolChoice: 'required'`. Measured against this server (`spike/gate-cost-probe.mts`):
+   * the tool block renders at the very FRONT of the prompt, before the system message, so
+   * swapping the array moves the longest common prefix to zero and the whole conversation is
+   * re-read — 34,347 tokens, 61.9 s, on a mid-session context. Sending the session's own
+   * unchanged array and constraining the sampler instead leaves 88.2% of the prompt cached:
+   * 7.5 s for the same answer.
+   *
+   * A named `tool_choice` would have been the obvious alternative and does NOT work here:
+   * this build accepts `{type:'function',function:{name}}` and ignores it, calling whatever
+   * the conversation invites (5/5 in `spike/tool-choice-probe.mts`). A GBNF `grammar` is
+   * refused outright while `tools` is present ("Cannot use custom grammar constraints with
+   * tools"). `response_format` is the one mechanism that both constrains and leaves the
+   * prompt alone.
+   *
+   * The answer arrives as JSON in `message.content`, not as a tool call.
+   */
+  jsonSchema?: { name: string; schema: Record<string, unknown> }
   maxTokens: number
   /** Optional override; defaults to the fixed Qwen sampling profile. */
   sampling?: Sampling

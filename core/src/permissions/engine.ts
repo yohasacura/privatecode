@@ -48,6 +48,23 @@ export const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['edit_file', 'writ
 /** Tools whose grantable act is running something outside the workspace jail. */
 export const EXEC_TOOLS: ReadonlySet<string> = new Set(['run_command', 'background_task'])
 
+/**
+ * Tools whose grantable act changes state that is neither a workspace file nor a process:
+ * a live database.
+ *
+ * A fourth family for the same reason `isExternalTool` was a third one. `sql_deploy`
+ * belongs to none of the others — its key carries an action, not a command or paths — so
+ * `modeDefault` fell straight through to its allow tier and `sql_deploy({action:'publish'})`
+ * applied schema changes to a live database in normal AND auto-edit mode with no approval
+ * card, while the tool's own doc comment claimed it was "gated on every use in every other
+ * mode". DESIGN.md §6 records this exact fall-through as the defect that motivated
+ * `isExternalTool`; that fix covered MCP and the browser, and `sql_deploy` landed after it.
+ *
+ * Both actions are gated, `script` included: what a person can sensibly grant standing
+ * permission to is a rule they wrote themselves (`sql_deploy(script)`), not a default.
+ */
+export const DEPLOY_TOOLS: ReadonlySet<string> = new Set(['sql_deploy'])
+
 /** The single browser tool. Named here so the engine does not import the tool module. */
 export const BROWSER_TOOL = 'browser'
 
@@ -85,8 +102,8 @@ export function isExternalTool(name: string): boolean {
 function acceptsSpec(tool: string): boolean {
   // An MCP key carries none of the three: `mcp__x__y(anything)` is always a dead rule.
   if (tool.startsWith(MCP_TOOL_PREFIX)) return false
-  return FILE_WRITE_TOOLS.has(tool) || EXEC_TOOLS.has(tool) || tool === BROWSER_TOOL ||
-    tool === WEB_TOOL
+  return FILE_WRITE_TOOLS.has(tool) || EXEC_TOOLS.has(tool) || DEPLOY_TOOLS.has(tool) ||
+    tool === BROWSER_TOOL || tool === WEB_TOOL
 }
 
 /**
@@ -95,7 +112,7 @@ function acceptsSpec(tool: string): boolean {
  * unremarkable in `run_command(git clone https://...)` or `browser(https://x)`.
  */
 function specIsPathShaped(tool: string): boolean {
-  return !EXEC_TOOLS.has(tool) && !isExternalTool(tool)
+  return !EXEC_TOOLS.has(tool) && !DEPLOY_TOOLS.has(tool) && !isExternalTool(tool)
 }
 
 /**
@@ -167,12 +184,16 @@ function scopeLabel(scope: SettingsLayer['scope']): string {
 // workspace.ts) is the actual backstop against a tool reaching outside the workspace root
 // regardless of what this engine decides -- this check only hardens the path-bearing half
 // of the deny tier, not a substitute for the jail.
-/** `.privatecode`, `.privatecode/x`, `.PrivateCode\x` -- but not `privatecode.md` or
- * `src/.privatecoded/`. Case-insensitive because NTFS is. */
-const PRIVATE_DIR_PATH = /^\.privatecode([\\/]|$)/i
-
-/** The same segment anywhere in a path, for the case where canonicalization gave up (an
- * absolute path, say) and the only honest reading is "this mentions the directory". */
+/** `.privatecode/x`, `app/.privatecode/x`, `.PrivateCode\x` -- but not `privatecode.md`
+ * or `src/.privatecoded/`. Case-insensitive because NTFS is.
+ *
+ * The same segment anywhere in a path -- which is also the case where canonicalization
+ * gave up (an absolute path, say) and the only honest reading is "this mentions the
+ * directory".
+ *
+ * Anywhere rather than only at the start, because a multi-folder workspace makes the
+ * folder name mandatory: `app/.privatecode/settings.json` is the only spelling the model
+ * can write there, and the start-anchored test this replaces called that one allowed. */
 const ANY_PRIVATE_DIR_SEGMENT = /(^|[\\/])\.privatecode([\\/]|$)/i
 
 /**
@@ -191,7 +212,14 @@ function builtinPrivateDirDeny(key: PermissionKey): Decision | null {
     // escape attempt takes, so fall back to looking for the segment ANYWHERE in the raw
     // text. The cost of being wrong in this direction is one refused write.
     const canonical = canonicalizePath(p)
-    if (canonical !== null) return PRIVATE_DIR_PATH.test(canonical)
+    // ANY segment, not only a leading one. `PRIVATE_DIR_PATH` is start-anchored, and in a
+    // multi-folder workspace the folder name is MANDATORY -- so the only spelling the
+    // model can even write is `app/.privatecode/settings.json`, which canonicalizes
+    // perfectly well and then fails the anchored test. The deny simply did not exist
+    // there, and nothing else covers it: `.privatecode` is in no DENIED_SEGMENTS, so the
+    // jail lets it through, and the next session loads those `permissions`, `hooks` and
+    // `format` rules -- hooks and format commands both run with no permission gate at all.
+    if (canonical !== null) return ANY_PRIVATE_DIR_SEGMENT.test(canonical)
     return ANY_PRIVATE_DIR_SEGMENT.test(p)
   })
   if (!hit) return null
@@ -394,7 +422,8 @@ export class PermissionEngine {
         // `readOnly: false`, so `registry.readOnlyNames()` never offers one to a
         // plan-mode Agent and decide() is never reached for it. It fires only in the
         // desync case, which is precisely when something must.
-        if (FILE_WRITE_TOOLS.has(key.tool) || EXEC_TOOLS.has(key.tool) || isExternalTool(key.tool)) {
+        if (FILE_WRITE_TOOLS.has(key.tool) || EXEC_TOOLS.has(key.tool) ||
+            DEPLOY_TOOLS.has(key.tool) || isExternalTool(key.tool)) {
           return { verdict: 'deny', reason: 'plan mode is read-only', source: 'mode' }
         }
         return { verdict: 'allow', reason: 'plan mode', source: 'mode' }
@@ -404,12 +433,13 @@ export class PermissionEngine {
         if (FILE_WRITE_TOOLS.has(key.tool)) return { verdict: 'allow', reason: 'auto-edit mode', source: 'mode' }
         // Auto-edit auto-approves EDITS. Running a command and reaching a network service
         // are the two things it deliberately still asks about.
-        if (EXEC_TOOLS.has(key.tool) || isExternalTool(key.tool)) {
+        if (EXEC_TOOLS.has(key.tool) || DEPLOY_TOOLS.has(key.tool) || isExternalTool(key.tool)) {
           return { verdict: 'ask', reason: 'auto-edit mode', source: 'mode' }
         }
         return { verdict: 'allow', reason: 'auto-edit mode', source: 'mode' }
       case 'normal':
-        if (FILE_WRITE_TOOLS.has(key.tool) || EXEC_TOOLS.has(key.tool) || isExternalTool(key.tool)) {
+        if (FILE_WRITE_TOOLS.has(key.tool) || EXEC_TOOLS.has(key.tool) ||
+            DEPLOY_TOOLS.has(key.tool) || isExternalTool(key.tool)) {
           return { verdict: 'ask', reason: 'normal mode', source: 'mode' }
         }
         return { verdict: 'allow', reason: 'normal mode', source: 'mode' }

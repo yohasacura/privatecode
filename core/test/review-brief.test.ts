@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from 'vitest'
-import { buildReviewBrief, reviewVerdict, REVIEW_SYSTEM } from '../src/session/contract.js'
+import { afterEach, describe, expect, test } from 'vitest'
+import { buildReviewBrief, parseReview, reviewVerdict, REVIEW_SYSTEM } from '../src/session/contract.js'
 import { LlamaClient } from '../src/llama/client.js'
 import { startFakeServer } from './fake-server.js'
 
@@ -60,19 +60,15 @@ test('the verdict is forced over whatever the reader looked at', async () => {
     seen = body
     return {
       choices: [{
-        finish_reason: 'tool_calls',
+        finish_reason: 'stop',
         message: {
           role: 'assistant',
-          tool_calls: [{
-            id: 'c1',
-            type: 'function',
-            function: {
-              name: 'review_verdict',
-              arguments: JSON.stringify({
-                issues: [{ where: 'src/invoice.ts allocate()', what: 'the counter is read outside the transaction' }],
-              }),
-            },
-          }],
+          // Forced by `response_format`, so the verdict arrives as JSON content rather than
+          // as a tool call — which is what lets the request keep the reviewer's own tools
+          // array and stay a warm append. See `forced-json.ts`.
+          content: JSON.stringify({
+            issues: [{ where: 'src/invoice.ts allocate()', what: 'the counter is read outside the transaction' }],
+          }),
         },
       }],
     }
@@ -88,14 +84,49 @@ test('the verdict is forced over whatever the reader looked at', async () => {
   // the looking from the verdict is that the verdict sees the looking.
   expect(seen.messages).toHaveLength(3)
   expect(String(seen.messages[1].content)).toContain('I opened src/invoice.ts')
-  expect(seen.tool_choice).toBe('required')
+  // The shape is forced by a schema, not by narrowing the tool list.
+  expect(seen.response_format.json_schema.name).toBe('review')
 })
 
 test('a reader that answers in prose leaves the turn unreviewed, not broken', async () => {
+  // Unparseable content, not a missing tool call, now that the shape is schema-forced.
   const fake = await startFakeServer(() => ({
     choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'looks fine to me' } }],
   }))
   stop = fake.close
   const client = new LlamaClient({ baseUrl: fake.url, model: 'test' })
   expect(await reviewVerdict(client, [{ role: 'user', content: 'the brief' }])).toBeNull()
+})
+
+describe('the goal question is asked separately, and cannot be declined', () => {
+  test('goalMet:false becomes the first finding, so every reader treats it as a defect', () => {
+    const issues = parseReview(JSON.stringify({
+      goalMet: false,
+      goalGap: 'src/credit-note.ts still reads the counter unlocked, so numbers can still skip',
+      issues: [{ where: 'src/invoice.ts', what: 'the retry count is now unbounded' }],
+    }))
+    expect(issues).toHaveLength(2)
+    expect(issues![0]).toEqual({
+      where: 'the goal',
+      what: 'src/credit-note.ts still reads the counter unlocked, so numbers can still skip',
+    })
+    // ...and the ordinary findings follow it.
+    expect(issues![1]!.where).toBe('src/invoice.ts')
+  })
+
+  test('goalMet:false with no reason is still a finding, not silence', () => {
+    // The grammar cannot force the reason to be USEFUL, only present. A verdict that says
+    // the goal is unmet and names nothing is still a turn that must not end clean.
+    const issues = parseReview(JSON.stringify({ goalMet: false, goalGap: '  ', issues: [] }))
+    expect(issues).toHaveLength(1)
+    expect(issues![0]!.what).toMatch(/named no reason/)
+  })
+
+  test('goalMet:true leaves the list exactly as it was', () => {
+    expect(parseReview(JSON.stringify({ goalMet: true, goalGap: '', issues: [] }))).toEqual([])
+    const one = parseReview(JSON.stringify({
+      goalMet: true, goalGap: '', issues: [{ where: 'a.ts', what: 'off by one' }],
+    }))
+    expect(one).toEqual([{ where: 'a.ts', what: 'off by one' }])
+  })
 })

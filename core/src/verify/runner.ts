@@ -77,6 +77,11 @@ export async function runVerify(
  * reports, do not start anything new — since the turn is already over in every sense except
  * that the workspace is broken.
  */
+/** The two openers a verify result can start with. `replay.ts` reads them so a build log the
+ * harness injected is not replayed as something the person typed. */
+export const VERIFY_FAILED_PREFIX = 'Automatic verification failed.'
+export const VERIFY_PROBLEM_PREFIX = 'Automatic verification could not run:'
+
 export function verifyFailureMessage(spec: VerifySpec, outcome: VerifyOutcome): string {
   if (outcome.problem !== undefined) {
     return `Automatic verification could not run: \`${spec.command}\` — ${outcome.problem}. ` +

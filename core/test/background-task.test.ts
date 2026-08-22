@@ -213,3 +213,33 @@ describe('the registry does not grow forever', () => {
     expect(t.snapshot().length).toBeLessThanOrEqual(MAX_FINISHED + 1)
   })
 })
+
+it('ready_when is validated, so a condition that can never be true is refused', () => {
+  // `{}` is schema-valid and grammar-reachable, and `isReady` falls through all three
+  // branches to false — forever — while the tool's description promises "poll until it
+  // reports ready". DESIGN.md §4 requires semantic validation for exactly this shape.
+  const tool = backgroundTaskTool(new BackgroundTasks())
+  const empty = tool.validate({ action: 'start', command: 'npm run dev', ready_when: {} })
+  expect(empty.ok).toBe(false)
+  expect((empty as { error: string }).error).toMatch(/port, file, or log_contains/)
+
+  for (const bad of [
+    { port: 0 }, { port: 70_000 }, { port: 'eighty' },
+    { file: '   ' }, { file: 42 },
+    { log_contains: '' },
+  ]) {
+    const v = tool.validate({ action: 'start', command: 'npm run dev', ready_when: bad })
+    expect(v.ok, JSON.stringify(bad)).toBe(false)
+  }
+})
+
+it('and the usable conditions still pass, trimmed', () => {
+  const tool = backgroundTaskTool(new BackgroundTasks())
+  const v = tool.validate({
+    action: 'start', command: 'npm run dev',
+    ready_when: { port: 5173, file: '  dist/index.html  ', log_contains: ' ready in ' },
+  })
+  expect(v.ok).toBe(true)
+  expect((v as { args: { ready_when?: unknown } }).args.ready_when)
+    .toEqual({ port: 5173, file: 'dist/index.html', log_contains: 'ready in' })
+})

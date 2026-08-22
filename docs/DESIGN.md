@@ -22,6 +22,17 @@ facts about that model that a general-purpose tool cannot assume.
 
 ## 2. The measured numbers everything is derived from
 
+> **THE MODEL CHANGED on 2026-08-22.** The server now serves `KAT-Coder-V2.5-Dev`, which is
+> a Kwaipilot FINE-TUNE OF Qwen3.6-35B-A3B itself (same `qwen35moe` architecture, 41 blocks,
+> 256 experts, MTP, hybrid recurrent/attention — so everything this document reasons about
+> the base model, the three laws included, still holds), and every number here was re-measured against
+> it in **`docs/SPIKE-KAT-CODER.md`**. The headline changes: prefill is FASTER
+> (545 -> ~730 tok/s), generation is SLOWER (60.6 -> ~42 tok/s), so an output token now costs
+> **~17 input tokens rather than 13** — Law 2 is more true, not less. MTP draft acceptance
+> fell to 0.46-0.52. Context served is 196608. Where the table below and that document
+> disagree, that document is the measurement.
+
+
 Source: `Start-QwenServer.ps1`, `server.log`, and the GGUF analysis recorded in the
 AnyRunner notes. Re-measure only if the model or server config changes.
 
@@ -99,7 +110,7 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 | **argument validation** | every tool validates arguments **semantically**, not just against the schema, and re-asks on failure | empty-but-valid strings occur: 2 of 5 runs on a trivial file emitted an empty `search_text`, which passes JSON-schema validation and would silently no-op |
 | **sampling** | **temp 0.6 / top-p 0.95 / top-k 20 everywhere** — Qwen's own recommendation, never lowered for "structured" output. Discipline comes from the system prompt and from `tool_choice=required`, not from narrowing the distribution | **Reversed by the spike.** The original plan used temp 0.1 for tool emission on the theory that creativity hurts structure. Measured, low temperature is the *cause* of the dominant failure mode: at 0.1 the thinking length is bimodal — either ~1.2–1.7k tokens and success, or 3.2k+ and a truncated spiral, with nothing in between, in half the runs. At 0.6 the tail vanishes entirely (12 consecutive runs, 1192–1991 tokens, zero truncations). This is the classic repetition trap of near-greedy decoding that Qwen's model card warns about |
 | **step shape** | one call per step with `tool_choice=required` on any step that must end in an action; a forced continuation only as a fallback when `finish_reason == "length"` | the planned two-call-per-turn split was built to carry different temperatures. With one temperature everywhere it has no job left: in 6 of 6 runs the first call already produced the tool call and the second never fired |
-| **thinking** | always on; a fast-mode flag is reserved but not surfaced | user's call. Past *completed* turns drop their thinking (matches Qwen's template); thinking is preserved **within** the current turn across tool round-trips so the model doesn't forget its own goal |
+| **thinking** | always on; a fast-mode flag is reserved but not surfaced | user's call. Thinking is preserved **within** the current turn across tool round-trips so the model doesn't forget its own goal. **Corrected 2026-08-22:** this row used to add "past *completed* turns drop their thinking (matches Qwen's template)", and that is FALSE as the server is actually launched — `local-standard-server` passes `--reasoning-preserve`, so every finished turn keeps its full reasoning in the prompt forever. That is deliberate and load-bearing: it is what makes the prompt append-only across turn boundaries, measured at 100% cache reuse. The cost is that thinking accumulates and only compaction reclaims it — see `docs/SPIKE-KAT-CODER.md` §8 |
 | **context full** | auto-compaction, **pre-computed in the background at 80 % fill** | summarising runs on top of the already-warm cache: prefill ≈ 0, ~2500 generated tokens ≈ 80 s, then ~10 s for the new prefix. Generating it while the user reads or types hides the pause entirely |
 | **code search** | ripgrep + tree-sitter symbol map. **No embeddings.** | zero index to go stale, no second model, no VRAM contention. A stale semantic index is what makes competing tools confidently wrong about the user's own code |
 | **permissions** | full Claude Code-equivalent: `allow`/`ask`/`deny` with `deny` winning; pattern rules (`Bash(dotnet test:*)`, `Edit(src/**)`); three merged settings layers (user → project → local) | user requirement. A pending prompt costs **zero tokens** — the KV cache sits untouched while the user decides |

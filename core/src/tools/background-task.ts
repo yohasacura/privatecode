@@ -319,7 +319,49 @@ export function backgroundTaskTool(tasks: BackgroundTasks): Tool<BackgroundTaskA
       if (r.command !== undefined) args.command = r.command
       if (r.id !== undefined) args.id = r.id
       if (r.wait_seconds !== undefined) args.wait_seconds = r.wait_seconds
-      if (r.ready_when !== undefined) args.ready_when = r.ready_when as ReadyWhen
+      // VALIDATED, not cast. `ready_when: {}` is schema-valid and grammar-reachable, and
+      // `isReady` falls through all three branches to `false` — forever — while the tool's
+      // own description promises "poll until it reports ready". The whole reason this tool
+      // exists is DESIGN.md §4's rule that a process exit is evidence and not completion; a
+      // readiness condition that can never be true turns that into an endless poll. §4 also
+      // requires every tool to validate its arguments semantically rather than against the
+      // schema alone, which is exactly what this cast skipped.
+      if (r.ready_when !== undefined) {
+        const raw = r.ready_when as Record<string, unknown>
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+          return { ok: false, error: 'ready_when must be an object with one of: port, file, log_contains' }
+        }
+        const ready: ReadyWhen = {}
+        if (raw['port'] !== undefined) {
+          const port = raw['port']
+          if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65_535) {
+            return { ok: false, error: 'ready_when.port must be an integer from 1 to 65535' }
+          }
+          ready.port = port
+        }
+        if (raw['file'] !== undefined) {
+          const file = raw['file']
+          if (typeof file !== 'string' || file.trim() === '') {
+            return { ok: false, error: 'ready_when.file must be a non-empty path' }
+          }
+          ready.file = file.trim()
+        }
+        if (raw['log_contains'] !== undefined) {
+          const marker = raw['log_contains']
+          if (typeof marker !== 'string' || marker.trim() === '') {
+            return { ok: false, error: 'ready_when.log_contains must be a non-empty string' }
+          }
+          ready.log_contains = marker.trim()
+        }
+        if (ready.port === undefined && ready.file === undefined && ready.log_contains === undefined) {
+          return {
+            ok: false,
+            error: 'ready_when needs one usable condition: port, file, or log_contains. ' +
+              'Omit it entirely if the process has none.',
+          }
+        }
+        args.ready_when = ready
+      }
       return { ok: true, args }
     },
     permissionKey(args): PermissionKey {

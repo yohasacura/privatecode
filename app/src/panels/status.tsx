@@ -306,6 +306,13 @@ export function SettingsModal({
           problems: r.problems, items: r.items, workspaceRoot: root,
           workspaceName: r.workspaceName, folderCount: r.folderCount,
           contextUsed: r.contextUsed,
+          // The five other constructions of this object carry it and these two did
+          // not. `session-switched` writes compactAt unguarded, so an undefined here
+          // replaces a real trigger with the 80%-of-window fallback: on a 262k window
+          // the bar then warns at 188k instead of at the 140k trigger, and stays calm
+          // and grey for exactly the stretch you would consult it. The next step.done
+          // merges it back, i.e. it is wrong until the next turn answers.
+          ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
         })
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))

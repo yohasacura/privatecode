@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
@@ -24,7 +24,7 @@ interface StubOptions {
   onClose?: () => void
 }
 
-function ctxWith(stub: StubOptions = {}): ToolContext {
+function ctxWith(stub: StubOptions = {}, workspace?: Workspace): ToolContext {
   const page = {
     url: () => stub.url ?? 'http://localhost:5173/',
     navigate: async () => ({ timedOut: false }),
@@ -54,7 +54,7 @@ function ctxWith(stub: StubOptions = {}): ToolContext {
     open: async () => page as any,
     close: async () => { stub.onClose?.() },
   }
-  return { workspace: new Workspace(root), browser: browser as any }
+  return { workspace: workspace ?? new Workspace(root), browser: browser as any }
 }
 
 const valid = (raw: unknown): BrowserArgs => {
@@ -202,8 +202,33 @@ describe('execute', () => {
     const result = await browserTool.execute(valid({ action: 'screenshot' }), ctxWith())
     expect(result.ok).toBe(true)
     expect(result.content).toMatch(/You cannot read images/)
-    const relative = /(\.privatecode\/state\/browser\/shot-\d+\.png)/.exec(result.content!)![1]!
+    // Timestamped, not counted: a module-level counter restarts at 0 in every process, so
+    // the first screenshot of each session overwrote the previous session's shot-001.png.
+    const relative = /(\.privatecode\/state\/browser\/shot-[\d-]+\.png)/.exec(result.content!)![1]!
     expect(readFileSync(join(root, relative)).subarray(0, 4))
+      .toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  })
+
+  test('and its path is one the workspace can actually resolve, with folders attached', async () => {
+    // The path used to be assembled from constants, so in a multi-folder workspace — where
+    // the first segment must name a mount — it was not a path anything could resolve. The
+    // decisive victim was the UI: the transcript matches this string and calls fs.read on
+    // it, and the host's resolve threw, so the inline image (the only reason the PNG is
+    // written at all) rendered as an error.
+    const app = join(root, 'app')
+    const engine = join(root, 'engine')
+    mkdirSync(app, { recursive: true })
+    mkdirSync(engine, { recursive: true })
+    const multi = new Workspace([
+      { name: 'app', root: app, access: 'write', primary: true },
+      { name: 'engine', root: engine, access: 'write', primary: false },
+    ])
+    const result = await browserTool.execute(valid({ action: 'screenshot' }), ctxWith({}, multi))
+    const relative = /(app\/[^\s]+\.png)/.exec(result.content!)![1]!
+    // The model's own tools would accept it...
+    expect(() => multi.resolve(relative)).not.toThrow()
+    // ...and it is the file that was written.
+    expect(readFileSync(multi.resolve(relative)).subarray(0, 4))
       .toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
   })
 

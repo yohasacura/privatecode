@@ -315,24 +315,21 @@ test('prompt.improve returns the draft suggestions, and touches nothing', async 
   // rendered back as prompt text — and the session's meta must stay exactly as it was,
   // because the draft may never be sent.
   const fake = await makeServer((body: any) => {
-    // The distill request is non-streaming with a forced tool; anything else here fails loudly.
-    if (body.tool_choice !== 'required') return new RawResponse(500, 'unexpected request', 'text/plain')
+    // A forced `suggestions` schema, non-streaming; anything else here fails loudly. The
+    // shape is forced by `response_format` now, not by narrowing the tool list, so the
+    // request keeps the session's own tools and the answer arrives as JSON content.
+    const schema = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
+    if (schema !== 'suggestions') return new RawResponse(500, 'unexpected request', 'text/plain')
     return {
       choices: [{
-        finish_reason: 'tool_calls',
+        finish_reason: 'stop',
         message: {
-          role: 'assistant', content: null,
-          tool_calls: [{
-            id: 'c1', type: 'function',
-            function: {
-              name: 'suggest_improvements',
-              arguments: JSON.stringify({
-                criteria: ['tests/greet.test.js проходит', 'экспорт обновлён'],
-                constraints: ['не менять greet()'],
-                questions: ['Какие файлы затронуть?'],
-              }),
-            },
-          }],
+          role: 'assistant',
+          content: JSON.stringify({
+            criteria: ['tests/greet.test.js проходит', 'экспорт обновлён'],
+            constraints: ['не менять greet()'],
+            questions: ['Какие файлы затронуть?'],
+          }),
         },
       }],
       usage: { completion_tokens: 60 },
@@ -360,22 +357,17 @@ test('prompt.expand returns the rewritten brief, and touches nothing', async () 
   // The expander behind the composer's preview card: a rough command grown into a
   // detailed brief. Same preview discipline as prompt.improve above.
   const fake = await makeServer((body: any) => {
-    if (body.tool_choice !== 'required') return new RawResponse(500, 'unexpected request', 'text/plain')
+    const schema = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
+    if (schema !== 'expanded') return new RawResponse(500, 'unexpected request', 'text/plain')
     return {
       choices: [{
-        finish_reason: 'tool_calls',
+        finish_reason: 'stop',
         message: {
-          role: 'assistant', content: null,
-          tool_calls: [{
-            id: 'c1', type: 'function',
-            function: {
-              name: 'expand_prompt',
-              arguments: JSON.stringify({
-                expanded: 'Сделай красную кнопку: возьми --danger из src/App.css, ' +
-                  'за основу — Button из components/button.tsx, размеры как у соседних.',
-              }),
-            },
-          }],
+          role: 'assistant',
+          content: JSON.stringify({
+            expanded: 'Сделай красную кнопку: возьми --danger из src/App.css, ' +
+              'за основу — Button из components/button.tsx, размеры как у соседних.',
+          }),
         },
       }],
       usage: { completion_tokens: 80 },
@@ -889,6 +881,19 @@ const TASK_TEXT =
   'Добавь tests/greet.test.js с тестами на оба случая и обнови экспорты модуля. Все ' +
   'тесты должны проходить, ничего не ломай.'
 
+/** The answer shape a `response_format`-constrained gate returns: JSON in `content`, no
+ * tool call. The gates that ride the live transcript force their shape this way now, so the
+ * request can keep the session's own tools array and stay a warm append (forced-json.ts). */
+function forcedJsonAnswer(value: unknown) {
+  return {
+    choices: [{
+      message: { role: 'assistant', content: JSON.stringify(value) },
+      finish_reason: 'stop',
+    }],
+    usage: { prompt_tokens: 400, completion_tokens: 50 },
+  }
+}
+
 function forcedCall(name: string, args: unknown) {
   return {
     choices: [{
@@ -907,9 +912,10 @@ test('a small task-shaped send seeds the plan from the contract criteria, for fr
   const fake = await makeServer((body, streaming) => {
     if (streaming) return textSSE('Первый шаг сделан, продолжу.')
     const tool = (body.tools ?? [])[0]?.function?.name
-    if (tool === 'plan_todos') sawPlanTodos = true
-    if (tool === 'set_contract') {
-      return forcedCall('set_contract', {
+    const schema = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
+    if (schema === 'plan') sawPlanTodos = true
+    if (schema === 'contract') {
+      return forcedJsonAnswer({
         goal: 'greetMany существует и покрыта',
         criteria: ['функция greetMany добавлена', 'тесты в tests/greet.test.js проходят'],
         constraints: [],
@@ -947,16 +953,17 @@ test('a big task earns one forced decomposition, and its steps become the plan',
   const fake = await makeServer((body, streaming) => {
     if (streaming) return textSSE('Начал, продолжу дальше.')
     const tool = (body.tools ?? [])[0]?.function?.name
-    if (tool === 'set_contract') {
-      return forcedCall('set_contract', {
+    const schema = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
+    if (schema === 'contract') {
+      return forcedJsonAnswer({
         goal: 'вся фича собрана',
         criteria: ['критерий 1', 'критерий 2', 'критерий 3', 'критерий 4', 'критерий 5'],
         constraints: [],
         interfaces: 'src/a.js экспортирует f; src/b.js импортирует f',
       })
     }
-    if (tool === 'plan_todos') {
-      return forcedCall('plan_todos', {
+    if (schema === 'plan') {
+      return forcedJsonAnswer({
         items: [
           { title: 'Добавить f в a.js', done_when: 'f экспортируется', files: ['src/a.js'] },
           { title: 'Подключить f в b.js', done_when: 'b.js импортирует f', files: ['src/b.js'] },
@@ -989,8 +996,9 @@ test('a stretch of writes with the plan untouched earns one upkeep order', async
   const fake = await makeServer((body, streaming) => {
     if (!streaming) {
       const tool = (body.tools ?? [])[0]?.function?.name
-      if (tool === 'set_contract') {
-        return forcedCall('set_contract', {
+      const schema = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
+      if (schema === 'contract') {
+        return forcedJsonAnswer({
           goal: 'все файлы обновлены',
           criteria: ['a.txt записан', 'b.txt записан'],
           constraints: [],
@@ -1133,7 +1141,7 @@ const REPRO_TASK =
   'fails before the fix and passes after it, then run the suite. Do not change the public ' +
   'signature of the parse function while you are in there.'
 
-test('a paraphrased audit gap leaves its plan item open instead of ticking it', async () => {
+test('an audit gap leaves its plan item open while the affirmed one is ticked', async () => {
   // The first is the harness's own bugfix criterion, verbatim: ~130 characters with two em
   // dashes, which the model has never once echoed back byte for byte.
   const criteria = [
@@ -1144,24 +1152,28 @@ test('a paraphrased audit gap leaves its plan item open instead of ticking it', 
   const fake = await makeServer((body, streaming) => {
     if (!streaming) {
       const tool = (body.tools ?? [])[0]?.function?.name
-      if (tool === 'set_contract') {
-        return forcedCall('set_contract', {
+      const schema = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
+      if (schema === 'contract') {
+        return forcedJsonAnswer({
           goal: 'the crash is fixed and covered', criteria, constraints: [],
         })
       }
-      if (tool === 'report_acceptance') {
-        return forcedCall('report_acceptance', {
+      if (schema === 'acceptance') {
+        return forcedJsonAnswer({
+          // BY NUMBER. This test used to send a restatement ("Reproduction test failed
+          // before and passes after.") because that is all the model ever promised when it
+          // was asked to retype each criterion, and the whole paraphrase-matching apparatus
+          // existed to place it. The audit answers with the index now, so the restatement
+          // channel — and with it the phantom gap it could produce — does not exist. The
+          // guarantee under test is unchanged: the gap the audit reported stays open, the
+          // criterion it affirmed is ticked.
           items: [
-            // A restatement, not a quotation — which is all the model ever promises.
-            {
-              criterion: 'Reproduction test failed before and passes after.',
-              met: false, evidence: 'no red run is in the conversation',
-            },
-            { criterion: criteria[1], met: true, evidence: 'ran it on empty input' },
+            { index: 1, met: false, evidence: 'no red run is in the conversation' },
+            { index: 2, met: true, evidence: 'ran it on empty input' },
           ],
         })
       }
-      return new RawResponse(500, `unexpected non-streaming call: ${tool}`, 'text/plain')
+      return new RawResponse(500, `unexpected non-streaming call: ${tool ?? schema}`, 'text/plain')
     }
     const lastUser = (body.messages as { role: string; content?: string | null }[])
       .filter((m) => m.role === 'user').at(-1)

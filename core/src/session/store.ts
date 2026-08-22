@@ -231,10 +231,41 @@ export class SessionStore {
     return { meta, transcript, compaction: live.marker }
   }
 
+  /**
+   * Best-effort, like `TodoStore.set` and for the same reason: what this session RUNS on is
+   * the in-memory `meta`, and the file is how the next one starts.
+   *
+   * It used to throw. Several callers sit on paths where a throw is far more expensive than
+   * a stale file — the premise and understanding gates call it from inside `onBeforeTool`,
+   * which runs between an assistant tool-call message and the reply that answers it, so a
+   * OneDrive lock, an AV hold or a full disk turned a lost checkpoint into an unanswered
+   * call written to disk, poisoning every later request of the session. Losing the write
+   * costs at most one re-run of a check on resume.
+   */
   saveMeta(meta: SessionMeta): void {
-    this.ensureDir()
-    writeFileSync(this.metaPath(meta.id), JSON.stringify(meta, null, 2))
+    try {
+      this.ensureDir()
+      writeFileSync(this.metaPath(meta.id), JSON.stringify(meta, null, 2))
+      this.lastWriteError = null
+    } catch (e) {
+      // Swallowed, and REMEMBERED. Swallowing is right — see above — but it used to lose the
+      // signal as well as the write, and `list()` keys entirely off `*.meta.json`, so a
+      // session whose very first save failed is a session that never appears in the rail at
+      // all. It normally self-heals on one of the ~8 saves a turn makes; when it does not,
+      // this is the only place that knows.
+      this.lastWriteError = (e as Error).message
+    }
   }
+
+  /**
+   * The last `saveMeta` failure, or null once one has succeeded.
+   *
+   * Read by whoever wants to tell the user their sessions are not being written down. Kept
+   * as state rather than thrown because the alternative — failing the turn over a checkpoint
+   * file — costs more than it saves; `appendMessages` still throws, so the transcript itself
+   * is never silently lost.
+   */
+  lastWriteError: string | null = null
 
   /**
    * Appends new messages as JSONL lines, one `JSON.stringify`'d message per line. A call

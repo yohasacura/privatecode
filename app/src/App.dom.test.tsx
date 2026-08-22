@@ -197,6 +197,31 @@ test('Escape in the Switch-workspace dialog closes it without aborting the turn'
   expect(abortsSeen).toBe(0)
 })
 
+test('Ctrl+K over the Switch-workspace dialog does not open the palette under it', async () => {
+  // Both surfaces are .modal-overlay at the same z-index and the palette renders FIRST, so
+  // the switcher paints over a live palette whose autofocused input owns every keystroke;
+  // Enter then fires whatever it had highlighted. Escape cannot untangle it either -- the
+  // palette declines Escape while a .modal is up, so Escape closes the switcher and leaves
+  // the palette behind. App documented this exact failure for Settings and guarded only that.
+  const swap = document.querySelector<HTMLElement>('[title^="Switch workspace"]')!
+  swap.click()
+  await settle()
+  const before = document.querySelectorAll('.modal-overlay').length
+  expect(before).toBe(1)
+
+  window.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'k', ctrlKey: true, bubbles: true, cancelable: true,
+  }))
+  await settle()
+
+  expect(document.querySelectorAll('.modal-overlay').length).toBe(before)
+  expect(document.querySelector('.palette')).toBeNull()
+
+  pressEscape()
+  await settle()
+  expect(document.querySelector('.modal-overlay')).toBeNull()
+})
+
 test('a reopen after a folder edit uses the server URL the HOST has, not the one from launch', async () => {
   // Settings applies a new URL with its own init + config.set and never tells App. Before
   // the fix, the next folder edit re-opened with App's launch-time copy and persisted it

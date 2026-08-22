@@ -74,7 +74,20 @@ async function paged(ctx: ToolContext, prefix: string, full: string): Promise<To
   return { ok: true, content, display: full }
 }
 
-let shotCounter = 0
+/**
+ * Screenshot names are timestamped, not counted.
+ *
+ * A module-level counter starts at 0 in every process, so the first screenshot of every
+ * session overwrote `shot-001.png` from the last one — and the file is kept precisely so a
+ * person can go back and look at it. Same shape as `output-log.ts`'s log names, and sortable
+ * in a directory listing for the same reason.
+ */
+function shotName(now: Date): string {
+  const p = (n: number, w = 2): string => String(n).padStart(w, '0')
+  return `shot-${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}` +
+    `-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}` +
+    `-${p(now.getMilliseconds(), 3)}.png`
+}
 
 export const browserTool: Tool<BrowserArgs> = {
   name: 'browser',
@@ -324,9 +337,16 @@ async function run(args: BrowserArgs, page: Page, ctx: ToolContext): Promise<Too
     case 'screenshot': {
       const png = await page.screenshot()
       const dir = ensureStateDir(ctx.workspace.root, SHOT_DIR)
-      const name = `shot-${String(++shotCounter).padStart(3, '0')}.png`
-      await writeFile(join(dir, name), png)
-      const relative = `${PRIVATE_DIR}/${STATE_DIR}/${SHOT_DIR}/${name}`
+      const abs = join(dir, shotName(new Date()))
+      await writeFile(abs, png)
+      // Derived from the file, NOT assembled from the constants. In a multi-folder workspace
+      // the first segment of a path must name a mount, so the assembled
+      // `.privatecode/state/browser/...` form is not a path this workspace can resolve at
+      // all — and the decisive victim is the UI's own render: the transcript matches this
+      // string, calls fs.read on it, and the host's `resolve` throws, so the inline image,
+      // the only reason the PNG is written, comes out as an error. Exactly the bug
+      // `output-log.ts` records fixing for `spillToLog`.
+      const relative = ctx.workspace.display(abs)
       return {
         ok: true,
         // Stated flatly, because the alternative is the model spending a step trying to

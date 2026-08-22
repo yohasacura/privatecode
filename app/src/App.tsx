@@ -57,6 +57,11 @@ type Phase =
    * out, and a restart. */
   | { kind: 'unreachable'; reason: string; stderr: string[] }
 
+/** Tools whose result means the workspace on disk may have moved. See `workspaceMutations`. */
+const MUTATING_TOOLS: ReadonlySet<string> = new Set([
+  'edit_file', 'write_file', 'move_file', 'delete_file', 'run_command', 'background_task',
+])
+
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:8080'
 /** How long the first request may take before the agent counts as unreachable. Generous:
  * on a cold start Node has to load a 600 kB bundle and the process may be competing with
@@ -219,6 +224,19 @@ export default function App() {
   // key, and they cost a loop instead of a JSON.parse per write call per token.
   const resolvedTools = chatState.items.reduce(
     (n, i) => n + (i.kind === 'tool' && i.result !== undefined ? 1 : 0), 0)
+  /**
+   * The same signal, narrowed to tools that can actually have CHANGED the workspace.
+   *
+   * `resolvedTools` counts every resolved call, reads and `todo_write` included, and it was
+   * driving the Workspace tab's reload key — so a turn that only read files re-ran
+   * `describeFolder` plus `discoverRepos` for every mount on every step: git process spawns
+   * and two uncached recursive directory walks, on the same laptop running the agent's own
+   * tools, to refresh a listing that cannot have moved. The file tree next door already does
+   * the filtered version of this. `run_command` and `background_task` are in the list because
+   * a build or a script genuinely does change the tree; nothing else here can.
+   */
+  const workspaceMutations = chatState.items.reduce(
+    (n, i) => n + (i.kind === 'tool' && i.result !== undefined && MUTATING_TOOLS.has(i.name) ? 1 : 0), 0)
   const changes = useMemo(
     () => collectChanges(chatState.items),
     // The session id is part of the key: a switch REPLACES items, and if the old and new
@@ -464,18 +482,27 @@ export default function App() {
     wasRunning.current = chatState.turnRunning
   }, [chatState.turnRunning])
 
-  // A ref, so the handler can see the CURRENT settings state from its []-deps closure:
+  // A ref, so the handler can see the CURRENT dialog state from its []-deps closure:
   // Ctrl+K under an open Settings dialog opened the palette invisibly BENEATH the settings
   // overlay (both are .modal-overlay; Settings mounts later and paints on top) and its
   // autofocused input silently stole every subsequent keystroke from the settings form.
-  const settingsOpenRef = useRef(settingsOpen)
-  settingsOpenRef.current = settingsOpen
+  //
+  // The Switch-workspace dialog is the SAME surface and was not covered: it is also a
+  // .modal-overlay at the same z-index, and the palette renders first, so the switcher
+  // paints over a live palette whose autofocused input owns the keyboard. Enter then fires
+  // whatever the palette had highlighted. Escape cannot even untangle it — the palette
+  // declines Escape while a .modal is up, so Escape closes the switcher and leaves the
+  // palette behind. Tracked as one "is a dialog up" fact rather than two flags, so the next
+  // modal added does not have to remember to come here.
+  const modalOpen = settingsOpen || switchOpen
+  const anyModalOpenRef = useRef(modalOpen)
+  anyModalOpenRef.current = modalOpen
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       if (!e.ctrlKey || e.altKey) return
       if (e.key === 'b' || e.key === 'B') { e.preventDefault(); setRailOpen((v) => !v) }
       if (e.key === 'j' || e.key === 'J') { e.preventDefault(); setContextOpen((v) => !v) }
-      if ((e.key === 'k' || e.key === 'K') && !settingsOpenRef.current) {
+      if ((e.key === 'k' || e.key === 'K') && !anyModalOpenRef.current) {
         e.preventDefault()
         setPaletteOpen((v) => !v)
       }
@@ -735,7 +762,7 @@ export default function App() {
                   // Escape-to-abort is on `window` too, so a dialog this flag forgets is a
                   // dialog you cannot dismiss without killing the running turn. The switcher
                   // stops its own Escape as well; this is the guard the composer documents.
-                  modalOpen={settingsOpen || switchOpen}
+                  modalOpen={modalOpen}
                   onAdoptViewed={adoptViewed}
                 />
               </div>
@@ -768,7 +795,7 @@ export default function App() {
                     client={client}
                     items={chatState.items}
                     changes={changes}
-                    reloadKey={resolvedTools + reverts}
+                    reloadKey={workspaceMutations + reverts}
                     onOpenFile={openTab}
                     hasSession={chatState.session !== null}
                     workspaceRoot={workspaceRoot}

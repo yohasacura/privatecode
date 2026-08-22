@@ -139,6 +139,12 @@ export class LlamaClient {
     }
     if (req.tools?.length) payload.tools = req.tools
     if (req.toolChoice) payload.tool_choice = req.toolChoice
+    if (req.jsonSchema) {
+      payload.response_format = {
+        type: 'json_schema',
+        json_schema: { name: req.jsonSchema.name, strict: true, schema: req.jsonSchema.schema },
+      }
+    }
     // `chat_template_kwargs` and NOT `reasoning_budget`: both are accepted by the server and
     // only the first one works. Measured — `reasoning_budget: 0` came back with 3554
     // characters of thinking, i.e. silently ignored.
@@ -215,6 +221,12 @@ export class LlamaClient {
     }
     if (req.tools?.length) payload.tools = req.tools
     if (req.toolChoice) payload.tool_choice = req.toolChoice
+    if (req.jsonSchema) {
+      payload.response_format = {
+        type: 'json_schema',
+        json_schema: { name: req.jsonSchema.name, strict: true, schema: req.jsonSchema.schema },
+      }
+    }
     // The same opt-out `chat()` sends, and it was missing here — latent until compaction
     // started streaming, because until then every `disableThinking` caller (the distiller,
     // the acceptance audit, the compaction summary) used the non-streaming path. A streamed

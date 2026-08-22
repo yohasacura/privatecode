@@ -132,11 +132,27 @@ export function createHookRunner(hooks: HookSpec[], workspace: Workspace): HookR
           const clipped = out.length > MAX_OUTPUT_CHARS
             ? `${out.slice(0, MAX_OUTPUT_CHARS)}\n... (hook output clipped)`
             : out
+          // CONSECUTIVE failures, and a success clears the count. `MAX_FAILURES`'s own
+          // comment says the intent is that a broken command must cost time once — but a
+          // hook whose whole job is to report problems (`npm run lint`, a type check) exits
+          // non-zero legitimately, and counting those cumulatively switched it off for the
+          // rest of the session after the third red file. Resetting on success keeps the
+          // guard pointed at what it was written for: a command that never works at all.
           if (run.exitCode !== 0) hook.failures++
+          else hook.failures = 0
           notes.push(
             `[hook ${hook.raw}] ${hook.command} exited ${run.exitCode ?? '?'}` +
             `${clipped === '' ? '' : `:\n${clipped}`}`,
           )
+          // And it SAYS so when it trips. It used to fall silent: the `continue` at the top
+          // skips the hook on every later tool call with nothing in the transcript admitting
+          // it, so a check the user believes is guarding their edits has quietly stopped.
+          if (hook.failures === MAX_FAILURES) {
+            notes.push(
+              `[hook ${hook.raw}] failed ${MAX_FAILURES} times in a row and will not be run ` +
+              'again this session.',
+            )
+          }
         } catch (e) {
           hook.failures++
           notes.push(`[hook ${hook.raw}] could not run: ${(e as Error).message}`)

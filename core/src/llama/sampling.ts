@@ -1,18 +1,32 @@
 import type { Sampling } from './types.js'
 
 /**
- * Qwen3.6's documented sampling profile. Do not deviate.
+ * The sampling profile, and it survived a change of model.
  *
- * Measured on this exact model and server (docs/SPIKE-TEMPERATURE.md): holding task,
- * prompt, tool_choice and max_tokens fixed and varying only temperature,
+ * Originally Qwen3.6's documented profile, measured on that model and server
+ * (docs/SPIKE-TEMPERATURE.md): holding task, prompt, tool_choice and max_tokens fixed and
+ * varying only temperature,
  *
  *   temp 0.1 -> 3 of 6 runs usable, thinking 1149..3382 tokens, worst step 73 s
  *   temp 0.6 -> 6 of 6 runs usable, thinking 1192..1991 tokens, worst step 47 s
  *
- * At low temperature the thinking length is bimodal: either it commits in ~1.3k tokens
- * or it spirals past 3.2k and emits nothing. Lowering temperature to make structured
- * output "more reliable" is a habit from cloud APIs where it is harmless; here it is
- * the direct cause of the dominant failure mode.
+ * At low temperature the thinking length was bimodal: either it committed in ~1.3k tokens
+ * or it spiralled past 3.2k and emitted nothing. Lowering temperature to make structured
+ * output "more reliable" is a habit from cloud APIs where it is harmless; there it was the
+ * direct cause of the dominant failure mode.
+ *
+ * RE-MEASURED 2026-08-22 against KAT-Coder-V2.5-Dev, which the server now serves and whose
+ * own GGUF metadata asks for temperature 1.0 (its top_k 20 and top_p 0.95 agree with what is
+ * sent). Same method, n=6 per arm (`spike/temperature-kat-probe.mts`,
+ * `docs/SPIKE-KAT-CODER.md`):
+ *
+ *   temp 0.6 -> 6 of 6 usable, wall median 5.6 s, thinking median 58 tokens, 0 truncated
+ *   temp 1.0 -> 6 of 6 usable, wall median 5.9 s, thinking median 56 tokens, 0 truncated
+ *
+ * No difference, so the value STAYS — a number that is measured to be equivalent is not
+ * worth changing. What did change is why it matters: this model thinks ~58 tokens where
+ * Qwen3.6 thought 1192-1991, and the runaway this pin defends against did not appear in
+ * either arm. The pin is no longer load-bearing; it is simply doing no harm.
  */
 export const QWEN_SAMPLING: Sampling = Object.freeze({
   temperature: 0.6,

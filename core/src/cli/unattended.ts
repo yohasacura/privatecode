@@ -201,6 +201,15 @@ export async function runUnattended(opts: UnattendedOptions): Promise<RunSummary
       // left criteria standing on is exactly the confident-but-unmet ending this whole
       // mechanism exists to stop.
       const unmet = opts.session.lastAcceptanceUnmet?.() ?? 0
+      // `null` is the audit having been attempted and failed — a transport error, a
+      // truncated generation, an answer that did not parse. That is not permission to
+      // finish: it is the one case where nothing checked the work at all, and it used to be
+      // indistinguishable from a clean audit because both arrived as the number 0.
+      if (unmet === null) {
+        return finish('blocked',
+          'the agent reported the work finished, but the contract audit could not be run, ' +
+          'so nothing has checked it')
+      }
       if (unmet === 0) return finish('done', 'the agent reported the work finished')
       return finish('blocked',
         `the agent reported the work finished, but ${unmet} contract ` +

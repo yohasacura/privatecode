@@ -2,7 +2,12 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { ChatMessage } from '../llama/types.js'
 import { statePath } from '../private-dir.js'
-import { COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX } from '../session/compaction.js'
+import {
+  COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, OVERFLOW_RETRY_NOTE,
+} from '../session/compaction.js'
+import { ACCEPTANCE_FIXER_PREFIX, REVIEW_FIXER_PREFIX } from '../session/contract.js'
+import { PREMISE_FAILURE_PREFIX } from '../session/premises.js'
+import { VERIFY_FAILED_PREFIX, VERIFY_PROBLEM_PREFIX } from '../verify/runner.js'
 import type { TranscriptEntry } from './protocol.js'
 
 /**
@@ -152,7 +157,34 @@ function isCompactionAck(message: ChatMessage): boolean {
  * wrong in that direction shows a note as a message, which is where we started; being wrong
  * the other way would hide something a person wrote, which is not recoverable by scrolling.
  */
+/**
+ * The harness messages that do NOT open with a bracket, listed because they exist.
+ *
+ * The bracket convention covers the notes; it never covered the FIXER messages, which are
+ * the harness talking just as much: the acceptance gate's list of unmet criteria, the diff
+ * reviewer's findings, a failed premise check, a build log from the verify runner, and the
+ * post-compaction retry note. All five open with plain prose, so on resume they rendered in
+ * the `›` caret row as things the PERSON said — `conversationAsMarkdown` exported them under
+ * "## You", and session search returned them as what a person had asked for. The session's
+ * own plan-focus note IS correctly bracketed, which is what shows the convention was meant
+ * to cover these too.
+ *
+ * Matched on an exported constant rather than a copied string, so a reworded message cannot
+ * quietly fall out of the list.
+ */
+const HARNESS_OPENERS: readonly string[] = [
+  ACCEPTANCE_FIXER_PREFIX,
+  REVIEW_FIXER_PREFIX,
+  PREMISE_FAILURE_PREFIX,
+  VERIFY_FAILED_PREFIX,
+  VERIFY_PROBLEM_PREFIX,
+  OVERFLOW_RETRY_NOTE,
+]
+
 export function splitUserMessage(content: string): { kind: 'user'; text: string; harness?: true } {
+  if (HARNESS_OPENERS.some((opener) => content.startsWith(opener))) {
+    return { kind: 'user', text: content, harness: true }
+  }
   if (!content.startsWith('[')) return { kind: 'user', text: content }
   let depth = 0
   let end = -1
@@ -165,9 +197,27 @@ export function splitUserMessage(content: string): { kind: 'user'; text: string;
     }
   }
   if (end === -1) return { kind: 'user', text: content }
-  const rest = content.slice(end + 1).trim()
-  // Nothing after the bracket: the message IS the note.
-  if (rest === '') return { kind: 'user', text: content, harness: true }
+  const after = content.slice(end + 1)
+  const rest = after.trim()
+  // Nothing after the bracket: the message IS the note -- as long as the bracket holds a
+  // SENTENCE. Every note the harness writes is one ("[Plan focus — step 2 of 5: ...]",
+  // "[Context is about 80% full...]", "[dotnet build: ok, 3.2s]"), and a lone bracketed
+  // TOKEN is the shape of something a person types: `[HttpGet]`, `[Fact]`, `[TODO]`. Those
+  // were being dimmed and marked as the harness talking.
+  if (rest === '') {
+    const inside = content.slice(1, end)
+    return /\s/.test(inside.trim())
+      ? { kind: 'user', text: content, harness: true }
+      : { kind: 'user', text: content }
+  }
+  // A note PREFIXED to a real message is separated by a blank line, because the one site
+  // that produces this shape writes `[${renderContract(contract)}]\n\n${userText}`.
+  // Requiring that separator is what makes the test positive instead of "it starts with a
+  // bracket": `[HttpGet] is missing on the controller` and
+  // `[2026-08-21 10:33:02] ERROR NullReferenceException` are ordinary things to type, and
+  // both were silently losing their first token on every resume -- in the transcript, in
+  // the row's title, and in the markdown export. Live was fine, so it only appeared later.
+  if (!/^\r?\n\r?\n/.test(after)) return { kind: 'user', text: content }
   return { kind: 'user', text: rest }
 }
 

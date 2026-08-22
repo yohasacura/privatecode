@@ -64,3 +64,83 @@ test('a bracket that does not open at the very first character is not a note', (
   const text = 'quick one [see below]'
   expect(splitUserMessage(text)).toEqual({ kind: 'user', text })
 })
+
+/**
+ * The shapes a person actually types that OPEN with a bracket.
+ *
+ * The test was "starts with `[`, find the matching `]`, keep the rest" — with no positive
+ * test for a harness note, no length bound and no separator requirement. So the first
+ * bracketed token of a log line, an attribute or a header was deleted from the row, from
+ * its title and from the markdown export, on every resume. Live rendering was fine, which
+ * is why it stayed hidden: it only appeared in a session you came back to.
+ */
+test('a log line keeps its timestamp', () => {
+  const line = '[2026-08-21 10:33:02] ERROR NullReferenceException in InvoiceService.allocate'
+  expect(splitUserMessage(line)).toEqual({ kind: 'user', text: line })
+})
+
+test('an attribute keeps its brackets', () => {
+  const msg = '[HttpGet] is missing on the controller, that is why the route 404s'
+  expect(splitUserMessage(msg)).toEqual({ kind: 'user', text: msg })
+})
+
+test('a lone bracketed token is the person, not the harness', () => {
+  // Every note the harness writes is a sentence; a bare token is what a person types.
+  expect(splitUserMessage('[Fact]')).toEqual({ kind: 'user', text: '[Fact]' })
+  expect(splitUserMessage('[TODO]')).toEqual({ kind: 'user', text: '[TODO]' })
+})
+
+test('and the contract preamble is still split off, because it brings a blank line', () => {
+  const msg = '[Task contract\nGoal: make writes atomic\nDone when: 1. the suite passes]\n\nplease do this'
+  expect(splitUserMessage(msg)).toEqual({ kind: 'user', text: 'please do this' })
+})
+
+test('a whole-message harness note is still marked as one', () => {
+  const note = '[Context is about 80% full. When it fills, the earlier part will be summarised.]'
+  expect(splitUserMessage(note)).toEqual({ kind: 'user', text: note, harness: true })
+})
+
+/**
+ * The harness messages that do NOT open with a bracket.
+ *
+ * The bracket convention covers the notes and never covered the FIXER messages, which are
+ * the harness talking just as much. On resume all five rendered in the caret row as things
+ * the PERSON said, `conversationAsMarkdown` exported them under "## You", and session search
+ * returned them as what a person had asked for.
+ */
+test('the fixer messages are the harness, not the person', async () => {
+  const { acceptanceFailureMessage, reviewFailureMessage } =
+    await import('../src/session/contract.js')
+  const { premiseFailureMessage } = await import('../src/session/premises.js')
+  const { verifyFailureMessage } = await import('../src/verify/runner.js')
+  const { OVERFLOW_RETRY_NOTE } = await import('../src/session/compaction.js')
+
+  const messages = [
+    acceptanceFailureMessage({ met: 1, unmet: [{ criterion: 'the suite passes', why: 'not run' }] }),
+    reviewFailureMessage([{ where: 'src/a.ts f()', what: 'the lock is not held' }]),
+    premiseFailureMessage({
+      verified: [],
+      unverified: [{
+        premise: { file: 'src/a.ts', quote: 'x', why: 'y' },
+        problem: 'those lines are not in that file',
+      }],
+    }),
+    verifyFailureMessage({ command: 'npm test' } as never,
+      { exitCode: 1, output: 'FAIL', problem: undefined } as never),
+    verifyFailureMessage({ command: 'npm test' } as never,
+      { exitCode: null, output: '', problem: 'command not found' } as never),
+    OVERFLOW_RETRY_NOTE,
+  ]
+
+  for (const m of messages) {
+    expect(splitUserMessage(m), m.slice(0, 48)).toEqual({ kind: 'user', text: m, harness: true })
+  }
+})
+
+test('and something a person types that merely mentions one of them is still theirs', () => {
+  const typed = 'Automatic verification failed on my machine too — any idea why?'
+  // Starts with the opener's words but is not the message; the constant is matched whole.
+  expect(splitUserMessage('why does it say Automatic verification failed?'))
+    .toEqual({ kind: 'user', text: 'why does it say Automatic verification failed?' })
+  void typed
+})

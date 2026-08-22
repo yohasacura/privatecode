@@ -129,7 +129,11 @@ test('edit_file keeps CRLF when the anchor only matches after ignoring whitespac
   expect(r.ok).toBe(true)
   expect(r.content).toMatch(/ignoring whitespace/)
   const after = readFileSync(join(root, 'ws.ts'), 'utf8')
-  expect(after).toBe('function f() {\r\nconst y = 3\r\n}\r\n')
+  // The FILE's indentation survives, not the model's. This branch is entered because the
+  // model's whitespace did not match, so its replacement's indentation is the half already
+  // known to be wrong — writing it back verbatim re-indented the block, which is cosmetic
+  // here and a change of meaning in Python or YAML.
+  expect(after).toBe('function f() {\r\n  const y = 3\r\n}\r\n')
   expect(after.replace(/\r\n/g, '')).not.toContain('\n')
 })
 

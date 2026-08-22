@@ -1,5 +1,30 @@
+import { readdirSync } from 'node:fs'
 import { navProcess, toWorkspacePath } from '../csharp/nav-process.js'
 import type { Tool } from './types.js'
+
+/**
+ * Which folder the C# index is built over.
+ *
+ * The helper takes ONE root, so a multi-folder workspace has to choose. The solution file is
+ * the honest signal — a `.sln` or `.csproj` is what makes a folder a C# project — and the
+ * primary folder is only the fallback for when nothing says otherwise, which is also the
+ * single-folder case. Checked shallowly on purpose: a solution lives at the top of its
+ * project, and walking every mount deeply on each call would cost more than the answer.
+ */
+function csharpRoot(workspace: { mounts: readonly { root: string }[]; root: string }): string {
+  for (const mount of workspace.mounts) {
+    let entries: string[]
+    try {
+      entries = readdirSync(mount.root)
+    } catch {
+      continue
+    }
+    if (entries.some((e) => e.toLowerCase().endsWith('.sln') || e.toLowerCase().endsWith('.csproj'))) {
+      return mount.root
+    }
+  }
+  return workspace.root
+}
 
 export interface CsharpNavArgs {
   action: 'definition' | 'references' | 'implementations' | 'members'
@@ -89,7 +114,15 @@ export const csharpNavTool: Tool<CsharpNavArgs> = {
       }
     }
 
-    const root = ctx.workspace.root
+    // The folder that actually holds the C#, not `mounts[0]`.
+    //
+    // `workspace.root` is the PRIMARY folder. With a primary that contains no C# (a web
+    // front-end, say) and the solution in an attached one, the index was built over the
+    // wrong tree and every question came back `ok: true` with `no symbol named "X"` — a
+    // confident denial, stable for the whole session because the helper caches by root. The
+    // rows it does return are relativised against the same root, so out-of-root hits came
+    // back as raw absolute paths no other tool could address.
+    const root = csharpRoot(ctx.workspace)
     let loaded: Record<string, unknown>
     try {
       loaded = await nav.ensureLoaded(root)
@@ -118,11 +151,15 @@ export const csharpNavTool: Tool<CsharpNavArgs> = {
     const rows = Array.isArray(reply['results']) ? reply['results'] as Record<string, unknown>[] : []
     const note = typeof reply['note'] === 'string' ? reply['note'] : null
     if (rows.length === 0) {
+      // Which folder was searched, when there is more than one. A bare "not found" over a
+      // multi-folder workspace is the shape of a false denial: the model cannot tell "it is
+      // not there" from "you looked in the wrong project".
+      const where = ctx.workspace.multi ? ` in ${ctx.workspace.display(root)}` : ''
       return {
         ok: true,
         content: note ??
-          `No ${args.action} found for "${args.symbol}". If it is not C#, or lives outside this ` +
-          'workspace, use search_code instead.',
+          `No ${args.action} found for "${args.symbol}"${where}. If it is not C#, or lives ` +
+          'outside the folder that was indexed, use search_code instead.',
       }
     }
 

@@ -385,7 +385,7 @@ export type ChatAction =
   | { type: 'step.continuation'; firstTokenTimeoutMs?: number; atMs: number }
   /** The server died mid-call and the same request is being re-sent: the dead attempt's
    * partial cards are superseded and must go, or the retry streams onto them. */
-  | { type: 'step.retry'; atMs: number }
+  | { type: 'step.retry'; atMs: number; firstTokenTimeoutMs?: number }
   /** Where a running generation has got to — the turn's step, or the background compaction.
    * Purely a readout: it moves no clock and closes no card. */
   | { type: 'generation.progress'; scope: 'step' | 'compaction'; progress: StepProgress }
@@ -797,10 +797,22 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         ...state,
         items,
         // The wait that follows is the relaunched server's cold prefill: re-arm the
-        // first-token countdown exactly as a continuation does. The original
-        // firstTokenTimeoutMs is kept by the spread — the step's own budget still applies.
+        // first-token countdown exactly as a continuation does — and adopt the budget the
+        // CORE re-armed with. Keeping the step's original flat budget was display-only but
+        // not harmless: on a fat transcript the core allows minutes for the cold read while
+        // the window counted down the old number and sat at "0s to timeout" throughout a
+        // perfectly healthy prefill.
         ...(state.currentStep !== null
-          ? { currentStep: { ...restarted(state.currentStep), aliveAtMs: action.atMs, waitingFirstToken: true } }
+          ? {
+            currentStep: {
+              ...restarted(state.currentStep),
+              aliveAtMs: action.atMs,
+              waitingFirstToken: true,
+              ...(action.firstTokenTimeoutMs !== undefined
+                ? { firstTokenTimeoutMs: action.firstTokenTimeoutMs }
+                : {}),
+            },
+          }
           : {}),
       }
     }

@@ -59,7 +59,16 @@ test('writes under .privatecode are denied in every mode', () => {
     // String.raw for the Windows separator: this is the spelling the tools actually
     // receive on this platform, and it must be caught as surely as the forward-slash one.
     for (const p of ['.privatecode/settings.json', '.privatecode', String.raw`.PrivateCode\hooks.json`,
-                     'a/../.privatecode/settings.json']) {
+                     'a/../.privatecode/settings.json',
+                     // A MULTI-FOLDER workspace makes the folder name mandatory, so this is
+                     // the only spelling the model can even write there -- and it is the one
+                     // a start-anchored test called allowed. The jail does not backstop it:
+                     // `.privatecode` is in no DENIED_SEGMENTS, so the write landed, and the
+                     // next session loaded those permissions, hooks and format commands --
+                     // hooks and format both run with no permission gate at all.
+                     'app/.privatecode/settings.json',
+                     String.raw`app\.privatecode\hooks.json`,
+                     'engine/.privatecode/settings.local.json']) {
       const d = engine.decide({ tool: 'write_file', paths: [p] })
       expect(d.verdict, `${mode}: ${p}`).toBe('deny')
       expect(d.source, `${mode}: ${p}`).toBe('builtin')

@@ -1,6 +1,7 @@
 import type { TodoItem } from '../interaction.js'
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ToolSchema } from '../llama/types.js'
+import { forcedJson } from './forced-json.js'
 
 /**
  * The task contract: what a complex task IS, held where the model cannot lose it.
@@ -95,47 +96,21 @@ export function looksLikeTask(text: string): boolean {
   return trimmed.length >= 80 && sentences.length >= 3
 }
 
-const CONTRACT_TOOL: ToolSchema = {
-  type: 'function',
-  function: {
-    name: 'set_contract',
-    description: 'Record the task contract distilled from the user request.',
-    parameters: {
-      type: 'object',
-      required: ['goal', 'criteria', 'constraints'],
-      properties: {
-        goal: { type: 'string', description: 'One sentence: what must exist when this is done.' },
-        criteria: {
-          type: 'array', items: { type: 'string' },
-          description: 'Two to six checkable done-criteria. Each answerable yes/no by ' +
-            'looking at a file or running a command. Never vague.\n' +
-            'Each one is a STATE OF THE WORLD once the work is finished, never an activity ' +
-            'along the way. "The counter cannot hand out the same number twice" is a ' +
-            'criterion; "the code is examined", "the root cause is identified", "a fix is ' +
-            'implemented" are not — every one of those is satisfied by a conversation in ' +
-            'which nothing was changed, which is exactly how a task passes its own audit ' +
-            'while the bug is still there.\n' +
-            'Every criterion must come from the REQUEST. Do not add work nobody asked for: ' +
-            'a criterion the request does not imply is not a higher standard, it is a ' +
-            'licence to go and do something else, and the audit will then hold the task open ' +
-            'until it is done.',
-        },
-        constraints: {
-          type: 'array', items: { type: 'string' },
-          description: 'What must NOT change or be touched. Empty if the user named none.',
-        },
-        interfaces: {
-          type: 'string',
-          description: 'Only when several files must agree: the signatures/types/names ' +
-            'they agree ON, pinned now. Omit otherwise.',
-        },
-        kind: {
-          type: 'string', enum: ['bugfix', 'feature', 'other'],
-          description: 'bugfix ONLY when the request reports existing behaviour as broken ' +
-            'and asks to repair it; feature for new capability; other for the rest.',
-        },
-      },
-    },
+/** Shape only — every word that has to reach the model is in `distillContract`'s ask, because
+ * a `response_format` schema is never rendered. */
+const CONTRACT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['goal', 'criteria', 'constraints', 'interfaces', 'kind'],
+  additionalProperties: false,
+  properties: {
+    goal: { type: 'string' },
+    criteria: { type: 'array', items: { type: 'string' } },
+    constraints: { type: 'array', items: { type: 'string' } },
+    // Required-but-emptyable rather than optional: a strict schema is clearer about what
+    // "nothing to say here" looks like than an absent key, and `parseContract` already
+    // treats an empty string and an absent one identically.
+    interfaces: { type: 'string' },
+    kind: { type: 'string', enum: ['bugfix', 'feature', 'other'] },
   },
 }
 
@@ -173,10 +148,33 @@ function distillContext(transcript: readonly ChatMessage[]): ChatMessage[] {
   const head = transcript.length > 0 && transcript[0]!.role === 'system' ? [transcript[0]!] : []
   const recent = transcript.slice(Math.max(head.length, transcript.length - DISTILL_TAIL_MESSAGES))
     .map((m) => {
-      if (typeof m.content !== 'string' || m.content.length <= DISTILL_TAIL_CLIP_CHARS) return m
+      // `content` is only half of a message's bulk, and on a write-heavy tail it is the
+      // empty half: a `write_file` call carries the whole file in
+      // `tool_calls[0].function.arguments` with `content: null` — bounded only by
+      // DEFAULT_MAX_TOKENS_PER_STEP, i.e. 8,000 tokens each. The old guard short-circuited
+      // on `typeof m.content !== 'string'`, so those messages were never clipped by any
+      // path, and `content: ''` skipped the length test too. Eight of them made this
+      // "small" context tens of thousands of tokens. This codebase has learned the same
+      // lesson twice already, in `approxTokensOf` and in the session's compaction gate.
+      const clipped = typeof m.content === 'string' && m.content.length > DISTILL_TAIL_CLIP_CHARS
+        ? `${m.content.slice(0, DISTILL_TAIL_CLIP_CHARS)}\n[... clipped for contract distillation]`
+        : m.content
+      const calls = m.tool_calls
+      if (calls === undefined) return clipped === m.content ? m : { ...m, content: clipped }
       return {
         ...m,
-        content: `${m.content.slice(0, DISTILL_TAIL_CLIP_CHARS)}\n[... clipped for contract distillation]`,
+        content: clipped,
+        tool_calls: calls.map((c) => (
+          c.function.arguments.length <= DISTILL_TAIL_CLIP_CHARS ? c : {
+            ...c,
+            function: {
+              ...c.function,
+              // Still valid JSON is not worth faking here: this context is read, never
+              // replayed as a call, and saying what was cut is the no-silent-truncation rule.
+              arguments: `${c.function.arguments.slice(0, DISTILL_TAIL_CLIP_CHARS)}\n[... clipped for contract distillation]`,
+            },
+          }
+        )),
       }
     })
   return [...head, ...recent]
@@ -187,6 +185,8 @@ export async function distillContract(
   transcript: readonly ChatMessage[],
   userText: string,
   signal?: AbortSignal,
+  /** The session's own tool array, unchanged, so this stays an append onto the warm prefix. */
+  tools?: readonly ToolSchema[],
 ): Promise<TaskContract | null> {
   const messages: ChatMessage[] = [
     ...distillContext(transcript),
@@ -194,29 +194,48 @@ export async function distillContract(
       role: 'user',
       content:
         `${userText}\n\n` +
-        '[Before starting: distill this request into a contract with set_contract. ' +
-        'Criteria must be CHECKABLE — a command that passes, a file that exists, an ' +
-        'observable behaviour — and must cover everything the request asked, including ' +
-        'anything it forbids. Keep the request\'s own specifics VERBATIM in the criteria: ' +
-        '"invalid status TRANSITION rejected" must not soften into "status is from the ' +
-        'valid set" — a generalized criterion passes work the user did not ask for. ' +
-        'Do not begin the work yet.]',
+        '[Before starting: distill this request into a task contract. Do not begin the work ' +
+        'yet.\n\n' +
+        // All of the following lived in CONTRACT_TOOL's `description` fields, which were
+        // rendered while the shape was forced by a one-tool `tools` array. A
+        // `response_format` schema is compiled to a grammar and contributes zero prompt
+        // tokens, so the move had to bring the prose with it — see forced-json.ts, and see
+        // the regression it caused the one time it did not.
+        'goal — one sentence: what must exist when this is done.\n\n' +
+        'criteria — two to six CHECKABLE done-criteria, each answerable yes/no by looking at ' +
+        'a file or running a command. Never vague. Each one is a STATE OF THE WORLD once the ' +
+        'work is finished, never an activity along the way: "the counter cannot hand out the ' +
+        'same number twice" is a criterion; "the code is examined", "the root cause is ' +
+        'identified", "a fix is implemented" are not — every one of those is satisfied by a ' +
+        'conversation in which nothing changed, which is exactly how a task passes its own ' +
+        'audit while the bug is still there. Every criterion must come from the REQUEST: a ' +
+        'criterion the request does not imply is not a higher standard, it is a licence to go ' +
+        'and do something else, and the audit will hold the task open until it is done. Keep ' +
+        'the request\'s own specifics VERBATIM — "invalid status TRANSITION rejected" must ' +
+        'not soften into "status is from the valid set", because a generalized criterion ' +
+        'passes work the user did not ask for.\n\n' +
+        'constraints — what must NOT change or be touched. Empty if the user named none.\n\n' +
+        'interfaces — only when several files must agree: the signatures, types and names ' +
+        'they agree ON, pinned now. Empty otherwise.\n\n' +
+        'kind — "bugfix" ONLY when the request reports existing behaviour as broken and asks ' +
+        'to repair it; "feature" for new capability; "other" for the rest.\n\n' +
+        'Answer with JSON only.]',
     },
   ]
-  try {
-    const result = await client.chat({
-      messages, tools: [CONTRACT_TOOL], toolChoice: 'required',
-      maxTokens: DISTILL_MAX_TOKENS, disableThinking: true,
-      ...(signal ? { signal } : {}),
-    })
-    const call = result.message.tool_calls?.[0]
-    if (!call || call.function.name !== 'set_contract') return null
-    return parseContract(call.function.arguments)
-  } catch {
-    // A distillation that failed must never cost the turn — the task simply runs the way
-    // every task ran before contracts existed.
-    return null
-  }
+  // The session's own tool array, so this shares the prefix every step warmed instead of
+  // being a new one. See `forcedJson`.
+  const parsed = await forcedJson(client, {
+    messages,
+    name: 'contract',
+    schema: CONTRACT_SCHEMA,
+    maxTokens: DISTILL_MAX_TOKENS,
+    disableThinking: true,
+    ...(tools ? { tools } : {}),
+    ...(signal ? { signal } : {}),
+  })
+  // A distillation that failed must never cost the turn — the task simply runs the way every
+  // task ran before contracts existed.
+  return parsed === null ? null : readContract(parsed)
 }
 
 /** Tolerant of every way a generated JSON document can be slightly wrong, strict about the
@@ -229,6 +248,10 @@ export function parseContract(argsJson: string): TaskContract | null {
   } catch {
     return null
   }
+  return readContract(parsed)
+}
+
+function readContract(parsed: unknown): TaskContract | null {
   if (typeof parsed !== 'object' || parsed === null) return null
   const o = parsed as Record<string, unknown>
   const goal = typeof o['goal'] === 'string' ? o['goal'].trim() : ''
@@ -278,32 +301,16 @@ export interface DraftSuggestions {
 /** `set_contract`'s sibling for DRAFTS: same checkability bar, plus questions, minus the
  * fields that only matter once work actually starts (kind, interfaces). Its own tool so
  * the send-path distiller never wastes tokens asking questions nobody will answer. */
-const IMPROVE_TOOL: ToolSchema = {
-  type: 'function',
-  function: {
-    name: 'suggest_improvements',
-    description: 'Suggest the structure a draft request is missing. Never begin the work.',
-    parameters: {
-      type: 'object',
-      required: ['criteria', 'constraints', 'questions'],
-      properties: {
-        criteria: {
-          type: 'array', items: { type: 'string' },
-          description: 'Checkable done-criteria the draft IMPLIES, its specifics verbatim. ' +
-            'Each answerable yes/no by looking at a file or running a command. Empty if none.',
-        },
-        constraints: {
-          type: 'array', items: { type: 'string' },
-          description: 'What the draft implies must NOT change. Empty if it implies none.',
-        },
-        questions: {
-          type: 'array', items: { type: 'string' },
-          description: 'Short questions for anything essential the draft leaves open — which ' +
-            'files, what counts as done, what must not break. NEVER answer them yourself: a ' +
-            'requirement the draft does not imply belongs here, not in criteria.',
-        },
-      },
-    },
+/** Shape only — the rules are in `improveDraft`'s ask, because a `response_format` schema is
+ * compiled to a grammar and never rendered. */
+const IMPROVE_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['criteria', 'constraints', 'questions'],
+  additionalProperties: false,
+  properties: {
+    criteria: { type: 'array', items: { type: 'string' } },
+    constraints: { type: 'array', items: { type: 'string' } },
+    questions: { type: 'array', items: { type: 'string' } },
   },
 }
 
@@ -316,6 +323,10 @@ export function parseSuggestions(argsJson: string): DraftSuggestions | null {
   } catch {
     return null
   }
+  return readSuggestions(parsed)
+}
+
+function readSuggestions(parsed: unknown): DraftSuggestions | null {
   if (typeof parsed !== 'object' || parsed === null) return null
   const o = parsed as Record<string, unknown>
   const strings = (v: unknown, cap: number): string[] =>
@@ -334,26 +345,13 @@ export function parseSuggestions(argsJson: string): DraftSuggestions | null {
 /** `suggest_improvements`' sibling for SHORT drafts: not structure around a long draft
  * but a rewritten one — the rough command expanded into a detailed brief out of what
  * message 0 already knows about the project (repo map, notes, conversation). */
-const EXPAND_TOOL: ToolSchema = {
-  type: 'function',
-  function: {
-    name: 'expand_prompt',
-    description: 'Rewrite a rough draft command as a detailed task brief. Never begin the work.',
-    parameters: {
-      type: 'object',
-      required: ['expanded'],
-      properties: {
-        expanded: {
-          type: 'string',
-          description: 'The same request, written the way a careful colleague would brief ' +
-            'it: name the concrete files, components, styles, tokens and conventions from ' +
-            'THIS project the work should build on. WRITTEN IN ENGLISH, always, whatever ' +
-            'language the draft is in. Only facts the ' +
-            'context supports — anything essential it cannot answer stays a short open ' +
-            'question inside the text. Plain prose, no headings.',
-        },
-      },
-    },
+/** Shape only — see `expandDraft`'s ask for the rules, including the language pin. */
+const EXPAND_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['expanded'],
+  additionalProperties: false,
+  properties: {
+    expanded: { type: 'string' },
   },
 }
 
@@ -365,6 +363,10 @@ export function parseExpanded(argsJson: string): string | null {
   } catch {
     return null
   }
+  return readExpanded(parsed)
+}
+
+function readExpanded(parsed: unknown): string | null {
   if (typeof parsed !== 'object' || parsed === null) return null
   const v = (parsed as Record<string, unknown>)['expanded']
   if (typeof v !== 'string' || v.trim() === '') return null
@@ -383,6 +385,9 @@ export async function expandDraft(
   transcript: readonly ChatMessage[],
   draft: string,
   signal?: AbortSignal,
+  /** The session's own tool array. The user is WAITING on this one — it runs from the
+   * composer while they type — so sharing the warm prefix is felt directly. */
+  tools?: readonly ToolSchema[],
 ): Promise<string | null> {
   const messages: ChatMessage[] = [
     ...distillContext(transcript),
@@ -391,27 +396,29 @@ export async function expandDraft(
       content:
         `${draft}\n\n` +
         '[The user is still DRAFTING the rough request above — do not begin the work. ' +
-        'Call expand_prompt with the same request expanded into a detailed brief: pull ' +
-        'the concrete file paths, components, design tokens and conventions it should ' +
-        'build on from the project context you already have (repo map, project notes, ' +
-        'this conversation). Never invent a path or a value the context does not ' +
-        'support — anything essential it cannot answer, keep as a short open question ' +
-        'inside the text. Keep the user\'s intent exactly, and write the brief IN ENGLISH ' +
-        'whatever language the draft is in.]',
+        'Give the same request expanded into a detailed brief: pull the concrete file ' +
+        'paths, components, design tokens and conventions it should build on from the ' +
+        'project context you already have (repo map, project notes, this conversation). ' +
+        'Never invent a path or a value the context does not support — anything essential ' +
+        'it cannot answer, keep as a short open question inside the text. Keep the ' +
+        'user\'s intent exactly.\n\n' +
+        // Out of EXPAND_TOOL's `description`, which is no longer rendered. This is the pin
+        // the owner reported Ctrl+E breaking without.
+        'Write it the way a careful colleague would brief it, WRITTEN IN ENGLISH always, ' +
+        'whatever language the draft is in. Plain prose, no headings.\n\n' +
+        'Answer with JSON only.]',
     },
   ]
-  try {
-    const result = await client.chat({
-      messages, tools: [EXPAND_TOOL], toolChoice: 'required',
-      maxTokens: DISTILL_MAX_TOKENS, disableThinking: true,
-      ...(signal ? { signal } : {}),
-    })
-    const call = result.message.tool_calls?.[0]
-    if (!call || call.function.name !== 'expand_prompt') return null
-    return parseExpanded(call.function.arguments)
-  } catch {
-    return null
-  }
+  const parsed = await forcedJson(client, {
+    messages,
+    name: 'expanded',
+    schema: EXPAND_SCHEMA,
+    maxTokens: DISTILL_MAX_TOKENS,
+    disableThinking: true,
+    ...(tools ? { tools } : {}),
+    ...(signal ? { signal } : {}),
+  })
+  return parsed === null ? null : readExpanded(parsed)
 }
 
 /**
@@ -425,6 +432,8 @@ export async function improveDraft(
   transcript: readonly ChatMessage[],
   draft: string,
   signal?: AbortSignal,
+  /** The session's own tool array — same reason as `expandDraft`. */
+  tools?: readonly ToolSchema[],
 ): Promise<DraftSuggestions | null> {
   const messages: ChatMessage[] = [
     ...distillContext(transcript),
@@ -432,24 +441,28 @@ export async function improveDraft(
       role: 'user',
       content:
         `${draft}\n\n` +
-        '[The user is still DRAFTING the request above — do not begin the work. Call ' +
-        'suggest_improvements with the checkable criteria and constraints the draft ' +
-        'implies (keep its own specifics VERBATIM), and a question for each essential ' +
-        'thing it leaves unspecified. Never invent a requirement the draft does not imply.]',
+        '[The user is still DRAFTING the request above — do not begin the work.\n\n' +
+        // Out of IMPROVE_TOOL's `description` fields, which are no longer rendered.
+        'criteria — the checkable done-criteria the draft IMPLIES, its own specifics kept ' +
+        'VERBATIM, each answerable yes/no by looking at a file or running a command. Empty ' +
+        'if it implies none.\n' +
+        'constraints — what the draft implies must NOT change. Empty if it implies none.\n' +
+        'questions — a short question for each essential thing the draft leaves open: which ' +
+        'files, what counts as done, what must not break. NEVER answer them yourself; a ' +
+        'requirement the draft does not imply belongs here, not in criteria.\n\n' +
+        'Never invent a requirement the draft does not imply. Answer with JSON only.]',
     },
   ]
-  try {
-    const result = await client.chat({
-      messages, tools: [IMPROVE_TOOL], toolChoice: 'required',
-      maxTokens: DISTILL_MAX_TOKENS, disableThinking: true,
-      ...(signal ? { signal } : {}),
-    })
-    const call = result.message.tool_calls?.[0]
-    if (!call || call.function.name !== 'suggest_improvements') return null
-    return parseSuggestions(call.function.arguments)
-  } catch {
-    return null
-  }
+  const parsedImprove = await forcedJson(client, {
+    messages,
+    name: 'suggestions',
+    schema: IMPROVE_SCHEMA,
+    maxTokens: DISTILL_MAX_TOKENS,
+    disableThinking: true,
+    ...(tools ? { tools } : {}),
+    ...(signal ? { signal } : {}),
+  })
+  return parsedImprove === null ? null : readSuggestions(parsedImprove)
 }
 
 /** The tool text/`done_when` cap `todo_write` enforces; planned items obey the same one
@@ -466,37 +479,23 @@ export function clipTodoText(text: string): string {
  * contract into ordered implementation steps — each with its own checkable done_when.
  * The schema is the discipline: `required` fields are what "write it in detail" means
  * when asking nicely has a measured hit rate of 0/703. */
-const PLAN_TOOL: ToolSchema = {
-  type: 'function',
-  function: {
-    name: 'plan_todos',
-    description: 'Break the task into ordered implementation steps. Never begin the work.',
-    parameters: {
-      type: 'object',
-      required: ['items'],
-      properties: {
-        items: {
-          type: 'array',
-          description: '2-12 steps, in execution order, IN ENGLISH.',
-          items: {
-            type: 'object',
-            required: ['title', 'done_when'],
-            properties: {
-              title: {
-                type: 'string',
-                description: 'One implementation step, imperative, specific to THIS task.',
-              },
-              done_when: {
-                type: 'string',
-                description: 'How this step is known to be done — answerable by looking ' +
-                  'at a file or running a command.',
-              },
-              files: {
-                type: 'array', items: { type: 'string' },
-                description: 'The files this step touches, when the contract names them.',
-              },
-            },
-          },
+/** Shape only — the rules live in `decomposeTodos`'s ask, because a `response_format`
+ * schema is compiled to a grammar and never rendered. */
+const PLAN_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['items'],
+  additionalProperties: false,
+  properties: {
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['title', 'done_when', 'files'],
+        additionalProperties: false,
+        properties: {
+          title: { type: 'string' },
+          done_when: { type: 'string' },
+          files: { type: 'array', items: { type: 'string' } },
         },
       },
     },
@@ -511,6 +510,10 @@ export function parsePlannedTodos(argsJson: string): TodoItem[] | null {
   } catch {
     return null
   }
+  return readPlannedTodos(parsed)
+}
+
+function readPlannedTodos(parsed: unknown): TodoItem[] | null {
   if (typeof parsed !== 'object' || parsed === null) return null
   const raw = (parsed as Record<string, unknown>)['items']
   if (!Array.isArray(raw)) return null
@@ -544,6 +547,9 @@ export async function decomposeTodos(
   transcript: readonly ChatMessage[],
   contract: TaskContract,
   signal?: AbortSignal,
+  /** The session's own tool array. This runs immediately after `distillContract`, so leaving
+   * it on a different array would evict the prefix that call just warmed. */
+  tools?: readonly ToolSchema[],
 ): Promise<TodoItem[] | null> {
   const messages: ChatMessage[] = [
     ...distillContext(transcript),
@@ -551,25 +557,30 @@ export async function decomposeTodos(
       role: 'user',
       content:
         `[${renderContract(contract)}]\n\n` +
-        '[Before any work starts: call plan_todos with the ordered implementation steps ' +
-        'for the contract above — each step with its own checkable done_when, and the ' +
-        'files it touches where the contract names them. Steps are the PATH; the ' +
-        'contract criteria stay the definition of done. Write the steps IN ENGLISH, ' +
-        'whatever language the task is in. Do not begin the work.]',
+        '[Before any work starts: give the ordered implementation steps for the contract ' +
+        'above. Two to twelve of them, in execution order. Steps are the PATH; the contract ' +
+        'criteria stay the definition of done.\n\n' +
+        // Out of PLAN_TOOL's `description` fields, which are no longer rendered. The English
+        // pin is the half that matters most — these titles are shown to the user.
+        'title — one implementation step, imperative, specific to THIS task.\n' +
+        'done_when — how this step is known to be done, answerable by looking at a file or ' +
+        'running a command.\n' +
+        'files — the files this step touches, when the contract names them; an empty list ' +
+        'otherwise.\n\n' +
+        'Write them IN ENGLISH, whatever language the task is in. Do not begin the work. ' +
+        'Answer with JSON only.]',
     },
   ]
-  try {
-    const result = await client.chat({
-      messages, tools: [PLAN_TOOL], toolChoice: 'required',
-      maxTokens: DISTILL_MAX_TOKENS, disableThinking: true,
-      ...(signal ? { signal } : {}),
-    })
-    const call = result.message.tool_calls?.[0]
-    if (!call || call.function.name !== 'plan_todos') return null
-    return parsePlannedTodos(call.function.arguments)
-  } catch {
-    return null
-  }
+  const parsed = await forcedJson(client, {
+    messages,
+    name: 'plan',
+    schema: PLAN_SCHEMA,
+    maxTokens: DISTILL_MAX_TOKENS,
+    disableThinking: true,
+    ...(tools ? { tools } : {}),
+    ...(signal ? { signal } : {}),
+  })
+  return parsed === null ? null : readPlannedTodos(parsed)
 }
 
 export function renderContract(c: TaskContract): string {
@@ -898,37 +909,67 @@ export interface AcceptanceReport {
   unmet: { criterion: string; why: string }[]
   /** How many criteria were affirmed with evidence. */
   met: number
+  /**
+   * The affirmed criteria AS THE AUDIT NAMED THEM, beside the count of them.
+   *
+   * The count alone cannot answer the question that matters — WHICH criteria the audit
+   * actually looked at — and without that, a criterion the report simply never mentioned
+   * was indistinguishable from one it affirmed. See `withUnreportedCriteria`.
+   *
+   * Optional so a report built by hand (tests, older callers) still typechecks; absent
+   * means "nothing is known to have been affirmed", which is the safe reading.
+   */
+  metCriteria?: string[]
+  /**
+   * Which criteria the audit reported on at all, as 0-based indices into `contract.criteria`.
+   *
+   * The audit answers by NUMBER now, so coverage is a fact rather than an inference: this is
+   * exactly the set it spoke about, with no matching involved. `withUnreportedCriteria` reads
+   * it and falls back to the text matcher only for a report built the old way.
+   */
+  reported?: number[]
 }
 
-const ACCEPTANCE_TOOL: ToolSchema = {
-  type: 'function',
-  function: {
-    name: 'report_acceptance',
-    description: 'Report, criterion by criterion, whether the contract is met.',
-    parameters: {
-      type: 'object',
-      required: ['items'],
-      properties: {
+/**
+ * The shape the audit's answer is held to, enforced by the sampler — see `forcedJson` for
+ * why this is a `response_format` schema and no longer a one-tool `tools` array.
+ *
+ * The audit answers with the criterion's NUMBER, not its text, and that one change removes a
+ * whole apparatus. Asked to retype each criterion, the model paraphrased — which is why
+ * `matchCriterionIndex` exists at all, with its three fallback passes — and a paraphrase that
+ * matched nothing then produced a gap belonging to no criterion, or a criterion that looked
+ * unreported while its restatement sat in the same list. An integer cannot paraphrase: the
+ * grammar bounds it to 1..n, so coverage is exact and every criterion string downstream is
+ * the contract's own.
+ *
+ * It is also the cheapest thing in the file to fix under Law 2. Retyping six criteria costs
+ * ~180 output tokens a round, twice a task at MAX_ACCEPTANCE_ROUNDS — about 8.6 s at the
+ * measured 42 tok/s, spent restating text the prompt already numbered two lines above.
+ *
+ * Per-call rather than a module constant, because `maximum` is the contract's own length:
+ * that is what makes an out-of-range index unreachable rather than merely unlikely.
+ */
+function acceptanceSchema(criteriaCount: number): Record<string, unknown> {
+  return {
+    type: 'object',
+    required: ['items'],
+    additionalProperties: false,
+    properties: {
+      items: {
+        type: 'array',
         items: {
-          type: 'array',
-          items: {
-            type: 'object',
-            required: ['criterion', 'met', 'evidence'],
-            properties: {
-              criterion: { type: 'string' },
-              met: { type: 'boolean' },
-              evidence: {
-                type: 'string',
-                description: 'What in THIS conversation demonstrates it: a command that ' +
-                  'ran and its result, a diff that landed, a file that was read back. ' +
-                  '"I implemented it" is not evidence; if nothing demonstrates it, met is false.',
-              },
-            },
+          type: 'object',
+          required: ['index', 'met', 'evidence'],
+          additionalProperties: false,
+          properties: {
+            index: { type: 'integer', minimum: 1, maximum: Math.max(1, criteriaCount) },
+            met: { type: 'boolean' },
+            evidence: { type: 'string' },
           },
         },
       },
     },
-  },
+  }
 }
 
 /** Room for 8 criteria each with a paragraph of evidence, several times over — see the
@@ -940,70 +981,161 @@ const ACCEPTANCE_MAX_TOKENS = 4_000
  *
  * Same-context self-review has a known bias — the writing context believes its own work —
  * so the instruction is phrased to hunt for the UNMET ("which of these can you not prove"),
- * and the evidence field's description makes assertion-without-demonstration a `met:
- * false` by definition. This will not catch everything; it reliably catches the measured
- * failure class of criteria that were simply forgotten.
+ * and the ask defines evidence so that assertion-without-demonstration is a `met: false` by
+ * definition. That sentence lives in the ASK and not in the schema: the shape is forced by a
+ * `response_format` schema, which is compiled to a grammar and never rendered, so a
+ * `description` on it is invisible to the model. This will not catch everything; it reliably
+ * catches the measured failure class of criteria that were simply forgotten.
  */
 export async function checkAcceptance(
   client: LlamaClient,
   transcript: readonly ChatMessage[],
   contract: TaskContract,
   signal?: AbortSignal,
+  /** The session's own tool array, passed straight through so this request stays a pure
+   * append onto the already-warm prompt. See `forcedJson`: sending a one-tool array
+   * instead cost a measured 61.9 s of re-prefill per gate. */
+  tools?: readonly ToolSchema[],
 ): Promise<AcceptanceReport | null> {
   const messages: ChatMessage[] = [
     ...transcript,
     {
       role: 'user',
       content:
-        '[Before this turn may end: audit the work above against the task contract with ' +
-        'report_acceptance, one item per criterion, in order:\n' +
+        '[Before this turn may end: audit the work above against the task contract, ' +
+        'one item per criterion, in order:\n' +
         contract.criteria.map((c, i) => `${i + 1}. ${c}`).join('\n') +
         '\nBe a skeptic about your own work: a criterion nothing in this conversation ' +
-        'demonstrates is NOT met, however confident you feel.]',
+        'demonstrates is NOT met, however confident you feel.\n\n' +
+        // Moved out of the schema's `evidence` description: a response_format schema is
+        // compiled to a grammar and never rendered, so an instruction left there is invisible.
+        // This one defines what the whole audit MEANS by "met", and it is the sentence that
+        // turns assertion-without-demonstration into met:false by definition.
+        'For each criterion give the evidence: what in THIS conversation demonstrates it — a ' +
+        'command that ran and its result, a diff that landed, a file that was read back. ' +
+        '"I implemented it" is not evidence; if nothing demonstrates it, met is false. ' +
+        'Report one item per criterion, and report on EVERY criterion above.\n\n' +
+        'Answer with JSON only.]',
     },
   ]
-  try {
-    const result = await client.chat({
-      messages, tools: [ACCEPTANCE_TOOL], toolChoice: 'required',
-      maxTokens: ACCEPTANCE_MAX_TOKENS, disableThinking: true,
-      ...(signal ? { signal } : {}),
-    })
-    const call = result.message.tool_calls?.[0]
-    if (!call || call.function.name !== 'report_acceptance') return null
-    return parseAcceptance(call.function.arguments)
-  } catch {
-    return null // a gate that cannot run must not block the turn; verify already ran
-  }
+  const parsed = await forcedJson(client, {
+    messages,
+    name: 'acceptance',
+    schema: acceptanceSchema(contract.criteria.length),
+    maxTokens: ACCEPTANCE_MAX_TOKENS,
+    disableThinking: true,
+    ...(tools ? { tools } : {}),
+    ...(signal ? { signal } : {}),
+  })
+  return parsed === null ? null : readAcceptance(parsed, contract.criteria)
 }
 
-export function parseAcceptance(argsJson: string): AcceptanceReport | null {
+/** The same reading, from JSON text — for callers that already hold a string. */
+export function parseAcceptance(argsJson: string, criteria: readonly string[]): AcceptanceReport | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(argsJson)
   } catch {
     return null
   }
+  return readAcceptance(parsed, criteria)
+}
+
+/**
+ * The audit's answer, resolved against the contract it was asked about.
+ *
+ * Every criterion string here is the CONTRACT'S OWN, looked up by the reported number — the
+ * model never supplies text, so there is nothing to paraphrase and nothing to match. An index
+ * outside the contract is dropped rather than guessed at; the grammar makes it unreachable,
+ * and a report that somehow arrived by another route should lose the item, not invent one.
+ */
+function readAcceptance(parsed: unknown, criteria: readonly string[]): AcceptanceReport | null {
   const items = (parsed as { items?: unknown })?.items
   if (!Array.isArray(items)) return null
   const unmet: { criterion: string; why: string }[] = []
-  let met = 0
+  const metCriteria: string[] = []
+  const reported: number[] = []
+  const seen = new Set<number>()
   for (const raw of items) {
     if (typeof raw !== 'object' || raw === null) continue
     const item = raw as Record<string, unknown>
-    const criterion = typeof item['criterion'] === 'string' ? item['criterion'] : ''
-    if (criterion === '') continue
-    if (item['met'] === true) met++
+    const n = item['index']
+    if (typeof n !== 'number' || !Number.isInteger(n)) continue
+    const i = n - 1
+    const criterion = criteria[i]
+    // A repeated number is the same criterion twice; the first verdict stands, the way
+    // `resolveReportedCriteria` has always taken the first reading of a repeated gap.
+    if (criterion === undefined || seen.has(i)) continue
+    seen.add(i)
+    reported.push(i)
+    if (item['met'] === true) metCriteria.push(criterion)
     else unmet.push({ criterion, why: typeof item['evidence'] === 'string' ? item['evidence'] : 'not demonstrated' })
   }
-  if (met === 0 && unmet.length === 0) return null
-  return { unmet, met }
+  if (metCriteria.length === 0 && unmet.length === 0) return null
+  return { unmet, met: metCriteria.length, metCriteria, reported }
+}
+
+/** What an unreported criterion is recorded as. Worded as a gap in the AUDIT, not in the
+ * work: the fixer must go and demonstrate it, not assume the work is missing. */
+export const UNREPORTED_REASON = 'the audit did not report on this criterion'
+
+/**
+ * Every criterion the report simply did not mention, promoted to UNMET.
+ *
+ * `parseAcceptance` derives its verdicts only from the items the model returned, and the
+ * only emptiness guard is "no items at all" — so a report covering 3 of 5 criteria parsed
+ * perfectly clean. Downstream, `renderCheckedState` treats "no gap recorded for criterion
+ * i" as an affirmation (`if (why === undefined) met.push(i + 1)`), which makes the ABSENCE
+ * of a report indistinguishable from an affirmation. A short report therefore ended the
+ * turn: `checkedState` promoted "1,2,3,4,5 met" into message 0 at every later swap, the
+ * plan ticked, and `contract.satisfied` retired the gate for good — over criteria nothing
+ * had ever looked at. That is the exact failure this file's header says it exists to stop,
+ * arriving through the audit instead of through the model's confidence.
+ *
+ * The schema cannot prevent it either: ACCEPTANCE_SCHEMA's `items` array carries no
+ * `minItems`, so a short list is a legal generation. So it is repaired here rather than
+ * requested: coverage is CODE, like every other structural guarantee in this design.
+ *
+ * Returns the report unchanged when the audit covered everything, so the common path
+ * allocates nothing and behaves exactly as before.
+ */
+export function withUnreportedCriteria(
+  criteria: readonly string[], report: AcceptanceReport,
+): AcceptanceReport {
+  // `reported` is the audit's own numbering, so coverage is exact and nothing has to be
+  // matched. That also closes the double-report this function used to produce: when the
+  // model paraphrased a criterion into something the matcher could not place, the
+  // paraphrase stayed in `unmet` AND the criterion was appended as unreported, so the
+  // fixer got the same criterion twice with contradictory reasons — one of which no edit
+  // could ever close — and `unmet.length` could exceed `criteria.length`.
+  const covered = new Set<number>(report.reported ?? [])
+  if (report.reported === undefined) {
+    for (const item of report.unmet) {
+      const i = matchCriterionIndex(criteria, item.criterion)
+      if (i !== null) covered.add(i)
+    }
+    for (const text of report.metCriteria ?? []) {
+      const i = matchCriterionIndex(criteria, text)
+      if (i !== null) covered.add(i)
+    }
+  }
+  const missing = criteria.filter((_, i) => !covered.has(i))
+  if (missing.length === 0) return report
+  return {
+    ...report,
+    unmet: [...report.unmet, ...missing.map((criterion) => ({ criterion, why: UNREPORTED_REASON }))],
+  }
 }
 
 /** What the fixer round is told. Names only the gaps — the criteria already sit in the
  * contract note above, and repeating the met ones invites re-doing finished work. */
+/** The opener the acceptance fixer message starts with. Exported so `replay.ts` can tell a
+ * harness message from something a person typed — see `HARNESS_OPENERS` there. */
+export const ACCEPTANCE_FIXER_PREFIX = 'The task contract is not fully met yet. Unmet criteria:'
+
 export function acceptanceFailureMessage(report: AcceptanceReport): string {
   const gaps = report.unmet.map((u) => `- ${u.criterion}\n  (${u.why})`).join('\n')
-  return 'The task contract is not fully met yet. Unmet criteria:\n' + gaps +
+  return `${ACCEPTANCE_FIXER_PREFIX}\n` + gaps +
     '\n\nClose these gaps now. If one is genuinely impossible or wrong, say why in one ' +
     'sentence instead of working around it.'
 }
@@ -1017,36 +1149,27 @@ export interface ReviewIssue {
   what: string
 }
 
-const REVIEW_TOOL: ToolSchema = {
-  type: 'function',
-  function: {
-    name: 'review_verdict',
-    description: 'Report genuine defects found in the diff, or an empty list.',
-    parameters: {
-      type: 'object',
-      required: ['issues'],
-      properties: {
-        issues: {
-          type: 'array',
-          items: {
-            type: 'object',
-            required: ['where', 'what'],
-            properties: {
-              where: {
-                type: 'string',
-                description: 'File and place, e.g. lib/stats.js percentile(). This may be a ' +
-                  'file the diff never touched, when that is where the problem is.',
-              },
-              what: {
-                type: 'string',
-                description: 'The defect and why it is one: a bug, a criterion the change ' +
-                  'contradicts, a constraint it violates, or the goal still not being met ' +
-                  'because the same problem survives somewhere the change did not reach. ' +
-                  'Style is not a defect, and neither is anything this change is not ' +
-                  'responsible for.',
-              },
-            },
-          },
+/** The verdict's shape, forced by the sampler — see `forced-json.ts`. The prose that has to
+ * REACH the model lives in the ask in `reviewVerdict`, because a `response_format` schema is
+ * compiled to a grammar and never rendered. */
+const REVIEW_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['goalMet', 'goalGap', 'issues'],
+  additionalProperties: false,
+  properties: {
+    // Asked SEPARATELY from the defect list, and required — which is the whole fix. See
+    // `reviewVerdict`.
+    goalMet: { type: 'boolean' },
+    goalGap: { type: 'string' },
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['where', 'what'],
+        additionalProperties: false,
+        properties: {
+          where: { type: 'string' },
+          what: { type: 'string' },
         },
       },
     },
@@ -1132,6 +1255,13 @@ export async function reviewVerdict(
   client: LlamaClient,
   messages: readonly ChatMessage[],
   signal?: AbortSignal,
+  /** The tools the REVIEWER itself was given, unchanged. Passing them keeps this an append
+   * onto the prefix the reviewer's own reading turn just warmed. A one-tool array instead
+   * re-prefilled that entire transcript from zero at the end of every writing task — and by
+   * this point the reviewer has read files around the change, so it is the fattest transcript
+   * in the system: measured at ~19k tokens on a modest task and ~60k on a large one, which is
+   * 26 s and 82 s of silence at 730 tok/s. */
+  tools?: readonly ToolSchema[],
 ): Promise<ReviewIssue[] | null> {
   try {
     const result = await client.chat({
@@ -1139,16 +1269,28 @@ export async function reviewVerdict(
         ...messages,
         {
           role: 'user',
-          content: '[Now the verdict, with review_verdict.\n\n' +
-            'Before you answer: is the goal actually met once the rest of the code is taken ' +
-            'into account? If the same problem is still reachable somewhere the change did ' +
-            'not touch, that is a defect and it belongs in the list, with the file named — ' +
-            'not an aside, and not something to leave out because it is outside the diff.\n\n' +
-            'An empty list is fine if the change genuinely does the job.]',
+          content: '[Now the verdict. Two separate answers.\n\n' +
+            'FIRST, goalMet. Is the goal actually achieved once the REST of the code is ' +
+            'taken into account — not "is this diff correct", but "is the thing the user ' +
+            'asked for now true of this codebase"? If the same problem is still reachable ' +
+            'through another path, or a second place still does the old thing, then the goal ' +
+            'is NOT met: answer false and put the file and the reason in goalGap.\n\n' +
+            'Scope limits what may be CHANGED. It does not limit what is TRUE. A problem ' +
+            'outside the diff is still the reason the goal is unmet, and saying so is always ' +
+            'in scope — that is what this question is for. Do not leave it out because ' +
+            'somebody else introduced it, because it is pre-existing, or because it is in a ' +
+            'file nobody asked you to touch. If the goal IS met, answer true and leave ' +
+            'goalGap empty.\n\n' +
+            'SECOND, issues: defects in the change itself. For each one give WHERE — file ' +
+            'and place, e.g. lib/stats.js percentile() — and WHAT the defect is and why it ' +
+            'is one: a bug, a criterion the change contradicts, or a constraint it violates. ' +
+            'Style is not a defect, and neither is anything this change is not responsible ' +
+            'for. An empty list is fine if the change genuinely does the job.\n\n' +
+            'Answer with JSON only.]',
         },
       ],
-      tools: [REVIEW_TOOL],
-      toolChoice: 'required',
+      ...(tools && tools.length > 0 ? { tools: [...tools] } : {}),
+      jsonSchema: { name: 'review', schema: REVIEW_SCHEMA },
       maxTokens: REVIEW_MAX_TOKENS,
       // Thinking OFF, and this is a change from when the review was a single generation.
       // Then it had to do the judging here, and 12k tokens of it was justified by measured
@@ -1160,9 +1302,9 @@ export async function reviewVerdict(
       disableThinking: true,
       ...(signal ? { signal } : {}),
     })
-    const call = result.message.tool_calls?.[0]
-    if (!call || call.function.name !== 'review_verdict') return null
-    return parseReview(call.function.arguments)
+    const text = result.message.content
+    if (typeof text !== 'string' || text.trim() === '') return null
+    return parseReview(text)
   } catch {
     return null // an unreviewed turn is the pre-review status quo, not a failure
   }
@@ -1175,17 +1317,48 @@ export function parseReview(argsJson: string): ReviewIssue[] | null {
   } catch {
     return null
   }
-  const issues = (parsed as { issues?: unknown })?.issues
+  const obj = parsed as { issues?: unknown; goalMet?: unknown; goalGap?: unknown }
+  const issues = obj?.issues
   if (!Array.isArray(issues)) return null
-  return issues
+  const listed = issues
     .filter((i): i is Record<string, unknown> => typeof i === 'object' && i !== null)
     .filter((i) => typeof i['where'] === 'string' && typeof i['what'] === 'string')
     .map((i) => ({ where: i['where'] as string, what: i['what'] as string }))
     .slice(0, 10)
+
+  // The GOAL answer, folded in as the first finding so every existing reader — the fixer
+  // message, the event, the turn gate — treats it exactly like any other defect.
+  //
+  // This is the fix for the failure recorded in docs/SPIKE-KAT-CODER.md §9. The reviewer
+  // used to be asked for a list of defects and nothing else, which let "is it a defect" and
+  // "is it in scope" collapse into one judgement it could decline: watched twice on the same
+  // planted case, it FOUND the second service still reading the counter unlocked, named it in
+  // its prose, and then wrote "not reporting: out of scope" and returned an empty list — over
+  // a goal that was not met. `REVIEW_SYSTEM` forbids exactly that, in three separate
+  // sentences, and the model did it anyway; this codebase's own measured law says
+  // instructions do not route behaviour and structure does. So the goal question is now a
+  // required boolean the grammar will not let it omit, asked about the GOAL rather than about
+  // the diff, and "out of scope" is no longer an expressible answer to it.
+  if (obj?.goalMet === false) {
+    const gap = typeof obj.goalGap === 'string' ? obj.goalGap.trim() : ''
+    return [
+      {
+        where: 'the goal',
+        what: gap === ''
+          ? 'the reviewer reports the goal is still not met, but named no reason'
+          : gap,
+      },
+      ...listed,
+    ].slice(0, 10)
+  }
+  return listed
 }
+
+/** Same job as `ACCEPTANCE_FIXER_PREFIX`, for the diff reviewer's findings. */
+export const REVIEW_FIXER_PREFIX = 'An independent review of this turn\'s diff found problems:'
 
 export function reviewFailureMessage(issues: ReviewIssue[]): string {
   const list = issues.map((i) => `- ${i.where}: ${i.what}`).join('\n')
-  return 'An independent review of this turn\'s diff found problems:\n' + list +
+  return `${REVIEW_FIXER_PREFIX}\n` + list +
     '\n\nAddress each one, or say in one sentence why the reviewer is wrong about it.'
 }

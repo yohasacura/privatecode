@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ToolSchema } from '../llama/types.js'
+import { forcedJson } from './forced-json.js'
 
 /**
  * The other half of "the model thought wrong", and the half with a hard oracle.
@@ -43,41 +44,38 @@ export interface FileReader {
   resolve(relativePath: string): string
 }
 
-const PREMISE_TOOL: ToolSchema = {
-  type: 'function',
-  function: {
-    name: 'record_premises',
-    description: 'State the facts about this codebase your change relies on, with the lines they come from.',
-    parameters: {
-      type: 'object',
-      required: ['premises'],
-      properties: {
-        premises: {
-          type: 'array',
-          description: 'Two to five. Only the things that would BREAK your change if they ' +
-            'turned out to be false — not a tour of the codebase.',
-          items: {
-            type: 'object',
-            required: ['file', 'quote', 'why'],
-            properties: {
-              file: {
-                type: 'string',
-                description: 'The file the quote is from, named exactly as the tools show ' +
-                  'it to you — including the folder prefix when the workspace has several.',
-              },
-              quote: {
-                type: 'string',
-                description: 'The lines themselves, copied out of the file. Word for word: ' +
-                  'this is checked against the file, so a remembered or tidied-up version ' +
-                  'will not match. One to five lines from ONE place — if you are relying on ' +
-                  'two different parts of the file, that is two premises, not one quote ' +
-                  'stitched together. Do not paraphrase and do not elide with "...".',
-              },
-              why: {
-                type: 'string',
-                description: 'One short line: what your change relies on this for.',
-              },
-            },
+/** The shape the answer is held to, enforced by the sampler rather than by a one-tool
+ * `tools` array — see `forced-json.ts` for the 61.9 s per gate that bought. */
+const PREMISE_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['premises'],
+  additionalProperties: false,
+  properties: {
+    premises: {
+      type: 'array',
+      description: 'Two to five. Only the things that would BREAK your change if they ' +
+        'turned out to be false — not a tour of the codebase.',
+      items: {
+        type: 'object',
+        required: ['file', 'quote', 'why'],
+        additionalProperties: false,
+        properties: {
+          file: {
+            type: 'string',
+            description: 'The file the quote is from, named exactly as the tools show ' +
+              'it to you — including the folder prefix when the workspace has several.',
+          },
+          quote: {
+            type: 'string',
+            description: 'The lines themselves, copied out of the file. Word for word: ' +
+              'this is checked against the file, so a remembered or tidied-up version ' +
+              'will not match. One to five lines from ONE place — if you are relying on ' +
+              'two different parts of the file, that is two premises, not one quote ' +
+              'stitched together. Do not paraphrase and do not elide with "...".',
+          },
+          why: {
+            type: 'string',
+            description: 'One short line: what your change relies on this for.',
           },
         },
       },
@@ -192,6 +190,10 @@ export function parsePremises(argsJson: string): Premise[] | null {
   } catch {
     return null
   }
+  return readPremises(parsed)
+}
+
+function readPremises(parsed: unknown): Premise[] | null {
   const raw = (parsed as { premises?: unknown } | null)?.premises
   if (!Array.isArray(raw)) return null
   const out: Premise[] = []
@@ -247,7 +249,18 @@ export function verifyPremises(premises: readonly Premise[], where: FileReader):
       })
       continue
     }
-    if (quoteIsInFile(premise.quote, content.code)) verified.push(premise)
+    // BOTH sides comment-stripped, not just the file. Stripping only the file made every
+    // comment line inside an otherwise-genuine quote into required evidence that could not
+    // possibly be found: the loose pass keeps every line of 8+ characters, and a comment
+    // line is exactly that. A model that really had copied four consecutive lines spanning
+    // one comment was told "those lines are only in a COMMENT there" — the one message that
+    // does not describe what happened — and the whole batched step halted, discarding every
+    // queued edit, to go and re-read files it had read correctly. In a codebase this
+    // comment-dense that is most multi-line quotes.
+    //
+    // A quote that is ONLY comments still strips to nothing, falls through, and is still
+    // named as a comment below — which is the case that branch was written for.
+    if (quoteIsInFile(stripComments(premise.quote), content.code)) verified.push(premise)
     else if (quoteIsInFile(premise.quote, content.full)) {
       // Found, but only among the comments. Said precisely, because the difference decides
       // what the model does next: re-quoting a different comment will not help, and reading
@@ -280,6 +293,8 @@ export async function statePremises(
   client: LlamaClient,
   transcript: readonly ChatMessage[],
   signal?: AbortSignal,
+  /** The session's own tool array, unchanged, so this stays a pure append. */
+  tools?: readonly ToolSchema[],
 ): Promise<Premise[] | null> {
   const messages: ChatMessage[] = [
     ...transcript,
@@ -292,24 +307,29 @@ export async function statePremises(
         'from. Copy them, do not retype them from memory: I am going to look them up, and a ' +
         'tidied-up version will not match. If you cannot find the lines for something you ' +
         'were about to rely on, that is worth knowing now.\n\n' +
-        'Call record_premises. Do not start the work.]',
+        // Moved out of PREMISE_SCHEMA's `description` fields: a response_format schema is
+        // compiled to a grammar and is never rendered, so anything written there is invisible
+        // to the model. These two rules are what the verifier actually checks against.
+        'Two to five of them — only the things that would BREAK your change if they turned ' +
+        'out to be false, not a tour of the codebase. Name the file exactly as the tools ' +
+        'showed it to you, INCLUDING the folder prefix when this workspace has several. ' +
+        'Quote one to five lines from ONE place: if you are relying on two different parts ' +
+        'of a file, that is two premises, not one quote stitched together. Do not paraphrase ' +
+        'and do not elide with "...". Say in one short line what your change relies on each ' +
+        'one for.\n\n' +
+        'Answer with JSON only. Do not start the work.]',
     },
   ]
-  try {
-    const result = await client.chat({
-      messages,
-      tools: [PREMISE_TOOL],
-      toolChoice: 'required',
-      maxTokens: PREMISE_MAX_TOKENS,
-      disableThinking: true,
-      ...(signal ? { signal } : {}),
-    })
-    const call = result.message.tool_calls?.[0]
-    if (!call || call.function.name !== 'record_premises') return null
-    return parsePremises(call.function.arguments)
-  } catch {
-    return null
-  }
+  const parsed = await forcedJson(client, {
+    messages,
+    name: 'premises',
+    schema: PREMISE_SCHEMA,
+    maxTokens: PREMISE_MAX_TOKENS,
+    disableThinking: true,
+    ...(tools ? { tools } : {}),
+    ...(signal ? { signal } : {}),
+  })
+  return parsed === null ? null : readPremises(parsed)
 }
 
 /**
@@ -320,6 +340,10 @@ export async function statePremises(
  * verify runner's message is worded around. The instruction is narrow on purpose: go and
  * look, then continue. Not "start over".
  */
+/** Same job as `ACCEPTANCE_FIXER_PREFIX` in contract.ts: `replay.ts` reads it so this is not
+ * replayed as something the person typed. */
+export const PREMISE_FAILURE_PREFIX = 'Not run: some of what you are relying on is not in the files.'
+
 export function premiseFailureMessage(check: PremiseCheck): string {
   const bad = check.unverified
     .map((u) => `- ${u.premise.file}: ${u.premise.why}\n  you quoted: ${u.premise.quote.split('\n')[0]}\n  ${u.problem}`)
@@ -327,7 +351,7 @@ export function premiseFailureMessage(check: PremiseCheck): string {
   const good = check.verified.length > 0
     ? `\n${check.verified.length} of your other assumptions did check out and are fine.\n`
     : ''
-  return 'Not run: some of what you are relying on is not in the files.\n\n' + bad + '\n' + good +
+  return `${PREMISE_FAILURE_PREFIX}\n\n` + bad + '\n' + good +
     '\nRead those places again before you change anything — what is actually there may not ' +
     'need the change you were about to make, or may need a different one. Nothing was written.'
 }

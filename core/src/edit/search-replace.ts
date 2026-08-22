@@ -13,6 +13,39 @@ function countOccurrences(haystack: string, needle: string): number {
   return n
 }
 
+/** The leading whitespace of a line, or '' when it has none. */
+function indentOf(line: string): string {
+  return /^[ \t]*/.exec(line)?.[0] ?? ''
+}
+
+/**
+ * The replacement's lines, shifted so they sit at the indentation the FILE had.
+ *
+ * Only reached from the whitespace-tolerant fallback, which by definition matched a window
+ * whose indentation differs from what the model wrote. The shift is computed once, from the
+ * first line of each side, and applied to every line — so the replacement's INTERNAL
+ * structure (a nested block, a continued expression) is preserved and only the block as a
+ * whole moves. A line that cannot absorb the shift because it has less indentation than the
+ * amount being removed is left alone rather than mangled.
+ *
+ * Blank lines stay blank: trailing whitespace on an empty line is not indentation, and
+ * adding some is how a diff acquires noise nobody asked for.
+ */
+function reindent(replace: string, matchedFirstLine: string): string[] {
+  const lines = replace.split('\n')
+  const want = indentOf(matchedFirstLine)
+  const had = indentOf(lines[0] ?? '')
+  if (want === had) return lines
+  return lines.map((line) => {
+    if (line.trim() === '') return ''
+    if (had !== '' && line.startsWith(had)) return want + line.slice(had.length)
+    if (had === '') return want + line
+    // Less indentation than the block's own first line: keep it as written rather than
+    // guessing, which is the direction that cannot corrupt anything.
+    return line
+  })
+}
+
 /** Collapses runs of whitespace so indentation drift cannot break an otherwise good anchor. */
 function normalise(s: string): string {
   return s.replace(/[ \t]+/g, ' ').replace(/[ \t]*\n[ \t]*/g, '\n').trim()
@@ -71,7 +104,15 @@ export function applySearchReplace(source: string, search: string, replace: stri
     const start = candidates[0]!
     const before = lines.slice(0, start)
     const after = lines.slice(start + searchLineCount)
-    const text = [...before, ...replace.split('\n'), ...after].join('\n')
+    // The FILE's indentation wins, not the model's.
+    //
+    // This branch is entered precisely because the model's whitespace did not match the
+    // file's, so its replacement's indentation is the half we already know is wrong — and
+    // writing it back verbatim re-indents the block. In C# or TypeScript that is cosmetic;
+    // in Python or YAML it changes what the code means, and it lands exactly when the model
+    // was least sure about layout. The fix is to re-anchor the replacement onto the leading
+    // whitespace the matched window actually had.
+    const text = [...before, ...reindent(replace, lines[start] ?? ''), ...after].join('\n')
     return { ok: true, text, matchedExactly: false }
   }
   if (candidates.length > 1) {

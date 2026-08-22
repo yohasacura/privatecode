@@ -141,19 +141,14 @@ test('the model is asked for the lines, and told they will be looked up', async 
     asked = String(body.messages[body.messages.length - 1].content)
     return {
       choices: [{
-        finish_reason: 'tool_calls',
+        finish_reason: 'stop',
         message: {
           role: 'assistant',
-          tool_calls: [{
-            id: 'c1',
-            type: 'function',
-            function: {
-              name: 'record_premises',
-              arguments: JSON.stringify({
-                premises: [{ file: 'src/invoice.ts', quote: 'padStart(6, "0")', why: 'padding' }],
-              }),
-            },
-          }],
+          // The gate now forces its shape with `response_format`, so the answer arrives as
+          // JSON content instead of a tool call -- see `forced-json.ts`.
+          content: JSON.stringify({
+            premises: [{ file: 'src/invoice.ts', quote: 'padStart(6, "0")', why: 'padding' }],
+          }),
         },
       }],
     }
@@ -165,7 +160,9 @@ test('the model is asked for the lines, and told they will be looked up', async 
   // Saying the quotes are checked is not decoration: it is the one instruction that changes
   // what the model produces, because copying and remembering cost it the same otherwise.
   expect(asked).toContain('look them up')
-  expect(asked).toContain('record_premises')
+  // The shape is forced by `response_format` now, so the prompt names no tool -- what it
+  // must still say is that the lines will be looked up, which is the whole deterrent.
+  expect(asked).toContain('JSON only')
 })
 
 test('a refusal to answer costs the check, never the turn', async () => {
@@ -252,4 +249,66 @@ test('a quote that is mostly short scraps is not evidence', () => {
   // seven-character line used to be skipped while its neighbours carried the premise.
   const content = 'if (ready) { doTheThing() } else { bail() }'
   expect(quoteIsInFile('if (ready) {\nnope()\n}\n}\n}', content)).toBe(false)
+})
+
+/**
+ * A quote that spans a comment line.
+ *
+ * The file was comment-stripped before matching and the quote was not, so every comment line
+ * inside an otherwise-genuine quote became required evidence that could not possibly be
+ * found — and the failure was reported as "those lines are only in a COMMENT there", the one
+ * message that does not describe what happened. The whole batched step then halted and threw
+ * away every queued edit. In a codebase this comment-dense, that is most multi-line quotes.
+ */
+const COMMENTED = 'export class InvoiceService {\n' +
+  '  // Allocates the next number for the year. Callers must hold the row lock.\n' +
+  '  async allocate(year: number): Promise<number> {\n' +
+  '    const row = await db.query("select last from counters where year = $1", [year])\n' +
+  '    return (row?.last ?? 0) + 1\n' +
+  '  }\n' +
+  '}\n'
+
+test('a real quote spanning a comment line verifies, instead of being called a comment', () => {
+  writeFileSync(join(root, 'src', 'alloc.ts'), COMMENTED, 'utf8')
+  const ws = new Workspace(root)
+  const quote =
+    '  // Allocates the next number for the year. Callers must hold the row lock.\n' +
+    '  async allocate(year: number): Promise<number> {\n' +
+    '    const row = await db.query("select last from counters where year = $1", [year])\n' +
+    '    return (row?.last ?? 0) + 1\n'
+
+  const check = verifyPremises([premise('src/alloc.ts', quote)], ws)
+
+  expect(check.unverified).toEqual([])
+  expect(check.verified).toHaveLength(1)
+})
+
+test('a quote that is ONLY a comment is still named as one', () => {
+  // The case that branch was written for, and it has to keep working: a note about what
+  // something does is not evidence that it does it.
+  writeFileSync(join(root, 'src', 'alloc.ts'), COMMENTED, 'utf8')
+  const ws = new Workspace(root)
+  const check = verifyPremises(
+    [premise('src/alloc.ts', '  // Allocates the next number for the year. Callers must hold the row lock.')],
+    ws,
+  )
+
+  expect(check.verified).toEqual([])
+  expect(check.unverified[0]!.problem).toContain('COMMENT')
+})
+
+test('an invented CODE line inside a real quote is still caught', () => {
+  // Stripping comments from the quote removes comment lines from the requirement. It must
+  // not remove code lines, or the check has been loosened into uselessness.
+  writeFileSync(join(root, 'src', 'alloc.ts'), COMMENTED, 'utf8')
+  const ws = new Workspace(root)
+  const quote =
+    '  // Allocates the next number for the year. Callers must hold the row lock.\n' +
+    '  async allocate(year: number): Promise<number> {\n' +
+    '    const row = await db.query("select last from counters where year = $1 FOR UPDATE", [year])\n'
+
+  const check = verifyPremises([premise('src/alloc.ts', quote)], ws)
+
+  expect(check.verified).toEqual([])
+  expect(check.unverified[0]!.problem).toContain('not in that file')
 })

@@ -126,3 +126,54 @@ test('scores the not-found hint against the whole window, not just the first lin
   expect(out.hint).toContain('line 5')
   expect(out.hint).not.toContain('line 1:')
 })
+
+test('the whitespace-tolerant path keeps the FILE\'s indentation, not the model\'s', () => {
+  // This branch is entered BECAUSE the model's whitespace did not match, so its replacement's
+  // indentation is the half already known to be wrong. Writing it back verbatim re-indents
+  // the block — cosmetic in C#, a change of meaning in Python or YAML, and it lands exactly
+  // when the model was least sure about layout.
+  const py = [
+    'def allocate(year):',
+    '    row = db.query("select last")',
+    '    nxt = row.last + 1',
+    '    return nxt',
+  ].join('\n')
+
+  // The model quotes it unindented (so the exact match misses) and replaces it unindented.
+  const out = applySearchReplace(
+    py,
+    'row = db.query("select last")\nnxt = row.last + 1',
+    'row = db.query("select last for update")\nnxt = row.last + 1',
+  )
+
+  expect(out.ok).toBe(true)
+  if (!out.ok) return
+  expect(out.matchedExactly).toBe(false)
+  // Four spaces, exactly as the file had them — not column zero.
+  expect(out.text.split('\n')).toEqual([
+    'def allocate(year):',
+    '    row = db.query("select last for update")',
+    '    nxt = row.last + 1',
+    '    return nxt',
+  ])
+})
+
+test('and a nested block inside the replacement keeps its own shape', () => {
+  const src = [
+    'def outer():',
+    '    if ready:',
+    '        go()',
+  ].join('\n')
+
+  const out = applySearchReplace(src, 'if ready:\n  go()', 'if ready:\n    go()\n    log()')
+
+  expect(out.ok).toBe(true)
+  if (!out.ok) return
+  // The block moves to the file's indentation as a whole; its internal step is preserved.
+  expect(out.text.split('\n')).toEqual([
+    'def outer():',
+    '    if ready:',
+    '        go()',
+    '        log()',
+  ])
+})

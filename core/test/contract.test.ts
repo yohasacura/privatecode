@@ -9,6 +9,7 @@ import { ToolRegistry } from '../src/tools/registry.js'
 import { Toolset } from '../src/tools/default-set.js'
 import {
   looksLikeTask, parseAcceptance, parseContract, renderCheckedState, renderContract,
+  withUnreportedCriteria, UNREPORTED_REASON, resolveReportedCriteria,
 } from '../src/session/contract.js'
 import { collapseSupersededReads } from '../src/session/compaction.js'
 import type { ChatMessage } from '../src/llama/types.js'
@@ -60,14 +61,90 @@ describe('parsing generated documents', () => {
     expect(parseContract(JSON.stringify({ goal: 'g', criteria: [], constraints: [] }))).toBeNull()
     expect(parseContract('{ not json')).toBeNull()
   })
-  test('acceptance report splits met from unmet', () => {
+  test('acceptance report splits met from unmet, resolved by NUMBER', () => {
+    // The audit answers with the criterion's index, so every string here is the contract's
+    // own: there is nothing for the model to paraphrase and nothing to match.
     const r = parseAcceptance(JSON.stringify({
       items: [
-        { criterion: 'a', met: true, evidence: 'ran the suite' },
-        { criterion: 'b', met: false, evidence: 'never demonstrated' },
+        { index: 1, met: true, evidence: 'ran the suite' },
+        { index: 2, met: false, evidence: 'never demonstrated' },
       ],
-    }))
-    expect(r).toEqual({ met: 1, unmet: [{ criterion: 'b', why: 'never demonstrated' }] })
+    }), ['a', 'b'])
+    expect(r).toEqual({
+      met: 1,
+      metCriteria: ['a'],
+      unmet: [{ criterion: 'b', why: 'never demonstrated' }],
+      // Exactly what it spoke about, as a fact rather than an inference.
+      reported: [0, 1],
+    })
+  })
+
+  test('an index outside the contract is dropped, not guessed at', () => {
+    const r = parseAcceptance(JSON.stringify({
+      items: [
+        { index: 1, met: true, evidence: 'ok' },
+        { index: 9, met: false, evidence: 'out of range' },
+        { index: 1, met: false, evidence: 'a repeat; the first verdict stands' },
+      ],
+    }), ['a', 'b'])
+    expect(r!.metCriteria).toEqual(['a'])
+    expect(r!.unmet).toEqual([])
+    expect(r!.reported).toEqual([0])
+  })
+})
+
+describe('an audit that does not cover every criterion', () => {
+  const contract = {
+    goal: 'g',
+    criteria: ['the counter never repeats a number', 'the suite passes on Windows', 'no public API changes'],
+    constraints: [],
+  }
+
+  test('a criterion the audit never mentioned is UNMET, not met', () => {
+    // The report is well-formed and parses clean; it just says nothing about criterion 3.
+    // Read literally that used to mean "no gap recorded", which every reader downstream
+    // treated as an affirmation -- so a short report ended the turn, ticked the plan and
+    // retired the gate over work nothing had looked at.
+    const raw = parseAcceptance(JSON.stringify({
+      items: [
+        { index: 1, met: true, evidence: 'the repro passes' },
+        { index: 2, met: true, evidence: 'npm test, 1114 passing' },
+      ],
+    }), contract.criteria)!
+    expect(raw.unmet).toEqual([])
+
+    const full = withUnreportedCriteria(contract.criteria, raw)
+    expect(full.unmet.map((u) => u.criterion)).toEqual(['no public API changes'])
+    expect(full.unmet[0]!.why).toBe(UNREPORTED_REASON)
+    // ...so the gate cannot close, and the note says where the task actually stands.
+    expect(renderCheckedState(contract, full)).toContain('3 UNMET')
+  })
+
+  test('a report that covers everything is passed through untouched', () => {
+    const raw = parseAcceptance(JSON.stringify({
+      items: contract.criteria.map((_c, i) => ({ index: i + 1, met: true, evidence: 'shown above' })),
+    }), contract.criteria)!
+    expect(withUnreportedCriteria(contract.criteria, raw)).toBe(raw)
+    expect(renderCheckedState(contract, raw)).toBe('1,2,3 met')
+  })
+
+  test('a paraphrase can no longer produce a phantom gap, because there is no text to match', () => {
+    // This is what the numbering retires. Asked to retype each criterion, the model
+    // paraphrased; a paraphrase the matcher could not place stayed in `unmet` AND its
+    // criterion was appended as unreported, so the fixer received the same criterion twice
+    // with contradictory reasons -- one of which ("the audit did not report on this") no
+    // edit could ever close -- and `unmet.length` could exceed `criteria.length`.
+    const raw = parseAcceptance(JSON.stringify({
+      items: [
+        { index: 1, met: true, evidence: 'ok' },
+        { index: 2, met: false, evidence: 'not run' },
+        { index: 3, met: true, evidence: 'diff is internal' },
+      ],
+    }), contract.criteria)!
+    const full = withUnreportedCriteria(contract.criteria, raw)
+    expect(full.unmet.map((u) => u.why)).not.toContain(UNREPORTED_REASON)
+    expect(full.unmet).toHaveLength(1)
+    expect(full.unmet.length).toBeLessThanOrEqual(contract.criteria.length)
   })
 })
 
@@ -213,54 +290,46 @@ test('the whole arc: distilled up front, gate catches a missed criterion, fix ro
     if (req.url === '/health') return { status: 'ok' }
     const tools = (body.tools ?? []) as { function: { name: string } }[]
     const toolNames = tools.map((t) => t.function.name)
+    const schemaName = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
 
-    // The distiller: forced set_contract, before any work.
-    if (toolNames.length === 1 && toolNames[0] === 'set_contract') {
+    // The distiller: a forced `contract` schema, before any work.
+    if (schemaName === 'contract') {
       return {
         choices: [{
           message: {
-            role: 'assistant', content: null,
-            tool_calls: [{
-              id: 'd1', type: 'function',
-              function: {
-                name: 'set_contract',
-                arguments: JSON.stringify({
-                  goal: 'clamp exists, is covered, everything stays green',
-                  criteria: ['clamp added and exported', 'three assertions added', 'existing checks stay green'],
-                  constraints: ['no renames of existing symbols'],
-                }),
-              },
-            }],
+            role: 'assistant',
+            content: JSON.stringify({
+              goal: 'clamp exists, is covered, everything stays green',
+              criteria: ['clamp added and exported', 'three assertions added', 'existing checks stay green'],
+              constraints: ['no renames of existing symbols'],
+            }),
           },
-          finish_reason: 'tool_calls',
+          finish_reason: 'stop',
         }],
         usage: { prompt_tokens: 900, completion_tokens: 60 },
       }
     }
 
     // The gate: first call reports one criterion unmet, the re-check affirms everything.
-    if (toolNames.length === 1 && toolNames[0] === 'report_acceptance') {
+    // Recognised by the SCHEMA it forces, not by a one-tool array -- the gate now sends the
+    // session's own tools unchanged so its request stays a warm append (see forced-json.ts),
+    // and answers as JSON content rather than as a tool call.
+    if (schemaName === 'acceptance') {
       acceptanceCalls++
       const allMet = acceptanceCalls > 1
       return {
         choices: [{
           message: {
-            role: 'assistant', content: null,
-            tool_calls: [{
-              id: `a${acceptanceCalls}`, type: 'function',
-              function: {
-                name: 'report_acceptance',
-                arguments: JSON.stringify({
-                  items: [
-                    { criterion: 'clamp added and exported', met: true, evidence: 'write landed' },
-                    { criterion: 'three assertions added', met: allMet, evidence: allMet ? 'write landed' : 'no assertion write happened' },
-                    { criterion: 'existing checks stay green', met: true, evidence: 'nothing removed' },
-                  ],
-                }),
-              },
-            }],
+            role: 'assistant',
+            content: JSON.stringify({
+              items: [
+                { index: 1, met: true, evidence: 'write landed' },
+                { index: 2, met: allMet, evidence: allMet ? 'write landed' : 'no assertion write happened' },
+                { index: 3, met: true, evidence: 'nothing removed' },
+              ],
+            }),
           },
-          finish_reason: 'tool_calls',
+          finish_reason: 'stop',
         }],
         usage: { prompt_tokens: 1_500, completion_tokens: 80 },
       }
@@ -376,17 +445,42 @@ test('a mid-turn compaction leaves the diff review reading the turn it belongs t
     if (req.url === '/health') return { status: 'ok' }
     const names = ((body.tools ?? []) as { function: { name: string } }[]).map((t) => t.function.name)
     const forced = names.length === 1 ? names[0] : undefined
-    if (forced === 'set_contract') {
-      return call('set_contract', { goal: 'clamp exists and is covered', criteria, constraints: [] }, 900)
+    const schemaName = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
+    if (schemaName === 'contract') {
+      return {
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: JSON.stringify({ goal: 'clamp exists and is covered', criteria, constraints: [] }),
+          },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 900, completion_tokens: 20 },
+      }
     }
-    if (forced === 'report_acceptance') {
-      return call('report_acceptance', {
-        items: criteria.map((c) => ({ criterion: c, met: true, evidence: 'the write landed' })),
-      }, 1_500)
+    if (schemaName === 'acceptance') {
+      return {
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: JSON.stringify({
+              items: criteria.map((_c, i) => ({ index: i + 1, met: true, evidence: 'the write landed' })),
+            }),
+          },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 1_500, completion_tokens: 20 },
+      }
     }
-    if (forced === 'review_verdict') {
+    if (schemaName === 'review') {
       reviewed.push(JSON.stringify(body.messages))
-      return call('review_verdict', { issues: [] }, 1_500)
+      return {
+        choices: [{
+          message: { role: 'assistant', content: JSON.stringify({ issues: [] }) },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 1_500, completion_tokens: 20 },
+      }
     }
     const last = (body.messages as { content?: string | null }[]).at(-1)
     if (typeof last?.content === 'string' && last.content.includes('compacted to free up context')) {
@@ -460,4 +554,61 @@ describe('parseExpanded', () => {
     expect(parseExpanded(JSON.stringify({ expanded: '  Сделай кнопку через --accent из App.css.  ' })))
       .toBe('Сделай кнопку через --accent из App.css.')
   })
+})
+
+test('a criterion the audit did not report on is not treated as an asserted gap', () => {
+  // The two guards interact. `withUnreportedCriteria` fills the audit's silence by appending
+  // the criterion VERBATIM, which is what makes the gate refuse to close — correctly. But
+  // verbatim means it matches, so it lands in `unmetByIndex` looking exactly like a finding
+  // the audit actually made, and the plan sync then un-ticked a step the user had watched
+  // complete. "Not audited this round" is not evidence that the work came undone.
+  const criteria = ['the counter never repeats', 'the suite passes', 'no API changes']
+  const raw = parseAcceptance(JSON.stringify({
+    items: [
+      { index: 1, met: true, evidence: 'repro passes' },
+      { index: 2, met: false, evidence: 'not run' },
+    ],
+  }), criteria)!
+  const full = withUnreportedCriteria(criteria, raw)
+
+  const { unmetByIndex } = resolveReportedCriteria(criteria, full)
+  // Both are held open...
+  expect([...unmetByIndex.keys()].sort()).toEqual([1, 2])
+  // ...but only one of them is something the audit actually asserted.
+  expect(unmetByIndex.get(1)).not.toBe(UNREPORTED_REASON)
+  expect(unmetByIndex.get(2)).toBe(UNREPORTED_REASON)
+})
+
+test('the distiller clips a write-heavy tail, where the bulk is in tool_call arguments', async () => {
+  // `content` is only half of a message's size, and on a write-heavy tail it is the empty
+  // half: a write_file call carries the whole file in arguments with content: null. The clip
+  // short-circuited on `typeof content !== 'string'`, so those were never clipped at all and
+  // this deliberately-small context became tens of thousands of tokens.
+  const huge = 'x'.repeat(50_000)
+  let sent: any
+  const fake = await startFakeServer((body: any) => {
+    sent = body
+    return { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'no' } }] }
+  })
+  const client = new LlamaClient({ baseUrl: fake.url, model: 'test' })
+  const transcript = [
+    { role: 'system' as const, content: 'sys' },
+    {
+      role: 'assistant' as const,
+      content: null,
+      tool_calls: [{
+        id: 'w1', type: 'function' as const,
+        function: { name: 'write_file', arguments: JSON.stringify({ path: 'a.ts', content: huge }) },
+      }],
+    },
+  ]
+
+  const { distillContract } = await import('../src/session/contract.js')
+  await distillContract(client, transcript, 'do the thing, and several other things too')
+  await fake.close()
+
+  const wire = JSON.stringify(sent.messages)
+  expect(wire).toContain('clipped for contract distillation')
+  // Nowhere near the 50k it used to carry.
+  expect(wire.length).toBeLessThan(12_000)
 })

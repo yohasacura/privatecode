@@ -530,8 +530,15 @@ export interface StepContinuationEvent { step: number; firstTokenTimeoutMs?: num
 /** The server died mid-call, came back healthy, and the SAME request is being re-sent.
  * The dead attempt's partial deltas are superseded — the retry re-streams from the start —
  * so a renderer must discard its open reasoning/writing cards, or the fresh stream appends
- * onto the dead partials and the step reads as one spliced generation. */
-export type StepRetryEvent = Record<string, never>
+ * onto the dead partials and the step reads as one spliced generation.
+ *
+ * `firstTokenTimeoutMs` is the budget the core re-armed its own clock with, and it is a
+ * COLD-prefill allowance: the relaunched server has an empty KV cache, so the whole prompt
+ * is read again. Carried for the same reason `StepContinuationEvent` carries it — the window
+ * runs an independent countdown, and keeping the old flat budget left it showing
+ * "0s to timeout" for minutes of a perfectly healthy prefill. Optional, so a client that
+ * predates it is unaffected. */
+export interface StepRetryEvent { firstTokenTimeoutMs?: number }
 export interface StepDoneEvent {
   step: number
   seconds: number

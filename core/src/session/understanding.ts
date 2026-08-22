@@ -1,5 +1,6 @@
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ToolSchema } from '../llama/types.js'
+import { forcedJson } from './forced-json.js'
 import { alignReadings } from './contract.js'
 
 /**
@@ -52,10 +53,14 @@ export type LensName = 'literal' | 'colleague' | 'skeptic'
  *
  * Deliberately casual, and not out of style preference: this codebase's one measured law of
  * prompting this model is that instructions do not route behaviour (0/703 on a system-prompt
- * ask) while STRUCTURE does. The schema below is what forces the shape; the prose only has to
- * put the model in a frame of mind, and stiff instruction-speak is worse at that than plain
- * speech. The difference between the lenses is the whole experiment, so each one says its
- * difference in one blunt sentence and stops.
+ * ask) while STRUCTURE does. The schema below is what forces the shape -- and ONLY the shape:
+ * it is a `response_format` schema, compiled to a grammar and never rendered, so a
+ * `description` written there contributes zero prompt tokens and the model never sees it.
+ * Every word that has to reach the model lives in the ask in `readOnce`. The prose there has
+ * to do two jobs then: put the model in a frame of mind, where stiff instruction-speak is
+ * worse than plain speech, and carry the rules the lines must obey. The difference between
+ * the lenses is the whole experiment, so each one says its difference in one blunt sentence
+ * and stops.
  */
 const LENSES: { name: LensName; ask: string }[] = [
   {
@@ -76,29 +81,26 @@ const LENSES: { name: LensName; ask: string }[] = [
   },
 ]
 
-const READING_TOOL: ToolSchema = {
-  type: 'function',
-  function: {
-    name: 'record_reading',
-    description: 'Say what will be different once this change is done, as you read it.',
-    parameters: {
-      type: 'object',
-      required: ['does'],
-      properties: {
-        does: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'One short line per thing that will be DIFFERENT once the work is ' +
-            'finished. Not how the code works today — you already know that, and nobody is ' +
-            'asking. Each line is an outcome, not a step and not a file: "invoice numbers ' +
-            'never skip a value", not "add a transaction to InvoiceService" and not "edit ' +
-            'BillingController.cs". Roll the call sites up into the outcome instead of ' +
-            'listing them one by one. Two to six lines, each under about ten words — no ' +
-            'examples, no brackets, and never the same outcome twice in different words. ' +
-            'Write them IN ENGLISH, whatever language the request is in — these lines are ' +
-            'shown to the user as they are.',
-        },
-      },
+/** The shape a reading is held to, enforced by the sampler rather than by a one-tool
+ * `tools` array — see `forced-json.ts`: the array swap was costing a full re-prefill of the
+ * conversation, and the readings ride the LIVE transcript. */
+const READING_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['does'],
+  additionalProperties: false,
+  properties: {
+    does: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'One short line per thing that will be DIFFERENT once the work is ' +
+        'finished. Not how the code works today — you already know that, and nobody is ' +
+        'asking. Each line is an outcome, not a step and not a file: "invoice numbers ' +
+        'never skip a value", not "add a transaction to InvoiceService" and not "edit ' +
+        'BillingController.cs". Roll the call sites up into the outcome instead of ' +
+        'listing them one by one. Two to six lines, each under about ten words — no ' +
+        'examples, no brackets, and never the same outcome twice in different words. ' +
+        'Write them IN ENGLISH, whatever language the request is in — these lines are ' +
+        'shown to the user as they are.',
     },
   },
 }
@@ -131,6 +133,10 @@ function parseReading(argsJson: string, lens: LensName): Reading | null {
   } catch {
     return null
   }
+  return readReading(parsed, lens)
+}
+
+function readReading(parsed: unknown, lens: LensName): Reading | null {
   if (typeof parsed !== 'object' || parsed === null) return null
   const raw = (parsed as Record<string, unknown>)['does']
   if (!Array.isArray(raw)) return null
@@ -157,6 +163,7 @@ async function readOnce(
   request: string,
   lens: { name: LensName; ask: string },
   signal?: AbortSignal,
+  tools?: readonly ToolSchema[],
 ): Promise<Reading | null> {
   const messages: ChatMessage[] = [
     ...transcript,
@@ -167,28 +174,41 @@ async function readOnce(
         'Here is what was asked for, word for word:\n\n' +
         `    ${request}\n\n` +
         `${lens.ask}\n\n` +
+        // These four sentences used to live in READING_SCHEMA's `description`, back when the
+        // shape was forced by a one-tool `tools` array — which IS rendered, at the front of
+        // the prompt. A `response_format` schema is compiled to a grammar and contributes
+        // ZERO prompt tokens (measured: an 868-character description changes the prompt from
+        // 275 tokens to 275 tokens), so moving the forcing mechanism moved this instruction
+        // out of the model's sight. The lines it produces are shown to the USER as tick-boxes,
+        // and without this the gate started offering steps and file names as options.
+        //
+        // The English pin is the half that matters most: it is the whole subject of commit
+        // 6b0caec and of english-only-output.test.ts, and these lines are rendered verbatim.
         'What I want back is what will be DIFFERENT when it is done — not a summary of how ' +
-        'the code works now. You have read the code; that part is settled. Call ' +
-        'record_reading and stop there, do not start the work.]',
+        'the code works now. You have read the code; that part is settled.\n\n' +
+        'One short line per thing that will be different. Each line is an OUTCOME, not a ' +
+        'step and not a file: "invoice numbers never skip a value", not "add a transaction ' +
+        'to InvoiceService" and not "edit BillingController.cs". Roll the call sites up into ' +
+        'the outcome instead of listing them one by one. Two to six lines, each under about ' +
+        'ten words — no examples, no brackets, and never the same outcome twice in different ' +
+        'words. Write them IN ENGLISH, whatever language the request is in: these lines are ' +
+        'shown to the user exactly as you write them.\n\n' +
+        'Answer with JSON only and stop there, do not start the work.]',
     },
   ]
-  try {
-    const result = await client.chat({
-      messages,
-      tools: [READING_TOOL],
-      toolChoice: 'required',
-      maxTokens: READING_MAX_TOKENS,
-      disableThinking: true,
-      ...(signal ? { signal } : {}),
-    })
-    const call = result.message.tool_calls?.[0]
-    if (!call || call.function.name !== 'record_reading') return null
-    return parseReading(call.function.arguments, lens.name)
-  } catch {
-    // A reading that failed costs the check its resolution, not the turn. Two readings still
-    // disagree usefully; one cannot disagree at all and the caller treats that as silence.
-    return null
-  }
+  // A reading that fails costs the check its resolution, not the turn: `forcedJson` returns
+  // null on any refusal or unparseable answer. Two readings still disagree usefully; one
+  // cannot disagree at all, and the caller treats that as silence.
+  const parsed = await forcedJson(client, {
+    messages,
+    name: 'reading',
+    schema: READING_SCHEMA,
+    maxTokens: READING_MAX_TOKENS,
+    disableThinking: true,
+    ...(tools ? { tools } : {}),
+    ...(signal ? { signal } : {}),
+  })
+  return parsed === null ? null : readReading(parsed, lens.name)
 }
 
 const GROUP_TOOL: ToolSchema = {
@@ -249,6 +269,12 @@ async function groupLines(
           'the wording is nearly identical — "within a year" and "across years" are not the ' +
           'same thing. Call group_lines with the numbers.',
       }],
+      // The ONE call in this codebase that still swaps the tools array, and deliberately.
+      // Every other gate carries the session's own array so it stays an append onto the warm
+      // prompt — but this one does not ride the transcript at all: its whole prompt is the
+      // numbered list of lines built two lines above, a few hundred tokens with nothing
+      // cached to preserve. Giving it the 4.4k-token tool block would make it bigger, not
+      // cheaper, and llama.cpp keeps the conversation's prefix in RAM regardless.
       tools: [GROUP_TOOL],
       toolChoice: 'required',
       maxTokens: GROUP_MAX_TOKENS,
@@ -311,11 +337,13 @@ export async function readThroughLenses(
   transcript: readonly ChatMessage[],
   request: string,
   signal?: AbortSignal,
+  /** The session's own tool array, unchanged, so the three readings stay pure appends. */
+  tools?: readonly ToolSchema[],
 ): Promise<Understanding | null> {
   const readings: Reading[] = []
   for (const lens of LENSES) {
     if (signal?.aborted) return null
-    const reading = await readOnce(client, transcript, request, lens, signal)
+    const reading = await readOnce(client, transcript, request, lens, signal, tools)
     if (reading !== null) readings.push(reading)
   }
   if (readings.length < 2) return null
@@ -371,9 +399,17 @@ export function fromGroups(readings: readonly Reading[], groups: readonly number
     const shortest = lines.reduce((a, b) => (b.length < a.length ? b : a))
     const owners = new Set(group.map((i) => ownerOf(readings, i)))
     const core = [...owners].filter((o) => coreLenses.has(o)).length
-    // With no core reading at all — only the skeptic survived — nothing can be agreed, and
-    // every line is a candidate rather than a promise.
-    if (coreLenses.size > 0 && core === coreLenses.size) shared.push(shortest)
+    // Agreement needs TWO core readings, not "all of however many survived". The only
+    // arity guard upstream is `readings.length < 2` over the whole array, skeptic included,
+    // so `[colleague, skeptic]` gets here with `coreLenses.size === 1` — and `core ===
+    // coreLenses.size` is then satisfied by that single reading agreeing with itself. Every
+    // line of the COLLEAGUE lens, the deliberately expansive one, was stated back verbatim
+    // under "Here is what I am about to do:" with nothing having confirmed it, while every
+    // skeptic line became contested — so the card was at its most confident and its noisiest
+    // at the same moment, on the one run where least was known. `readOnce` returns null on a
+    // parse failure, a wrong or absent tool call, or any throw, which is a real rate against
+    // a 1500-token cap.
+    if (coreLenses.size >= 2 && core === coreLenses.size) shared.push(shortest)
     else contested.push({ text: shortest, core, fromCore: core > 0 })
   }
   contested.sort((a, b) => (b.core - a.core) || (Number(b.fromCore) - Number(a.fromCore)))
@@ -483,13 +519,38 @@ export function foldAnswer(u: Understanding, answer: string): { criteria: string
   const picked = answer.split(';').map((p) => p.trim()).filter((p) => p.length > 0)
   const criteria: string[] = []
   const notPicked: string[] = []
+
+  // EXACT first, and it is what the checkbox path actually produces: the host joins the
+  // ticked options with "; ", so every one of them is byte-identical to an option here.
+  // Going straight to `alignReadings` let a ticked option ALSO claim a near-identical one
+  // the person deliberately left unticked — narrow/wide pairs are exactly what it folds
+  // together, and `groupLines` is under explicit instructions to keep such pairs in
+  // separate groups, so the question offers them as separate choices and then adopted
+  // both. The user was then told "they want these, and they are now part of what done
+  // means" about scope they had just declined — and it was audited against, and promoted
+  // into message 0 at every compaction after that.
+  const unclaimed = [...picked]
+  const takeExact = (option: string): boolean => {
+    const at = unclaimed.indexOf(option)
+    if (at === -1) return false
+    unclaimed.splice(at, 1)
+    return true
+  }
+
+  const fuzzyCandidates: string[] = []
   for (const option of u.contested) {
-    if (picked.some((p) => alignReadings(p, option))) criteria.push(option)
+    if (takeExact(option)) criteria.push(option)
+    else fuzzyCandidates.push(option)
+  }
+  // Only what no exact tick claimed is matched loosely, and only against ticks no option
+  // has taken — that is the typed-their-own-words case the alignment exists for.
+  for (const option of fuzzyCandidates) {
+    if (unclaimed.some((p) => alignReadings(p, option))) criteria.push(option)
     else notPicked.push(option)
   }
   // Free text the person typed instead of picking: their own words outrank every reading,
   // so it is kept exactly as written.
-  for (const p of picked) {
+  for (const p of unclaimed) {
     if (!u.contested.some((option) => alignReadings(p, option)) && p.length >= MIN_USEFUL_CHARS) {
       criteria.push(p)
     }

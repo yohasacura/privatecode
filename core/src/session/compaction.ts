@@ -12,6 +12,13 @@ export interface CompactionInput {
    * `fitForSummary`.
    */
   budgetTokens?: number
+  /**
+   * The tool schemas every ordinary step sends, passed straight through.
+   *
+   * Present so this request shares their prefix — see `buildCompactionRequest`. Optional so
+   * a caller that has none (a test, a one-shot) behaves exactly as before.
+   */
+  tools?: readonly import('../llama/types.js').ToolSchema[]
 }
 export interface CompactionResult {
   /** The summary text the new transcript opens with. */
@@ -35,25 +42,47 @@ const REQUIRED_SECTIONS = [
   'Task state',
   'Files touched',
   'Decisions and constraints',
-  'Open todos',
   'Next step',
 ] as const
+
+/**
+ * What the model is told when a send is retried after the window overflowed.
+ *
+ * Lives here rather than in session.ts so `replay.ts` can import it without a cycle:
+ * it opens with plain prose, so without it in `HARNESS_OPENERS` a resumed session shows
+ * this as something the PERSON typed.
+ */
+export const OVERFLOW_RETRY_NOTE =
+  'The conversation had outgrown the context window and has just been compacted. Continue ' +
+  'with the request above, using the briefing for anything the summary replaced.'
 
 const COMPACTION_INSTRUCTION = `The conversation above is about to be compacted to free up context space. \
 Write a continuation briefing for the session to resume from. Write it for yourself: you \
 will continue this session with ONLY this briefing and the last few messages.
 
-Cover exactly these five sections, in this order:
+Cover exactly these four sections, in this order:
 
 1. ${REQUIRED_SECTIONS[0]}: what was asked, what is done, what remains.
 2. ${REQUIRED_SECTIONS[1]}: every path touched so far, one line each on what changed and why.
 3. ${REQUIRED_SECTIONS[2]}: anything agreed with the user that must not be silently revisited.
-4. ${REQUIRED_SECTIONS[3]}: verbatim, in the user's or your own original wording -- do not \
-summarize or drop any of them.
-5. ${REQUIRED_SECTIONS[4]}: the single next action to take.
+4. ${REQUIRED_SECTIONS[3]}: the single next action to take.
 
 Be concrete: exact file paths, exact function/variable names, exact remaining steps. Omit \
-nothing a continuation would need and add nothing it would not.`
+nothing a continuation would need and add nothing it would not.
+
+Do NOT restate the todo list: it is appended after this briefing straight from the todo tool, \
+which is the version that is actually true.`
+
+// There used to be a fifth section -- "Open todos: verbatim, in the user's or your own
+// original wording -- do not summarize or drop any of them" -- which asked the model to
+// GENERATE, from memory, the list `continuationInventory` prints two lines later straight
+// from the store. A generated copy of an authoritative source can only ever be a worse one,
+// and it cost ~320 output tokens: at the measured 42 tok/s that is ~7.6 s of the user's time
+// per compaction, spent on the most expensive channel there is to duplicate something free.
+//
+// Section 2 ("Files touched ... what changed and why") deliberately STAYS, even though the
+// inventory also lists paths and pastes bodies: the inventory cannot know WHY, and the
+// rationale is the half a continuation cannot reconstruct by opening the files.
 
 /** The same chars-per-token estimate `Transcript.approxTokens` uses, per message. */
 /**
@@ -214,6 +243,16 @@ export function buildCompactionRequest(input: CompactionInput): ChatRequest {
   return {
     messages: [...fitForSummary(input.messages, input.budgetTokens), briefing],
     maxTokens: MAX_TOKENS,
+    // The SESSION'S OWN tool array, carried through even though this request has nothing to
+    // call. It is not decoration: with `--jinja` the tool block renders at the very front of
+    // the prompt, so omitting it makes this a different prefix from every step that came
+    // before — the comment above about "prefill ≈ 0" was simply false, and a compaction paid
+    // a full cold read of the conversation it was summarising. Measured on this server:
+    // sending tools with `tool_choice: 'none'` renders a byte-identical prompt to sending
+    // them normally (2,984 prompt tokens either way, 99.9% cached), while sending none at all
+    // is a 2,427-token prompt that reuses nothing. `tool_choice: 'none'` is what keeps the
+    // model from calling anything.
+    ...(input.tools && input.tools.length > 0 ? { tools: [...input.tools] } : {}),
     toolChoice: 'none',
     // The one request in this system with nothing to decide: the whole conversation is in
     // front of it and the job is to restate it. Measured in a real 27-minute run before

@@ -34,12 +34,14 @@ import { Workspace } from '../workspace.js'
 import {
   COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, approxTokensOf, collapseSupersededReads,
   continuationInventory, generateCompaction, selectCompactionTail, touchedPaths,
+  OVERFLOW_RETRY_NOTE,
 } from './compaction.js'
 import {
   DIFF_REVIEW_MIN_CHARS, acceptanceFailureMessage, checkAcceptance, clipTodoText,
   decomposeTodos, distillContract,
   expandDraft, improveDraft, looksLikeTask, renderCheckedState, renderContract,
-  resolveReportedCriteria, buildReviewBrief, reviewVerdict, REVIEW_SYSTEM,
+  resolveReportedCriteria, withUnreportedCriteria, UNREPORTED_REASON,
+  buildReviewBrief, reviewVerdict, REVIEW_SYSTEM,
 } from './contract.js'
 import {
   buildQuestion, foldAnswer, readThroughLenses, type Understanding,
@@ -422,6 +424,17 @@ const SLOW_VERIFY_SECONDS = 8
  */
 const MAX_ACCEPTANCE_ROUNDS = 2
 
+/**
+ * What the fresh-context reviewer may call, named once.
+ *
+ * Named explicitly rather than left to plan mode's default, which is the registry's WHOLE
+ * read-only set -- that set includes `database` and `use_skill`, and the reviewer's context
+ * deliberately carries neither, so both would answer with a confident false statement about
+ * the workspace that it would then reason from. Shared with `reviewVerdict` so the verdict
+ * call sends the same array the reading turn did and stays a warm append.
+ */
+const REVIEWER_TOOLS = ['read_file', 'search_code', 'list_dir', 'find_files', 'symbol_outline'] as const
+
 /** How far the independent reader may look before it must deliver a verdict. Enough to open
  * the files the diff touched and follow one thread out of them; past that it is re-reading
  * the repository at the end of every task, and each step is a generation. */
@@ -467,13 +480,17 @@ const LOGGED_TOOLS = new Set(['run_command', 'background_task'])
  * fill estimate, which is one of the reasons the estimate read low enough to let an
  * over-long prompt through.
  */
-const TOOL_SCHEMA_TOKENS = 2_600
+// RE-MEASURED 2026-08-22 (`spike/prefix-size-probe.mts`): the toolset registers 21 tools
+// now, not the 15 this was taken over, and the array serialises to 17,798 chars = ~4,450
+// tokens. Reading 1,850 tokens low on every single request is the wrong direction for the
+// one estimate that decides when to compact.
+const TOOL_SCHEMA_TOKENS = 4_450
 
 /** What the retry says instead of repeating the user's message, which is already in the
  * compacted tail. */
-const OVERFLOW_RETRY_NOTE =
-  'The conversation had outgrown the context window and has just been compacted. Continue ' +
-  'with the request above, using the briefing for anything the summary replaced.'
+// Declared in compaction.ts, not here: `replay.ts` needs it to recognise this as a harness
+// message rather than something the person typed, and session.ts already imports replay.ts —
+// so the constant lives in the module they can both reach without a cycle.
 
 /**
  * The prompt size llama.cpp reported when it refused, or null when this was some other
@@ -839,7 +856,11 @@ export class Session {
     const norm = (c: string): string => c.trim().replace(/\s+/g, ' ').toLowerCase()
     if (norm(args.command) !== norm(command)) return
     this.writesAtLastVerify = this.writeCount
-    this.lastVerifyFingerprint = 'ok'
+    // The model ran the project's own check itself, and `run_command` carries no folder — so
+    // every folder's slot is cleared rather than one guessed at. Being wrong here costs one
+    // re-run of a check, which is the direction this has always erred in.
+    this.lastVerifyFingerprint.clear()
+    this.lastVerifyFingerprint.set('', 'ok')
   }
 
   /**
@@ -859,7 +880,7 @@ export class Session {
    * the model rewriting working code.
    */
   private async verifyAndFix(
-    result: TurnResult, writesThisTurn: number, turnStartIndex: number, signal?: AbortSignal,
+    result: TurnResult, writesThisTurn: number, signal?: AbortSignal,
   ): Promise<TurnResult> {
     if (result.stoppedBecause !== 'done') return result
     // A turn that wrote nothing cannot have broken the build — but it CAN be the turn
@@ -867,7 +888,7 @@ export class Session {
     // did all the work, turn 3 claimed the task fully finished with zero writes, and
     // the writes guard silently skipped the contract gate on exactly the turn whose
     // claim it exists to audit. The gate carries its own saysFinished/satisfied guards.
-    if (writesThisTurn === 0) return await this.acceptanceGate(result, turnStartIndex, signal)
+    if (writesThisTurn === 0) return await this.acceptanceGate(result, signal)
 
     // Nothing has been written since the mid-turn check last ran, and it passed. Running the
     // same command again over the same bytes would ask a question that has already been
@@ -879,8 +900,10 @@ export class Session {
     // Skips the BUILD, not the CONTRACT: found live, on the very first turn where the
     // model self-ran the check — the dedup returned here and the acceptance gate below
     // never ran at all. A green build answers "does it compile", never "is the task met".
-    if (this.writesAtLastVerify === this.writeCount && this.lastVerifyFingerprint === 'ok') {
-      return await this.acceptanceGate(result, turnStartIndex, signal)
+    if (this.writesAtLastVerify === this.writeCount &&
+        [...this.lastVerifyFingerprint.values()].every((f) => f === 'ok') &&
+        this.lastVerifyFingerprint.size > 0) {
+      return await this.acceptanceGate(result, signal)
     }
 
     // Only the folders this turn actually wrote to, each with its own command. Running every
@@ -897,7 +920,7 @@ export class Session {
     }
     // The contract gate runs AFTER the build gate: green code that misses a criterion is
     // a different failure from red code, and handing the model both at once buries one.
-    return await this.acceptanceGate(current, turnStartIndex, signal)
+    return await this.acceptanceGate(current, signal)
   }
 
   /**
@@ -908,7 +931,7 @@ export class Session {
    * measured failure ("finished with conviction, criteria plainly unmet") lives.
    */
   private async acceptanceGate(
-    result: TurnResult, turnStartIndex: number, signal?: AbortSignal,
+    result: TurnResult, signal?: AbortSignal,
   ): Promise<TurnResult> {
     const contract = this.meta.contract
     // A SATISFIED contract has retired: the follow-up turns after a finished task must
@@ -938,16 +961,33 @@ export class Session {
     const writesAtGateStart = this.writeCount
     for (let round = 1; round <= MAX_ACCEPTANCE_ROUNDS; round++) {
       if (signal?.aborted) return current
-      // The check's prompt diverges from the conversation (different tool list), so the
-      // server's cache is displaced exactly as a compaction generation displaces it —
-      // flagged so the next request buys its cold prefill honestly.
-      this.compactionDisplacedCache = true
-      this.promptCacheCold = true
-      const report = await checkAcceptance(
-        this.opts.client, this.transcript.messages(), contract, signal,
+      // No cache flag any more, and that is the point of the rewrite: the check used to send
+      // a one-tool `tools` array, which renders at the FRONT of the prompt and dropped the
+      // server's prefix match to zero. It now sends the session's own array unchanged and
+      // forces its shape with a sampler constraint, so this request is an ordinary append —
+      // measured at 549 tokens of re-prefill against 1,228 for a normal step, with the
+      // conversation still 100% cached afterwards (docs/SPIKE-KAT-CODER.md §3).
+      // Claiming displacement here would hand the NEXT step a cold-start timeout for a
+      // prefill that does not happen, which is minutes of grace a wedged server does not
+      // deserve.
+      const raw = await checkAcceptance(
+        this.opts.client, this.transcript.messages(), contract, signal, this.stepSchemas(),
       )
       // A check that could not run must not block the turn; the build gate already ran.
-      if (report === null) return current
+      if (raw === null) {
+        // ATTEMPTED AND FAILED is not the same as "nothing was unmet", and until now the two
+        // were the same value. `lastUnmetCount` starts at 0 and is only ever written on the
+        // success path below, so a transport error, a truncated generation or an unparseable
+        // answer left it reading 0 — and the unattended runner ends a run 'done' on exactly
+        // that number. A task whose audit never ran once could report itself finished.
+        this.lastUnmetCount = null
+        return current
+      }
+      // A criterion the audit did not MENTION is a gap in the audit, not an affirmation —
+      // and every reader below (the note, the plan, the failure message, the `unmet.length
+      // === 0` test on the next line but one) treated the two as the same thing. See
+      // `withUnreportedCriteria`.
+      const report = withUnreportedCriteria(contract.criteria, raw)
       this.lastUnmetCount = report.unmet.length
       // The audit's verdict becomes part of the contract itself: every later swap promotes
       // "where the task actually STANDS" into message 0, not only what done would mean.
@@ -958,8 +998,7 @@ export class Session {
       this.syncTodosWithAudit(contract, report)
       this.opts.onAcceptance?.({ met: report.met, unmet: report.unmet.length, round, kind: 'criteria' })
       if (report.unmet.length === 0) { clean = true; break }
-      const fixer = this.buildAgent(signal)
-      const fixed = await fixer.runTurn(acceptanceFailureMessage(report))
+      const fixed = await this.runHarnessTurn(acceptanceFailureMessage(report), signal)
       current = { ...fixed, steps: current.steps + fixed.steps }
       if (current.stoppedBecause !== 'done') return current
     }
@@ -972,7 +1011,9 @@ export class Session {
         if (current.stoppedBecause !== 'done') return current
       }
     }
-    current = await this.freshReview(contract, current, turnStartIndex, signal)
+    current = await this.freshReview(contract, current, signal)
+    // `=== 0` and not merely falsy: `null` means the audit could not run, and a contract
+    // must never retire on an audit that did not happen.
     if (clean && current.stoppedBecause === 'done' && this.lastUnmetCount === 0) {
       contract.satisfied = true
       this.opts.store?.saveMeta(this.meta)
@@ -1004,23 +1045,28 @@ export class Session {
   private async freshReview(
     contract: NonNullable<SessionMeta['contract']>,
     result: TurnResult,
-    turnStartIndex: number,
     signal?: AbortSignal,
   ): Promise<TurnResult> {
     if (signal?.aborted || result.stoppedBecause !== 'done') return result
-    const diff = this.turnDiffText(turnStartIndex)
+    // Read HERE, not carried in: a fixer turn inside the acceptance gate can compact, and
+    // `applyCompactionSwap` remaps the field while a value captured before the gate keeps
+    // pointing into the pre-swap transcript. `slice(190)` of a 9-message transcript is
+    // empty, so the diff measured 0 characters and `freshReview` returned before the
+    // reviewer was ever built and before any review event was emitted — on exactly the
+    // largest turns, the ones a compaction happens on. The comment at the capture site names
+    // this hazard for the OUTER turn; it applies just as much to the fixer's.
+    const diff = this.turnDiffText(this.turnStartIndex)
     if (diff.length < DIFF_REVIEW_MIN_CHARS) return result
     this.compactionDisplacedCache = true
     this.promptCacheCold = true
     const issues = await this.runReviewer(contract, diff, signal)
     if (issues !== null) {
-      this.lastUnmetCount = Math.max(this.lastUnmetCount, issues.length)
+      this.lastUnmetCount = Math.max(this.lastUnmetCount ?? 0, issues.length)
       this.opts.onAcceptance?.({ met: 0, unmet: issues.length, round: 1, kind: 'review' })
     }
     if (issues === null || issues.length === 0) return result
     const writesBeforeFix = this.writeCount
-    const fixer = this.buildAgent(signal)
-    const fixed = await fixer.runTurn(reviewFailureMessage(issues))
+    const fixed = await this.runHarnessTurn(reviewFailureMessage(issues), signal)
     let current: TurnResult = { ...fixed, steps: result.steps + fixed.steps }
     // Same honesty rule as the acceptance fixers: writes after the last verify must not
     // end a turn unverified.
@@ -1081,7 +1127,7 @@ export class Session {
       // answer with a confident false statement about the workspace ("no database is
       // configured") that it then reasons from. Plan mode still narrows whatever is passed,
       // so this can only ever be a subset.
-      allowedTools: ['read_file', 'search_code', 'list_dir', 'find_files', 'symbol_outline'],
+      allowedTools: [...REVIEWER_TOOLS],
       // Enough to open the touched files and follow one thread out of them; past that it is
       // re-reading the repository on every finished task, and the verdict is a generation
       // away either side of it.
@@ -1096,6 +1142,18 @@ export class Session {
       events: { onTextDelta: () => {} },
       ...(signal ? { signal } : {}),
     }
+    // The same ceiling the main agent gets, and for the same reason its comment gives: one
+    // step may batch several reads, and `MAX_CHARS` per read is 60,000 — four of them is a
+    // window's worth of tokens appended atomically on top of an already-large brief. The
+    // reviewer was the ONLY Agent built without this, and it is the one whose context is
+    // most nearly full to begin with. Past the limit the next request 400s, `runTurn`
+    // throws, the catch below swallows it, `reviewVerdict` then throws over the same
+    // transcript and returns null — and `freshReview` reports nothing, having fired no
+    // event. "Reviewed, found nothing" and "the review could not run" were the same thing
+    // in the transcript, the verify strip and the log, on exactly the largest turns.
+    if (this.opts.compaction !== undefined) {
+      agentOpts.stepResultBudgetChars = tailBudgetTokens(this.opts.compaction.contextLength) * 4
+    }
     try {
       const reader = new Agent(agentOpts)
       await reader.runTurn(brief)
@@ -1105,7 +1163,13 @@ export class Session {
       // is exactly where it stood before any of this existed.
     }
     if (signal?.aborted) return null
-    return await reviewVerdict(this.opts.client, transcript.messages(), signal)
+    // The reviewer's OWN tool list, so the verdict is an append onto the prefix its reading
+    // turn just warmed rather than a fresh one. Same list `agentOpts.allowedTools` names
+    // above -- read from the registry so the two cannot drift.
+    return await reviewVerdict(
+      this.opts.client, transcript.messages(), signal,
+      this.opts.toolset.registry.schemas([...REVIEWER_TOOLS]),
+    )
   }
 
   /**
@@ -1160,12 +1224,15 @@ export class Session {
     // write would pay for it again.
     contract.premisesChecked = true
     this.opts.store?.saveMeta(this.meta)
-    this.compactionDisplacedCache = true
-    this.promptCacheCold = true
+    // No cache flag: this now sends the session's own tool array and constrains the answer
+    // with a sampler schema, so it is an append onto the warm prompt rather than a new
+    // prefix. See the acceptance gate above.
 
     let premises: Premise[] | null
     try {
-      premises = await statePremises(this.opts.client, this.transcript.messages(), signal)
+      premises = await statePremises(
+        this.opts.client, this.transcript.messages(), signal, this.stepSchemas(),
+      )
     } catch {
       return undefined
     }
@@ -1219,16 +1286,13 @@ export class Session {
     contract.understood = true
     this.opts.store?.saveMeta(this.meta)
 
-    // The readings diverge from the conversation's tool list, so the server's cache is
-    // displaced exactly as a compaction generation displaces it — flagged so the next
-    // request buys its cold prefill honestly rather than being surprised by it.
-    this.compactionDisplacedCache = true
-    this.promptCacheCold = true
+    // No cache flag, for the same reason as the two gates above: the readings ride the
+    // session's own unchanged tool array now, so all three are appends onto the warm prompt.
 
     let understanding: Understanding | null
     try {
       understanding = await readThroughLenses(
-        this.opts.client, this.transcript.messages(), request, signal,
+        this.opts.client, this.transcript.messages(), request, signal, this.stepSchemas(),
       )
     } catch {
       return undefined
@@ -1275,7 +1339,12 @@ export class Session {
     // would promote "1,2,3 met" into message 0 over a contract that has grown since.
     delete contract.checkedState
     this.opts.store?.saveMeta(this.meta)
-    this.opts.onAcceptance?.({ met: criteria.length, unmet: 0, round: 1, kind: 'criteria' })
+    // NOT an acceptance event. This used to fire `onAcceptance({ met: criteria.length,
+    // unmet: 0, kind: 'criteria' })` — which the window and the work log both read as "the
+    // contract check ran and passed", asserted here before a single line has been written,
+    // let alone audited. `met` was not even a count of met criteria; it was the number of
+    // criteria the user had just ADDED. The contract growing is a different event from the
+    // contract being checked, and the only honest thing to say here is nothing.
 
     const wanted = criteria.length > 0
       ? `They want these, and they are now part of what "done" means:\n${criteria.map((c) => `- ${c}`).join('\n')}\n`
@@ -1330,8 +1399,7 @@ export class Session {
       if (outcome.problem !== undefined) return current
 
       const where = this.workspace.multi ? `In the "${job.folder}" folder: ` : ''
-      const fixer = this.buildAgent(signal)
-      const fixed = await fixer.runTurn(`${where}${verifyFailureMessage(job.spec, outcome)}`)
+      const fixed = await this.runHarnessTurn(`${where}${verifyFailureMessage(job.spec, outcome)}`, signal)
       // The fixer's result REPLACES the outcome — it is the later, truer statement of how the
       // turn ended — but its step count is its own, not the turn's. Replacing that outright
       // is what made the work log say "1 step" for a turn that had taken thirteen, and
@@ -1410,9 +1478,16 @@ export class Session {
     this.workLog?.appendRunEnd(new Date(), this.turnNumber, detail)
   }
 
-  /** How many contract criteria (or review findings) the last gate left standing — the
-   * unattended runner reads it so a run cannot end 'done' on a turn the gate knows failed. */
-  lastAcceptanceUnmet(): number {
+  /**
+   * How many contract criteria (or review findings) the last gate left standing, or `null`
+   * when a gate was ATTEMPTED and could not run at all.
+   *
+   * The distinction is the whole point: the unattended runner reads this to decide whether a
+   * turn that says "done" may end the run, and a gate that failed to answer is not evidence
+   * of anything. `0` still means what it always meant — either no audit was owed, or one ran
+   * and found nothing.
+   */
+  lastAcceptanceUnmet(): number | null {
     return this.lastUnmetCount
   }
 
@@ -1438,7 +1513,23 @@ export class Session {
     // A summary does not need the whole conversation. `fitForSummary` already keeps the
     // system message, the opening exchange and the most recent work, which is what a
     // continuation is built from; the middle is what a summary is for.
-    return Math.max(0, Math.min(contextLength - SUMMARY_OUTPUT_RESERVE, SUMMARY_MAX_INPUT_TOKENS))
+    //
+    // ...and all of that is true only when the prefix is COLD, which is the case that
+    // reasoning was measured in. It no longer describes the common one. This request now
+    // carries the session's own tool block (see `buildCompactionRequest`), so when the
+    // server is still holding the prompt the turn just used, sending the WHOLE transcript is
+    // a pure append — the only new tokens are the briefing instruction — while capping it at
+    // 40k makes `fitForSummary` drop the middle, and dropping the middle is a mutation: the
+    // prompt diverges at the cut and ~40k tokens are re-read for nothing. Capping is the
+    // slower option exactly when compaction normally fires, which is straight after a turn.
+    //
+    // So the cap is kept for the case it was measured on, and only that case: a cold prefix,
+    // where a window-sized request really is five minutes of silence. `promptCacheCold` is
+    // the session's own answer to that question and is already maintained for the step
+    // clock. Being wrong here is bounded either way — wrong-warm costs one capped summary,
+    // wrong-cold costs one slow one — and it decides nothing about correctness, only speed.
+    const cap = this.promptCacheCold ? SUMMARY_MAX_INPUT_TOKENS : contextLength - SUMMARY_OUTPUT_RESERVE
+    return Math.max(0, Math.min(contextLength - SUMMARY_OUTPUT_RESERVE, cap))
   }
 
   /**
@@ -1971,7 +2062,7 @@ export class Session {
       let turnText = userText
       if ((sendOpts?.distill ?? looksLikeTask(text)) && looksLikeTask(text)) {
         const contract = await distillContract(
-          this.opts.client, this.transcript.messages(), userText, signal,
+          this.opts.client, this.transcript.messages(), userText, signal, this.stepSchemas(),
         )
         if (contract !== null) {
           // The user's own words ride along with the distillation of them: the understanding
@@ -2038,7 +2129,7 @@ export class Session {
       // `this.turnStartIndex`, not `beforeCount`: a mid-turn compaction swap replaces the
       // transcript object and remaps the field to the new object's coordinates, while the
       // captured local would silently index past the end of a ten-message transcript.
-      result = await this.verifyAndFix(result, this.writeCount - writesBefore, this.turnStartIndex, signal)
+      result = await this.verifyAndFix(result, this.writeCount - writesBefore, signal)
 
       // Restore the note only when the user message itself never reached the transcript --
       // checked directly against the transcript rather than via `result.steps`, which counts
@@ -2228,8 +2319,8 @@ export class Session {
           // The six tokens that are the whole point. Said only when the state CHANGED —
           // repeating "still fine" after every one of forty edits is the noise the old
           // silence was trying to avoid, and this keeps the answer without it.
-          if (this.lastVerifyFingerprint !== 'ok') {
-            this.lastVerifyFingerprint = 'ok'
+          if (this.lastVerifyFingerprint.get(job.folder ?? '') !== 'ok') {
+            this.lastVerifyFingerprint.set(job.folder ?? '', 'ok')
             this.transcript.append({
               role: 'user',
               content: `[${where}${job.spec.command}: ok, ${seconds.toFixed(1)}s]`,
@@ -2245,14 +2336,14 @@ export class Session {
         // legitimately red for a dozen edits, and re-reading the same errors twelve times
         // costs more context than the errors are worth.
         const fingerprint = `fail:${job.folder ?? ''}:${outcome.output.slice(0, 800)}`
-        if (fingerprint === this.lastVerifyFingerprint) {
+        if (fingerprint === this.lastVerifyFingerprint.get(job.folder ?? '')) {
           this.transcript.append({
             role: 'user',
             content: `[${where}${job.spec.command}: still failing, same errors as before.]`,
           })
           return
         }
-        this.lastVerifyFingerprint = fingerprint
+        this.lastVerifyFingerprint.set(job.folder ?? '', fingerprint)
         this.transcript.append({
           role: 'user',
           content:
@@ -2358,7 +2449,7 @@ export class Session {
     const big = contract.criteria.length >= 4 || contract.interfaces !== undefined
     if (big) {
       const planned = await decomposeTodos(
-        this.opts.client, this.transcript.messages(), contract, signal,
+        this.opts.client, this.transcript.messages(), contract, signal, this.stepSchemas(),
       )
       if (planned !== null) {
         store.set(planned)
@@ -2370,6 +2461,32 @@ export class Session {
     store.set(contract.criteria.map((c) => ({ text: clipTodoText(c), status: 'pending' as const })))
     this.opts.interaction?.todosChanged?.(store.list())
     this.syncUpkeepMarkers()
+  }
+
+  /**
+   * Runs a HARNESS-issued turn (an acceptance fixer, a review fixer, a premise re-read) with
+   * the same context-overflow recovery `send` gives the user's own turn.
+   *
+   * Those four call sites were bare awaits. The window survives a throw from them —
+   * `send-failed` renders — but an unattended run does not: it classifies any throw it does
+   * not recognise as a transport failure and re-sends into the same over-full transcript,
+   * with `latestPromptTokens` never corrected, so three genuine overflows were reported as
+   * `server-unreachable` against a server that was answering perfectly. It also skips
+   * `recordTurn`, the meta save and the tail flush on the way out.
+   *
+   * The recovery is the same shape as the main path's: believe the server's own number,
+   * compact on it, and continue rather than re-sending a message the transcript already has.
+   */
+  private async runHarnessTurn(text: string, signal?: AbortSignal): Promise<TurnResult> {
+    try {
+      return await this.buildAgent(signal).runTurn(text)
+    } catch (e) {
+      const measured = contextOverflowTokens(e)
+      if (measured === null) throw e
+      this.latestPromptTokens = measured
+      await this.compactNow(signal)
+      return await this.buildAgent(signal).runTurn(OVERFLOW_RETRY_NOTE)
+    }
   }
 
   /**
@@ -2394,9 +2511,32 @@ export class Session {
     const met = new Set(
       criteria.filter((_c, i) => !unmetByIndex.has(i)).map((c) => clipTodoText(c)),
     )
-    if (met.size === 0) return
+    // Un-ticking happens only on a gap the audit ASSERTED, never on one it merely failed to
+    // mention. `withUnreportedCriteria` fills the silence by appending the criterion verbatim
+    // — which is what makes the gate hold the task open, correctly — but verbatim means it
+    // MATCHES, so it lands in `unmetByIndex` indistinguishable from a real finding, and the
+    // step the user watched complete flipped back to pending because one paraphrase in the
+    // report could not be placed. "Not audited this round" is not evidence that the work came
+    // undone; the gate still refuses to close, which is where that doubt belongs.
+    const unmet = new Set(
+      criteria
+        .filter((_c, i) => unmetByIndex.get(i) !== undefined && unmetByIndex.get(i) !== UNREPORTED_REASON)
+        .map((c) => clipTodoText(c)),
+    )
+    if (met.size === 0 && unmet.size === 0) return
     let changed = false
     const next = store.list().map((t) => {
+      // Both directions, because the audit can change its mind and `checkedState` already
+      // does: it is recomputed whole every round, while a ticked box used to be permanent.
+      // Round 2 downgrading a criterion left the user reading a 4/4 Plan card beside a note
+      // saying criterion 2 is UNMET — and worse, `planFinished` then reads that card as
+      // complete forever, so every later turn in the session opens an audit whether or not
+      // anything claimed to be done. Only scaffolded items are touched either way: a
+      // decomposed or model-written item's text matches no criterion.
+      if (unmet.has(t.text) && t.status === 'completed') {
+        changed = true
+        return { ...t, status: 'pending' as const }
+      }
       if (t.status === 'completed' || !met.has(t.text)) return { ...t }
       changed = true
       return { ...t, status: 'completed' as const }
@@ -2531,14 +2671,14 @@ export class Session {
    * declines or suggests nothing — the caller keeps its quiet lint chips, never an error.
    */
   async previewSuggestions(text: string, signal?: AbortSignal): Promise<DraftSuggestions | null> {
-    return improveDraft(this.opts.client, this.previewContext(), text, signal)
+    return improveDraft(this.opts.client, this.previewContext(), text, signal, this.stepSchemas())
   }
 
   /** The composer's expand preview: a rough command grown into a detailed brief from the
    * same context a send would carry (message 0's repo map and notes included). A preview
    * and nothing more, exactly like `previewSuggestions` above. */
   async previewExpansion(text: string, signal?: AbortSignal): Promise<string | null> {
-    return expandDraft(this.opts.client, this.previewContext(), text, signal)
+    return expandDraft(this.opts.client, this.previewContext(), text, signal, this.stepSchemas())
   }
 
   /**
@@ -2629,6 +2769,9 @@ export class Session {
             messages: this.transcript.messages(),
             workspaceRoot: this.opts.workspaceRoot,
             budgetTokens: this.summaryBudget(),
+            // The same tool block every step sends, so this request shares their prefix
+            // instead of being a new one. See `buildCompactionRequest`.
+            tools: this.stepSchemas(),
           },
           signal,
           this.opts.onCompactionProgress,
@@ -2999,6 +3142,14 @@ export class Session {
 
     this.transcript = next
     this.persistedCount = next.messages().length
+    // The fill warnings arm again, because the thing they warn about has just happened and
+    // will happen again. They were a once-per-SESSION set, and the doc for them said so
+    // deliberately — but the nudge is "the window is filling, write down anything that must
+    // survive", which is advice about an imminent event, not a fact about the session. After
+    // the first compaction every later cycle was silent, so on a long run the one warning
+    // that matters was the one nobody was there for. Per-CYCLE keeps the anti-nag intent
+    // (still at most one per mark, per cycle) and drops the part that made it useless.
+    this.fillMarksSeen.clear()
     // The swap rewrote the prefix: nothing the server cached still matches, and the next
     // request pays a full prefill.
     this.promptCacheCold = true
@@ -3093,7 +3244,12 @@ export class Session {
     try {
       const result = await generateCompaction(
         this.opts.client,
-        { messages, workspaceRoot: this.opts.workspaceRoot, budgetTokens: this.summaryBudget() },
+        {
+          messages,
+          workspaceRoot: this.opts.workspaceRoot,
+          budgetTokens: this.summaryBudget(),
+          tools: this.stepSchemas(),
+        },
         signal,
         this.opts.onCompactionProgress,
       )
@@ -3111,7 +3267,7 @@ export class Session {
           messages: [...next.messages()],
           // The SAME tool list the real steps send: the rendered tool schemas are part of
           // the prompt, so a prewarm without them warms a prompt no step will ever send.
-          tools: this.opts.toolset.registry.schemas(),
+          tools: this.stepSchemas(),
           maxTokens: 1, disableThinking: true, signal,
         })
         // The server cache now holds the post-swap prefix — the next step is warm.
@@ -3171,7 +3327,18 @@ export class Session {
   private writeCountAtStepStart = 0
   /** What the last mid-turn check said, so an unchanged answer is reported as unchanged
    * rather than repeated in full. 'ok' or a clipped failure fingerprint. */
-  private lastVerifyFingerprint: string | null = null
+  /**
+   * The last verify outcome PER FOLDER, so a multi-folder workspace can dedup at all.
+   *
+   * One shared slot was enough while a workspace had one check. With two writable folders it
+   * defeats itself: `api` green stores 'ok', `web` red stores its fingerprint, the next `api`
+   * run overwrites it with 'ok' again — so `web`'s unchanged failure never matches, and its
+   * full build log is re-appended at EVERY write boundary. In an append-only transcript that
+   * is roughly 16k prompt tokens per refactor that nothing can reclaim, restating errors the
+   * model has already read a dozen times. The value already carried `job.folder`; only the
+   * storage did not.
+   */
+  private lastVerifyFingerprint = new Map<string, string>()
   /** Identity of the last plan-focus note injected, so the frame is re-pointed only when
    * the in-progress item actually changes. See `injectPlanFocus`. */
   private lastPlanFocus: string | null = null
@@ -3184,11 +3351,14 @@ export class Session {
   private turnStartIndex = 0
   /** How many contract criteria the last acceptance check left unmet, for the unattended
    * runner's honesty: a run must not end 'done' on a turn the gate knows failed. */
-  private lastUnmetCount = 0
+  /** `null` = a gate was attempted and could not run. See `lastAcceptanceUnmet`. */
+  private lastUnmetCount: number | null = 0
   /** Set the first time a check is measured slow; from then on it is time-gated again. */
   private verifySlow = false
   private lastVerifyAtMs = 0
   /** Fill marks already announced, so each is said once per session and never again. */
+  /** Cleared at every compaction swap — see `applyCompactionSwap`. Per CYCLE, not per
+   * session: the warning is about an imminent compaction, and there is one every cycle. */
   private readonly fillMarksSeen = new Set<number>()
   private lastCheckpointAtMs = 0
   /** Where the current turn began, for the work log's own diff. See `recordTurn`. */
@@ -3269,6 +3439,29 @@ export class Session {
       ...(this.opts.unattended?.approvalTimeoutMs !== undefined
         ? { approvalTimeoutMs: this.opts.unattended.approvalTimeoutMs } : {}),
     })
+  }
+
+  /**
+   * Exactly the tool schemas the next step will send — including plan mode's narrowing.
+   *
+   * The comment two lines above the prewarm's `tools:` states the invariant correctly and
+   * the code did not hold it: `buildAgent` never passes `allowedTools`, so `Agent` narrows
+   * plan mode to the registry's `readOnlyNames()` itself and sends 11 schemas, while the
+   * prewarm sent all 21. That difference (~8.1k chars, ~2k tokens) sits INSIDE the system
+   * block at the very front of the prompt, so the prewarmed prefix matched nothing from
+   * token 0 and the full re-prefill was paid twice — once wasted on the prewarm, once on
+   * the user's clock. Roughly 55 s of GPU per plan-mode compaction, for a warm-up that
+   * could not warm anything.
+   *
+   * Mirrors `Agent`'s own rule rather than restating it: the mode this reads is the one
+   * `buildAgent` resolves, and `Agent` derives the list from the tools' own `readOnly`
+   * declarations, so neither side has a hand-kept list to drift.
+   */
+  private stepSchemas(): import('../llama/types.js').ToolSchema[] {
+    const registry = this.opts.toolset.registry
+    return this.meta.mode === 'plan'
+      ? registry.schemas(registry.readOnlyNames())
+      : registry.schemas()
   }
 
   private buildAgent(signal?: AbortSignal, sampling?: import('../llama/types.js').Sampling): Agent {

@@ -128,17 +128,10 @@ test('the three lenses are three DIFFERENT questions, not three samples of one',
     asks.push(String(last.content))
     return {
       choices: [{
-        finish_reason: 'tool_calls',
+        finish_reason: 'stop',
         message: {
           role: 'assistant',
-          tool_calls: [{
-            id: `c${asks.length}`,
-            type: 'function',
-            function: {
-              name: 'record_reading',
-              arguments: JSON.stringify({ does: ['rename the status column to state'] }),
-            },
-          }],
+          content: JSON.stringify({ does: ['rename the status column to state'] }),
         },
       }],
     }
@@ -147,8 +140,9 @@ test('the three lenses are three DIFFERENT questions, not three samples of one',
   const client = new LlamaClient({ baseUrl: fake.url, model: 'test' })
   const u = await readThroughLenses(client, [{ role: 'user', content: 'earlier' }], 'rename status to state')
 
-  // Three readings, then the grouping pass over what they produced.
-  const lensAsks = asks.filter((a) => a.includes('record_reading'))
+  // Three readings, then the grouping pass over what they produced. The readings are the
+  // asks that quote the request back; the grouping pass never does.
+  const lensAsks = asks.filter((a) => a.includes('before you write anything'))
   expect(lensAsks).toHaveLength(3)
   expect(new Set(lensAsks).size).toBe(3)
   // Every one of them carries the user's ORIGINAL words, never a distillation of them: a
@@ -165,17 +159,10 @@ test('a lens that fails costs resolution, not the turn', async () => {
     if (call === 2) return { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'no thanks' } }] }
     return {
       choices: [{
-        finish_reason: 'tool_calls',
+        finish_reason: 'stop',
         message: {
           role: 'assistant',
-          tool_calls: [{
-            id: `c${call}`,
-            type: 'function',
-            function: {
-              name: 'record_reading',
-              arguments: JSON.stringify({ does: ['rename the status column to state', `extra line number ${call}`] }),
-            },
-          }],
+          content: JSON.stringify({ does: ['rename the status column to state', `extra line number ${call}`] }),
         },
       }],
     }
@@ -191,17 +178,10 @@ test('a lens that fails costs resolution, not the turn', async () => {
 test('lines too short to carry meaning are dropped rather than asked about', async () => {
   const fake = await startFakeServer(() => ({
     choices: [{
-      finish_reason: 'tool_calls',
+      finish_reason: 'stop',
       message: {
         role: 'assistant',
-        tool_calls: [{
-          id: 'c1',
-          type: 'function',
-          function: {
-            name: 'record_reading',
-            arguments: JSON.stringify({ does: ['fix it', 'the bug', 'rename the status column to state'] }),
-          },
-        }],
+        content: JSON.stringify({ does: ['fix it', 'the bug', 'rename the status column to state'] }),
       },
     }],
   }))
@@ -273,4 +253,62 @@ test('a group is shown by its shortest phrasing, which is the one without the pa
   ]
   const u = fromGroups(readings, [[0, 1]])
   expect(u.shared).toEqual(['invoice numbers never skip a value'])
+})
+
+test('ticking one option does not adopt a near-identical one left unticked', () => {
+  // `alignReadings` folds narrow/wide pairs together on purpose — it is what makes "keeps
+  // its padding" and "the padding is kept" one line. That is right when comparing READINGS
+  // and wrong when reading a person's ticks: `groupLines` is under explicit instructions to
+  // keep such a pair in separate groups, so the question offers them as two choices, and
+  // matching the answer loosely then adopted both. The user was told "they want these" about
+  // scope they had just declined, and it was audited against from then on.
+  const u = {
+    shared: [],
+    contested: [
+      'the counter never hands out the same number twice',
+      'the counter never hands out the same number twice within a year',
+    ],
+  }
+
+  const folded = foldAnswer(u, 'the counter never hands out the same number twice')
+
+  expect(folded.criteria).toEqual(['the counter never hands out the same number twice'])
+  expect(folded.notPicked).toEqual(['the counter never hands out the same number twice within a year'])
+})
+
+test('and ticking both still adopts both', () => {
+  const u = {
+    shared: [],
+    contested: ['rename the column', 'rename the column and its index'],
+  }
+  const folded = foldAnswer(u, 'rename the column; rename the column and its index')
+  expect(folded.criteria).toEqual(['rename the column', 'rename the column and its index'])
+  expect(folded.notPicked).toEqual([])
+})
+
+test('one surviving core reading is not agreement', () => {
+  // The only arity guard upstream counts the whole array, skeptic included, so
+  // [colleague, skeptic] gets here with one core lens — and "every core reading saw it"
+  // was then satisfied by that single reading agreeing with itself. Every line of the
+  // deliberately EXPANSIVE lens was stated back as settled, with nothing confirming it.
+  const readings: Reading[] = [
+    { lens: 'colleague', does: ['rename the column', 'also regenerate the client'] },
+    { lens: 'skeptic', does: ['leave the column and add a view'] },
+  ]
+  const groups = [[0], [1], [2]]
+
+  const u = fromGroups(readings, groups)
+
+  expect(u.shared).toEqual([])
+  expect(u.contested).toContain('rename the column')
+})
+
+test('two core readings that agree still produce a shared line', () => {
+  const readings: Reading[] = [
+    { lens: 'literal', does: ['rename the column'] },
+    { lens: 'colleague', does: ['rename the column'] },
+    { lens: 'skeptic', does: ['add a view instead'] },
+  ]
+  const u = fromGroups(readings, [[0, 1], [2]])
+  expect(u.shared).toEqual(['rename the column'])
 })

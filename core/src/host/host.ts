@@ -910,13 +910,22 @@ export class SessionHost {
     // same kind of fact ("a check ran after your work, here is what it said") and a gate
     // that runs invisibly cannot be trusted or tuned — a silent pass and a silently
     // broken gate would look identical.
-    sessionOpts.onAcceptance = (info) => this.emit('verify', {
-      command: info.kind === 'review'
-        ? `independent diff review: ${info.unmet === 0 ? 'no findings' : `${info.unmet} finding${info.unmet === 1 ? '' : 's'}`}`
-        : `contract check: ${info.met} met, ${info.unmet} unmet`,
-      ok: info.unmet === 0,
-      attempt: info.round,
-    })
+    //
+    // `problem` carries the detail, and that is not cosmetic: the reducer's fallback for a
+    // failed check is `exited ${exitCode ?? '?'}`, and a gate has no exit code — so every
+    // unmet result rendered as "contract check: 4 met, 2 unmet — exited ?", in the
+    // transcript and in the markdown export. A gate does not exit, it reports.
+    sessionOpts.onAcceptance = (info) => {
+      const detail = info.kind === 'review'
+        ? `${info.unmet} finding${info.unmet === 1 ? '' : 's'}`
+        : `${info.met} met, ${info.unmet} unmet`
+      this.emit('verify', {
+        command: info.kind === 'review' ? 'independent diff review' : 'contract check',
+        ok: info.unmet === 0,
+        attempt: info.round,
+        ...(info.unmet === 0 ? {} : { problem: detail }),
+      })
+    }
     if (resumeId !== undefined) sessionOpts.resume = resumeId
     // The configured trigger is passed whether or not the window is known yet. A session
     // built while the model is still loading has no `compaction` at all — `setContextLength`
@@ -1255,7 +1264,7 @@ export class SessionHost {
       onContinuation: (step, firstTokenTimeoutMs) => this.emit('step.continuation', {
         step, ...(firstTokenTimeoutMs !== undefined ? { firstTokenTimeoutMs } : {}),
       }),
-      onStepRetry: () => this.emit('step.retry', {}),
+      onStepRetry: (firstTokenTimeoutMs) => this.emit('step.retry', { firstTokenTimeoutMs }),
       onStepDone: (info) => this.emit('step.done', {
         step: info.step,
         seconds: info.seconds,

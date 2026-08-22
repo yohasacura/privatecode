@@ -30,12 +30,20 @@ export const DEFAULT_STEP_TIMEOUT_MS = 90_000
  * already hold, so the gap before a step's FIRST token is not idleness, it is work whose
  * length is known in advance. Measured on this machine during the run that found this:
  * 15,393 new tokens → 36.3 s (2.36 ms/token), 15,409 → 58.8 s (3.82), 11,963 → 25.0 s (2.09).
- * 4 ms carries the slowest of those plus room for a GPU also driving a display.
+ * 4 ms carried the slowest of those plus room for a GPU also driving a display.
+ *
+ * RETUNED 2026-08-22 to **2 ms**, after the served model changed. Prefill is now measured at
+ * 726-739 tok/s (`docs/SPIKE-KAT-CODER.md` §2), i.e. ~1.37 ms/token, so 2 ms still carries a
+ * ~46% margin over the measurement. This can only ever make a wait SHORTER, and no healthy
+ * step is at risk: the whole 196k window at 730 tok/s is 269 s, comfortably inside
+ * MAX_COLD_START_MS either way. What it buys is the other end — a server that has actually
+ * wedged used to hold the window for the full nine minutes on an allowance sized for a
+ * machine three times slower.
  *
  * `Session` measured the same rate independently while warming a compacted session (393
  * tok/s) and had this constant privately; it now imports it, so the two cannot drift.
  */
-export const PREFILL_MS_PER_TOKEN = 4
+export const PREFILL_MS_PER_TOKEN = 2
 
 /** Ceiling on any single wait, below the client's ten-minute transport timeout so a server
  * that goes silent is still caught by something. */
@@ -158,7 +166,13 @@ export interface AgentEvents {
    * from the start — so a renderer should discard its open reasoning/writing cards
    * rather than let the fresh stream append onto them.
    */
-  onStepRetry?(): void
+  /** `firstTokenTimeoutMs` is the budget the retry re-armed the clock with — the relaunched
+   * server has an empty KV cache, so it is a COLD-prefill allowance, not the flat step
+   * budget. Carried for the same reason `onContinuation` carries it: the window runs its own
+   * countdown, and without the new number it kept the old one and sat at "0s to timeout" for
+   * minutes of a perfectly healthy prefill. Optional argument, so a listener that ignores it
+   * behaves exactly as before. */
+  onStepRetry?(firstTokenTimeoutMs: number): void
   /** A running tool's live output (run_command's stdout/stderr as it arrives). Chunks,
    * not lines; display-only — the tool result stays the authoritative record. */
   onToolOutput?(name: string, text: string): void
@@ -756,7 +770,24 @@ export class Agent {
         this.opts.events?.onToolCall?.(call.function.name, call.function.arguments)
         // Before the call, not after: whatever this returns is meant to reach the model
         // INSTEAD of what the tool would have done.
-        const instead = await this.opts.onBeforeTool?.(call.function.name, call.function.arguments)
+        //
+        // Guarded like the permission gate's own host boundary (see `runTool`), and for the
+        // identical reason. This sits BETWEEN the assistant message being appended and the
+        // `role: 'tool'` reply that answers it: a throw here escapes `runTurn` with the call
+        // unanswered, `Session.send` rethrows it, `Host.send`'s try/finally never emits
+        // `turn.done`, and `persistIfPossible` writes the orphan to disk — so it survives
+        // resume, and `compaction.ts` deliberately leaves an unanswered call "exactly as
+        // unanswered as it was". That is the one state this loop's own comment calls
+        // poisonous to every later request of the session, reached by a `writeFileSync` in
+        // `saveMeta` losing a race with OneDrive, an AV hold or a full disk.
+        let instead: string | undefined
+        try {
+          instead = await this.opts.onBeforeTool?.(call.function.name, call.function.arguments)
+        } catch (e) {
+          instead = 'Not run: the pre-write check could not complete ' +
+            `(${e instanceof Error ? e.message : String(e)}). Nothing was written. ` +
+            'Re-issue this call on a later step if it is still needed.'
+        }
         if (instead !== undefined) {
           this.answer(call, { ok: false, content: instead })
           resultChars += instead.length
@@ -1008,7 +1039,7 @@ export class Agent {
   private async chat(
     schemas: ReturnType<ToolRegistry['schemas']>,
     toolChoice: 'auto' | 'required',
-    clock: { signal: AbortSignal; touch(): void },
+    clock: { signal: AbortSignal; touch(): void; beforeRequest(budgetMs: number): void },
   ): Promise<ChatOutcome> {
     const deadline = clock.signal
     const signal = this.opts.signal
@@ -1092,9 +1123,30 @@ export class Agent {
         if (this.opts.signal?.aborted) { this.appendInterrupted(e); return { kind: 'aborted' } }
         if (healthy) {
           if (deadline.aborted) return { kind: 'timeout' }
-          // Announced BEFORE the re-send: a renderer that keeps appending would show the
-          // dead attempt's partial reasoning with the retry's spliced onto it.
-          events?.onStepRetry?.()
+          // Zeroed BEFORE the budget is computed, because `firstTokenBudget` both reads and
+          // ADVANCES `charsAtLastRequest`: computing first would price only the handful of
+          // characters appended since the last request, which is exactly the reading that is
+          // no longer true once the server has forgotten everything.
+          // RE-ARM, or the retry inherits a clock that is already most of the way through
+          // its budget. The dead attempt's deltas had called `touch()`, which clears
+          // `awaitingFirstToken` and leaves only the flat between-token allowance running;
+          // `waitHealthy` then burns 20-30 s of it on the model reload. What comes back is
+          // a process with an EMPTY KV cache, so the retried request must prefill the whole
+          // prompt from nothing — and the turn died on "passed its 90 s time limit" against
+          // a server that was perfectly healthy and working hard. Worse, with
+          // `awaitingFirstToken` false the /slots prefill extension written for exactly this
+          // silence short-circuits and never even probes. `charsAtLastRequest = 0` is what
+          // makes `firstTokenBudget` price the WHOLE prompt rather than the few characters
+          // appended since the last request, which is the honest reading now that nothing
+          // on the far side remembers any of it. The app's own reducer already re-arms for
+          // this wait; the core did not.
+          this.charsAtLastRequest = 0
+          const retryBudget = this.firstTokenBudget(this.opts.stepTimeoutMs)
+          clock.beforeRequest(retryBudget)
+          // Announced AFTER the budget exists so the window can adopt it, and before the
+          // re-send so a renderer that keeps appending does not splice the retry's stream
+          // onto the dead attempt's partial reasoning.
+          events?.onStepRetry?.(retryBudget)
           continue
         }
       }

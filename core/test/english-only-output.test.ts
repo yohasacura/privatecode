@@ -32,7 +32,12 @@ async function capture(run: (client: LlamaClient) => Promise<unknown>): Promise<
   await run(new LlamaClient({ baseUrl: fake.url, model: 'test' }))
   return {
     sent: JSON.stringify(body?.messages ?? []),
-    tools: JSON.stringify(body?.tools ?? []),
+    // Where the SHAPE is declared. Note this is deliberately NOT where a language pin may
+    // live: a `response_format` schema is compiled to a grammar and never rendered, so a
+    // `description` on it reaches the model as exactly zero tokens (measured: an 868-char
+    // description leaves the prompt at 275 tokens either way). Anything that has to route
+    // behaviour must be in `sent`, which is why the understanding test below reads `sent`.
+    tools: JSON.stringify(body?.response_format ?? body?.tools ?? []),
   }
 }
 
@@ -43,25 +48,33 @@ test('the system prompt pins English rather than mirroring the user', () => {
   expect(text).not.toContain('Reply in the same language the user writes in')
 })
 
-test('the expander behind Ctrl+E asks for English, in the prompt AND in the schema', async () => {
-  // Both, because they are read at different moments and the schema is the one this project
-  // has measured as actually routing behaviour.
-  const { sent, tools } = await capture((c) => expandDraft(c, [], 'сделай кнопку красной'))
-  expect(sent).toContain('IN ENGLISH')
-  expect(tools).toContain('WRITTEN IN ENGLISH')
-  expect(tools).not.toContain('LANGUAGE OF THE DRAFT')
+test('the expander behind Ctrl+E asks for English, in the PROMPT', async () => {
+  // In the prompt, and only there. This used to assert it in the schema too, on the theory
+  // that the schema is what routes behaviour -- true while the shape was forced by a
+  // RENDERED `tools` array, false now: a `response_format` schema is compiled to a grammar
+  // and reaches the model as zero tokens. A pin left there would be declared, tested, and
+  // invisible, which is exactly the regression this file exists to catch.
+  const { sent } = await capture((c) => expandDraft(c, [], 'сделай кнопку красной'))
+  expect(sent).toContain('WRITTEN IN ENGLISH')
+  expect(sent).not.toContain('LANGUAGE OF THE DRAFT')
 })
 
 test('the plan decomposition asks for English steps', async () => {
   const contract = { goal: 'сделать нумерацию сплошной', criteria: ['номера не пропускаются'], constraints: [] }
-  const { sent, tools } = await capture((c) => decomposeTodos(c, [], contract))
+  // In the PROMPT. The plan gate forces its shape with `response_format` now, and a schema
+  // is compiled to a grammar and never rendered — so a pin left in a `description` reaches
+  // the model as exactly zero tokens.
+  const { sent } = await capture((c) => decomposeTodos(c, [], contract))
   expect(sent).toContain('IN ENGLISH')
-  expect(tools).toContain('IN ENGLISH')
 })
 
 test('the understanding check asks for English lines, since they are shown as they are', async () => {
-  const { tools } = await capture((c) => readThroughLenses(c, [], 'сделай чтобы номера не имели пропусков'))
-  expect(tools).toContain('IN ENGLISH')
+  // In the PROMPT, not in the schema. This assertion used to read the schema and passed for
+  // the wrong reason: the pin was moved into a `response_format` description when the gate
+  // was converted, and a schema description is never rendered -- so for one commit the pin
+  // was declared, tested, and invisible to the model.
+  const { sent } = await capture((c) => readThroughLenses(c, [], 'сделай чтобы номера не имели пропусков'))
+  expect(sent).toContain('IN ENGLISH')
 })
 
 test('the draft improver inherits the pin from message 0 rather than restating it', async () => {

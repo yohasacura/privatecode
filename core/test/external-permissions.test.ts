@@ -230,3 +230,53 @@ describe('rules still win over mode defaults for the new family', () => {
       .toBe('allow')
   })
 })
+
+/**
+ * The fourth family, and the same defect one tool later.
+ *
+ * `sql_deploy`'s key carries an ACTION — not a command, not paths, not a URL — so it
+ * belonged to no family and `modeDefault` fell straight through to its allow tier.
+ * `sql_deploy({ action: 'publish' })` applied schema changes to a live database, in normal
+ * and in auto-edit, with no approval card, while the tool's own doc comment said it was
+ * "gated on every use in every other mode".
+ */
+describe('the deploy family is gated, not auto-allowed', () => {
+  const PUBLISH: PermissionKey = { tool: 'sql_deploy', target: 'publish' }
+  const SCRIPT: PermissionKey = { tool: 'sql_deploy', target: 'script' }
+
+  test('normal mode ASKS before a publish reaches a live database', () => {
+    const d = engineIn('normal').decide(PUBLISH)
+    expect(d.verdict).toBe('ask')
+    expect(d.source).toBe('mode')
+  })
+
+  test('auto-edit auto-approves edits and still asks about a deployment', () => {
+    expect(engineIn('auto-edit').decide(PUBLISH).verdict).toBe('ask')
+  })
+
+  test('plan mode denies it outright, like every other mutating family', () => {
+    const d = engineIn('plan').decide(PUBLISH)
+    expect(d.verdict).toBe('deny')
+    expect(d.reason).toContain('read-only')
+  })
+
+  test('autopilot allows it, as it allows everything else', () => {
+    expect(engineIn('autopilot').decide(PUBLISH).verdict).toBe('allow')
+  })
+
+  test('script is gated too — what is grantable is a rule the person wrote', () => {
+    expect(engineIn('normal').decide(SCRIPT).verdict).toBe('ask')
+  })
+
+  test('and a per-action rule can still grant it, because the key carries the action', () => {
+    const engine = new PermissionEngine({
+      layers: [{ scope: 'project', path: 'p', permissions: { allow: ['sql_deploy(script)'], ask: [], deny: [] } }],
+      mode: 'normal',
+      workspaceRoot: root,
+    })
+    expect(engine.problems).toEqual([])
+    expect(engine.decide(SCRIPT).verdict).toBe('allow')
+    // ...and grants only what it named.
+    expect(engine.decide(PUBLISH).verdict).toBe('ask')
+  })
+})
