@@ -621,3 +621,46 @@ They want these, and they are now part of what "done" means:
 
 Communicated, not duplicated.
 
+---
+
+# The residual, caught in the act
+
+One more turn driven end to end after all of the above, and it shows both halves of where
+this now stands.
+
+**What the fixes bought.** With the rule present as a criterion, the agent stripped
+punctuation this time — the previous run shipped code leaving `"hello,-world!"` — and it ran
+the rule over inputs unprompted:
+
+```
+slug Hello World = hello-world     slug a--b = a-b     slug -hello- = hello
+```
+
+Then it declared "Done" with a confident summary, and the gate refused it:
+
+```
+verified with contract check — 6 met, 2 unmet
+```
+
+The fixer round took the test file from three assertions to seven. That is the whole point of
+the gate, working.
+
+**What it did not buy.** The second pass passed, `satisfied: True`, `1..8 met` — and the rule
+still does not hold:
+
+```
+FAIL "a_b & c" -> "a_b-c"
+FAIL "__x__"   -> "__x__"
+```
+
+The implementation is `.replace(/[^\w\s-]/g, '')`, and `\w` includes the underscore. Not one
+of the seven assertions the model wrote uses an underscore. It picked a plausible-looking
+pattern and then picked the test inputs that do not probe its own choice.
+
+That is the residual named earlier — "the audit trusting a green run over cases that do not
+exercise the rule" — observed rather than predicted, and it is the shape of the limit. The
+model cannot find where its own output is weak, because finding that requires knowing what it
+does not know. No wording of the ask changes that. What would: an input source the model does
+not choose — a property test, a fuzzer, a checker that derives cases from the rule's own
+character class rather than from the model's imagination.
+
