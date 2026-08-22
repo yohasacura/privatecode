@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, describe, expect, test } from 'vitest'
 import { alignReadings } from '../src/session/contract.js'
 import {
   buildQuestion, compareReadings, foldAnswer, readThroughLenses, type Reading,
@@ -337,4 +337,86 @@ test('picking it alongside a real option still adopts the real one', () => {
   const folded = foldAnswer(u, `also drop the index; ${NONE_OF_THESE}`)
   expect(folded.criteria).toEqual(['also drop the index'])
   expect(folded.notPicked).toEqual(['also update the docs'])
+})
+
+/**
+ * The answer folds INTO the contract, it does not pile on top of it.
+ *
+ * The options are readings of the same request the contract was distilled from, so a ticked
+ * one is usually a paraphrase of something already in there. Watched live on a task about
+ * slugs: seven distilled criteria, three ticks, ten criteria — items 8, 9 and 10 restating
+ * 2, 4 and 5 in slightly shorter words. Each duplicate is audited on its own, gets its own
+ * plan item, and rides into message 0 at every compaction.
+ */
+describe('folding an answer into criteria that already exist', () => {
+  const CONTRACT = [
+    'src/util/slug.js exports a slug() function',
+    "slug('Hello World') returns 'hello-world' (no leading/trailing hyphen, only lowercase and hyphens)",
+    "slug('  spaces  ') returns 'spaces' (trimmed, no leading/trailing hyphen)",
+    'node src/util/slug.test.js exits with code 0',
+  ]
+
+  test('a tick that restates a criterion confirms it instead of duplicating it', () => {
+    const u = {
+      shared: [],
+      contested: ["slug('Hello World') returns 'hello-world'", "slug('  spaces  ') returns 'spaces'"],
+    }
+    const folded = foldAnswer(u, u.contested.join('; '), CONTRACT)
+    // Both were wanted -- that is what the person is told -- and the contract is unchanged.
+    expect(folded.criteria).toHaveLength(2)
+    expect(folded.nextCriteria).toEqual(CONTRACT)
+  })
+
+  test('a tick that says strictly more sharpens the criterion in place', () => {
+    const u = { shared: [], contested: ['invoice numbers are gap-free even when a transaction rolls back'] }
+    const folded = foldAnswer(u, u.contested[0]!, ['invoice numbers are gap-free'])
+    expect(folded.nextCriteria).toEqual(['invoice numbers are gap-free even when a transaction rolls back'])
+  })
+
+  test('a tick that says less must never narrow what done means', () => {
+    // The same rule the unpicked half already follows: a checkbox is not an instruction to
+    // do less. Being wrong in this direction quietly drops scope the user never withdrew.
+    const u = { shared: [], contested: ['invoice numbers are gap-free'] }
+    const folded = foldAnswer(u, u.contested[0]!, ['invoice numbers are gap-free even when a transaction rolls back'])
+    expect(folded.nextCriteria).toEqual(['invoice numbers are gap-free even when a transaction rolls back'])
+  })
+
+  test('a reading the contract does not already carry is still added', () => {
+    const u = { shared: [], contested: ['concurrent requests never produce a duplicate number'] }
+    const folded = foldAnswer(u, u.contested[0]!, ['invoice numbers are gap-free'])
+    expect(folded.nextCriteria).toEqual([
+      'invoice numbers are gap-free',
+      'concurrent requests never produce a duplicate number',
+    ])
+  })
+
+  test('two ticks that restate the SAME criterion both fold into it', () => {
+    // Two lenses producing near-identical restatements is exactly what `groupLines`
+    // sometimes fails to merge, so both reach the question and both can be ticked.
+    const u = {
+      shared: [],
+      contested: ['invoice numbers never skip a value', 'numbers never skip a value'],
+    }
+    const folded = foldAnswer(u, u.contested.join('; '), ['invoice numbers never skip a value'])
+    expect(folded.nextCriteria).toEqual(['invoice numbers never skip a value'])
+  })
+
+  test('a tick the matcher does NOT read as the same thing is left as its own criterion', () => {
+    // The boundary, stated so the fold cannot quietly widen later: `alignReadings` is the
+    // judge of "same thing", and where it says no, nothing is merged. Verified against it
+    // rather than assumed -- an earlier version of this test asserted a merge the matcher
+    // never claimed.
+    const a = 'the counter never repeats a number'
+    const b = 'the counter never hands out a number twice'
+    expect(alignReadings(a, b)).toBe(false)
+    const folded = foldAnswer({ shared: [], contested: [a, b] }, [a, b].join('; '), [a])
+    expect(folded.nextCriteria).toEqual([a, b])
+  })
+
+  test('with no contract passed it behaves exactly as it always did', () => {
+    // Every other caller and every older test relies on this: the fold is opt-in.
+    const u = { shared: [], contested: ['add a migration for the rename'] }
+    const folded = foldAnswer(u, 'add a migration for the rename')
+    expect(folded.nextCriteria).toEqual(folded.criteria)
+  })
 })

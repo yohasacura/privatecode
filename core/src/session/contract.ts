@@ -731,6 +731,28 @@ function stem(word: string): string {
   return word
 }
 
+/**
+ * Whether `wider` says everything `narrower` says, and more.
+ *
+ * The sibling of `alignReadings`, for the case where two lines have ALREADY been found to
+ * say the same thing and the question is which of them to keep. Content words only, on the
+ * same stemming and the same stopword list, so the two notions cannot drift apart: a line
+ * whose content words are a strict superset carries the other's meaning plus something the
+ * other does not have.
+ *
+ * Written for `foldAnswer`, where a person ticking a reading of the request must be able to
+ * SHARPEN a criterion without either duplicating it or quietly narrowing it.
+ */
+export function readingCovers(wider: string, narrower: string): boolean {
+  const content = (text: string): Set<string> =>
+    new Set(matchWords(text).map(stem).filter((w) => !MATCH_STOPWORDS.has(w)))
+  const w = content(wider)
+  const n = content(narrower)
+  if (n.size === 0 || w.size <= n.size) return false
+  for (const word of n) if (!w.has(word)) return false
+  return true
+}
+
 export function alignReadings(a: string, b: string): boolean {
   const wa = matchWords(a).map(stem)
   const wb = matchWords(b).map(stem)

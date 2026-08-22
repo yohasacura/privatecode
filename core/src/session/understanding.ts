@@ -1,7 +1,7 @@
 import type { LlamaClient } from '../llama/client.js'
 import type { ChatMessage, ToolSchema } from '../llama/types.js'
 import { forcedJson } from './forced-json.js'
-import { alignReadings } from './contract.js'
+import { alignReadings, readingCovers } from './contract.js'
 
 /**
  * The check that runs in the last quiet moment before the first write: **did I understand
@@ -531,8 +531,27 @@ export function buildQuestion(u: Understanding): { question: string; options: st
  * The answer is matched back to the options by the same alignment used to compare readings:
  * the host joins a multi-select with "; ", but a person may also type their own words, and a
  * typed answer that matches nothing is kept verbatim as a criterion rather than dropped.
+ *
+ * `existing` is the contract's criteria as they stand, and passing them is what stops the
+ * contract growing a second copy of something it already says. The options here are readings
+ * of the SAME request the contract was distilled from, so a ticked one is usually a paraphrase
+ * of a criterion that is already in there. Watched live on a task about slugs: the contract
+ * came out with seven criteria, the person ticked three readings, and the contract went to ten
+ * — items 8, 9 and 10 restating 2, 4 and 5 in slightly shorter words. Every duplicate is
+ * audited on its own, promoted into message 0 at every compaction, and gets its own line in
+ * the plan.
+ *
+ * `nextCriteria` is what the contract should become. A tick that aligns with a criterion
+ * CONFIRMS it rather than adding to it; it may sharpen it, but only upwards — if the ticked
+ * wording covers strictly more than the criterion's, it replaces it in place, and otherwise
+ * the criterion stands. Never the other way round: a checkbox must not be able to narrow what
+ * "done" means, which is the same rule the unpicked half already follows.
  */
-export function foldAnswer(u: Understanding, answer: string): { criteria: string[]; notPicked: string[] } {
+export function foldAnswer(
+  u: Understanding,
+  answer: string,
+  existing: readonly string[] = [],
+): { criteria: string[]; notPicked: string[]; nextCriteria: string[] } {
   const picked = answer.split(';').map((p) => p.trim()).filter((p) => p.length > 0)
   const criteria: string[] = []
   const notPicked: string[] = []
@@ -575,5 +594,16 @@ export function foldAnswer(u: Understanding, answer: string): { criteria: string
       criteria.push(p)
     }
   }
-  return { criteria, notPicked }
+
+  // Fold, do not append. Each picked reading goes into the criterion it already restates —
+  // sharpening it when the tick says strictly more — and only a reading that matches nothing
+  // in the contract becomes a new criterion. `some` on the result, not on `existing`, so two
+  // ticks that both restate the same criterion cannot both land as new ones.
+  const nextCriteria = [...existing]
+  for (const wanted of criteria) {
+    const at = nextCriteria.findIndex((c) => alignReadings(c, wanted))
+    if (at === -1) { nextCriteria.push(wanted); continue }
+    if (readingCovers(wanted, nextCriteria[at]!)) nextCriteria[at] = wanted
+  }
+  return { criteria, notPicked, nextCriteria }
 }

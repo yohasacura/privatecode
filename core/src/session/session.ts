@@ -1390,14 +1390,21 @@ export class Session {
     // reading it already had, and the contract is untouched.
     if (signal?.aborted || answer.trim() === '' || answer === PARKED_ANSWER) return undefined
 
-    const { criteria, notPicked } = foldAnswer(understanding, answer)
+    const { criteria, notPicked, nextCriteria } = foldAnswer(
+      understanding, answer, contract.criteria,
+    )
     if (criteria.length === 0 && notPicked.length === understanding.contested.length) {
       // Nothing matched and nothing was typed that we could keep — an answer we cannot read.
       // Reporting every option as "they did not pick this" would be a confident summary of
       // something we did not understand.
       return undefined
     }
-    contract.criteria = [...contract.criteria, ...criteria].slice(0, 12)
+    // `nextCriteria`, not a concatenation: the options are readings of the same request the
+    // contract came from, so a tick usually restates a criterion that is already there.
+    // Appending gave one live task ten criteria where seven said everything — and each
+    // duplicate is audited separately, planned separately, and carried into message 0 at
+    // every compaction. See `foldAnswer`.
+    contract.criteria = nextCriteria.slice(0, 12)
     // The audit's record of where the task stands is about the OLD criteria; leaving it
     // would promote "1,2,3 met" into message 0 over a contract that has grown since.
     delete contract.checkedState

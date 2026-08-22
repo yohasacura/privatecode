@@ -521,3 +521,43 @@ in eight holds up honest work for an extra round. Against a baseline of 0/3 caug
 remaining miss is real, and it is the audit trusting a green run over cases that do not
 exercise the rule.
 
+---
+
+# The answers that piled on top of the contract instead of into it
+
+The other half of what the live run turned up. `foldAnswer` reads the understanding check's
+answer, and `session.ts` did this with the result:
+
+```ts
+contract.criteria = [...contract.criteria, ...criteria].slice(0, 12)
+```
+
+A pure append. But the options in that question are readings of the SAME request the contract
+was distilled from, so a ticked one is usually a paraphrase of a criterion already in there.
+Measured on the real session's own data (`spike/fold-answer-probe.mts`): seven distilled
+criteria, three ticks, **ten criteria** — items 8, 9 and 10 restating 2, 4 and 5 in slightly
+shorter words. Each duplicate is audited on its own, gets its own plan item, and rides into
+message 0 at every compaction.
+
+`foldAnswer` now takes the contract's criteria and returns what it should BECOME. A tick that
+aligns with a criterion confirms it rather than adding to it — and may sharpen it, but only
+upwards: if the ticked wording covers strictly more, it replaces the criterion in place;
+otherwise the criterion stands. Never the other way round, because a checkbox must not be able
+to narrow what "done" means. That is the same rule the unpicked half already follows, for the
+same reason.
+
+```
+the live case          : 7 criteria + 3 ticks -> 7   (was 10)
+a tick that says more  : sharpens the criterion in place, still one criterion
+a tick that says less  : the fuller wording stands
+a genuinely new tick   : still added
+```
+
+Judged by `alignReadings` — the audit's own criterion matcher — with a new `readingCovers`
+beside it for the "which of these two do we keep" question, on the same stemming and the same
+stopword list so the two notions cannot drift. Where the matcher says two lines are not the
+same thing, nothing is merged; a test states that boundary explicitly, because the first
+version of it asserted a merge the matcher never claimed.
+
+`existing` defaults to empty, so the fold is opt-in and every other caller is unchanged.
+
