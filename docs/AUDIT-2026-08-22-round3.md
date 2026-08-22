@@ -26,7 +26,7 @@ That discipline paid twice over, in both directions:
 
 ## Status
 
-**All 25 are fixed.** Core 1165 → 1181 tests, app 282 → 286, both typechecks clean.
+**All 25 are fixed, plus the residual the audit left open** (last section). Core 1165 → 1184 tests, app 282 → 286, both typechecks clean.
 
 Item 25 is the exception in kind, not in handling: the audit itself classifies it as a
 DECISION rather than a defect, and it was decided — see below.
@@ -46,7 +46,39 @@ from a busy one. Either way, nothing came near the 730 tok/s the old constant as
 
 Probes added: `spike/tool-block-tokens.mts`, `spike/prefill-rate-probe.mts`,
 `spike/format-placeholder-probe.mts`, `spike/move-across-drives-probe.mts`,
-`spike/short-name-probe.mts`. Each prints the measurement its constant or fix rests on.
+`spike/short-name-probe.mts`, `spike/slots-during-prefill-probe.mts`. Each prints the
+measurement its constant or fix rests on.
+
+### Driven in the real window afterwards
+
+One task, start to finish, in the running app against the live server. What it exercised, in
+order, all of it visible on screen:
+
+```
+contract distilled, plan seeded, item 1 ticked
+premise gate REFUSED a write        "2 of your other assumptions did check out"
+queued calls folded honestly        "Not run: the turn was interrupted to check something"
+understanding check parked the turn "waiting on you · nothing generating"
+  ... offering "None of these — just do what we agreed above" as a real option
+approval card for run_command       the turn genuinely parked, Allow resumed it
+exit 0 in 0.4 s                     "All assertions passed."
+verified with contract check — passed
+verified with independent diff review — passed
+4.4s · 41.0 tok/s
+```
+
+`exited ?` appears nowhere. `plan.json` is back to `[]` and the meta reads
+`satisfied: True | checkedState: 1,2,3,4,5,6,7,8,9,10 met`. The agent's own work is correct
+and its test passes with exit 0, checked by hand outside the app.
+
+**One thing the run turned up that is not a bug in the gates.** The distilled contract
+rendered "slugs contain only lowercase letters, digits and single hyphens" as ten
+EXAMPLE-shaped criteria and none stating the rule, so `slug('Hello, World!')` still returns
+`'hello,-world!'` and the audit was right to pass all ten. The general rule became a list of
+instances, and the instances all held. Also: criteria 8-10 duplicate 2, 4 and 5 — the
+understanding check's answers were folded in as fresh criteria rather than merged, so three
+of the ten are audited twice. Both belong to distillation, not to the gate chain, and neither
+was in the audit's scope.
 
 ---
 
@@ -347,11 +379,54 @@ checkpoints/git store, outline, skills, memory, hooks beyond item 1's consequenc
 `web` tool families, `decisions.ts`/`worklog.ts` gate behaviour, compaction driven end to end
 over a genuinely long real session, and the unattended runner end to end.
 
-## One residual, observed but not written up as a finding
+## The residual, chased down — and the audit's number does not hold
 
-During a 39,330-token cold prefill, **~12 of ~28 `/slots` polls hit the 3 s timeout**
-`client.ts` uses — llama.cpp only serves `/slots` between ~5 s decode batches.
-`slotPrefillProgress` returns `null` on timeout and `fire()` then calls `quiet()` and aborts
-the step. So the prefill-extension backstop that items 7 and 8 lean on is **unreliable by
-roughly half**. Not fixed here; it wants its own probe and its own decision, and it is the
-first thing to look at next.
+The audit closed on one loose end: during a 39,330-token cold prefill, "~12 of ~28 `/slots`
+polls hit the 3 s timeout", making the prefill-extension backstop that items 7 and 8 lean on
+"unreliable by roughly half".
+
+**That frequency does not reproduce.** Driving a real 41,087-token cold prefill and polling
+throughout with the shipped 3 s timeout (`spike/slots-during-prefill-probe.mts`):
+
+```
+21 polls, 0 timeouts, n_prompt_tokens_processed climbing 2048 -> 40571 in clean 2048 steps
+=> 0/21 polls did not answer (0%)
+```
+
+But the audit was right about the mechanism, and measuring the LATENCY rather than counting
+failures is what shows how thin the margin is. A second run, same probe, recording how long
+each answer took:
+
+```
+took 2643ms  took 2522ms  took 2620ms  took 2559ms  took 2496ms  took 2607ms
+took 2545ms  took 2630ms  took 2613ms  took 2655ms   ... and one at 3007ms -> TIMEOUT
+answer latency: median 2607ms, worst 2655ms -> 89% of the 3000ms timeout
+=> 1/13 polls did not answer (8%)
+```
+
+llama.cpp serves HTTP between decode batches, so during the exact prefill this extension
+exists for, `/slots` is the slowest it ever is — and it answers at 89% of the budget it was
+given. Not "unreliable by half"; a coin toss on a batch running slightly long. **8%, not 43%
+— and every crossing killed a healthy step.**
+
+Three things were wrong, and all three are fixed:
+
+1. **The timeout was 3 s against a 2.6 s answer.** Now 8 s, which the same probe measures at
+   34% utilisation, 0/13 failures. It costs nothing to raise: this question is only ever
+   asked once a first-token window has already expired, when the alternative to waiting is
+   giving up.
+2. **`null` meant "stalled".** `slotPrefillProgress` returns `null` for "could not ask", and
+   `fire()` sent it down the same branch as "the slot is not moving" — so a step doing
+   nothing wrong died because the question about it went unanswered. Now tolerated up to
+   three times at a shortened recheck (nothing was learned, so re-establish contact rather
+   than wait out a batch), then the step dies as it always did.
+3. **A backwards jump in the counter read as a stall** — new, found in the probe output
+   rather than in the audit. `n_prompt_tokens_processed` belongs to whatever the SLOT is
+   working on and carries the previous task's final value until the next one starts:
+   `t+0s processed=23487` from the request before, then `t+1.5s processed=2048` from the one
+   being measured. The test is now CHANGED, not GREW.
+
+The cost of (2) is bounded on purpose: three unknown probes at a shortened interval, so an
+unreachable `/slots` buys well under a minute of grace and then the step ends. Three existing
+timeout tests had to be re-tuned because they exercise a hung server and that path is now
+genuinely longer — which is the honest price of not killing healthy prefills.

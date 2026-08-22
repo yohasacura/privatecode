@@ -547,6 +547,16 @@ const SERVER_RESTART_WAIT_MS = 90_000
  * enough that a legitimate multi-minute re-prefill costs a handful of probes. */
 const PREFILL_RECHECK_MS = 20_000
 
+/** How many times in a row `/slots` may fail to answer before the step gives up anyway.
+ * Three: enough that a run of slow decode batches cannot kill a healthy prefill, bounded so
+ * an unreachable `/slots` cannot buy an unbounded wait. */
+const MAX_UNANSWERED_SLOT_PROBES = 3
+
+/** Between retries of a `/slots` probe that did not answer. Shorter than
+ * `PREFILL_RECHECK_MS` because nothing was learned: with the 8 s probe timeout, three of
+ * these bound the whole unknown-server grace at well under a minute. */
+const UNKNOWN_RECHECK_MS = 5_000
+
 /**
  * What a per-turn decline is counted against — the tool plus the thing it wanted to act on.
  *
@@ -1032,20 +1042,55 @@ export class Agent {
     // from what THIS process appended — it cannot see a server-side cache eviction, and
     // one evicted 180k-token prefix turned into a nine-minute re-prefill that died against
     // a deadline sized for a few hundred fresh tokens (watched live). `/slots` reports the
-    // server's own progress on exactly that work: growing means the silence is prefill,
-    // not failure, and the window re-arms; stalled or unreachable dies as it always did.
-    // Generation re-arms through `touch()` on every delta, so the extension never loosens
-    // the between-token guard.
+    // server's own progress on exactly that work: moving means the silence is prefill, not
+    // failure, and the window re-arms; a slot that is idle or has not moved dies as it always
+    // did. Generation re-arms through `touch()` on every delta, so the extension never
+    // loosens the between-token guard.
+    //
+    // "Unreachable" used to die here too, and that was wrong in the one situation this whole
+    // mechanism exists for — see the branches in `fire()`.
     let awaitingFirstToken = false
     let lastProcessed = -1
+    let unanswered = 0
     const quiet = (): void => { controller.abort(new Error('step went quiet')) }
     const fire = (): void => {
       if (!awaitingFirstToken) { quiet(); return }
       void this.opts.client.slotPrefillProgress().then((p) => {
         if (controller.signal.aborted) return
-        if (p !== null && p.processing && p.processed > lastProcessed) {
+        const recheck = this.opts.prefillRecheckMs ?? PREFILL_RECHECK_MS
+        // COULD NOT ASK is not the same answer as NOTHING IS HAPPENING, and this branch used
+        // to give both the same one. `/slots` is served between decode batches, so during the
+        // exact prefill this extension exists for it is the slowest it ever is — measured at
+        // a 2,607 ms median with one poll in thirteen crossing the old 3,000 ms timeout. A
+        // step doing nothing wrong died because the question about it went unanswered.
+        //
+        // Tolerated a bounded number of times rather than indefinitely: an unreachable
+        // `/slots` says nothing about the server, but it must not buy an unbounded wait
+        // either. Three unknowns is one recheck interval of grace each, and then the step
+        // dies as it always did.
+        if (p === null) {
+          unanswered++
+          // Sooner than the ordinary recheck, and deliberately: a probe that ANSWERED bought
+          // information worth a full interval, while one that did not leaves the step in the
+          // dark — the useful thing is to re-establish contact, not to wait out a batch.
+          // Total grace is bounded at MAX_UNANSWERED_SLOT_PROBES of these.
+          if (unanswered <= MAX_UNANSWERED_SLOT_PROBES) { arm(Math.min(recheck, UNKNOWN_RECHECK_MS)); return }
+          quiet()
+          return
+        }
+        unanswered = 0
+        // A DECREASE means a different request is being prefilled now, not that ours stalled.
+        // `n_prompt_tokens_processed` belongs to whatever the slot is working on, and the
+        // counter carries the previous task's final value until the next one starts —
+        // observed directly: a probe read `processing=false processed=41087` from the request
+        // before, while the one being measured then climbed 4096, 6144, 8192. Re-baseline on
+        // it instead of reading it as a stall.
+        //
+        // So the test is CHANGED, not GREW. What kills the step is a slot that is processing
+        // and has not moved at all since the last look, or one that is not processing.
+        if (p.processing && p.processed !== lastProcessed) {
           lastProcessed = p.processed
-          arm(this.opts.prefillRecheckMs ?? PREFILL_RECHECK_MS)
+          arm(recheck)
           return
         }
         quiet()
@@ -1062,7 +1107,12 @@ export class Agent {
     return {
       signal: controller.signal,
       beforeRequest: (budgetMs) => {
-        if (!controller.signal.aborted) { awaitingFirstToken = true; lastProcessed = -1; arm(budgetMs) }
+        if (!controller.signal.aborted) {
+          awaitingFirstToken = true
+          lastProcessed = -1
+          unanswered = 0
+          arm(budgetMs)
+        }
       },
       touch: () => { if (!controller.signal.aborted) { awaitingFirstToken = false; arm(steadyMs) } },
       stop: () => { if (timer !== undefined) clearTimeout(timer) },

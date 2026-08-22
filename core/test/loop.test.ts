@@ -112,10 +112,15 @@ function makeAgent(url: string, extra: ExtraOptions = {}, alsoRegister: Tool<any
   const root = mkdtempSync(join(tmpdir(), 'pc-loop-'))
   workspaces.push(root)
   return new Agent({
-    client: new LlamaClient({ baseUrl: url, model: 'm' }),
+    // A short `/slots` budget so the unreachable path can be exercised in a test rather than
+    // waited out: the shipped default is 8 s, sized against a real decode batch.
+    client: new LlamaClient({ baseUrl: url, model: 'm', slotsTimeoutMs: 300 }),
     registry,
     context: { workspace: new Workspace(root) },
     maxSteps: 5,
+    // No test wants to wait out the production 20 s recheck; the ones that are ABOUT the
+    // recheck set their own, because `extra` spreads after this.
+    prefillRecheckMs: 100,
     ...extra,
   })
 }
@@ -1433,4 +1438,73 @@ test('a continuation that talks instead of acting ends the turn truncated, not d
   expect(result.finalText).toContain('finished reviewing')
   // `required` really was asked for, which is what makes this the server's answer and not ours.
   expect(fake.requests.map((r: any) => r.body.tool_choice)).toEqual(['auto', 'required'])
+})
+
+/**
+ * `/slots` not answering is not the same statement as "nothing is happening", and the step
+ * clock used to treat it as one.
+ *
+ * llama.cpp serves HTTP between decode batches, so during the exact prefill this extension
+ * exists to protect, `/slots` is the slowest it ever is. Measured against a real 23,487-token
+ * cold prefill with the shipped 3 s timeout: a 2,607 ms median answer, worst 2,655 ms, and
+ * one poll in thirteen crossing outright. Every crossing killed a step that was doing
+ * nothing wrong.
+ */
+test('a prefill survives a run of /slots probes that do not answer', async () => {
+  let slotPolls = 0
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/slots') {
+      slotPolls++
+      // The first two go unanswered, exactly as a slow decode batch does.
+      if (slotPolls <= 2) return hang()
+      return [{ is_processing: true, n_prompt_tokens_processed: slotPolls * 1000 }]
+    }
+    return new Promise((resolve) => setTimeout(() => resolve(textResponse('after long prefill')), 6500))
+  })
+  stop = fake.close
+  const result = await makeAgent(fake.url, {
+    stepTimeoutMs: 200, firstStepTimeoutMs: 200, prefillRecheckMs: 200,
+  }).runTurn('hi')
+  expect(result.stoppedBecause).toBe('done')
+  expect(result.finalText).toBe('after long prefill')
+})
+
+test('a /slots that never answers at all still lets the step die', async () => {
+  // The other half: tolerating an unanswered probe must not become an unbounded wait. Three
+  // unknowns of grace, then the step ends the way it always did.
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/slots') return hang()
+    return hang()
+  })
+  stop = fake.close
+  const result = await makeAgent(fake.url, {
+    stepTimeoutMs: 200, firstStepTimeoutMs: 200, prefillRecheckMs: 100,
+  }).runTurn('hi')
+  expect(result.stoppedBecause).toBe('timeout')
+})
+
+/**
+ * `n_prompt_tokens_processed` belongs to whatever the SLOT is working on, not to our
+ * request, and it carries the previous task's final value until the next one starts.
+ * Observed directly while probing: `processing=false processed=41087` from the request
+ * before, while the request being measured then climbed 4096, 6144, 8192. Read as "the
+ * counter went backwards, so we stalled", that kills a healthy prefill.
+ */
+test('a prefill counter that jumps backwards is a new request, not a stall', async () => {
+  let slotPolls = 0
+  const fake = await startFakeServer((_body, req) => {
+    if (req.url === '/slots') {
+      slotPolls++
+      // First look: the tail of some earlier, much bigger prefill. Then ours, from the start.
+      const processed = slotPolls === 1 ? 41_087 : slotPolls * 2048
+      return [{ is_processing: true, n_prompt_tokens_processed: processed }]
+    }
+    return new Promise((resolve) => setTimeout(() => resolve(textResponse('after long prefill')), 6500))
+  })
+  stop = fake.close
+  const result = await makeAgent(fake.url, {
+    stepTimeoutMs: 200, firstStepTimeoutMs: 200, prefillRecheckMs: 200,
+  }).runTurn('hi')
+  expect(result.stoppedBecause).toBe('done')
+  expect(result.finalText).toBe('after long prefill')
 })

@@ -6,6 +6,9 @@ export interface LlamaClientOptions {
   model: string
   /** Hard ceiling for a single request, in milliseconds. */
   requestTimeoutMs?: number
+  /** How long `/slots` gets to answer. Defaults to `SLOTS_TIMEOUT_MS`; injectable so a test
+   * can exercise the unreachable path without waiting out the real one. */
+  slotsTimeoutMs?: number
 }
 
 export interface LlamaRequestFailure {
@@ -75,6 +78,26 @@ export class LlamaRequestError extends Error {
 /** Ceiling on how much of a response body is carried on an error. */
 const MAX_ERROR_BODY_CHARS = 600
 
+/**
+ * How long `/slots` gets to answer — and it needs far more than a health check does.
+ *
+ * llama.cpp serves HTTP between decode batches, so during a prefill the reply waits for the
+ * current batch to finish. Measured against a real 23,487-token cold prefill, polling
+ * throughout (`spike/slots-during-prefill-probe.mts`):
+ *
+ *   took 2643ms  took 2522ms  took 2620ms  took 2559ms  took 2496ms  took 2607ms
+ *   took 2545ms  took 2655ms  took 2630ms  took 2613ms  ... and one at 3007ms -> TIMEOUT
+ *
+ * Median 2,607 ms, worst answer 2,655 ms — **89% of the 3,000 ms this used to allow**, with
+ * 1 of 13 polls crossing it outright. That is not a margin, it is a coin toss on a batch
+ * running slightly long, and the consequence of losing it was a HEALTHY step being killed
+ * (see `stepClock`). The number is a property of the batch size, not of load.
+ *
+ * Costs nothing to raise: this is only ever asked once a first-token window has already
+ * expired, when the alternative to waiting is giving up.
+ */
+const SLOTS_TIMEOUT_MS = 8_000
+
 /** How often a running generation reports its token count. Four readings a second is past
  * the rate a person reads a changing number, and far below the ~60 the server now offers. */
 const PROGRESS_MIN_INTERVAL_MS = 250
@@ -90,6 +113,7 @@ export class LlamaClient {
   private readonly baseUrl: string
   private readonly model: string
   private readonly timeoutMs: number
+  private readonly slotsTimeoutMs: number
 
   constructor(opts: LlamaClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '')
@@ -107,6 +131,7 @@ export class LlamaClient {
     // socket nothing will ever close. See `LlamaRequestFailure.transportTimeout` for how a
     // caller tells the two apart.
     this.timeoutMs = opts.requestTimeoutMs ?? 900_000
+    this.slotsTimeoutMs = opts.slotsTimeoutMs ?? SLOTS_TIMEOUT_MS
   }
 
   /**
@@ -140,10 +165,13 @@ export class LlamaClient {
    * live at 179k: the state outgrew --cache-ram, one divergent request evicted the prefix,
    * and the next turn re-prefilled ~187k tokens into a deadline sized for a few hundred).
    * `n_prompt_tokens_processed` is the server's own progress report on exactly that work.
+   *
+   * `null` means "could not find out", NEVER "nothing is happening". The caller must not
+   * collapse the two — see `stepClock`.
    */
   async slotPrefillProgress(): Promise<{ processing: boolean; processed: number } | null> {
     try {
-      const res = await fetch(`${this.baseUrl}/slots`, { signal: AbortSignal.timeout(3_000) })
+      const res = await fetch(`${this.baseUrl}/slots`, { signal: AbortSignal.timeout(this.slotsTimeoutMs) })
       if (!res.ok) return null
       const arr = await res.json() as { is_processing?: boolean; n_prompt_tokens_processed?: number }[]
       const slot = Array.isArray(arr) ? arr[0] : undefined
