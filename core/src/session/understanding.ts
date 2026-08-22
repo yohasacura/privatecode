@@ -477,6 +477,23 @@ export function compareReadings(readings: readonly Reading[]): Understanding | n
  * Null when nothing was contested, which is the common case and the right silence: three
  * readings that agree have nothing to ask about.
  */
+/**
+ * The option that says "none of these", offered because otherwise it cannot be said.
+ *
+ * The card is a multi-select whose Answer button stays disabled until something is ticked
+ * (`approvals.tsx`), so a person who wanted NONE of the contested readings had no way to
+ * send that: tick something they did not want, or leave the turn parked. Meanwhile
+ * `session.ts` carries a branch reading "They did not want any of them." that nothing could
+ * reach. Reproduced in the running app before this existed.
+ *
+ * An explicit option rather than an enabled empty submit, because an EMPTY answer already
+ * means something else on that path and must keep meaning it: the gate treats no-answer (an
+ * abort, a queued run's parked reply, an empty string) as "keep the reading you had, touch
+ * nothing". Deliberately choosing none is a different fact and needs its own way of being
+ * said.
+ */
+export const NONE_OF_THESE = 'None of these — just do what we agreed above'
+
 export function buildQuestion(u: Understanding): { question: string; options: string[]; multiSelect: true } | null {
   if (u.contested.length === 0) return null
   const agreed = u.shared.length > 0
@@ -486,7 +503,7 @@ export function buildQuestion(u: Understanding): { question: string; options: st
     question:
       `${agreed}I am not sure about these. Which of them did you mean?\n` +
       '(Pick the ones you want. Anything you leave unpicked, I will not do.)',
-    options: u.contested,
+    options: [...u.contested, NONE_OF_THESE],
     multiSelect: true,
   }
 }
@@ -549,8 +566,11 @@ export function foldAnswer(u: Understanding, answer: string): { criteria: string
     else notPicked.push(option)
   }
   // Free text the person typed instead of picking: their own words outrank every reading,
-  // so it is kept exactly as written.
+  // so it is kept exactly as written. `NONE_OF_THESE` is excluded explicitly — it is the
+  // harness's own sentence, not the person's, and without this it would sail through as
+  // free text and become a criterion reading "None of these — just do what we agreed above".
   for (const p of unclaimed) {
+    if (p === NONE_OF_THESE) continue
     if (!u.contested.some((option) => alignReadings(p, option)) && p.length >= MIN_USEFUL_CHARS) {
       criteria.push(p)
     }

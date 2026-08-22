@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'vitest'
 import { alignReadings } from '../src/session/contract.js'
 import {
   buildQuestion, compareReadings, foldAnswer, readThroughLenses, type Reading,
-  fromGroups, parseGroups,
+  fromGroups, parseGroups, NONE_OF_THESE,
 } from '../src/session/understanding.js'
 import { LlamaClient } from '../src/llama/client.js'
 import { startFakeServer } from './fake-server.js'
@@ -82,7 +82,8 @@ test('the question states what was agreed and asks only about the rest', () => {
   // one place a person sees what is ABOUT to happen while it is still free to change.
   expect(q?.question).toContain('rename the status column to state')
   expect(q?.question).toContain('about to do')
-  expect(q?.options).toEqual(['add a migration for the rename'])
+  // The contested readings, plus the way to decline all of them — see NONE_OF_THESE.
+  expect(q?.options).toEqual(['add a migration for the rename', NONE_OF_THESE])
   expect(q?.multiSelect).toBe(true)
   // And it says what silence means, because an unpicked option is an answer too.
   expect(q?.question).toContain('will not do')
@@ -311,4 +312,29 @@ test('two core readings that agree still produce a shared line', () => {
   ]
   const u = fromGroups(readings, [[0, 1], [2]])
   expect(u.shared).toEqual(['rename the column'])
+})
+
+test('"none of these" is offered, because otherwise it cannot be said', () => {
+  // The card is a multi-select whose Answer button stays disabled until something is ticked,
+  // so a person who wanted NONE of the contested readings had two choices: tick something
+  // they did not want, or leave the turn parked forever. Reproduced in the running app.
+  const q = buildQuestion({ shared: ['rename the column'], contested: ['also drop the index', 'also update the docs'] })
+  expect(q).not.toBeNull()
+  expect(q!.options).toEqual(['also drop the index', 'also update the docs', NONE_OF_THESE])
+})
+
+test('and picking it adopts nothing, without becoming a criterion itself', () => {
+  // It is the harness's own sentence. Without an explicit exclusion it sails through
+  // foldAnswer's free-text branch and becomes a done-criterion reading "None of these...".
+  const u = { shared: [], contested: ['also drop the index', 'also update the docs'] }
+  const folded = foldAnswer(u, NONE_OF_THESE)
+  expect(folded.criteria).toEqual([])
+  expect(folded.notPicked).toEqual(['also drop the index', 'also update the docs'])
+})
+
+test('picking it alongside a real option still adopts the real one', () => {
+  const u = { shared: [], contested: ['also drop the index', 'also update the docs'] }
+  const folded = foldAnswer(u, `also drop the index; ${NONE_OF_THESE}`)
+  expect(folded.criteria).toEqual(['also drop the index'])
+  expect(folded.notPicked).toEqual(['also update the docs'])
 })
