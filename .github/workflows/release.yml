@@ -53,6 +53,12 @@ jobs:
         with:
           workspaces: app/src-tauri
 
+      # Before anything is built, because a release whose version does not match its tag is
+      # published, correct, downloadable -- and invisible to the updater, which compares the
+      # manifest's version with the running app's own. Nothing would look broken.
+      - name: Check the version matches the tag
+        run: node scripts/check-version.mjs ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
       - name: Install dependencies
         run: |
           npm ci --prefix core
