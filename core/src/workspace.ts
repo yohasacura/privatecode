@@ -138,7 +138,7 @@ function assertSegmentAllowed(segment: string, path: string): void {
  * long names, with the not-yet-existing remainder rejoined. Paths that do not exist yet
  * are the normal case for a write, so a missing target is not an error here.
  */
-function canonicalize(target: string): string {
+export function canonicalize(target: string): string {
   const pending: string[] = []
   let current = target
   for (;;) {

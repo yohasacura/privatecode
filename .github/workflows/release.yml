@@ -64,13 +64,19 @@ jobs:
           npm ci --prefix core
           npm ci --prefix app
 
-      # The suites are the gate: a release that cannot pass them should not exist.
-      - name: Test
-        run: |
-          npm run typecheck --prefix core
-          npm run typecheck --prefix app
-          npm test --prefix core
-          npm test --prefix app
+      # One command per step, deliberately. A multi-line `run:` on a Windows runner is
+      # PowerShell, and PowerShell reports only the LAST command's exit code -- so these four
+      # as one block passed while `npm test --prefix core` was failing 60 tests, and the gate
+      # that exists to stop a bad release was decorative. Caught because the publish step
+      # failed for an unrelated reason and the log had to be read.
+      - name: Typecheck core
+        run: npm run typecheck --prefix core
+      - name: Typecheck app
+        run: npm run typecheck --prefix app
+      - name: Test core
+        run: npm test --prefix core
+      - name: Test app
+        run: npm test --prefix app
 
       # Downloads node.exe and rg.exe and verifies the publisher's own SHA-256 for both the
       # archive and the extracted file, copies the tree-sitter wasm out of node_modules where
@@ -102,9 +108,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "${{ github.ref_name }}"
-          (Get-ChildItem release/*.zip release/latest.json | ForEach-Object { $_.FullName })
-          --title "${{ github.ref_name }}"
-          --notes-file release/NOTES.md
         shell: pwsh
+        run: |
+          # -Path explicitly, as an array. Get-ChildItem's second POSITIONAL argument is
+          # -Filter, not another path, so `Get-ChildItem release/*.zip release/latest.json`
+          # went looking for a path inside release/ named after release/ itself, and the
+          # publish failed after a nine-minute build with everything already packaged.
+          $assets = Get-ChildItem -Path release/*.zip, release/latest.json | ForEach-Object { $_.FullName }
+          gh release create "${{ github.ref_name }}" $assets --title "${{ github.ref_name }}" --notes-file release/NOTES.md

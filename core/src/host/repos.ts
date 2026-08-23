@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { findNestedRepos } from '../checkpoints/units.js'
 import type { Mount } from '../mounts.js'
-import { type Workspace, WorkspaceViolation } from '../workspace.js'
+import { canonicalize, type Workspace, WorkspaceViolation } from '../workspace.js'
 import { type GitFileChange, parsePorcelain } from './git.js'
 
 /**
@@ -126,19 +126,30 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
 
     const own = await toplevelOf(mount.root)
     if (own !== null) {
-      const relation: RepoRelation = own === resolve(mount.root) ? 'folder' : 'above'
+      // The CANONICAL spelling on both sides. `--show-toplevel` answers with the name the
+      // filesystem reports; the mount's root is whatever the caller typed — and Windows opens
+      // one directory under several names. The 8.3 alias is the one that bites: a GitHub
+      // runner's %TEMP% is spelled `RUNNER~1` while git answers `runneradmin`, so this
+      // comparison concluded the repository was ABOVE the folder, `toPrefix` produced a
+      // `..`-laden prefix, and every file was filtered out — an empty git panel. Sixty tests
+      // failed that way on CI while passing on a machine whose username is short enough to
+      // have no alias at all. `path.relative` would not have caught it: it folds case on
+      // win32, but an alias is a different string, not a different case.
+      const ownPath = canonicalize(own)
+      const rootPath = canonicalize(resolve(mount.root))
+      const relation: RepoRelation = ownPath === rootPath ? 'folder' : 'above'
       const existing = byRoot.get(own)
       if (existing) {
         // Two folders, one repository — one section, two scopes. Two sections would let a
         // commit from either quietly stage the other's files.
-        existing.scopes.push({ mount: mount.name, prefix: toPrefix(own, mount.root) })
+        existing.scopes.push({ mount: mount.name, prefix: toPrefix(ownPath, rootPath) })
       } else {
         byRoot.set(own, {
           root: own,
           label: '',
           branch: null,
           relation,
-          scopes: [{ mount: mount.name, prefix: toPrefix(own, mount.root) }],
+          scopes: [{ mount: mount.name, prefix: toPrefix(ownPath, rootPath) }],
           files: [],
         })
       }
