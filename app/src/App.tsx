@@ -672,6 +672,54 @@ export default function App() {
         </button>
       </header>
 
+      {/* One grid item, because `.shell` declares exactly three rows and a fourth child would
+          land the status bar in an implicit row it was never sized for. Everything that fills
+          the middle of the window goes in here. */}
+      <div class="stage">
+      {/* Above the phase branch, deliberately, so it exists in every one of them.
+          It used to live inside the chat pane, which only renders once a workspace is open:
+          launching the app and not opening a folder meant never being told an update
+          existed — and before starting work is exactly when taking one costs nothing. Found
+          by running the real 0.1.0 → 0.1.1 update and looking for the banner that was not
+          there. It also belongs on the `unreachable` screen, where a newer build may be the
+          fix for whatever is broken. */}
+      {update !== null && (
+        <div class="problem-strip update-strip">
+          <span class="problem-icon">{Icon.check()}</span>
+          <div class="problem-list">
+            {updateError === null
+              ? <div>
+                  PrivateCode {update.newVersion} is available — {formatBytes(update.downloadBytes)} to download.{' '}
+                  {updating ? 'Downloading…' : 'The app restarts when it is done.'}
+                </div>
+              : <div>Update failed: {updateError}</div>}
+          </div>
+          {!updating && updateError === null && (
+            <button
+              class="icon-button"
+              onClick={() => {
+                setUpdating(true)
+                void applyUpdate().then((err) => {
+                  // Only returns on failure -- success replaces the process.
+                  setUpdateError(err)
+                  setUpdating(false)
+                })
+              }}
+              title={`Download ${formatBytes(update.downloadBytes)} and restart on ${update.newVersion}`}
+            >
+              {Icon.check()}
+            </button>
+          )}
+          <button
+            class="icon-button"
+            onClick={() => { setUpdate(null); setUpdateError(null) }}
+            title="Not now"
+          >
+            {Icon.x()}
+          </button>
+        </div>
+      )}
+
       {phase.kind === 'unreachable'
         ? <AgentDown phase={phase} isDevBridge={isDevBridge} />
         : ready && client
@@ -747,42 +795,6 @@ export default function App() {
                   // to lose one so it can put it back.
                   offscreen={activeTab !== null}
                 />
-                {update !== null && (
-                  <div class="problem-strip update-strip">
-                    <span class="problem-icon">{Icon.check()}</span>
-                    <div class="problem-list">
-                      {updateError === null
-                        ? <div>
-                            PrivateCode {update.newVersion} is available — {formatBytes(update.downloadBytes)} to download.{' '}
-                            {updating ? 'Downloading…' : 'The app restarts when it is done.'}
-                          </div>
-                        : <div>Update failed: {updateError}</div>}
-                    </div>
-                    {!updating && updateError === null && (
-                      <button
-                        class="icon-button"
-                        onClick={() => {
-                          setUpdating(true)
-                          void applyUpdate().then((err) => {
-                            // Only returns on failure -- success replaces the process.
-                            setUpdateError(err)
-                            setUpdating(false)
-                          })
-                        }}
-                        title={`Download ${formatBytes(update.downloadBytes)} and restart on ${update.newVersion}`}
-                      >
-                        {Icon.check()}
-                      </button>
-                    )}
-                    <button
-                      class="icon-button"
-                      onClick={() => { setUpdate(null); setUpdateError(null) }}
-                      title="Not now"
-                    >
-                      {Icon.x()}
-                    </button>
-                  </div>
-                )}
                 {chatState.problems.length > 0 && (
                   <div class="problem-strip">
                     <span class="problem-icon">{Icon.alert()}</span>
@@ -928,6 +940,7 @@ export default function App() {
             </div>
           </div>
           )}
+      </div>
 
       {client && ready && phase.kind === 'ready' && <StatusBar client={client} chatState={chatState} />}
 

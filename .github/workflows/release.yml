@@ -89,6 +89,11 @@ jobs:
         run: npm test --prefix core
       - name: Test app
         run: npm test --prefix app
+      # The shell has unit tests too, and until this step existed nothing ran them: the
+      # version comparison that decides whether an update is offered at all lives here, and
+      # it shipped backwards (a 0.1.2 build offered to "update" itself to the released 0.1.1).
+      - name: Test the shell
+        run: cargo test --manifest-path app/src-tauri/Cargo.toml
 
       - name: Bundle the agent sidecar
         run: npm run bundle --prefix core

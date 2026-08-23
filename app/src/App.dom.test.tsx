@@ -20,6 +20,11 @@ const calls: { method: string; params: unknown }[] = []
 /** What `config.get` answers next. The reopen test changes it mid-run, which is exactly
  * what Settings does when it applies a new server URL without telling App. */
 let savedServerUrl = 'http://127.0.0.1:8080'
+/** What `config.get` answers for the recent list. Empty means the app lands on the WELCOME
+ * screen instead of auto-connecting — the state in which the update notice did not exist. */
+let savedRecents: string[] = ['D:\\proj']
+/** What the update check "finds", if anything. */
+let updateToOffer: import('./lib/update').UpdateAvailable | null = null
 
 /** What `/props` had said by the time the session was built. `null` is a session built while
  * the model server was down — the state the context-readout test below is about. */
@@ -27,7 +32,7 @@ let initContextLength: number | null = 262144
 
 function fakeResult(method: string): unknown {
   switch (method) {
-    case 'config.get': return { serverUrl: savedServerUrl, recentWorkspaces: ['D:\\proj'] }
+    case 'config.get': return { serverUrl: savedServerUrl, recentWorkspaces: savedRecents }
     case 'init': return {
       sessionId: 's1', mode: 'normal', contextLength: initContextLength, title: '',
       // The real shape: the server's own count (null until a step runs in this process) and
@@ -50,6 +55,19 @@ function fakeResult(method: string): unknown {
     default: return {}
   }
 }
+
+// Stubbed because the real one waits twenty seconds and then talks to GitHub. What is under
+// test here is WHERE the notice renders, not when it is found.
+vi.mock('./lib/update', async () => {
+  const actual = await vi.importActual<typeof import('./lib/update')>('./lib/update')
+  return {
+    ...actual,
+    scheduleUpdateCheck: (onAvailable: (u: import('./lib/update').UpdateAvailable) => void) => {
+      if (updateToOffer !== null) onAvailable(updateToOffer)
+      return () => {}
+    },
+  }
+})
 
 vi.mock('./lib/client', async () => {
   const actual = await vi.importActual<typeof import('./lib/client')>('./lib/client')
@@ -83,6 +101,8 @@ let abortsSeen: number
 beforeEach(async () => {
   calls.length = 0
   savedServerUrl = 'http://127.0.0.1:8080'
+  savedRecents = ['D:\\proj']
+  updateToOffer = null
   initContextLength = 262144
   abortsSeen = 0
   host = document.createElement('div')
@@ -283,4 +303,48 @@ test('and when the two copies disagree, the FRESHER one wins', async () => {
   const readout = host.querySelector('.status-context')
   expect(readout?.textContent).toContain('262.1k')
   expect(readout?.textContent).not.toContain('131.1k')
+})
+
+test('the update notice is shown before any folder is open, not only inside a workspace', async () => {
+  // It used to be a child of the chat pane, which does not exist until a workspace is
+  // open: launch the app, do not pick a folder, and nothing ever mentioned the update.
+  // Found by running the real 0.1.0 -> 0.1.1 release and looking for a banner that was not
+  // there. Before starting work is the moment when taking an update costs nothing.
+  render(null, host)
+  savedRecents = []
+  updateToOffer = {
+    currentVersion: '0.1.0',
+    newVersion: '0.1.1',
+    downloadBytes: 4_567_499,
+    notesUrl: 'https://example.invalid/releases/latest',
+  }
+  render(<App />, host)
+  await settle()
+
+  // The welcome screen, genuinely: no workspace body anywhere in the document.
+  expect(host.querySelector('.body')).toBeNull()
+  expect(host.querySelector('.welcome-card')).not.toBeNull()
+
+  const strip = host.querySelector('.update-strip')
+  expect(strip).not.toBeNull()
+  expect(strip?.textContent).toContain('0.1.1')
+  // The size of the UPDATE, not of the release -- the number that decides whether a person
+  // says yes.
+  expect(strip?.textContent).toContain('4.4 MB')
+})
+
+test('and it stays put once a workspace is open', async () => {
+  // The move must not cost the case that already worked.
+  render(null, host)
+  updateToOffer = {
+    currentVersion: '0.1.0',
+    newVersion: '0.1.1',
+    downloadBytes: 4_567_499,
+    notesUrl: 'https://example.invalid/releases/latest',
+  }
+  render(<App />, host)
+  await settle()
+
+  expect(host.querySelector('.body')).not.toBeNull()
+  expect(host.querySelector('.update-strip')).not.toBeNull()
 })

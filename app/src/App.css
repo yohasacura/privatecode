@@ -520,7 +520,16 @@ kbd {
 .conn-connecting { background: var(--yellow); }
 .conn-closed { background: var(--red); }
 
-.body { display: flex; min-height: 0; min-width: 0; overflow: hidden; }
+.stage {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+/* Between the title bar and whatever fills the window. `flex: none` so a two-line update
+   notice never steals height from the thing below it. */
+.stage > .problem-strip { flex: none; margin-top: 10px; }
+.body { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .column { display: flex; flex-direction: column; min-height: 0; }
 .column-chat { flex: 1; min-width: 0; background: var(--bg); }
 
@@ -2169,7 +2178,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 
 /* ------------------------------------------------------------- welcome and modal ----- */
 
-.welcome { display: flex; align-items: center; justify-content: center; overflow: auto; padding: 24px; }
+.welcome { display: flex; flex: 1; align-items: center; justify-content: center; overflow: auto; padding: 24px; min-height: 0; }
 .welcome-card {
   width: 100%;
   max-width: 420px;

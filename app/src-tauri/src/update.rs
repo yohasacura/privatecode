@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 /// Where the manifest lives. A GitHub release asset on a public repository, so no token, no
 /// header and no account are involved — the reason the repository is public at all.
@@ -114,6 +114,33 @@ async fn manifest() -> Result<Manifest, String> {
     serde_json::from_slice(&body).map_err(|e| format!("manifest is not readable: {e}"))
 }
 
+/// Split a dotted numeric version. `None` for anything else, including an empty string.
+fn version_parts(v: &str) -> Option<Vec<u64>> {
+    let parts: Option<Vec<u64>> = v.split('.').map(|p| p.parse::<u64>().ok()).collect();
+    parts.filter(|p| !p.is_empty())
+}
+
+/// Is the release LATER than what is running?
+///
+/// This was `m.version != current`, which is wrong in one direction: a build newer than the
+/// latest release is told that an older one "is available", and taking it moves backwards.
+/// That is not hypothetical — it happens to anyone running a local build, and to everyone
+/// running the current release for as long as a bad one stays yanked. Observed while checking
+/// this very change: a locally built 0.1.2 offered to update itself to the released 0.1.1.
+///
+/// Compared as numbers, not as strings, because `"0.10.0" < "0.9.0"` lexically. Shorter wins
+/// against its own prefix (`0.1` is older than `0.1.1`) because `Vec` compares element by
+/// element and then by length.
+///
+/// Anything that does not parse falls back to "different means newer" — the old behaviour,
+/// and the conservative one for a manifest this app did not write.
+fn is_newer(candidate: &str, current: &str) -> bool {
+    match (version_parts(candidate), version_parts(current)) {
+        (Some(a), Some(b)) => a > b,
+        _ => candidate != current,
+    }
+}
+
 /// Is there a newer release, and what would it cost to take it?
 ///
 /// Deliberately says nothing and changes nothing when it cannot reach GitHub: an offline tool
@@ -136,7 +163,7 @@ pub async fn check_for_update(app: AppHandle) -> Result<UpdateCheck, String> {
     }
 
     Ok(UpdateCheck {
-        available: m.version != current,
+        available: is_newer(&m.version, &current),
         current_version: current,
         new_version: m.version,
         download_bytes: bytes,
@@ -221,7 +248,62 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
     }
 
     let _ = fs::remove_dir_all(&staging);
-    app.restart();
+    relaunch_and_leave(&app, &exe)
+}
+
+/// Start the replacement and go — without asking Tauri to arrange it.
+///
+/// `AppHandle::restart()` is the obvious call and it does not finish the job from here.
+/// `apply_update` is an async command, so it runs on a worker thread, and off the main thread
+/// `restart` only REQUESTS an exit and then parks the calling thread forever, leaving the
+/// event loop to spawn the replacement and call `std::process::exit(0)`.
+///
+/// Measured against the real 0.1.0 → 0.1.1 release rather than reasoned about: the
+/// replacement started correctly and the old process never left. It sat minimised off-screen
+/// at (-32000, -32000), still answering, which meant two agents were live against one
+/// workspace — and it held `PrivateCode.old.exe` open, so `clean_previous_update` on the next
+/// launch could not delete it and every update would leave another 12 MB behind. Proved by
+/// killing that process by hand: the file deleted immediately afterwards, so it was the thing
+/// holding it.
+///
+/// `exit(0)` is where it stops. On Windows that abruptly terminates every other thread and
+/// then runs DLL detach and the CRT's atexit chain; WebView2 keeps a large number of COM
+/// threads, and one terminated while holding the loader lock deadlocks the teardown.
+///
+/// So the sidecar is shut down explicitly first — the graceful path, which the `RunEvent::Exit`
+/// handler will no longer get to run — and then the process is ended with `TerminateProcess`,
+/// which skips the teardown entirely.
+///
+/// That is safe here for a specific reason and not a general one: the sidecar and everything
+/// it starts live in a kill-on-close job object (see `job.rs`), and the kernel closes the last
+/// handle to that job when this process dies BY ANY MEANS. Verified, not assumed — the
+/// leftover process was terminated by hand and its `node.exe` went with it.
+fn relaunch_and_leave(app: &AppHandle, exe: &Path) -> ! {
+    // Before the new process starts, so the two are never both talking to the same
+    // `.privatecode/` at once.
+    crate::shutdown_sidecar(&app.state::<crate::SidecarState>());
+
+    if let Err(e) = std::process::Command::new(exe).spawn() {
+        // Nothing left to report to: the window is about to go. The old binary is still on
+        // disk under `.old.exe`, so the folder is not left without a working app.
+        eprintln!("update: could not start the new version: {e}");
+    }
+    // SAFETY: ends this process and nothing else. The job object above owns the child
+    // processes and the kernel releases it as part of our death.
+    unsafe { winexit::TerminateProcess(winexit::GetCurrentProcess(), 0) };
+    // TerminateProcess does not return for the current process, but it is not typed `!`.
+    std::process::exit(0)
+}
+
+mod winexit {
+    use std::ffi::c_void;
+
+    // Declared rather than pulled in with the `windows` crate, matching `job.rs`: two
+    // functions against a dependency larger than the app itself.
+    extern "system" {
+        pub fn GetCurrentProcess() -> *mut c_void;
+        pub fn TerminateProcess(process: *mut c_void, exit_code: u32) -> i32;
+    }
 }
 
 /// Removes the binary the previous update renamed aside. Called once at startup, when nothing
@@ -233,5 +315,48 @@ pub fn clean_previous_update() {
             let _ = fs::remove_dir_all(dir.join(".sidecar.old"));
             let _ = fs::remove_dir_all(dir.join(".update-staging"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_newer;
+
+    #[test]
+    fn only_a_later_release_counts_as_available() {
+        assert!(is_newer("0.1.2", "0.1.1"));
+        assert!(is_newer("0.2.0", "0.1.9"));
+        assert!(is_newer("1.0.0", "0.99.99"));
+        assert!(!is_newer("0.1.1", "0.1.1"));
+    }
+
+    #[test]
+    fn an_older_release_is_not_offered() {
+        // The bug this replaced: a locally built 0.1.2 was told the released 0.1.1 "is
+        // available", and clicking would have moved it backwards.
+        assert!(!is_newer("0.1.1", "0.1.2"));
+        assert!(!is_newer("0.9.0", "1.0.0"));
+    }
+
+    #[test]
+    fn compared_as_numbers_rather_than_as_text() {
+        // The whole reason not to use string ordering: "0.10.0" < "0.9.0" lexically.
+        assert!(is_newer("0.10.0", "0.9.0"));
+        assert!(!is_newer("0.9.0", "0.10.0"));
+    }
+
+    #[test]
+    fn a_prefix_is_older_than_what_extends_it() {
+        assert!(is_newer("0.1.1", "0.1"));
+        assert!(!is_newer("0.1", "0.1.1"));
+    }
+
+    #[test]
+    fn anything_unparseable_falls_back_to_difference() {
+        // A manifest this app did not write. Refusing to offer anything at all would make a
+        // future versioning scheme silently un-updatable; "different means newer" is what
+        // the code did before and it is the safe direction here.
+        assert!(is_newer("2026-08-24", "0.1.1"));
+        assert!(!is_newer("0.1.1-rc1", "0.1.1-rc1"));
     }
 }
