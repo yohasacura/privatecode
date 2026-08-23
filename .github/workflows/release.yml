@@ -1,0 +1,104 @@
+# Builds the portable Windows release and publishes it.
+#
+# Triggered by a tag, so a release is a deliberate act rather than something every push does:
+#
+#   git tag v0.1.1 && git push origin v0.1.1
+#
+# What it publishes, and why it is three archives rather than one:
+#
+#   PrivateCode-<version>-win-x64.zip   the whole thing — what a first-time download gets
+#   PrivateCode-app-<version>.zip       the app and the agent, a few MB — what an UPDATE gets
+#   sidecar-<sha>.zip                   node.exe, ripgrep, tree-sitter, roslyn, sql-probe
+#   latest.json                         versions and SHA-256 of each part
+#
+# The split exists because the heavy half is ~368 MB and almost never changes: node.exe and
+# the two .NET helpers are pinned by their PROVENANCE files and move maybe twice a year, while
+# the agent and the window change every day. Shipping one archive would make every bugfix a
+# 380 MB download. The updater compares the hashes in latest.json and fetches only the part
+# that moved.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and upload artifacts, but publish no release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # needed to create the release; nothing else
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # The two vendored helpers are `dotnet publish`ed from tools/ — see their PROVENANCE.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Rust dominates the build; without this every run recompiles the whole dependency tree.
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix core
+          npm ci --prefix app
+
+      # The suites are the gate: a release that cannot pass them should not exist.
+      - name: Test
+        run: |
+          npm run typecheck --prefix core
+          npm run typecheck --prefix app
+          npm test --prefix core
+          npm test --prefix app
+
+      # Downloads node.exe and rg.exe and verifies the publisher's own SHA-256 for both the
+      # archive and the extracted file, copies the tree-sitter wasm out of node_modules where
+      # npm has already checked their integrity, and builds the two .NET helpers from source.
+      - name: Stage vendor/
+        run: node scripts/fetch-vendor.mjs
+
+      - name: Bundle the agent sidecar
+        run: npm run bundle --prefix core
+
+      - name: Build the app
+        run: npm run tauri build --prefix app -- --no-bundle
+        # --no-bundle: we want the raw executable and its resources, not an installer. Tauri
+        # has no "portable" bundle target, and the owner never installs anything.
+
+      - name: Package
+        id: package
+        shell: pwsh
+        run: node scripts/package-release.mjs
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: privatecode-${{ steps.package.outputs.version }}
+          path: release/
+          retention-days: 7
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}"
+          (Get-ChildItem release/*.zip release/latest.json | ForEach-Object { $_.FullName })
+          --title "${{ github.ref_name }}"
+          --notes-file release/NOTES.md
+        shell: pwsh

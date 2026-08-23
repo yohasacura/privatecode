@@ -28,3 +28,6 @@ ext/vendor/
 
 # Debug symbols from the sql-probe publish; never belonged in the tree.
 sql-probe.pdb
+
+# Release artefacts, built by scripts/package-release.mjs.
+release/
