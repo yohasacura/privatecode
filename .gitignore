@@ -12,3 +12,19 @@ tools/roslyn-nav/obj/
 # hundreds of intermediate files that change on every build.
 tools/*/bin/
 tools/*/obj/
+
+# Vendored binaries: 382 MB, and sql-probe.exe alone is past GitHub's hard 100 MiB per-file
+# limit, so a repository carrying them cannot be pushed at all. `scripts/fetch-vendor.mjs`
+# rebuilds the whole tree from the sources each PROVENANCE.md names, verifying the
+# publisher's own SHA-256 on the way — a stronger guarantee than a committed blob. The
+# PROVENANCE files stay in git -- they ARE the source of truth -- and so do the third-party
+# licence texts, so a reader can see what the release bundles without running anything.
+vendor/*/*.exe
+vendor/*/*.dll
+vendor/*/*.wasm
+
+# Staged by ext/scripts/stage-vendor.mjs from vendor/ at build time.
+ext/vendor/
+
+# Debug symbols from the sql-probe publish; never belonged in the tree.
+sql-probe.pdb

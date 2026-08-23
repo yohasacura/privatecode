@@ -32,3 +32,15 @@ a pinned runtime behaves identically on both machines, where a system install wo
   shell uses the developer's PATH node instead — that dev/release difference is
   documented in `app/src-tauri/src/main.rs`.
 - Upgrade together with the dev machine's major, never past `agent.cjs`'s esbuild target.
+
+## Where this file comes from now
+
+It is **not committed**. `scripts/fetch-vendor.mjs` recreates it from the source named above,
+verifying the publisher's own SHA-256 before staging, and CI runs that script before every
+build. The binaries were removed from git because they total 382 MB and one of them is past
+GitHub's hard 100 MiB per-file limit, so a repository carrying them cannot be pushed.
+
+Nothing about the vendoring rationale changed: the machine the app RUNS on still has no
+toolchain, and the release still ships this exact pinned binary. What changed is that the
+machine that BUILDS it fetches from the publisher and checks the hash first — which is a
+stronger guarantee than a blob somebody committed once.
