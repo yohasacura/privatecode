@@ -3135,3 +3135,11 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   text-underline-offset: 2px;
 }
 .changes-reviewed-toggle:hover { color: var(--text); }
+
+/* The update notice reuses the problem strip's layout and only changes its colour: this is
+   news, not a fault, and a red bar for "a new version is available" reads as something being
+   wrong. */
+.update-strip {
+  border-color: var(--green);
+  background: var(--green-soft);
+}

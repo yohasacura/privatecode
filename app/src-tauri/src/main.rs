@@ -28,6 +28,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 #[cfg(windows)]
 mod job;
+mod update;
 #[cfg(windows)]
 use job::{assign_to_job, JobHandle};
 
@@ -353,8 +354,18 @@ fn main() {
         // is worth nothing if the only way to learn it happened is to come back and look.
         .plugin(tauri_plugin_notification::init())
         .manage(SidecarState::new())
-        .invoke_handler(tauri::generate_handler![sidecar_send, sidecar_stderr, restart_sidecar])
+        .invoke_handler(tauri::generate_handler![
+            sidecar_send,
+            sidecar_stderr,
+            restart_sidecar,
+            update::check_for_update,
+            update::apply_update
+        ])
         .setup(|app| {
+            // Sweep up whatever the previous update renamed aside. Here rather than at the end
+            // of the update itself: the old binary is still held open until this process is
+            // the new one, which it is by now.
+            update::clean_previous_update();
             let handle = app.handle().clone();
             let running = spawn_sidecar(&handle).map_err(std::io::Error::other)?;
             let pid = running.child.id();

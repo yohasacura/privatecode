@@ -53,12 +53,42 @@ function walk(dir, base = dir) {
   return out
 }
 
-/** A directory's identity: its file list and every file's content, hashed as one. */
-function treeHash(dir) {
+/**
+ * The sidecar's identity, computed from what it was BUILT FROM rather than from the bytes.
+ *
+ * Hashing the built tree was the obvious thing and it is wrong. `dotnet publish` of a
+ * self-contained single file is not byte-reproducible — timestamps and MVIDs go into the
+ * bundle — so the same sources produce a different hash on every machine and every run.
+ * Caught by comparing a CI build against a local one: identical inputs, identical sizes,
+ * different hash (`ee91253e6525` vs `8c2fdb9ccaa4`). Left alone, EVERY release would have
+ * looked like a new sidecar and every update would have downloaded 120 MB instead of 3 —
+ * which is the whole reason the payload is split.
+ *
+ * So the identity is the pinned inputs: each vendor PROVENANCE.md (which carries the version,
+ * the URL and the SHA-256 of everything downloaded) and the source of the two .NET helpers.
+ * Two builds from the same sources are the same sidecar, whatever the bytes say — and they
+ * are, functionally, because the parts that could differ are compiled from identical source.
+ */
+function sidecarIdentity() {
   const h = createHash('sha256')
-  for (const rel of walk(dir)) {
-    h.update(rel)
-    h.update(readFileSync(join(dir, rel)))
+  const inputs = []
+  for (const name of readdirSync(join(repo, 'vendor')).sort()) {
+    const prov = join(repo, 'vendor', name, 'PROVENANCE.md')
+    if (existsSync(prov)) inputs.push(prov)
+  }
+  for (const tool of readdirSync(join(repo, 'tools')).sort()) {
+    const dir = join(repo, 'tools', tool)
+    if (!statSync(dir).isDirectory()) continue
+    for (const rel of walk(dir)) {
+      // bin/ and obj/ are build output; including them would reintroduce the very
+      // nondeterminism this function exists to avoid.
+      if (rel.startsWith('bin/') || rel.startsWith('obj/')) continue
+      inputs.push(join(dir, rel))
+    }
+  }
+  for (const path of inputs) {
+    h.update(relative(repo, path).split('\\').join('/'))
+    h.update(readFileSync(path))
   }
   return h.digest('hex')
 }
@@ -83,7 +113,11 @@ for (const name of readdirSync(sidecarSrc)) {
   if (name === 'agent.cjs' || name === 'agent.cjs.map') continue
   cpSync(join(sidecarSrc, name), join(heavyDir, name), { recursive: true })
 }
-const sidecarHash = treeHash(heavyDir)
+const sidecarHash = sidecarIdentity()
+// Written INTO the archive so the running app can read back which sidecar it has without
+// hashing 368 MB of binaries -- and without needing them to be byte-reproducible.
+writeFileSync(join(heavyDir, '.identity'), `${sidecarHash}
+`)
 const sidecarName = `sidecar-${sidecarHash.slice(0, 12)}.zip`
 zip(join(staging, 'sidecar-payload'), join(outDir, sidecarName))
 

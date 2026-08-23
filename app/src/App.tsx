@@ -6,6 +6,7 @@ import {
 } from './lib/client'
 import { useChatSession } from './lib/use-chat-session'
 import { notify } from './lib/notify'
+import { applyUpdate, formatBytes, scheduleUpdateCheck, type UpdateAvailable } from './lib/update'
 import { baseName } from './lib/format'
 import { conversationAsMarkdown } from './lib/export'
 import { MIN_CONTEXT, MIN_RAIL, fitColumns } from './lib/layout'
@@ -200,6 +201,13 @@ export default function App() {
    * squeezed into the 420px side panel. */
   const [tabs, setTabs] = useState<EditorTab[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
+  // Asked once, twenty seconds after launch, and silent about every kind of failure -- see
+  // lib/update.ts. An offline tool must not be able to look broken because a check nobody
+  // asked for could not reach GitHub.
+  const [update, setUpdate] = useState<UpdateAvailable | null>(null)
+  const [updating, setUpdating] = useState(false)
+  const [updateError, setUpdateError] = useState<string | null>(null)
+  useEffect(() => scheduleUpdateCheck(setUpdate), [])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [switchOpen, setSwitchOpen] = useState(false)
   /** What this workspace is called and how many folders it spans. Kept beside `phase`
@@ -739,6 +747,42 @@ export default function App() {
                   // to lose one so it can put it back.
                   offscreen={activeTab !== null}
                 />
+                {update !== null && (
+                  <div class="problem-strip update-strip">
+                    <span class="problem-icon">{Icon.check()}</span>
+                    <div class="problem-list">
+                      {updateError === null
+                        ? <div>
+                            PrivateCode {update.newVersion} is available — {formatBytes(update.downloadBytes)} to download.{' '}
+                            {updating ? 'Downloading…' : 'The app restarts when it is done.'}
+                          </div>
+                        : <div>Update failed: {updateError}</div>}
+                    </div>
+                    {!updating && updateError === null && (
+                      <button
+                        class="icon-button"
+                        onClick={() => {
+                          setUpdating(true)
+                          void applyUpdate().then((err) => {
+                            // Only returns on failure -- success replaces the process.
+                            setUpdateError(err)
+                            setUpdating(false)
+                          })
+                        }}
+                        title={`Download ${formatBytes(update.downloadBytes)} and restart on ${update.newVersion}`}
+                      >
+                        {Icon.check()}
+                      </button>
+                    )}
+                    <button
+                      class="icon-button"
+                      onClick={() => { setUpdate(null); setUpdateError(null) }}
+                      title="Not now"
+                    >
+                      {Icon.x()}
+                    </button>
+                  </div>
+                )}
                 {chatState.problems.length > 0 && (
                   <div class="problem-strip">
                     <span class="problem-icon">{Icon.alert()}</span>
