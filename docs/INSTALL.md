@@ -22,7 +22,8 @@ reservation for this machine.
 ## 1. Build the installer (GPU laptop)
 
 ```powershell
-cd D:\Projects\LocalAgent\local-private-code-app\core; npm run bundle
+cd <repo>; node scripts\fetch-vendor.mjs
+cd core; npm run bundle
 cd ..\app; npx tauri build
 ```
 

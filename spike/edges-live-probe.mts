@@ -5,7 +5,14 @@ import { indexRepo, renderIndex } from '../core/src/outline/repo-map.js'
 import { harvestReferenceEdges } from '../core/src/csharp/reference-edges.js'
 import { stopNavProcess } from '../core/src/csharp/nav-process.js'
 
-const ROOT = process.argv[2] ?? 'D:/Projects/LocalAgent/local-standard-server/src'
+/** A C# tree to harvest. No default: the one this was written against is a checkout that
+ * exists on one machine, and a probe that silently measures the wrong tree is worse than
+ * one that refuses to start. */
+const ROOT = process.argv[2]
+if (ROOT === undefined) {
+  console.error('usage: npx tsx spike/edges-live-probe.mts <path-to-a-csharp-src-tree>')
+  process.exit(2)
+}
 
 async function main(): Promise<void> {
 const t0 = Date.now()
