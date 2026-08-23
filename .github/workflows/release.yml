@@ -89,11 +89,6 @@ jobs:
         run: npm test --prefix core
       - name: Test app
         run: npm test --prefix app
-      # The shell has unit tests too, and until this step existed nothing ran them: the
-      # version comparison that decides whether an update is offered at all lives here, and
-      # it shipped backwards (a 0.1.2 build offered to "update" itself to the released 0.1.1).
-      - name: Test the shell
-        run: cargo test --manifest-path app/src-tauri/Cargo.toml
 
       - name: Bundle the agent sidecar
         run: npm run bundle --prefix core
@@ -102,6 +97,19 @@ jobs:
         run: npm run tauri build --prefix app -- --no-bundle
         # --no-bundle: we want the raw executable and its resources, not an installer. Tauri
         # has no "portable" bundle target, and the owner never installs anything.
+
+      # The shell has unit tests too, and until this step existed nothing ran them -- which is
+      # how a backwards version comparison shipped: `available` was `manifest != current`, so
+      # a build NEWER than the latest release offered to move itself back to it.
+      #
+      # Here rather than beside the other test steps, for two reasons. It cannot run before
+      # `Bundle the agent sidecar`: tauri's build script resolves `bundle.resources`, and with
+      # `core/dist/sidecar` not yet built it fails with "resource path doesn't exist" -- which
+      # is exactly what putting it up there did. And `--release` after `Build the app` reuses
+      # that build's dependency tree instead of compiling the whole of tauri again in debug.
+      # It still gates Package and Publish, which is the only thing a gate has to do.
+      - name: Test the shell
+        run: cargo test --release --manifest-path app/src-tauri/Cargo.toml
 
       - name: Package
         id: package
