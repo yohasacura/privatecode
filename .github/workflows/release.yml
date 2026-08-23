@@ -64,6 +64,18 @@ jobs:
           npm ci --prefix core
           npm ci --prefix app
 
+      # Downloads node.exe and rg.exe and verifies the publisher's own SHA-256 for both the
+      # archive and the extracted file, copies the tree-sitter wasm out of node_modules where
+      # npm has already checked their integrity, and builds the two .NET helpers from source.
+      - name: Stage vendor/
+        run: node scripts/fetch-vendor.mjs
+
+      # AFTER vendor/ is staged, because the suites use it: `search_code` runs the vendored
+      # ripgrep and `symbol_outline` loads the vendored wasm, and with the binaries no longer
+      # committed they do not exist until the step above has run. Putting the tests first --
+      # which is where they naturally want to go -- failed 11 files with
+      # "ripgrep is unavailable", and that was my own doing, not a bug in the code under test.
+      #
       # One command per step, deliberately. A multi-line `run:` on a Windows runner is
       # PowerShell, and PowerShell reports only the LAST command's exit code -- so these four
       # as one block passed while `npm test --prefix core` was failing 60 tests, and the gate
@@ -77,12 +89,6 @@ jobs:
         run: npm test --prefix core
       - name: Test app
         run: npm test --prefix app
-
-      # Downloads node.exe and rg.exe and verifies the publisher's own SHA-256 for both the
-      # archive and the extracted file, copies the tree-sitter wasm out of node_modules where
-      # npm has already checked their integrity, and builds the two .NET helpers from source.
-      - name: Stage vendor/
-        run: node scripts/fetch-vendor.mjs
 
       - name: Bundle the agent sidecar
         run: npm run bundle --prefix core
