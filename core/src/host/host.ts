@@ -28,7 +28,7 @@ import { createToolset, type Toolset } from '../tools/default-set.js'
 import { loadBrowserSettings } from '../browser/settings.js'
 import { loadServers } from '../mcp/config.js'
 import { McpManager } from '../mcp/manager.js'
-import { isRootPath, Workspace } from '../workspace.js'
+import { canonicalize, isRootPath, Workspace } from '../workspace.js'
 import {
   loadMounts, readProfile, saveWorkspaceFile, storedPath, workspaceFilePath,
   type Mount, type WorkspaceFile,
@@ -1478,7 +1478,10 @@ export class SessionHost {
     const abs = resolvePanelPath(workspace, params.path)
     const repoRoot = await repoRootFor(abs)
     if (repoRoot === null) return { diff: '' }
-    const within = relative(repoRoot, abs).split(sep).join('/')
+    // Canonical on both sides before they are subtracted: `repoRoot` is git's spelling and
+    // `abs` is the caller's, and one Windows directory answers to several names. Mismatched,
+    // `relative` returned a `..\..\`-laden path and git diffed nothing at all.
+    const within = relative(repoRoot, canonicalize(abs)).split(sep).join('/')
     return { diff: await gitDiff(repoRoot, within, params.untracked === true) }
   }
 

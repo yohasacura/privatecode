@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -161,5 +161,54 @@ describe('committing into the right repository', () => {
     const result = toRepoPaths(ws, engine, ['engine/src/lib.rs', 'app/main.ts'])
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.problem).toContain('not in this repository')
+  })
+})
+
+describe('one directory, two names', () => {
+  // Windows opens a directory under more than one name at a time -- an 8.3 alias, a
+  // junction, a differing case -- and the panel's two halves get their names from different
+  // places: the mount root is however the folder was ATTACHED, while `git rev-parse
+  // --show-toplevel` answers with the name the filesystem reports, whichever one it was
+  // asked under. Compared as strings, those two said "different directory", `path.relative`
+  // returned a `..\..\`-laden path, every changed file was filtered out as "outside the
+  // workspace", and the Changes panel was empty. No error anywhere -- it simply showed
+  // nothing, which looks exactly like a clean tree.
+  //
+  // Twelve tests failed this way on a GitHub runner and passed on the machine they were
+  // written on, whose username is short enough to have no 8.3 alias at all. So this uses a
+  // JUNCTION rather than a short name: it produces the same two-spellings situation on any
+  // Windows machine, including one with 8.3 generation switched off, instead of only where
+  // the paths happen to be long.
+  const junctionsWork = process.platform === 'win32'
+
+  test.runIf(junctionsWork)('a folder opened through a junction still shows its changes', () => {
+    const real = repoAt(dir('actual-project'))
+    writeFileSync(join(real, 'seed.txt'), 'edited\n', 'utf8')
+    const link = join(base, 'through-link')
+    symlinkSync(real, link, 'junction')
+
+    return discoverRepos(new Workspace(link)).then((found) => {
+      expect(found.repos).toHaveLength(1)
+      // `folder`, not `above`: the junction IS the repository, and calling it "part of
+      // something bigger" is the first visible symptom of the comparison having failed.
+      expect(found.repos[0]?.relation).toBe('folder')
+      expect(found.repos[0]?.files.map((f) => f.path)).toEqual(['seed.txt'])
+    })
+  })
+
+  test.runIf(junctionsWork)('and its files can still be staged by the name the panel shows', () => {
+    const real = repoAt(dir('stageable'))
+    writeFileSync(join(real, 'seed.txt'), 'edited\n', 'utf8')
+    const link = join(base, 'stage-link')
+    symlinkSync(real, link, 'junction')
+    const ws = new Workspace(link)
+
+    return discoverRepos(ws).then((found) => {
+      const repo = found.repos[0]
+      expect(repo).toBeDefined()
+      // The round trip is the point: the panel shows `seed.txt`, and staging it has to reach
+      // git as `seed.txt` in THIS repository rather than as "not in this repository".
+      expect(toRepoPaths(ws, repo!.root, ['seed.txt'])).toEqual({ ok: true, paths: ['seed.txt'] })
+    })
   })
 })

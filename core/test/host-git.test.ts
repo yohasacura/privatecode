@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { gitCommitStaged, gitDiff, gitStage, gitUnstage, stagedPaths, suggestCommitMessage } from '../src/host/git.js'
 import { discoverRepos, resolvePanelPath, toRepoPaths } from '../src/host/repos.js'
 import { gitStatusTool } from '../src/tools/git-tool.js'
-import { Workspace } from '../src/workspace.js'
+import { canonicalize, Workspace } from '../src/workspace.js'
 
 /**
  * The working tree, for the window.
@@ -140,7 +140,10 @@ describe('reading the working tree', () => {
     await run(['add', 'docs/guide.md'])
     await run(['commit', '--quiet', '-m', 'docs'])
     rmSync(join(root, 'docs'), { recursive: true, force: true })
-    expect(await repoRootFor(join(root, 'docs', 'guide.md'))).toBe(root)
+    // Canonicalised, not compared to `root` as spelled: `repoRootFor` answers with the
+    // canonical path on purpose, because its callers subtract it from a canonicalised file
+    // path. On a machine where `root` has an 8.3 alias the two spell one directory two ways.
+    expect(await repoRootFor(join(root, 'docs', 'guide.md'))).toBe(canonicalize(root))
   })
 
   test('a directory that is not a repository is listed as unversioned, not as a failure', async () => {

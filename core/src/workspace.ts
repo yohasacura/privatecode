@@ -182,6 +182,8 @@ export class Workspace {
    * by "the workspace root". */
   readonly root: string
 
+  private readonly canonicalRoots = new Map<string, string>()
+
   constructor(rootOrMounts: string | readonly Mount[]) {
     if (typeof rootOrMounts === 'string') {
       const root = pathResolve(rootOrMounts)
@@ -216,13 +218,63 @@ export class Workspace {
     return this.mounts.find((m) => opensAsWorkspaceRoot(absolutePath, m.root))
   }
 
+  /**
+   * The folder a path belongs to and its place inside it, or undefined for a path that is
+   * outside every folder.
+   *
+   * Two passes, and the second one is the whole point. A mount's root is spelled the way the
+   * caller spelled it, but paths arrive here from elsewhere too — `git rev-parse
+   * --show-toplevel`, a directory listing, `realpath` — and on Windows one directory answers
+   * to several names at once. The 8.3 alias is the one that bites: a GitHub runner's `%TEMP%`
+   * is `C:\Users\RUNNER~1\...` while git answers `C:\Users\runneradmin\...`, and
+   * `path.relative` between them yields a `..`-laden path, which reads exactly like "outside
+   * the workspace". Every changed file was then dropped and the git panel was empty — no
+   * error, no warning, just nothing. Twelve tests failed that way on CI and passed here,
+   * because this machine's username is short enough to have no alias at all.
+   *
+   * `pathRelative` folds case on win32 and so hides the easy half of this; an alias is a
+   * different string, not a different case, and it does not hide.
+   *
+   * The canonical pass runs only after the cheap one has already concluded "outside", so the
+   * common path costs no syscall and the fallback is bounded by how often that answer is
+   * genuinely wrong.
+   */
+  private locate(absolutePath: string): { mount: Mount; rel: string } | undefined {
+    const abs = pathResolve(absolutePath)
+    const direct = this.within(abs, (m) => m.root)
+    if (direct !== undefined) return direct
+    // Unconditionally, not `if (canonicalize(abs) !== abs)`. Either side can be the aliased
+    // one and it is usually the ROOT: a folder opened as `...\VERYLO~1\proj` holds files that
+    // git and the filesystem both name `...\verylongdirectoryname\proj\x.ts`, which is already
+    // canonical. Skipping the second pass whenever the path needed no rewriting therefore
+    // skipped it in exactly the case it exists for — measured, by writing it that way first
+    // and watching the same fifteen tests fail.
+    return this.within(canonicalize(abs), (m) => this.canonicalRootOf(m))
+  }
+
+  private within(
+    abs: string, rootOf: (m: Mount) => string,
+  ): { mount: Mount; rel: string } | undefined {
+    for (const mount of this.mounts) {
+      const rel = pathRelative(rootOf(mount), abs)
+      if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return { mount, rel }
+    }
+    return undefined
+  }
+
+  /** Memoised: the roots do not move while a workspace is open, and `realpath` is a syscall. */
+  private canonicalRootOf(mount: Mount): string {
+    let root = this.canonicalRoots.get(mount.root)
+    if (root === undefined) {
+      root = canonicalize(mount.root)
+      this.canonicalRoots.set(mount.root, root)
+    }
+    return root
+  }
+
   /** The folder a resolved absolute path belongs to. Mounts never overlap, so at most one. */
   mountFor(absolutePath: string): Mount | undefined {
-    const abs = pathResolve(absolutePath)
-    return this.mounts.find((m) => {
-      const rel = pathRelative(m.root, abs)
-      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
-    })
+    return this.locate(absolutePath)?.mount
   }
 
   /**
@@ -231,12 +283,14 @@ export class Workspace {
    * `find_files` has always emitted.
    */
   display(absolutePath: string): string {
-    const abs = pathResolve(absolutePath)
-    const mount = this.mountFor(abs)
-    if (mount === undefined) return abs
-    const rel = pathRelative(mount.root, abs).split(sep).join('/')
+    const found = this.locate(absolutePath)
+    if (found === undefined) return pathResolve(absolutePath)
+    // `locate`'s own rel, not one recomputed against `mount.root`: when the path was matched
+    // canonically its spelling differs from the root's, and relative-ing them again would
+    // rebuild the very `..\..\` path that made the match fail in the first place.
+    const rel = found.rel.split(sep).join('/')
     if (!this.multi) return rel === '' ? '.' : rel
-    return rel === '' ? mount.name : `${mount.name}/${rel}`
+    return rel === '' ? found.mount.name : `${found.mount.name}/${rel}`
   }
 
   private mountNames(): string {

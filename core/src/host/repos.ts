@@ -64,13 +64,24 @@ async function git(cwd: string, args: string[]) {
   return execa('git', args, { cwd, reject: false, timeout: GIT_TIMEOUT_MS, windowsHide: true })
 }
 
-/** The repository this directory belongs to, or null. `--show-toplevel` answers the question
- * that matters — where the repository STARTS — which `--is-inside-work-tree` does not. */
+/**
+ * The repository this directory belongs to, or null. `--show-toplevel` answers the question
+ * that matters — where the repository STARTS — which `--is-inside-work-tree` does not.
+ *
+ * Canonical, because this is where a path spelled by something other than the caller enters
+ * the program, and everything downstream compares it against paths that did come from the
+ * caller: `relative(repoRoot, abs)` in `toRepoPaths` and in the diff handler, `isInside` in
+ * the commit guard, `join(repo.root, file.path)` here. Git answers with the long name
+ * (`C:\Users\runneradmin\...`) whatever name it was asked under, so on a machine whose
+ * workspace path has an 8.3 alias every one of those comparisons said "different place" and
+ * the panel went quietly empty. One canonical spelling on this side, and `Workspace.locate`
+ * accepting either on the other, is what makes them meet.
+ */
 async function toplevelOf(dir: string): Promise<string | null> {
   const result = await git(dir, ['rev-parse', '--show-toplevel'])
   if (result.exitCode !== 0) return null
   const out = result.stdout.trim()
-  return out === '' ? null : resolve(out)
+  return out === '' ? null : canonicalize(resolve(out))
 }
 
 function isInside(child: string, parent: string): boolean {
@@ -126,16 +137,12 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
 
     const own = await toplevelOf(mount.root)
     if (own !== null) {
-      // The CANONICAL spelling on both sides. `--show-toplevel` answers with the name the
-      // filesystem reports; the mount's root is whatever the caller typed — and Windows opens
-      // one directory under several names. The 8.3 alias is the one that bites: a GitHub
-      // runner's %TEMP% is spelled `RUNNER~1` while git answers `runneradmin`, so this
-      // comparison concluded the repository was ABOVE the folder, `toPrefix` produced a
-      // `..`-laden prefix, and every file was filtered out — an empty git panel. Sixty tests
-      // failed that way on CI while passing on a machine whose username is short enough to
-      // have no alias at all. `path.relative` would not have caught it: it folds case on
-      // win32, but an alias is a different string, not a different case.
-      const ownPath = canonicalize(own)
+      // Canonical on both sides. `own` already is (see `toplevelOf`); the mount's root is
+      // whatever the caller typed. Compared as the caller typed it, a folder opened by its
+      // 8.3 alias looked like a DIFFERENT directory from the one git named, so `relation`
+      // came out `above`, `toPrefix` produced a `..`-laden pathspec, and `git status` was
+      // asked about a subtree that does not exist.
+      const ownPath = own
       const rootPath = canonicalize(resolve(mount.root))
       const relation: RepoRelation = ownPath === rootPath ? 'folder' : 'above'
       const existing = byRoot.get(own)
@@ -160,7 +167,11 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
     // Independent of the above: a folder can be a repository AND contain others, and a
     // folder that is under no version control at all is exactly where a pile of cloned
     // repositories tends to live.
-    for (const nested of await findNestedRepos(mount.root)) {
+    for (const found of await findNestedRepos(mount.root)) {
+      // Canonical like `toplevelOf`'s, and for the same reason: these are walked down from
+      // the caller's spelling of the mount, so without this one map would be keyed by two
+      // spellings of the same directory and a repository could be listed twice.
+      const nested = canonicalize(found)
       if (byRoot.has(nested)) continue
       byRoot.set(nested, {
         root: nested,
@@ -238,13 +249,21 @@ export async function describeFolder(root: string): Promise<string> {
   const inside = nested.length === 0
     ? ''
     : ` · ${nested.length} repositor${nested.length === 1 ? 'y' : 'ies'} inside`
-  if (toplevel === resolve(root)) return `git repository${inside}`
+  // Canonical on both sides — `toplevel` already is, `root` is however the folder was added.
+  // Compared raw, a folder attached under its 8.3 alias described itself as "part of" the
+  // very repository it IS.
+  if (toplevel === canonicalize(resolve(root))) return `git repository${inside}`
   if (toplevel !== null) return `part of ${toplevel.split(/[\\/]/).pop() ?? toplevel}${inside}`
   return nested.length === 0 ? 'not under version control' : `not a repository${inside}`
 }
 
 /**
- * The repository that owns one file, asked of git directly.
+ * The repository that owns one file, asked of git directly — as a CANONICAL path.
+ *
+ * Canonical because the answer's only use is to be subtracted from a file path
+ * (`relative(repoRoot, abs)`) or tested for containment, and both callers canonicalise the
+ * other side. Handing back git's raw spelling next to a caller-spelled file made those two
+ * agree only on machines where the workspace path happens to have no second name.
  *
  * One process instead of re-running the whole discovery: `git.diff` fires on every expanded
  * row, and a directory scan per click is not something a panel can afford. It is also more
@@ -321,6 +340,10 @@ export function toRepoPaths(
   workspace: Workspace, repoRoot: string, paths: readonly string[],
 ): { ok: true; paths: string[] } | { ok: false; problem: string } {
   const out: string[] = []
+  // Both sides canonical, and `repoRoot` too rather than trusting the caller to have got a
+  // canonical one: this is exported, and a root spelled any other way would make every path
+  // below look like it belongs to a different repository.
+  const root = canonicalize(repoRoot)
   for (const path of paths) {
     let abs: string
     try {
@@ -328,10 +351,16 @@ export function toRepoPaths(
     } catch (e) {
       return { ok: false, problem: (e as Error).message }
     }
-    if (!isInside(abs, repoRoot)) {
+    // Canonicalised to meet `repoRoot`, which came from git and is canonical. `abs` came from
+    // the panel, which got it from the caller's spelling of the workspace — so on a folder
+    // opened by an 8.3 alias these two named the same file with different strings, `isInside`
+    // said "not in this repository", and staging refused every path in a repository the panel
+    // was at that moment showing.
+    const real = canonicalize(abs)
+    if (!isInside(real, root)) {
       return { ok: false, problem: `${path} is not in this repository; commit it from its own section` }
     }
-    out.push(relative(repoRoot, abs).split(sep).join('/'))
+    out.push(relative(root, real).split(sep).join('/'))
   }
   return { ok: true, paths: out }
 }
