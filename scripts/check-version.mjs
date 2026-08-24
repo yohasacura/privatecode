@@ -10,7 +10,7 @@
  *
  * That is the failure this guards. It is cheap and it runs before anything is built.
  *
- *   node scripts/check-version.mjs           # just check the three files agree
+ *   node scripts/check-version.mjs           # just check the files agree with each other
  *   node scripts/check-version.mjs v0.1.1    # and that they match the tag
  */
 import { readFileSync } from 'node:fs'
@@ -20,10 +20,25 @@ import { fileURLToPath } from 'node:url'
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (...parts) => JSON.parse(readFileSync(join(repo, ...parts), 'utf8'))
 
+/** The `version` of the first `[package]` table, without taking on a TOML parser for one line. */
+function cargoVersion() {
+  const toml = readFileSync(join(repo, 'app', 'src-tauri', 'Cargo.toml'), 'utf8')
+  const after = toml.split(/^\[package\]$/m)[1] ?? ''
+  // Stops at the next table header, so a dependency's own `version = ` cannot be mistaken
+  // for the package's.
+  const body = after.split(/^\[/m)[0] ?? ''
+  return /^\s*version\s*=\s*"([^"]+)"/m.exec(body)?.[1]
+}
+
 const sources = {
   'app/src-tauri/tauri.conf.json': read('app', 'src-tauri', 'tauri.conf.json').version,
   'app/package.json': read('app', 'package.json').version,
   'core/package.json': read('core', 'package.json').version,
+  // Not load-bearing — tauri.conf.json's version is what the binary and the updater use, so
+  // this one drifted to 0.1.0 while three releases shipped and nothing noticed. It is what
+  // cargo prints in every build error and what `cargo metadata` reports, so a stale number
+  // here is a small lie told often. Cheap to check; checked.
+  'app/src-tauri/Cargo.toml': cargoVersion(),
 }
 
 const problems = []
@@ -52,4 +67,4 @@ if (problems.length > 0) {
   for (const p of problems) console.error(`  - ${p}`)
   process.exit(1)
 }
-console.log(`version ${authoritative}${tag ? ` matches tag ${tag}` : ''}, and all three files agree`)
+console.log(`version ${authoritative}${tag ? ` matches tag ${tag}` : ''}, and all ${Object.keys(sources).length} files agree`)

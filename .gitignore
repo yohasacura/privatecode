@@ -31,3 +31,8 @@ sql-probe.pdb
 
 # Release artefacts, built by scripts/package-release.mjs.
 release/
+
+# Vitest's own run cache. It records which tests passed on the machine that last ran them,
+# which is a fact about that machine and nothing else -- it was committed once and then
+# carried a stale verdict around for anyone who cloned.
+.vite/

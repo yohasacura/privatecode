@@ -100,7 +100,7 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 
 | area | decision | rationale |
 |---|---|---|
-| **form factor** | **standalone desktop app** (Tauri). Briefly reversed to a VS Code extension on 2026-08-03 and reversed back the same day: the extension surface was a chat participant wedged into Copilot's chat view, which is not the "full working chat window" this tool is for. `ext/` stays in history, unbuilt. The UI was rebuilt instead — sessions rail \| chat \| context panel — see `docs/superpowers/plans/2026-08-03-ui-rework.md` | user requirement, tested against a built artefact twice |
+| **form factor** | **standalone desktop app** (Tauri). Briefly reversed to a VS Code extension on 2026-08-03 and reversed back the same day: the extension surface was a chat participant wedged into Copilot's chat view, which is not the "full working chat window" this tool is for. `ext/` stays in history, unbuilt. The UI was rebuilt instead — sessions rail \| chat \| context panel. | user requirement, tested against a built artefact twice |
 | **stack** | Tauri 2 — Rust shell (window, fs, process spawning) + **TypeScript agent core** | ~70 MB RAM vs Electron's ~400; WebView2 already ships with Win11; the agent logic stays in the language Qwen writes best, so the model can maintain its own tool |
 | **dev / build** | both on the GPU laptop; only the built `.exe` is copied to the work laptop | keeps the weak machine free of toolchains. Build while the server is stopped — Rust saturates all cores |
 | **toolchain to install** | Rust + Node (~2 GB, one-time, then fully offline) | not currently present; .NET, git, ripgrep, Python 3.14 already are |
