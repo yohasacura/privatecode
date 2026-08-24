@@ -35,6 +35,40 @@ There is no installer. Download the portable archive from
 [Releases](../../releases), unpack it anywhere — a folder, a USB stick — and run
 `PrivateCode.exe`. Everything it needs sits beside the executable.
 
+Windows will warn about an unsigned application the first time — the build is not
+code-signed. "More info" → "Run anyway".
+
+The app never starts the model server for you, by design: you start llama.cpp yourself and
+give the app its URL.
+
+## Using it
+
+**Modes**, chosen per session: *normal* asks before every edit and every command · *plan* is
+read-only · *auto-edit* stops asking about edits · *autopilot* asks once and then runs (red
+banner, so the window never looks like normal by accident).
+
+**"Always allow"** writes a permission rule to whichever layer you pick — the user layer in
+`%APPDATA%\PrivateCode\settings.json`, or the project layer in
+`<workspace>\.privatecode\settings.json`. Settings shows what currently holds standing
+permission and takes it back.
+
+**Esc** interrupts a running turn. The partial reply is kept, so continuing is cheap: the
+prompt is still a prefix of what the server has cached.
+
+**`<workspace>\.privatecode\`** is split so that opening it shows something readable. What
+*you* write is at the top — `settings.json`, `skills\`, `commands\`,
+`checkpoints.exclude`. What the tool writes for itself is under `state\` (sessions, logs,
+the work log, the checkpoint stores) and there is nothing in there to edit. An existing
+workspace is rearranged into this shape the first time it is opened. The whole folder stays
+out of git, so nothing in it travels with the project — copy a skill across by hand.
+
+Nothing follows you between machines automatically. `%APPDATA%\PrivateCode\` holds the
+user-scope settings, `AGENTS.md` and skills; copy that folder if you want them elsewhere.
+
+**Deliberately absent:** no images or screenshots — the model this is built for has no
+vision tower (DESIGN.md §6). And the app itself opens exactly one network connection: the
+server URL you configured.
+
 ## Building it yourself
 
 ```bash

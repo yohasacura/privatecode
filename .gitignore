@@ -23,8 +23,6 @@ vendor/*/*.exe
 vendor/*/*.dll
 vendor/*/*.wasm
 
-# Staged by ext/scripts/stage-vendor.mjs from vendor/ at build time.
-ext/vendor/
 
 # Debug symbols from the sql-probe publish; never belonged in the tree.
 sql-probe.pdb

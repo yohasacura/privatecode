@@ -8,8 +8,12 @@ item that is not DONE.
 
 Standing constraints carried from the user, never lifted:
 
-- Deployment is off the table. The release `.exe`, the port-8080 firewall rule and
-  `docs/INSTALL.md` stay untouched.
+- ~~Deployment is off the table. The release `.exe`, the port-8080 firewall rule and
+  `docs/INSTALL.md` stay untouched.~~ **Lifted 2026-08-24 by the owner**, who then asked for
+  the opposite: a public repository, a tagged CI release and in-app self-update. The runbook
+  this named was a one-machine deployment note (it carried a LAN address and steps for
+  hand-building an installer) and was deleted at their request; what in it described the app
+  rather than the deployment moved into README.md.
 - Balanced unit tests are fine. ONE review round per task, no review-on-review.
 - Measure before claiming. Every finding in this project was established by running
   something, not by reading.
@@ -452,7 +456,7 @@ these again. Each was checked by running something, not by reading.
 
 - permission-hole: Session-layer grants — the approval card's DEFAULT — are invisible to the audit screen, whose empty state claims 'Allow always ... adds a rule here' — The factual chain (session default in approvals.tsx:57, sessionAllow in-memory only, permissions.list reading disk) is accurate, but the claimed defect — an invisible, irrevocable grant and a silently-degrading f
 - permission-hole: permissions.remove silently maps any unknown scope — including 'session', a value the app's own grant vocabulary uses — to the local settings file — The failure sequence requires a caller that does not exist and cannot be written under the repo's own type checking. PermissionsRemoveParams.scope is the closed union 'user' | 'project' | 'local' (protocol.ts:713),
-- run-lifecycle: Session switch or reload mid-run kills the unattended run and wipes its ended card before it can be seen — The mechanics are accurately traced but no reachable path makes this a defect. (1) The headline trigger — "opening the app / reload kills the run the user left going" — is impossible in the shipping build: app/src-tauri/main.rs kills the sidecar's whole proc
+- run-lifecycle: Session switch or reload mid-run kills the unattended run and wipes its ended card before it can be seen — The mechanics are accurately traced but no reachable path makes this a defect. (1) The headline trigger — "opening the app / reload kills the run the user left going" — is impossible in the shipping build: app/src-tauri/src/main.rs kills the sidecar's whole proc
 - run-lifecycle: Stop failures are swallowed: a failed run.stop leaves the banner running with zero feedback — The run.stop promise can only reject via rejectAllPending, whose two call sites (client.ts:217-220 transport.onClose, client.ts:301-305 close()) both set connection state 'closed' first. App.tsx:256-264 reacts to connState 'closed' by setting phase 'unreachable', and App
 - export-truth: Export attributes harness-authored run nudges and notes to '## You' when copying a viewed session — The mechanics are accurate but the behavior is deliberate and documented upstream, not a defect of this batch. core/src/host/replay.ts:84-87 (commit b225a87, pre-batch) states: "Nudges the unattended runner sent as user messages are NOT dropped, because they genuine
 - export-truth: Palette 'Copy conversation as Markdown' gives zero feedback: success and clipboard failure are indistinguishable — The finding describes the code accurately but cannot produce its claimed failure, and the silence it objects to is the batch's documented convention, not a defect. (1) The claimed triggers are unreachable: writeText is invoked synchronously inside the

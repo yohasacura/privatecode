@@ -1,6 +1,0 @@
-src/**
-scripts/**
-node_modules/**
-!vendor/**
-tsconfig.json
-**/*.map
