@@ -31,6 +31,19 @@ on:
 permissions:
   contents: write   # needed to create the release; nothing else
 
+# Re-pushing a tag does NOT stop the run the first push started. Both go to the end, and
+# whichever reaches `gh release create` first is the one that publishes; the other dies with
+# "a release with the same tag name already exists".
+#
+# That happened on v0.1.4: a tag was moved to pick up a one-line follow-up commit, and the
+# release was built from the commit BEFORE it. Harmless there — the line was a version string
+# in Cargo.lock, which cargo rewrites anyway — but it is only harmless by luck. Nothing about
+# the race says the older commit loses, so the published artefact was decided by which runner
+# was quicker, and the visible symptom was a red step on the run that had the right code.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
