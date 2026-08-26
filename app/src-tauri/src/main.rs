@@ -27,6 +27,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 #[cfg(windows)]
+mod erase;
 mod job;
 mod update;
 #[cfg(windows)]
@@ -359,7 +360,9 @@ fn main() {
             sidecar_stderr,
             restart_sidecar,
             update::check_for_update,
-            update::apply_update
+            update::apply_update,
+            erase::scan_local_data,
+            erase::erase_local_data
         ])
         .setup(|app| {
             // Sweep up whatever the previous update renamed aside. Here rather than at the end

@@ -128,3 +128,38 @@ export function migratePrivateDir(workspaceRoot: string): string[] {
   // of our own directories has any business doing.
   return problems
 }
+
+/**
+ * The per-session file names, defined here rather than at the three modules that write
+ * them.
+ *
+ * They were local constants in `host/replay.ts` and `interaction.ts`, which is the right
+ * place while the only question is "where do I write this". It stops being the right place
+ * the moment something has to delete a session, because that caller must know EVERY file the
+ * session owns and one it does not know about is a file left behind — the rail stops listing
+ * the session while its transcript is still on disk. `session/store.ts` cannot import
+ * `host/replay.ts` (replay imports half of `session/`, so that is a cycle), and this module
+ * is what both already depend on and is where the layout is documented.
+ */
+
+/** `state/sessions/` — one directory, one session's files named by its id. */
+export const SESSIONS_DIR = 'sessions'
+
+/** `state/sessions/<id>.ui.jsonl` — how each tool call ended, for restoring a view. */
+export const OUTCOMES_SUFFIX = '.ui.jsonl'
+
+/**
+ * A session id reduced to something that can only name a file inside `state/`.
+ *
+ * Ids are generated filename-safe today; this does not trust that they always will be, and
+ * a delete is exactly the operation where a `..` arriving from a hand-edited file would be
+ * worst.
+ */
+export function safeSessionId(id: string): string {
+  return id.replace(/[^A-Za-z0-9_-]/g, '_')
+}
+
+/** `state/plan-<id>.json` — one session's todo plan. */
+export function planFileFor(sessionId: string): string {
+  return `plan-${safeSessionId(sessionId)}.json`
+}

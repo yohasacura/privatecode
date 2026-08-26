@@ -9,6 +9,7 @@ import { Icon } from '../components/icons'
 import type { SessionSwitch } from './sessions-rail'
 import { Permissions } from './permissions'
 import { McpEditor } from './mcp-editor'
+import { EraseEverything } from './erase-data'
 import { Skills } from './skills'
 
 /**
@@ -245,7 +246,7 @@ export function SettingsModal({
   const [workspace, setWorkspace] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
-  const [tab, setTab] = useState<'server' | 'permissions' | 'skills' | 'mcp'>('server')
+  const [tab, setTab] = useState<'server' | 'permissions' | 'skills' | 'mcp' | 'data'>('server')
 
   useEffect(() => {
     client.call('config.get', {})
@@ -345,6 +346,7 @@ export function SettingsModal({
             ['permissions', 'Permissions'],
             ['skills', 'Skills'],
             ['mcp', 'MCP servers'],
+            ['data', 'Data'],
           ] as const).map(([id, label]) => (
             <button
               key={id}
@@ -401,6 +403,8 @@ export function SettingsModal({
             <McpEditor client={client} onApply={() => connect()} />
           </>
         )}
+
+        {tab === 'data' && <EraseEverything />}
       </div>
     </div>
   )

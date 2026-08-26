@@ -213,6 +213,30 @@ export interface SessionsReadResult {
   items: TranscriptEntry[]
 }
 
+export interface SessionsDeleteParams { id: string }
+export type SessionsDeleteAllParams = Empty
+
+/**
+ * What a delete leaves behind.
+ *
+ * `replacedBy` carries a whole new session, and only when the one deleted was the LIVE one.
+ * Deleting the conversation you are in cannot just remove files: the window would be showing
+ * a transcript with nothing behind it and the next message would append to a session that no
+ * longer exists. So the host tears that session down, builds a fresh one, and hands it back
+ * in exactly the shape `init` uses — the window adopts it the same way it adopts any switch.
+ * Deleting some OTHER session touches nothing that is running, and this is absent.
+ *
+ * `problems` is for files that refused to go: on Windows a scanner or an editor holding a
+ * handle is the usual reason, and the honest answer is to say which file rather than to
+ * report a success that left a transcript on disk.
+ */
+export interface SessionsDeleteResult {
+  /** How many sessions were actually removed — 0 when there was nothing there. */
+  deleted: number
+  replacedBy?: InitResult
+  problems: string[]
+}
+
 export interface SessionsResumeParams { id: string }
 /** Same shape as `init`'s result -- see `SessionsNewResult`. */
 export type SessionsResumeResult = InitResult
@@ -467,6 +491,8 @@ export interface HostMethodMap {
   'sessions.list': { params: SessionsListParams; result: SessionsListResult }
   'sessions.new': { params: SessionsNewParams; result: SessionsNewResult }
   'sessions.resume': { params: SessionsResumeParams; result: SessionsResumeResult }
+  'sessions.delete': { params: SessionsDeleteParams; result: SessionsDeleteResult }
+  'sessions.deleteAll': { params: SessionsDeleteAllParams; result: SessionsDeleteResult }
   'sessions.read': { params: SessionsReadParams; result: SessionsReadResult }
   'sessions.search': { params: SessionsSearchParams; result: SessionsSearchResult }
   'workspace.get': { params: WorkspaceGetParams; result: WorkspaceGetResult }

@@ -98,6 +98,8 @@ import type {
   SessionsNewResult,
   SessionsReadParams,
   SessionsReadResult,
+  SessionsDeleteParams,
+  SessionsDeleteResult,
   SessionsResumeParams,
   SessionsResumeResult,
   SessionsSearchParams,
@@ -433,6 +435,8 @@ export class SessionHost {
       case 'sessions.list': return this.sessionsList()
       case 'sessions.new': return this.sessionsNew()
       case 'sessions.resume': return this.sessionsResume(params as SessionsResumeParams)
+      case 'sessions.delete': return this.sessionsDelete(params as SessionsDeleteParams)
+      case 'sessions.deleteAll': return this.sessionsDeleteAll()
       case 'sessions.read': return this.sessionsRead(params as SessionsReadParams)
       case 'sessions.search': return this.sessionsSearch(params as SessionsSearchParams)
       case 'compact': return this.compact()
@@ -1057,6 +1061,68 @@ export class SessionHost {
   private sessionsList(): SessionsListResult {
     const { store } = this.requireInitialized()
     return { sessions: store.list(), problems: [...store.problems] }
+  }
+
+  /**
+   * Removes one stored session, and everything it owns on disk.
+   *
+   * The order below is the whole of the difficulty. Deleting the LIVE session's files while
+   * that session is still running recreates them within moments — the running `Session`
+   * appends to its transcript on every turn and saves its meta ~8 times a turn — so the
+   * delete would appear to work and the session would reappear in the rail after the next
+   * message. The tear-down therefore happens FIRST: `switchSession` aborts the turn, awaits
+   * it, stops any background compaction, and builds a replacement. Only then, with nothing
+   * holding the id, do the files go.
+   *
+   * Deleting any OTHER session must not disturb what is running. No abort, no switch,
+   * nothing awaited — a person tidying yesterday's conversations while today's turn works is
+   * doing two unrelated things and the window should treat them that way.
+   */
+  private async sessionsDelete(params: SessionsDeleteParams): Promise<SessionsDeleteResult> {
+    const { store } = this.requireInitialized()
+    const isLive = this.session?.id === params.id
+    const replacedBy = isLive ? await this.switchSession(undefined) : undefined
+    const { removed, problems } = store.delete(params.id)
+    return {
+      // A session is "there" if any of its four files was, and the meta alone is what the
+      // rail shows — so anything removed counts as a deletion of one session.
+      deleted: removed > 0 ? 1 : 0,
+      ...(replacedBy !== undefined ? { replacedBy } : {}),
+      problems,
+    }
+  }
+
+  /**
+   * Removes every stored session in this workspace and leaves a fresh one open.
+   *
+   * The ids are captured BEFORE the switch, and that is not incidental: `switchSession`
+   * builds a new session immediately, and a sweep taken afterwards would include it. Taking
+   * the list first means the replacement is the one thing in the directory that survives —
+   * which is what "delete everything and start over" has to mean when the window cannot be
+   * left with no session at all.
+   *
+   * Checkpoints are deliberately left alone. They are snapshots of the FILES, shared across
+   * every session in the workspace, and quietly discarding someone's undo history because
+   * they cleared a conversation list would be a much larger thing than they asked for. The
+   * full erase, which does say so, is where that goes.
+   */
+  private async sessionsDeleteAll(): Promise<SessionsDeleteResult> {
+    const { store } = this.requireInitialized()
+    // `storedIds`, not `list`: a session whose meta will not parse is invisible to the rail
+    // and is exactly the one someone is trying to be rid of. Swept BEFORE the switch, so the
+    // replacement built below is not in the set — `deleteAll()` would have included it, and
+    // erasing the live session's files underneath it is the hazard `delete` warns about.
+    const swept = store.storedIds()
+    const replacedBy = await this.switchSession(undefined)
+
+    const problems = [...swept.problems]
+    let deleted = 0
+    for (const id of swept.ids) {
+      const result = store.delete(id)
+      if (result.removed > 0) deleted++
+      problems.push(...result.problems)
+    }
+    return { deleted, replacedBy, problems }
   }
 
   private setMode(params: SetModeParams): SetModeResult {

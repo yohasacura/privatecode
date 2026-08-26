@@ -1,6 +1,8 @@
-import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { STATE_DIR, ensurePrivateDir, statePath } from '../private-dir.js'
+import {
+  OUTCOMES_SUFFIX, SESSIONS_DIR, STATE_DIR, ensurePrivateDir, planFileFor, safeSessionId, statePath,
+} from '../private-dir.js'
 import type { ChatMessage } from '../llama/types.js'
 import type { AgentMode } from '../permissions/engine.js'
 import { Transcript } from '../transcript/transcript.js'
@@ -112,13 +114,13 @@ export class SessionStore {
   private readonly dir: string
 
   constructor(private readonly workspaceRoot: string) {
-    this.dir = statePath(workspaceRoot, 'sessions')
+    this.dir = statePath(workspaceRoot, SESSIONS_DIR)
   }
 
   private ensureDir(): void {
     // Not a bare mkdir: `.privatecode/` also gets a self-ignore so this tool's state never
     // shows up in the user's `git status`. See private-dir.ts.
-    ensurePrivateDir(this.workspaceRoot, join(STATE_DIR, 'sessions'))
+    ensurePrivateDir(this.workspaceRoot, join(STATE_DIR, SESSIONS_DIR))
   }
 
   private metaPath(id: string): string {
@@ -307,5 +309,108 @@ export class SessionStore {
     const block = `${JSON.stringify(markerLine)}\n` +
       messages.map((m) => `${JSON.stringify(m)}\n`).join('')
     appendFileSync(this.jsonlPath(id), block)
+  }
+
+  /**
+   * Everything ONE session owns on disk. Four files, written by four different modules, and
+   * the reason they are enumerated here rather than at each site is that a "delete" which
+   * misses one is worse than no delete at all: the rail stops listing the session while its
+   * transcript stays on disk, so the person believes it is gone.
+   *
+   *   <id>.meta.json   this store — title, mode, contract; what `list()` reads
+   *   <id>.jsonl       this store — the full transcript, the actual content
+   *   <id>.ui.jsonl    host/replay.ts — per-call outcomes, so a restored view is not guesswork
+   *   plan-<id>.json   interaction.ts — that session's todo plan, one level up in state/
+   *
+   * The last two are written by other modules, so their names moved into `private-dir.ts`
+   * when this was added — one definition each, imported by both the writer and this. A
+   * re-derived copy here would go stale silently, and the symptom of going stale is a file
+   * left behind after a delete that reported success.
+   */
+  private ownedPaths(id: string): string[] {
+    // Session ids are generated filename-safe, and this does not trust that. A `..` arriving
+    // from a hand-edited file or a future id scheme must not let a delete walk out of the
+    // sessions directory -- the same guard `TodoStore.file()` applies for the same reason.
+    const safe = safeSessionId(id)
+    return [
+      join(this.dir, `${safe}.meta.json`),
+      join(this.dir, `${safe}.jsonl`),
+      join(this.dir, `${safe}${OUTCOMES_SUFFIX}`),
+      statePath(this.workspaceRoot, planFileFor(safe)),
+    ]
+  }
+
+  /**
+   * Deletes one session and everything it owns.
+   *
+   * Returns what could not be removed, empty on success. Reported rather than thrown: three
+   * of the four files are optional (a session that never ran has no transcript, one from
+   * before outcomes existed has no `.ui.jsonl`), so "missing" is the ordinary case and only
+   * a real refusal — a lock, a permission — is worth telling anyone about.
+   *
+   * Never call this for the LIVE session without tearing it down first. The running `Session`
+   * appends to the transcript on every turn, so deleting underneath it recreates the file
+   * moments later and leaves a half-session with no meta.
+   */
+  delete(id: string): { removed: number; problems: string[] } {
+    const problems: string[] = []
+    let removed = 0
+    for (const path of this.ownedPaths(id)) {
+      // Asked BEFORE the removal, because `force: true` makes a missing file a silent no-op
+      // and counting the calls instead would report four removals for a session that was
+      // never there. `removed` is what the caller uses to say whether anything happened.
+      const wasThere = existsSync(path)
+      try {
+        // `maxRetries` because this is Windows: a virus scanner or an indexer holding a
+        // handle for a moment is the ordinary reason a delete fails here, and it passes.
+        rmSync(path, { force: true, maxRetries: 3, retryDelay: 50 })
+        if (wasThere) removed++
+      } catch (e) {
+        problems.push(`${path}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    return { removed, problems }
+  }
+
+  /**
+   * Deletes every session this workspace has.
+   *
+   * Driven off the directory rather than off `list()`, because `list()` skips anything whose
+   * meta is corrupt — and a session damaged enough to be unlistable is exactly the one a
+   * person is trying to get rid of. Anything in `sessions/` shaped like a session file goes;
+   * `ids` reports what was recognised so the caller can say how many.
+   */
+  deleteAll(): { ids: string[]; problems: string[] } {
+    const { ids, problems } = this.storedIds()
+    for (const id of ids) problems.push(...this.delete(id).problems)
+    return { ids, problems }
+  }
+
+  /**
+   * Which sessions exist on disk, INCLUDING ones `list()` will not show.
+   *
+   * Separate from `deleteAll` because the host needs the answer BEFORE it creates the
+   * replacement session. Sweeping after the switch would include that replacement, and
+   * deleting the live session's files underneath it is the one thing `delete` warns against;
+   * "clear every conversation" would then leave the new one half-erased.
+   */
+  storedIds(): { ids: string[]; problems: string[] } {
+    if (!existsSync(this.dir)) return { ids: [], problems: [] }
+    let names: string[]
+    try {
+      names = readdirSync(this.dir)
+    } catch (e) {
+      return { ids: [], problems: [`${this.dir}: ${e instanceof Error ? e.message : String(e)}`] }
+    }
+    const ids = new Set<string>()
+    for (const name of names) {
+      // `.ui.jsonl` is tested before `.jsonl`, since it ends in one.
+      const id = name.endsWith('.meta.json') ? name.slice(0, -'.meta.json'.length)
+        : name.endsWith(OUTCOMES_SUFFIX) ? name.slice(0, -OUTCOMES_SUFFIX.length)
+        : name.endsWith('.jsonl') ? name.slice(0, -'.jsonl'.length)
+        : null
+      if (id !== null && id !== '') ids.add(id)
+    }
+    return { ids: [...ids], problems: [] }
   }
 }

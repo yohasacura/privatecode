@@ -5,7 +5,7 @@ import {
   TRUNCATED_TWICE,
 } from '../agent/loop.js'
 import type { ChatMessage } from '../llama/types.js'
-import { statePath } from '../private-dir.js'
+import { OUTCOMES_SUFFIX, SESSIONS_DIR, statePath } from '../private-dir.js'
 import { attachmentUserText } from '../session/attachment-text.js'
 import { REVERT_FILE_PREFIX, ROLLBACK_PREFIX } from '../session/checkpoint-notices.js'
 import {
@@ -31,12 +31,10 @@ import type { TranscriptEntry } from './protocol.js'
  * model's, and this is the window's.
  */
 
-const OUTCOMES_SUFFIX = '.ui.jsonl'
-
 interface Outcome { id: string; ok: boolean }
 
 function outcomesPath(workspaceRoot: string, sessionId: string): string {
-  return statePath(workspaceRoot, 'sessions', `${sessionId}${OUTCOMES_SUFFIX}`)
+  return statePath(workspaceRoot, SESSIONS_DIR, `${sessionId}${OUTCOMES_SUFFIX}`)
 }
 
 /**

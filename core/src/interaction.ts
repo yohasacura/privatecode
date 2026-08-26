@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { ensureStateDir, statePath } from './private-dir.js'
+import { ensureStateDir, planFileFor, statePath } from './private-dir.js'
 
 /** The plan on disk. JSON, not markdown: the app renders it, nobody hand-edits it. */
 const PLAN_FILE = 'plan.json'
@@ -128,12 +128,9 @@ export class TodoStore {
     this.items = readPlan(own)
   }
 
-  /** Session ids are filename-safe today; the replace keeps a hostile one from walking
-   * out of the state directory rather than trusting that they stay so. */
+  /** See `planFileFor` for why the id is sanitised on the way into a path. */
   private file(): string {
-    return this.sessionId === undefined
-      ? PLAN_FILE
-      : `plan-${this.sessionId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`
+    return this.sessionId === undefined ? PLAN_FILE : planFileFor(this.sessionId)
   }
 
   set(items: TodoItem[]): void {

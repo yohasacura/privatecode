@@ -1233,3 +1233,156 @@ test('a session never refuses a repeated call, however identical the answer', as
   expect(listings.some((r) => r.content.includes('already called'))).toBe(false)
   expect(listings.some((r) => r.content.startsWith('Not run:'))).toBe(false)
 })
+
+// ---------------------------------------------------------------------------------------
+// Deleting sessions
+// ---------------------------------------------------------------------------------------
+
+test('deleting the session you are IN replaces it, rather than leaving the window on a ghost',
+  async () => {
+    // The trap this exists for: the live `Session` writes its meta ~8 times a turn and
+    // appends to its transcript on every one. Delete the files with it still running and
+    // they come back — the session vanishes from the rail, then reappears after the next
+    // message, with a transcript the window never showed. So the host tears it down first.
+    const fake = await makeServer(() => textSSE('fine'))
+    stop = fake.close
+    const root = newWorkspace()
+    const { host, transport } = await initHost(fake.url, root)
+
+    // A turn, so the session has actually been written to disk.
+    await host.handle({ id: 2, method: 'send', params: { text: 'hello' } })
+    await host.handle({ id: 3, method: 'sessions.list', params: {} })
+    const before = resultOf<{ sessions: { id: string }[] }>(transport, 3).sessions
+    expect(before).toHaveLength(1)
+    const liveId = before[0]!.id
+
+    await host.handle({ id: 4, method: 'sessions.delete', params: { id: liveId } })
+    const result = resultOf<{
+      deleted: number; problems: string[]; replacedBy?: { sessionId: string }
+    }>(transport, 4)
+
+    expect(result.deleted).toBe(1)
+    expect(result.problems).toEqual([])
+    // A replacement, and a DIFFERENT one — the same id back would mean nothing was torn down.
+    expect(result.replacedBy).toBeDefined()
+    expect(result.replacedBy?.sessionId).not.toBe(liveId)
+
+    // And it stays gone. Listing immediately would pass even if the files were still there
+    // waiting to be rewritten, so the check that matters is after another turn has run.
+    await host.handle({ id: 5, method: 'send', params: { text: 'again' } })
+    await host.handle({ id: 6, method: 'sessions.list', params: {} })
+    const after = resultOf<{ sessions: { id: string }[] }>(transport, 6).sessions
+    expect(after.map((s) => s.id)).not.toContain(liveId)
+  })
+
+test('deleting the live session MID-TURN still leaves it gone, not rewritten', async () => {
+  // This is the test the ordering exists for, and the first version of it was not.
+  //
+  // I asserted "the files are removed after the tear-down" against an IDLE session, then
+  // swapped the two lines to check the test bit — and it still passed. Of course it did:
+  // an idle session writes nothing, so deleting before or after the switch looks identical.
+  // The hazard only exists while a turn is in flight, because aborting one flushes its
+  // transcript and saves its meta. Delete first and that flush recreates both files
+  // moments later: the session disappears from the rail and comes back.
+  let served = 0
+  const fake = await makeServer(() => {
+    served++
+    // The first turn completes, so the session is real on disk. The second hangs, so the
+    // delete lands while it is running.
+    return served === 1 ? textSSE('written down') : hang()
+  })
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+
+  await host.handle({ id: 2, method: 'send', params: { text: 'first' } })
+  await host.handle({ id: 3, method: 'sessions.list', params: {} })
+  const liveId = resultOf<{ sessions: { id: string }[] }>(transport, 3).sessions[0]!.id
+
+  const inFlight = host.handle({ id: 4, method: 'send', params: { text: 'second' } })
+  await waitForEvent(transport, 'step.start')
+
+  await host.handle({ id: 5, method: 'sessions.delete', params: { id: liveId } })
+  const result = resultOf<{ deleted: number; replacedBy?: { sessionId: string } }>(transport, 5)
+  expect(result.deleted).toBe(1)
+  expect(result.replacedBy?.sessionId).not.toBe(liveId)
+
+  // The turn that was running has been aborted by the switch; let it settle before looking,
+  // so a late flush would have had every chance to put the files back.
+  await inFlight
+  await host.handle({ id: 6, method: 'sessions.list', params: {} })
+  expect(resultOf<{ sessions: { id: string }[] }>(transport, 6).sessions.map((s) => s.id))
+    .not.toContain(liveId)
+})
+
+test('deleting some OTHER session does not disturb the one that is running', async () => {
+  const fake = await makeServer(() => textSSE('fine'))
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+
+  // Two sessions: one written and left behind, one live.
+  await host.handle({ id: 2, method: 'send', params: { text: 'the old one' } })
+  await host.handle({ id: 3, method: 'sessions.list', params: {} })
+  const oldId = resultOf<{ sessions: { id: string }[] }>(transport, 3).sessions[0]!.id
+
+  await host.handle({ id: 4, method: 'sessions.new', params: {} })
+  const liveId = resultOf<{ sessionId: string }>(transport, 4).sessionId
+  await host.handle({ id: 5, method: 'send', params: { text: 'the live one' } })
+
+  await host.handle({ id: 6, method: 'sessions.delete', params: { id: oldId } })
+  const result = resultOf<{ deleted: number; replacedBy?: unknown }>(transport, 6)
+
+  expect(result.deleted).toBe(1)
+  // No replacement: nothing was torn down, because nothing needed to be.
+  expect(result.replacedBy).toBeUndefined()
+
+  await host.handle({ id: 7, method: 'sessions.list', params: {} })
+  expect(resultOf<{ sessions: { id: string }[] }>(transport, 7).sessions.map((s) => s.id))
+    .toEqual([liveId])
+})
+
+test('deleting one that is not there reports nothing deleted, and is not an error', async () => {
+  const fake = await makeServer(() => textSSE('fine'))
+  stop = fake.close
+  const { host, transport } = await initHost(fake.url, newWorkspace())
+
+  await host.handle({ id: 2, method: 'sessions.delete', params: { id: 'no-such-session' } })
+
+  expect(resultOf<{ deleted: number; problems: string[] }>(transport, 2))
+    .toEqual({ deleted: 0, problems: [] })
+})
+
+test('delete-all clears every stored session and leaves exactly one fresh one', async () => {
+  const fake = await makeServer(() => textSSE('fine'))
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+
+  await host.handle({ id: 2, method: 'send', params: { text: 'one' } })
+  await host.handle({ id: 3, method: 'sessions.new', params: {} })
+  await host.handle({ id: 4, method: 'send', params: { text: 'two' } })
+  await host.handle({ id: 5, method: 'sessions.new', params: {} })
+  await host.handle({ id: 6, method: 'send', params: { text: 'three' } })
+
+  await host.handle({ id: 7, method: 'sessions.list', params: {} })
+  expect(resultOf<{ sessions: unknown[] }>(transport, 7).sessions).toHaveLength(3)
+
+  await host.handle({ id: 8, method: 'sessions.deleteAll', params: {} })
+  const result = resultOf<{
+    deleted: number; problems: string[]; replacedBy?: { sessionId: string }
+  }>(transport, 8)
+
+  expect(result.deleted).toBe(3)
+  expect(result.problems).toEqual([])
+  expect(result.replacedBy).toBeDefined()
+
+  // The replacement must SURVIVE. The sweep is taken before the switch precisely so the
+  // new session is not in it; taken after, "clear everything" would have erased the files
+  // of the session the window was left holding.
+  const fresh = result.replacedBy!.sessionId
+  await host.handle({ id: 9, method: 'send', params: { text: 'after the wipe' } })
+  await host.handle({ id: 10, method: 'sessions.list', params: {} })
+  const after = resultOf<{ sessions: { id: string }[] }>(transport, 10).sessions
+  expect(after.map((s) => s.id)).toEqual([fresh])
+})

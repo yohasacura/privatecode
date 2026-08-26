@@ -25,6 +25,9 @@ let savedServerUrl = 'http://127.0.0.1:8080'
 let savedRecents: string[] = ['D:\\proj']
 /** What the update check "finds", if anything. */
 let updateToOffer: import('./lib/update').UpdateAvailable | null = null
+/** What `sessions.list` answers. Empty by default, so every test written before this one
+ * sees the rail it has always seen. */
+let savedSessions: { id: string; title: string; updatedAt: string; mode: string }[] = []
 
 /** What `/props` had said by the time the session was built. `null` is a session built while
  * the model server was down — the state the context-readout test below is about. */
@@ -40,7 +43,9 @@ function fakeResult(method: string): unknown {
       contextUsed: { promptTokens: null, approxTokens: 4200 },
       items: [], problems: [], workspaceName: 'proj', folderCount: 1,
     }
-    case 'sessions.list': return { sessions: [], problems: [] }
+    case 'sessions.list': return { sessions: savedSessions, problems: [] }
+    case 'sessions.delete': return { deleted: 1, problems: [] }
+    case 'sessions.deleteAll': return { deleted: savedSessions.length, problems: [] }
     case 'decisions.list': return { decisions: [] }
     case 'workspace.get': return { name: 'proj', folders: [], problems: [] }
     case 'workspace.set': return {}
@@ -103,6 +108,7 @@ beforeEach(async () => {
   savedServerUrl = 'http://127.0.0.1:8080'
   savedRecents = ['D:\\proj']
   updateToOffer = null
+  savedSessions = []
   initContextLength = 262144
   abortsSeen = 0
   host = document.createElement('div')
@@ -348,3 +354,101 @@ test('and it stays put once a workspace is open', async () => {
   expect(host.querySelector('.body')).not.toBeNull()
   expect(host.querySelector('.update-strip')).not.toBeNull()
 })
+
+test('the delete control on a session row does not open that session', async () => {
+  // The row used to BE a button, and adding a delete inside it would have been a button
+  // inside a button — invalid markup that browsers resolve by dropping the inner element.
+  // The delete would then have been an ordinary click on the row: it would have opened the
+  // conversation instead of offering to remove it, which is the worst possible confusion
+  // for a control with no undo. The row is a container now; this is what pins that.
+  render(null, host)
+  savedSessions = [
+    { id: 's-one', title: 'yesterday', updatedAt: '2026-08-23T10:00:00.000Z', mode: 'normal' },
+  ]
+  render(<App />, host)
+  await settle()
+
+  const before = calls.filter((c) => c.method === 'sessions.read').length
+  const del = host.querySelector<HTMLButtonElement>('.rail-item-delete')
+  expect(del, 'each session row should offer a delete').not.toBeNull()
+
+  del!.click()
+  await settle()
+
+  // It asked, rather than acting or navigating.
+  expect(host.querySelector('.rail-item-confirm')?.textContent).toContain('yesterday')
+  expect(calls.filter((c) => c.method === 'sessions.read').length).toBe(before)
+  expect(calls.some((c) => c.method === 'sessions.delete')).toBe(false)
+})
+
+test('and confirming is what actually deletes it', async () => {
+  render(null, host)
+  savedSessions = [
+    { id: 's-one', title: 'yesterday', updatedAt: '2026-08-23T10:00:00.000Z', mode: 'normal' },
+  ]
+  render(<App />, host)
+  await settle()
+
+  host.querySelector<HTMLButtonElement>('.rail-item-delete')!.click()
+  await settle()
+
+  const confirm = [...host.querySelectorAll<HTMLButtonElement>('.rail-item-confirm button')]
+    .find((b) => b.textContent === 'Delete')
+  expect(confirm, 'the confirmation should offer a Delete').toBeTruthy()
+  confirm!.click()
+  await settle()
+
+  expect(calls.filter((c) => c.method === 'sessions.delete').map((c) => c.params))
+    .toEqual([{ id: 's-one' }])
+})
+
+test('backing out of the confirmation deletes nothing', async () => {
+  render(null, host)
+  savedSessions = [
+    { id: 's-one', title: 'yesterday', updatedAt: '2026-08-23T10:00:00.000Z', mode: 'normal' },
+  ]
+  render(<App />, host)
+  await settle()
+
+  host.querySelector<HTMLButtonElement>('.rail-item-delete')!.click()
+  await settle()
+  const keep = [...host.querySelectorAll<HTMLButtonElement>('.rail-item-confirm button')]
+    .find((b) => b.textContent === 'Keep')
+  keep!.click()
+  await settle()
+
+  expect(host.querySelector('.rail-item-confirm')).toBeNull()
+  expect(calls.some((c) => c.method === 'sessions.delete')).toBe(false)
+  // And the row is back, not left as a gap in the list.
+  expect(host.querySelector('.rail-row')).not.toBeNull()
+})
+
+test('"delete all" is offered only when there is something to delete, and it too asks first',
+  async () => {
+    render(null, host)
+    render(<App />, host)
+    await settle()
+    expect(host.querySelector('.rail-clear'), 'an empty rail offers nothing to clear').toBeNull()
+
+    render(null, host)
+    savedSessions = [
+      { id: 's-one', title: 'one', updatedAt: '2026-08-23T10:00:00.000Z', mode: 'normal' },
+      { id: 's-two', title: 'two', updatedAt: '2026-08-23T11:00:00.000Z', mode: 'plan' },
+    ]
+    render(<App />, host)
+    await settle()
+
+    host.querySelector<HTMLButtonElement>('.rail-clear')!.click()
+    await settle()
+
+    // The count is in the question, because "delete all" without a number is a question
+    // about an unknown quantity.
+    expect(host.querySelector('.rail-item-confirm')?.textContent).toContain('2 sessions')
+    expect(calls.some((c) => c.method === 'sessions.deleteAll')).toBe(false)
+
+    const go = [...host.querySelectorAll<HTMLButtonElement>('.rail-item-confirm button')]
+      .find((b) => b.textContent === 'Delete all')
+    go!.click()
+    await settle()
+    expect(calls.some((c) => c.method === 'sessions.deleteAll')).toBe(true)
+  })

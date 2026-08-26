@@ -248,7 +248,22 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
     }
 
     let _ = fs::remove_dir_all(&staging);
-    relaunch_and_leave(&app, &exe)
+    // Before the new process starts, so the two are never both talking to the same
+    // `.privatecode/` at once.
+    crate::shutdown_sidecar(&app.state::<crate::SidecarState>());
+    relaunch_and_leave(&exe)
+}
+
+/// The erase path's entry point: the sidecar is already down by the time it is called, since
+/// the files it was holding had to go first.
+pub fn relaunch_and_leave_without_sidecar(_app: &AppHandle) -> ! {
+    match std::env::current_exe() {
+        Ok(exe) => relaunch_and_leave(&exe),
+        Err(e) => {
+            eprintln!("erase: could not find our own executable to restart: {e}");
+            std::process::exit(0)
+        }
+    }
 }
 
 /// Start the replacement and go — without asking Tauri to arrange it.
@@ -278,11 +293,7 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
 /// it starts live in a kill-on-close job object (see `job.rs`), and the kernel closes the last
 /// handle to that job when this process dies BY ANY MEANS. Verified, not assumed — the
 /// leftover process was terminated by hand and its `node.exe` went with it.
-fn relaunch_and_leave(app: &AppHandle, exe: &Path) -> ! {
-    // Before the new process starts, so the two are never both talking to the same
-    // `.privatecode/` at once.
-    crate::shutdown_sidecar(&app.state::<crate::SidecarState>());
-
+fn relaunch_and_leave(exe: &Path) -> ! {
     if let Err(e) = std::process::Command::new(exe).spawn() {
         // Nothing left to report to: the window is about to go. The old binary is still on
         // disk under `.old.exe`, so the folder is not left without a working app.
