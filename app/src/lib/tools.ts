@@ -92,6 +92,23 @@ function str(o: Record<string, unknown>, key: string): string | null {
 }
 
 /**
+ * What a command card is labelled with.
+ *
+ * `run_command` takes a LIST now — the shape is what stops the model writing `&&` for a shell
+ * that has none — so a card built from `args.command` alone went blank. Both are read, and
+ * the string form stays because stored sessions are full of it: a transcript recorded before
+ * the change is replayed through exactly this function.
+ */
+function commandLabel(o: Record<string, unknown>): string | null {
+  const list = o['commands']
+  if (Array.isArray(list)) {
+    const parts = list.filter((c): c is string => typeof c === 'string' && c !== '')
+    if (parts.length > 0) return parts.join('; ')
+  }
+  return str(o, 'command')
+}
+
+/**
  * The screenshot a `browser` call saved, or `null`.
  *
  * Anchored to the exact shape the tool writes, and that strictness is the point: the
@@ -150,7 +167,7 @@ export function presentTool(name: string, argsJson: string): ToolPresentation {
   }
   if (name === 'background_task') {
     const action = str(args, 'action') ?? 'poll'
-    const detail = str(args, 'command') ?? str(args, 'id') ?? ''
+    const detail = commandLabel(args) ?? str(args, 'id') ?? ''
     return { kind, verb: `Background ${action}`, target: detail, path: null }
   }
   if (name === 'git_status') {
@@ -186,7 +203,7 @@ export function presentTool(name: string, argsJson: string): ToolPresentation {
     return { kind, verb, target: parts.join(' '), path: null }
   }
 
-  const command = str(args, 'command')
+  const command = commandLabel(args)
   if (command !== null) return { kind, verb, target: command, path: null }
 
   const path = str(args, 'path')

@@ -7,10 +7,41 @@ import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
 import type { Workspace } from '../workspace.js'
 
 export interface RunCommandArgs {
-  command: string
+  /** One entry per command, run in order, stopping at the first failure. */
+  commands: string[]
   timeout_seconds?: number
   cwd?: string
 }
+
+/**
+ * Joins a list of commands so that it means what `&&` means.
+ *
+ * `&&` is what the model reaches for and Windows PowerShell 5.1 does not have it — it is a
+ * parse error, so nothing runs at all. Telling the model that is not enough, and this is not
+ * a guess: measured against the live model over 14 trials per arm
+ * (`spike/operator-grammar-probe.mts`), with a prompt that invites the habit —
+ *
+ *   a `command` string, bare schema            14/14 wrote `&&`
+ *   the same, plus a `pattern` forbidding it   14/14 — this build ignores `pattern` in a
+ *                                              tool schema, so the sampler never constrains it
+ *   the same, plus prose in the description     3/14
+ *   a `commands` LIST, bare                     0/14
+ *
+ * Which is this project's own law arriving from the other direction: instructions do not
+ * route behaviour, structure does. A list has nowhere to write a separator, so none is
+ * written — and the joining becomes the harness's job.
+ *
+ * `$?` and not `$LASTEXITCODE`, and the difference is not stylistic. Only NATIVE commands set
+ * `$LASTEXITCODE`, so after a cmdlet it holds whatever a previous native command left there,
+ * or nothing at all. Measured (`spike/chain-join-probe.mts`): joining with
+ * `if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }` broke the most ordinary case of the six —
+ * two successful cmdlets, where the second never ran because `$null -ne 0`. `$?` is the last
+ * statement's success whether it was a cmdlet or a native program, and was correct in all six.
+ *
+ * `exit 1` rather than the real code because `powershell.exe -Command` already collapses a
+ * native exit code to 1 on the way out; the distinction is lost before this line either way.
+ */
+const CHAIN = '; if (-not $?) { exit 1 }; '
 
 const DEFAULT_TIMEOUT_S = 120
 const MAX_TIMEOUT_S = 600
@@ -74,18 +105,60 @@ function whereRan(workspace: Workspace, resolved: string, asked: string | undefi
  */
 const OPENS_BY_CHANGING_DIRECTORY = /^\s*(cd|chdir|sl|set-location)\s+\S/i
 
+/**
+ * `&&` or `||` written where PowerShell 5.1 will refuse to parse it — outside every quoted
+ * run.
+ *
+ * The list shape removed the SEPARATOR use of `&&` (measured: 14/14 chained as one string,
+ * 0/14 as a list). What it does not remove is the habit inside a single entry —
+ * `npm run build && npm test`, `cat a || cat b` — which still reaches a shell that has no
+ * such operator, so nothing runs and the reply is a parse error pointing at our own prelude.
+ * Caught here instead: no process spawned, and the answer names the fix.
+ *
+ * Quote-aware, and biased to ALLOW. `cmd /c "a && b"` is legitimate — the `&&` is cmd's, not
+ * PowerShell's — and refusing it would break a working command to prevent a broken one.
+ * Anything this scanner is unsure about therefore runs, and falls back to the honest parse
+ * error it always had. That is the safe direction: a false negative costs a round trip, a
+ * false positive costs a command someone meant.
+ *
+ * Not a shell parser. It tracks one thing — whether the cursor is inside a `'` or `"` run —
+ * which is all that separates the two cases above.
+ */
+export function unparsableChainAt(command: string): '&&' | '||' | null {
+  let quote: "'" | '"' | null = null
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    // PowerShell's escape is a backtick, and only inside double quotes.
+    if (quote === '"' && c === '`') { i++; continue }
+    if (quote === null && (c === "'" || c === '"')) { quote = c; continue }
+    if (quote !== null && c === quote) { quote = null; continue }
+    if (quote !== null) continue
+    if ((c === '&' || c === '|') && command[i + 1] === c) return c === '&' ? '&&' : '||'
+  }
+  return null
+}
+
 export const runCommandTool: Tool<RunCommandArgs> = {
   name: 'run_command',
   readOnly: false,
   description:
-    'Run a PowerShell command in the workspace and return its combined output and exit ' +
-    'code. Exit code 0 is evidence, not proof — verify with a follow-up check when it ' +
-    'matters (some installers return 0 while work continues in the background). ' +
-    'Long-running processes (dev servers, watchers) belong in background_task, not here.',
+    'Run one or more commands in the workspace, in order, stopping at the first failure, and ' +
+    'return their combined output and exit code. Exit code 0 is evidence, not proof — verify ' +
+    'with a follow-up check when it matters (some installers return 0 while work continues ' +
+    'in the background). Long-running processes (dev servers, watchers) belong in ' +
+    'background_task, not here.',
   parameters: {
     type: 'object',
     properties: {
-      command: { type: 'string', description: 'The PowerShell command line to run.' },
+      commands: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'The commands to run, in order, one per entry. Each runs only if the one before ' +
+          'it succeeded — so a list is what `&&` would mean elsewhere. Usually one entry. ' +
+          'Each entry is a Windows PowerShell 5.1 command line, not sh: no `&&`, no `||`, ' +
+          'no `2>/dev/null`.',
+      },
       timeout_seconds: {
         type: 'integer',
         description: `Kill the command after this many seconds (default ${DEFAULT_TIMEOUT_S}, max ${MAX_TIMEOUT_S}).`,
@@ -101,12 +174,38 @@ export const runCommandTool: Tool<RunCommandArgs> = {
           'in the command.',
       },
     },
-    required: ['command'],
+    required: ['commands'],
   },
   validate(raw) {
-    const r = raw as Partial<RunCommandArgs>
-    if (typeof r?.command !== 'string' || r.command.trim() === '') {
-      return { ok: false, error: 'command must be a non-empty string' }
+    const r = raw as Partial<RunCommandArgs> & { command?: unknown }
+    // A bare `command` string is accepted as a one-entry list. The schema does not offer it
+    // and the model does not send it, but a stored session, a hand-written call or a future
+    // caller might — and answering "commands must be an array" to something this can plainly
+    // run would be pedantry with a cost.
+    const given = Array.isArray(r?.commands) ? r.commands
+      : typeof r?.command === 'string' ? [r.command]
+      : null
+    if (given === null) {
+      return { ok: false, error: 'commands must be an array of command lines' }
+    }
+    const commands = given.filter((c): c is string => typeof c === 'string' && c.trim() !== '')
+    if (commands.length !== given.length) {
+      return { ok: false, error: 'every entry in commands must be a non-empty string' }
+    }
+    if (commands.length === 0) {
+      return { ok: false, error: 'commands must contain at least one command line' }
+    }
+    for (const [i, c] of commands.entries()) {
+      const op = unparsableChainAt(c)
+      if (op !== null) {
+        return {
+          ok: false,
+          error: `commands[${i}] contains \`${op}\`, which Windows PowerShell 5.1 cannot ` +
+            'parse — nothing would run at all. Put each command in its own entry: they ' +
+            'already run in order and stop at the first failure, which is what ' +
+            `\`${op}\` means.`,
+        }
+      }
     }
     if (r.timeout_seconds !== undefined) {
       if (!Number.isInteger(r.timeout_seconds) || r.timeout_seconds < 1 ||
@@ -117,22 +216,34 @@ export const runCommandTool: Tool<RunCommandArgs> = {
     if (r.cwd !== undefined && (typeof r.cwd !== 'string' || r.cwd.trim() === '')) {
       return { ok: false, error: 'cwd must be a non-empty workspace-relative path when given' }
     }
-    const args: RunCommandArgs = { command: r.command }
+    const args: RunCommandArgs = { commands }
     if (r.timeout_seconds !== undefined) args.timeout_seconds = r.timeout_seconds
     if (r.cwd !== undefined) args.cwd = r.cwd
     return { ok: true, args }
   },
   permissionKey(args): PermissionKey {
-    return { tool: 'run_command', command: args.command }
+    // Joined with a plain `; `, which is the exact shape the model used to send as ONE string
+    // — so every permission rule and every hard-deny pattern a person already has keeps
+    // matching what it always matched. `HARD_DENY`'s entries bound themselves with `[^|;&]*`
+    // so a `git push` in the second half is still caught, and joining this way preserves it.
+    //
+    // Not one key per entry, which would be finer and is the obvious next step: the gate asks
+    // `permissionKey` once per tool call and the whole approval path — the card, "always
+    // allow", session rules — is built on that one answer. Changing it is a bigger change
+    // than this, and doing it here would have smuggled it in behind a fix for `&&`.
+    return { tool: 'run_command', command: args.commands.join('; ') }
   },
   approvalPreview(args): ApprovalPreview {
-    const oneLine = args.command.replace(/\s+/g, ' ').trim()
+    const oneLine = args.commands.join('; ').replace(/\s+/g, ' ').trim()
     return {
       summary: oneLine.length > 80 ? `${oneLine.slice(0, 77)}...` : oneLine,
       // "workspace root" was the wording, and it names nothing a person can point at once the
       // workspace is several folders — the default is the FIRST of them. No `ctx` reaches
       // here to say which, so it says which one it means rather than naming it.
-      detail: `Run in PowerShell (cwd: ${args.cwd ?? 'the first workspace folder'}):\n${args.command}`,
+      // One per line, because the approval card is where a person decides, and a list joined
+      // back into one line is exactly the shape that made this hard to read in the first place.
+      detail: `Run in PowerShell (cwd: ${args.cwd ?? 'the first workspace folder'}):\n` +
+        args.commands.join('\n'),
     }
   },
   async execute(args, ctx) {
@@ -163,7 +274,9 @@ export const runCommandTool: Tool<RunCommandArgs> = {
     // therefore run by hand below, so the tree can be taken down parent-first.
     const child = execa(
       POWERSHELL_EXE,
-      powershellArgs(args.command),
+      // ONE shell for the whole list: a `cd` in the first entry has to still apply to
+      // the second, which separate invocations would lose.
+      powershellArgs(args.commands.join(CHAIN)),
       {
         cwd,
         forceKillAfterDelay: 2_000,
@@ -270,7 +383,7 @@ export const runCommandTool: Tool<RunCommandArgs> = {
     }
     const code = result.exitCode ?? -1
     const header = `exit ${code} in ${seconds} s${whereRan(ctx.workspace, cwd, args.cwd)}\n`
-    const hint = code !== 0 && OPENS_BY_CHANGING_DIRECTORY.test(args.command)
+    const hint = code !== 0 && OPENS_BY_CHANGING_DIRECTORY.test(args.commands[0] ?? '')
       ? '\n\nThis command began by changing directory. Set the `cwd` argument instead — it ' +
         'takes the same folder-prefixed path every other tool argument takes, and a `cd` ' +
         'inside the command does not.'

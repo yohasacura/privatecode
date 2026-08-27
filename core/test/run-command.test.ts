@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { runCommandTool, clipOutput } from '../src/tools/run-command.js'
+import { runCommandTool, clipOutput, unparsableChainAt } from '../src/tools/run-command.js'
 import { Workspace } from '../src/workspace.js'
 
 const root = mkdtempSync(join(tmpdir(), 'pc-run-'))
@@ -73,7 +73,7 @@ describe('execute', () => {
   it('is cancelled by the context signal', async () => {
     const ac = new AbortController()
     const p = runCommandTool.execute(
-      { command: 'Start-Sleep -Seconds 30' },
+      { commands: ['Start-Sleep -Seconds 30'] },
       { workspace: new Workspace(root), signal: ac.signal },
     )
     setTimeout(() => ac.abort(), 300)
@@ -124,7 +124,7 @@ describe('killing the process tree', () => {
     const marker = join(root, 'cancel-ticker.txt')
     const ac = new AbortController()
     const p = runCommandTool.execute(
-      { command: tickerCommand(marker) },
+      { commands: [tickerCommand(marker)] },
       { workspace: new Workspace(root), signal: ac.signal },
     )
     await awaitTicking(marker)
@@ -159,8 +159,14 @@ describe('clipOutput', () => {
 
 describe('permission surface', () => {
   it('exposes the exact command as its permission key', () => {
-    expect(runCommandTool.permissionKey!({ command: 'git status' }))
+    expect(runCommandTool.permissionKey!({ commands: ['git status'] }))
       .toEqual({ tool: 'run_command', command: 'git status' })
+
+    // A list is keyed by the `; `-joined form — the exact shape the model used to send as one
+    // string, so a rule someone already wrote keeps matching what it always matched, and
+    // HARD_DENY's `[^|;&]*`-bounded patterns still catch a `git push` in the second half.
+    expect(runCommandTool.permissionKey!({ commands: ['npm install', 'npm test'] }))
+      .toEqual({ tool: 'run_command', command: 'npm install; npm test' })
   })
 })
 
@@ -216,4 +222,89 @@ describe('a command whose first half fails', () => {
     expect(r.ok).toBe(true)
     expect(r.content).toContain('reached the end')
   }, 30_000)
+})
+
+describe('a list of commands', () => {
+  it('runs them in order, in one shell', async () => {
+    // One shell, not one per entry: a `cd` in the first has to still apply to the second,
+    // which separate invocations would silently lose.
+    const r = await run({ commands: ['Set-Location $env:TEMP', '(Get-Location).Path'] })
+    expect(r.ok).toBe(true)
+    expect(r.content.toLowerCase()).toContain('temp')
+  }, 30_000)
+
+  it('stops at the first failure, which is what `&&` means', async () => {
+    const r = await run({ commands: ['cmd /c exit 3', 'Write-Output "should NOT run"'] })
+    expect(r.ok).toBe(false)
+    expect(r.content).not.toContain('should NOT run')
+  }, 30_000)
+
+  it('and stops on a cmdlet failure too, not only a native one', async () => {
+    // The two kinds fail differently — a cmdlet error is terminating under
+    // $ErrorActionPreference, a native non-zero exit is not — and the joiner has to catch
+    // both. `$LASTEXITCODE` catches only the second; see CHAIN.
+    const r = await run({ commands: ['cd no-such-directory', 'Write-Output "should NOT run"'] })
+    expect(r.ok).toBe(false)
+    expect(r.content).not.toContain('should NOT run')
+  }, 30_000)
+
+  it('runs every entry when they all succeed', async () => {
+    // The case the obvious joiner gets wrong. `if ($LASTEXITCODE -ne 0) { exit }` between two
+    // successful CMDLETS compares against a variable no cmdlet sets — `$null -ne 0` is true —
+    // so the second never ran. Measured, then fixed by using `$?`.
+    const r = await run({ commands: ['Write-Output one', 'Write-Output two'] })
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('one')
+    expect(r.content).toContain('two')
+  }, 30_000)
+
+  it('refuses an empty list, and an entry that is not a command', async () => {
+    expect(runCommandTool.validate({ commands: [] }).ok).toBe(false)
+    expect(runCommandTool.validate({ commands: ['ok', '   '] }).ok).toBe(false)
+    expect(runCommandTool.validate({ commands: 'not a list' }).ok).toBe(false)
+    expect(runCommandTool.validate({}).ok).toBe(false)
+  })
+
+  it('still accepts a bare command string, as one entry', () => {
+    // The schema does not offer it and the model does not send it. A stored session or a
+    // hand-written call might, and refusing something this can plainly run would be pedantry.
+    const v = runCommandTool.validate({ command: 'Write-Output hi' })
+    expect(v.ok).toBe(true)
+    expect(v.ok && v.args.commands).toEqual(['Write-Output hi'])
+  })
+})
+
+describe('an operator PowerShell 5.1 cannot parse', () => {
+  it('is refused before anything is spawned, with the fix in the message', () => {
+    // The residue the list shape does not remove: `&&` inside ONE entry. Measured against
+    // the live model with the real schema — the separator use went to zero, this stayed at
+    // about one in twelve. Reaching the shell, it is a parse error pointing at our own
+    // prelude; caught here, it costs no process and names what to do.
+    const v = runCommandTool.validate({ commands: ['npm run build && npm test'] })
+    expect(v.ok).toBe(false)
+    expect(v.ok === false && v.error).toContain('own entry')
+    expect(v.ok === false && v.error).toContain('&&')
+  })
+
+  it('catches || too, and says which entry', () => {
+    const v = runCommandTool.validate({ commands: ['echo a', 'cat x || cat y'] })
+    expect(v.ok).toBe(false)
+    expect(v.ok === false && v.error).toContain('commands[1]')
+  })
+
+  it('leaves a legitimate one inside quotes alone', () => {
+    // `cmd /c "a && b"` is cmd's operator, not PowerShell's, and it works. Refusing it would
+    // break a working command in order to prevent a broken one, so the scan is quote-aware
+    // and biased to allow.
+    expect(unparsableChainAt('cmd /c "echo a && echo b"')).toBeNull()
+    expect(unparsableChainAt("cmd /c 'echo a && echo b'")).toBeNull()
+    expect(runCommandTool.validate({ commands: ['cmd /c "echo a && echo b"'] }).ok).toBe(true)
+  })
+
+  it('and a single & or | is not an operator', () => {
+    // A pipeline and a background-ish `&` are ordinary PowerShell. Only the doubled forms
+    // are the ones 5.1 refuses.
+    expect(unparsableChainAt('Get-Process | Select-Object -First 1')).toBeNull()
+    expect(unparsableChainAt('cmd /c "echo a & echo b"')).toBeNull()
+  })
 })

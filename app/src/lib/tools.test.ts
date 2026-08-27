@@ -104,3 +104,17 @@ describe('screenshotPathOf', () => {
     expect(screenshotPathOf('browser', undefined)).toBeNull()
   })
 })
+
+it('labels a run_command card from a LIST of commands, and still from a string', () => {
+  // The tool takes a list now — that shape is what stops the model writing `&&` for a shell
+  // that has none — and a card built from `args.command` alone went blank. The string form
+  // stays because every session recorded before the change replays through this same
+  // function.
+  const fromList = presentTool('run_command', JSON.stringify({
+    commands: ['npm install', 'npm test'],
+  }))
+  expect(fromList.target).toBe('npm install; npm test')
+
+  const fromString = presentTool('run_command', JSON.stringify({ command: 'git status' }))
+  expect(fromString.target).toBe('git status')
+})
