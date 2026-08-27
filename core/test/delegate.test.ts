@@ -140,7 +140,7 @@ describe('a worker that could act', () => {
       tools: ['write_file'], mode: 'normal' as const, maxSteps: 4,
     }
     const out = await runSubAgent(
-      { client: null as never, registry: null as never, workspace: new Workspace(root) },
+      { client: null as never, registry: null as never, context: { workspace: new Workspace(root) } },
       acting,
       'write something to a file in the workspace',
     )
@@ -151,16 +151,42 @@ describe('a worker that could act', () => {
     expect(out.text).toBe('')
   })
 
-  test('every role that ships today is read-only, so the guard is not load-bearing yet', () => {
-    // Both statements are asserted because they protect each other: the guard above is the
-    // net, and this is the floor. Losing either silently would leave the other looking
-    // sufficient.
+  test('a role is either narrowed to reading, or full-capability and therefore gated', () => {
+    // Two shapes ship, and the invariant is that there is no third.
+    //
+    //   narrowed     plan mode, and every tool it names is read-only. Its job is to ANSWER,
+    //                and a worker that could edit would be a second writer nobody asked for
+    //   full         no `tools` and no `mode`: exactly what the caller has, trusted exactly
+    //                as much. `runSubAgent` refuses to build one without the permission
+    //                engine, so it cannot become an ungated writer by omission
+    //
+    // What this rules out is the middle: a role that names write tools AND a mode, which
+    // would look deliberate and be ungated the moment somebody built it with the old deps.
+    const registry = buildRegistry()
     for (const role of ROLES) {
-      expect(role.mode, `${role.name} should be plan mode`).toBe('plan')
-      const registry = buildRegistry()
+      if (role.tools === undefined) {
+        expect(role.mode, `${role.name} takes the caller's tools, so it must take its mode`)
+          .toBeUndefined()
+        continue
+      }
+      expect(role.mode, `${role.name} names its tools, so it must name plan mode`).toBe('plan')
       for (const tool of role.tools) {
         expect(registry.readOnlyNames(), `${role.name} may not offer ${tool}`).toContain(tool)
       }
     }
+  })
+
+  test('the full-capability role is refused when there is no engine to gate it', async () => {
+    // Named rather than generic: `work` is the one that can write, and the guard existing is
+    // no use if it stops applying to the role it was written for.
+    const work = ROLES.find((r) => r.name === 'work')
+    expect(work, 'a full-capability role should ship').toBeDefined()
+    const out = await runSubAgent(
+      { client: null as never, registry: null as never, context: { workspace: new Workspace(root) } },
+      { ...work!, mode: 'normal' },
+      'change something in the workspace and check it still builds',
+    )
+    expect(out.problem).toContain('needs the permission engine')
+    expect(out.steps).toBe(0)
   })
 })

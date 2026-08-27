@@ -4,7 +4,8 @@ import type { AgentMode, PermissionEngine } from '../permissions/engine.js'
 import { ReadMemory } from '../tools/read-memory.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import { Transcript } from '../transcript/transcript.js'
-import type { Workspace } from '../workspace.js'
+import type { AgentEvents } from './loop.js'
+import type { ToolContext } from '../tools/types.js'
 
 /**
  * A worker with one job, its own short conversation, and no memory of yours.
@@ -52,8 +53,17 @@ export interface SubAgentRole {
    * files needs both exactly as much as the caller does.
    */
   brief: string
-  tools: readonly string[]
-  mode: AgentMode
+  /**
+   * What this role may touch. ABSENT means everything the caller has.
+   *
+   * A narrowed set is for roles whose job is to ANSWER — an investigator that could edit
+   * would be a second writer nobody asked for. It is not what makes a worker useful: the
+   * narrowness that pays is in the question, not in taking tools away.
+   */
+  tools?: readonly string[]
+  /** Absent means the caller's own mode, so a worker is no more and no less trusted than the
+   * session it was spawned from. */
+  mode?: AgentMode
   maxSteps: number
 }
 
@@ -86,6 +96,26 @@ export const ROLES: readonly SubAgentRole[] = [
     mode: 'plan',
     maxSteps: 8,
   },
+  {
+    name: 'work',
+    purpose:
+      'Carry out one small, fully described job — it can read, write, run commands and ' +
+      'search the web, exactly as you can.',
+    brief:
+      'You are carrying out ONE job, described below, for someone who cannot see what you ' +
+      'do. They see only what you write at the end.\n\n' +
+      'Do the whole job, then say what you changed and what you ran to check it. Name paths ' +
+      'and commands — a summary they cannot verify is worth less to them than a short list ' +
+      'they can.\n\n' +
+      'If the job as described cannot be done, stop and say why rather than doing the ' +
+      'nearest thing that can: they will act on your answer and you will not be there to ' +
+      'correct it.',
+    // Neither `tools` nor `mode`: it gets exactly what the caller has, and is trusted exactly
+    // as much. That is the point of it — the narrowness that pays is in the question, not in
+    // taking tools away. `runSubAgent` refuses to build this at all without the permission
+    // engine, so it cannot become an ungated second writer by omission.
+    maxSteps: 12,
+  },
 ]
 
 export const ROLE_NAMES: readonly string[] = ROLES.map((r) => r.name)
@@ -110,7 +140,16 @@ const MAX_ANSWER_CHARS = 4_000
 export interface SubAgentDeps {
   client: LlamaClient
   registry: ToolRegistry
-  workspace: Workspace
+  /**
+   * The caller's own tool context, whole.
+   *
+   * A worker with the caller's tools and half its context is worse than one with neither:
+   * the reviewer was once offered `database` and `use_skill` without the context they read
+   * from, and answered with a confident false statement about the workspace ("no database is
+   * configured") that it then reasoned from. Two things are replaced on the way in — see
+   * `runSubAgent`.
+   */
+  context: ToolContext
   /** Ceiling on one step's tool results, sized from the window — see the reviewer's note. */
   stepResultBudgetChars?: number
   /**
@@ -127,6 +166,15 @@ export interface SubAgentDeps {
    * combination outright. Passing an engine is what unlocks a worker that can act.
    */
   permissions?: PermissionEngine
+  /**
+   * The caller's event hooks, so a worker's work is counted as work.
+   *
+   * Not for display. `Session` wraps these to count writes and to record WHICH folder
+   * each write landed in, and both feed the build gate — a worker that wrote while the
+   * caller did not would otherwise leave `writesThisTurn` at zero, and the gate's
+   * shortcut would skip the check on exactly the turn that changed something.
+   */
+  events?: AgentEvents
 }
 
 /**
@@ -149,25 +197,35 @@ export async function runSubAgent(
     }
   }
   const transcript = new Transcript()
+  // No worker spawns a worker. Depth is a budget with no bottom, and the one thing a narrow
+  // job does not need is the ability to widen itself. Destructured off rather than set to
+  // `undefined`: with `exactOptionalPropertyTypes`, an explicit undefined is not the same as
+  // an absent key, and the tool tests for absence.
+  const { delegate: _noNesting, ...callerContext } = deps.context
   const options: AgentOptions = {
     client: deps.client,
     registry: deps.registry,
     context: {
-      workspace: deps.workspace,
+      ...callerContext,
       // Its own, not the caller's. See the note at the top of this file.
       reads: new ReadMemory(),
     },
     transcript,
-    mode: role.mode,
+    ...(role.mode !== undefined ? { mode: role.mode } : {}),
     ...(deps.permissions !== undefined ? { permissions: deps.permissions } : {}),
-    allowedTools: [...role.tools],
+    ...(role.tools !== undefined ? { allowedTools: [...role.tools] } : {}),
     maxSteps: role.maxSteps,
     // Load-bearing rather than cosmetic: streaming is opt-in on one of these being present,
     // and the step clock measures SILENCE by re-arming on every delta. Without it the
     // first-token budget applies to the whole request, and a worker reading a large file
     // dies on a deadline meant to catch a hung server. The reviewer was the one Agent built
     // without this and it was watched running past ten minutes.
-    events: { onTextDelta: () => {} },
+    // The caller's hooks, plus a delta callback that has to be present for a reason that
+    // is not about rendering: streaming is opt-in on one of these existing, and the step
+    // clock measures SILENCE by re-arming on every delta. An Agent with none gets its
+    // first-token budget applied to the whole request, and a worker reading a large file
+    // dies on a deadline meant to catch a hung server.
+    events: { onTextDelta: () => {}, ...deps.events },
     ...(signal ? { signal } : {}),
     ...(deps.stepResultBudgetChars !== undefined
       ? { stepResultBudgetChars: deps.stepResultBudgetChars }

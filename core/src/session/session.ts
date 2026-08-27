@@ -3669,7 +3669,7 @@ export class Session {
    * caller that got the name wrong is better told than crashed.
    */
   private async runWorker(
-    role: string, task: string, signal?: AbortSignal,
+    role: string, task: string, context: ToolContext, events: AgentEvents, signal?: AbortSignal,
   ): Promise<SubAgentOutcome> {
     const found = ROLES.find((r) => r.name === role)
     if (found === undefined) {
@@ -3682,7 +3682,11 @@ export class Session {
       {
         client: this.opts.client,
         registry: this.opts.toolset.registry,
-        workspace: this.workspace,
+        context,
+        events,
+        // Without this a worker in any mode but plan is refused outright, which is the
+        // point: the capability and its gate arrive together or not at all.
+        ...(this.opts.engine ? { permissions: this.opts.engine } : {}),
         ...(this.opts.compaction !== undefined
           ? { stepResultBudgetChars: tailBudgetTokens(this.opts.compaction.contextLength) * 4 }
           : {}),
@@ -3719,7 +3723,13 @@ export class Session {
     if (port) context.interaction = port
     // A bound function, not the client and the registry: a tool holding those could
     // build any agent it liked, and this one can only ask for a role that exists.
-    context.delegate = (role, task, sig) => this.runWorker(role, task, sig)
+    // The context and the events are the CALLER's own, so a worker sees the same
+    // workspace, the same browser, the same database and the same approval port — and so
+    // its writes are counted by the same hooks. A worker whose writes went uncounted
+    // would leave `writesThisTurn` at zero on a turn that changed the workspace, and the
+    // build gate's shortcut would skip the check on exactly that turn.
+    context.delegate = (role, task, sig) =>
+      this.runWorker(role, task, context, this.composeEvents(this.opts.events), sig)
 
     const agentOpts: AgentOptions = {
       client: this.opts.client,
