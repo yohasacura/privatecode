@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'vitest'
 import { looksRepetitive } from '../src/agent/loop.js'
-import { QWEN_SAMPLING } from '../src/llama/sampling.js'
 
 /**
  * The thinking spiral, and why the transcript was what carried it.

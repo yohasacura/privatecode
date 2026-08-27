@@ -58,15 +58,15 @@ export interface RunSummary {
   detail: string
 }
 
-export const DEFAULT_MAX_TURNS = 50
-export const DEFAULT_MAX_HOURS = 8
+const DEFAULT_MAX_TURNS = 50
+const DEFAULT_MAX_HOURS = 8
 
 /** Below this many transcript tokens, a between-turn refresh would summarise a
  * conversation that still fits comfortably in the model's attention, let alone its
  * window — the cost (a summary generation per turn) would exceed the drift it prevents.
  * 60k, because the incompressible floor (system prompt + briefing + the 24k kept-tail
  * cap) can reach ~37k: a threshold at 40k re-compacted every single turn forever. */
-export const REFRESH_CONTEXT_AT = 60_000
+const REFRESH_CONTEXT_AT = 60_000
 
 /** Two turns in a row that changed nothing and ran nothing. */
 const IDLE_LIMIT = 2

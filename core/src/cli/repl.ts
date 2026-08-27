@@ -10,7 +10,6 @@ import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory, type LoadedMemory } from '../memory/project-memory.js'
 import { loadSkills, projectSkillsDir, userSkillsDir, type LoadedSkills } from '../skills/skills.js'
-import { expandCommand, listCommands } from '../commands/custom.js'
 import { Session, type SessionOptions } from '../session/session.js'
 import type { SessionStore } from '../session/store.js'
 import type { Toolset } from '../tools/default-set.js'
@@ -81,7 +80,7 @@ function renderCompactionEvent(info: { state: string; droppedMessages?: number }
  * Otherwise falls back to the old character-count heuristic, `approxTokens`, labelled
  * `(approx)` so it is never mistaken for the real figure.
  */
-export function formatContextLine(
+function formatContextLine(
   promptTokens: number | null,
   contextLength: number | undefined,
   approxTokens: number,
@@ -204,7 +203,23 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   /** Same idea for skills: what the catalogue in message 0 was built from, so `/skills`
    * can answer "did my folder get picked up" — which nothing else can. */
   let loadedSkills: LoadedSkills | undefined
+  /**
+   * Everything that went wrong loading AGENTS.md, skills, format rules and hooks.
+   *
+   * Filled on every rebuild and, until a dead-code pass asked who read it, printed by
+   * nobody. The comment four lines up has said "printed beside `engine.problems`" since it
+   * was written, so the intent was recorded and the wiring never happened: a skills folder
+   * that failed to load left the CLI silent while the window said so plainly.
+   */
   let memoryProblems: string[] = []
+
+  /** Settings problems and load problems together, in the three places that already
+   * reported the first of them. */
+  function writeProblems(): void {
+    for (const p of [...engine.problems, ...memoryProblems]) {
+      process.stdout.write(`settings: ${p}\n`)
+    }
+  }
 
   /**
    * Loads settings layers fresh, builds a new PermissionEngine around them, and builds a
@@ -344,7 +359,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       `  context length: ${contextLine}\n` +
       `  session: ${session.id}\n`,
     )
-    for (const p of engine.problems) process.stdout.write(`settings: ${p}\n`)
+    writeProblems()
     process.stdout.write(HELP_TEXT)
   }
 
@@ -442,7 +457,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     try {
       await rebuild(undefined, id)
       process.stdout.write(`Resumed session ${session.id} (mode: ${session.mode}).\n`)
-      for (const p of engine.problems) process.stdout.write(`settings: ${p}\n`)
+      writeProblems()
     } catch (e) {
       // store.load() throws actionable messages for a missing or corrupt session; the
       // current session is untouched (rebuild only assigns on success), so this is a
@@ -550,7 +565,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     switch (cmd) {
       case '/help': process.stdout.write(HELP_TEXT); return
       case '/mode': await handleMode(arg); return
-      case '/new': await rebuild(undefined, undefined); process.stdout.write(`Started a new session: ${session.id}\n`); for (const p of engine.problems) process.stdout.write(`settings: ${p}\n`); return
+      case '/new': await rebuild(undefined, undefined); process.stdout.write(`Started a new session: ${session.id}\n`); writeProblems(); return
       case '/sessions': handleSessions(); return
       case '/resume': await handleResume(arg); return
       case '/todos': handleTodos(); return

@@ -552,17 +552,6 @@ const PLAN_SCHEMA: Record<string, unknown> = {
   },
 }
 
-/** Tolerant like the parsers above. Fewer than 2 usable steps is not a plan. */
-export function parsePlannedTodos(argsJson: string): TodoItem[] | null {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(argsJson)
-  } catch {
-    return null
-  }
-  return readPlannedTodos(parsed)
-}
-
 function readPlannedTodos(parsed: unknown): TodoItem[] | null {
   if (typeof parsed !== 'object' || parsed === null) return null
   const raw = (parsed as Record<string, unknown>)['items']

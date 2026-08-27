@@ -17,7 +17,7 @@ import { PRIVATE_DIR } from '../private-dir.js'
  * engine, on one keystroke.
  */
 
-export const COMMANDS_DIR = `${PRIVATE_DIR}/commands`
+const COMMANDS_DIR = `${PRIVATE_DIR}/commands`
 
 /** ~2k tokens, permanent in the transcript, spent per invocation. A template should be
  * instructions, not a pasted document. */

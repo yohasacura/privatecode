@@ -58,7 +58,7 @@ const MAX_DESCRIPTION_CHARS = 400
 /** Permanent prompt cost, like `AGENTS.md`'s budgets and for the same reason. ~1k tokens. */
 const CATALOGUE_BUDGET = 4_000
 /** Read into the transcript on use, where it stays. Instructions, not a pasted document. */
-export const MAX_BODY_CHARS = 20_000
+const MAX_BODY_CHARS = 20_000
 const MAX_SKILLS = 100
 /** Enough for a reference table or a checklist; past this it is data, not a procedure. */
 const MAX_BUNDLED_FILE_CHARS = 40_000

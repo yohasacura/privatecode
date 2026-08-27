@@ -43,10 +43,10 @@ export interface Decision {
 }
 
 /** Tools whose grantable act is writing to the workspace. */
-export const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['edit_file', 'write_file', 'move_file', 'delete_file'])
+const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['edit_file', 'write_file', 'move_file', 'delete_file'])
 
 /** Tools whose grantable act is running something outside the workspace jail. */
-export const EXEC_TOOLS: ReadonlySet<string> = new Set(['run_command', 'background_task'])
+const EXEC_TOOLS: ReadonlySet<string> = new Set(['run_command', 'background_task'])
 
 /**
  * Tools whose grantable act changes state that is neither a workspace file nor a process:
@@ -63,14 +63,14 @@ export const EXEC_TOOLS: ReadonlySet<string> = new Set(['run_command', 'backgrou
  * Both actions are gated, `script` included: what a person can sensibly grant standing
  * permission to is a rule they wrote themselves (`sql_deploy(script)`), not a default.
  */
-export const DEPLOY_TOOLS: ReadonlySet<string> = new Set(['sql_deploy'])
+const DEPLOY_TOOLS: ReadonlySet<string> = new Set(['sql_deploy'])
 
 /** The single browser tool. Named here so the engine does not import the tool module. */
 export const BROWSER_TOOL = 'browser'
 
 /** The web search/read tool, same arrangement. Its `search` action carries this fixed
  * target; reads carry the URL. */
-export const WEB_TOOL = 'web'
+const WEB_TOOL = 'web'
 export const WEB_SEARCH_TARGET = 'search'
 
 // Re-exported so every caller has one place to import the MCP namespace from; it is

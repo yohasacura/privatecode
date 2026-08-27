@@ -5,7 +5,7 @@ import { LlamaRequestError } from '../llama/client.js'
  * transport timeout -- see the health-check call site for why. */
 export const HEALTH_CHECK_TIMEOUT_MS = 5_000
 
-export function fmtDuration(ms: number): string {
+function fmtDuration(ms: number): string {
   return ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`
 }
 

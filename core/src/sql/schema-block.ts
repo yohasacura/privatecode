@@ -27,7 +27,7 @@ import { renderSchema } from './render.js'
  * would otherwise crowd out the code the session is actually about. What does not fit is
  * named as a count, so the model knows to ask rather than concluding the tables are absent.
  */
-export const DEFAULT_SCHEMA_BUDGET = 6_000
+const DEFAULT_SCHEMA_BUDGET = 6_000
 
 /** Bounded hard: this runs on the path that opens a session, and a server that accepts a
  * connection and then never answers must not hold the window on its welcome screen. */

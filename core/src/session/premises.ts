@@ -135,7 +135,7 @@ export function normaliseCode(text: string): string {
  * and that only ever makes the check STRICTER: the worst case is a premise reported as
  * unverified, which the model answers by quoting a different line.
  */
-export function stripComments(text: string): string {
+function stripComments(text: string): string {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1')

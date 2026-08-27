@@ -5,7 +5,6 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { csharpNavTool } from '../src/tools/csharp-nav.js'
 import { NavProcess, noteWorkspaceWrite, resolveHelper, toWorkspacePath } from '../src/csharp/nav-process.js'
-import { Workspace } from '../src/workspace.js'
 
 /**
  * The C# navigator's edges: where the binary is found, and what is refused before one is

@@ -21,6 +21,7 @@ import { loadProjectMemory } from '../memory/project-memory.js'
 import { loadProjectNotes } from '../memory/project-notes.js'
 import { loadSkills, projectSkillsDir, userSkillsDir } from '../skills/skills.js'
 import { stopNavProcess } from '../csharp/nav-process.js'
+import { stopSqlProcess } from '../sql/sql-process.js'
 import { expandCommand, listCommands } from '../commands/custom.js'
 import { DEFAULT_TRIGGER_TOKENS, Session, type SessionOptions } from '../session/session.js'
 import { SessionStore } from '../session/store.js'
@@ -418,6 +419,14 @@ export class SessionHost {
       // belongs in exactly this list: an `init` that switched workspaces while leaving the
       // old index resident is the orphaned-dev-server defect wearing a different hat.
       stopNavProcess().catch(() => {}),
+      // `sql-probe.exe` is the same shape and was the one left out: `sqlProcess()` builds a
+      // module-level singleton the first time a query runs and keeps its child alive for
+      // reuse, and `stopSqlProcess` was written for this list and never added to it. Found
+      // by a dead-code pass, which flagged the function as called by nothing — the honest
+      // reading of which was not "delete it" but "the call is missing". Switching workspaces
+      // left the old connection and its process resident, which is the orphaned-dev-server
+      // defect in its fourth hat.
+      stopSqlProcess().catch(() => {}),
     ])
     this.mcp = undefined
   }

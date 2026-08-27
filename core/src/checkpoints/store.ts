@@ -1,7 +1,7 @@
 import { execa } from 'execa'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { ensurePrivateDir, PRIVATE_DIR, STATE_DIR, statePath } from '../private-dir.js'
+import { ensurePrivateDir, PRIVATE_DIR, statePath } from '../private-dir.js'
 import type { SnapshotUnit } from './units.js'
 
 /**

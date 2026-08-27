@@ -1,5 +1,4 @@
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { statePath } from '../private-dir.js'
 import type { SessionMeta } from '../session/store.js'
 

@@ -894,19 +894,6 @@ function forcedJsonAnswer(value: unknown) {
   }
 }
 
-function forcedCall(name: string, args: unknown) {
-  return {
-    choices: [{
-      message: {
-        role: 'assistant', content: null,
-        tool_calls: [{ id: 'f1', type: 'function', function: { name, arguments: JSON.stringify(args) } }],
-      },
-      finish_reason: 'tool_calls',
-    }],
-    usage: { prompt_tokens: 400, completion_tokens: 50 },
-  }
-}
-
 test('a small task-shaped send seeds the plan from the contract criteria, for free', async () => {
   let sawPlanTodos = false
   const fake = await makeServer((body, streaming) => {

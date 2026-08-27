@@ -84,11 +84,3 @@ export function baseName(path: string): string {
   const parts = path.replace(/[\\/]+$/, '').split(/[\\/]/)
   return parts[parts.length - 1] || path
 }
-
-/** Middle-elides a long path so both ends stay readable in a narrow column. */
-export function ellipsizePath(path: string, max = 44): string {
-  if (path.length <= max) return path
-  const keepEnd = Math.floor((max - 1) * 0.7)
-  const keepStart = max - 1 - keepEnd
-  return `${path.slice(0, keepStart)}…${path.slice(path.length - keepEnd)}`
-}

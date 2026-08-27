@@ -117,7 +117,7 @@ for (const [block, bits] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::'
 /** Whether a literal IP address — as typed in a URL, or as a resolver handed it back —
  * belongs to one of the blocks above. Anything that is not an IP address at all is not an
  * address to judge, so it is false here; names go through `isPrivateHost`. */
-export function isPrivateAddress(address: string): boolean {
+function isPrivateAddress(address: string): boolean {
   // `fe80::1%eth0`: the zone id names a local interface and is not part of the address.
   const bare = address.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0] ?? ''
   const family = isIP(bare)

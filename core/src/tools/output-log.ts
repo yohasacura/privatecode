@@ -1,6 +1,6 @@
 import { readdir, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { PRIVATE_DIR, STATE_DIR, ensureStateDir } from '../private-dir.js'
+import { ensureStateDir } from '../private-dir.js'
 import type { Workspace } from '../workspace.js'
 
 /**
@@ -22,12 +22,6 @@ import type { Workspace } from '../workspace.js'
  * (sessions live beside it), already inside the jail so `read_file` accepts it, and
  * conventionally ignored by tooling.
  */
-
-/** Where overflow logs live, relative to the workspace's PRIMARY folder, spelled with
- * forward slashes. The address handed to the model is not this string: a multi-folder
- * workspace addresses the same file as `<folder>/.privatecode/state/logs/…`, so
- * `spillToLog` derives it from the file it wrote. See the note there. */
-export const LOG_DIR = `${PRIVATE_DIR}/${STATE_DIR}/logs`
 
 /** How many log files to keep PER PREFIX (see pruneLogs). Old ones are the least likely to
  * be wanted and the most likely to be forgotten, so the directory prunes itself rather than

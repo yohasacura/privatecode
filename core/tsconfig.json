@@ -7,6 +7,12 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
+    /* On here as they have always been on in app/tsconfig.json, which is the only reason
+       this half of the codebase had accumulated twenty-one unused imports, one dead parser
+       and a variable that collected config problems for nobody to print. A dead-code pass
+       found them; this is what stops the next twenty-one. */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "outDir": "dist",
     "rootDir": ".",
     "types": ["node"]

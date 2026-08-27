@@ -408,8 +408,6 @@ test('the whole arc: distilled up front, gate catches a missed criterion, fix ro
   const fake = await startFakeServer((body, req) => {
     if (req.url === '/props') return { default_generation_settings: { n_ctx: 131_072 } }
     if (req.url === '/health') return { status: 'ok' }
-    const tools = (body.tools ?? []) as { function: { name: string } }[]
-    const toolNames = tools.map((t) => t.function.name)
     const schemaName = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
 
     // The distiller: a forced `contract` schema, before any work.
@@ -563,8 +561,6 @@ test('a mid-turn compaction leaves the diff review reading the turn it belongs t
   const fake = await startFakeServer((body, req) => {
     if (req.url === '/props') return { default_generation_settings: { n_ctx: CONTEXT } }
     if (req.url === '/health') return { status: 'ok' }
-    const names = ((body.tools ?? []) as { function: { name: string } }[]).map((t) => t.function.name)
-    const forced = names.length === 1 ? names[0] : undefined
     const schemaName = (body.response_format as { json_schema?: { name?: string } } | undefined)?.json_schema?.name
     if (schemaName === 'contract') {
       return {

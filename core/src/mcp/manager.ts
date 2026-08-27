@@ -85,7 +85,7 @@ function previewArgs(args: unknown): string {
   }
 }
 
-export function buildMcpTool(
+function buildMcpTool(
   config: ServerConfig,
   def: McpToolDef,
   registeredName: string,

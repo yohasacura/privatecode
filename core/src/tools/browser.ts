@@ -1,9 +1,8 @@
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { BrowserManager } from '../browser/manager.js'
+import { ensureStateDir } from '../private-dir.js'
 import type { ConsoleEntry, NetEntry, Page } from '../browser/page.js'
 import { knownKeys } from '../browser/page.js'
-import { PRIVATE_DIR, STATE_DIR, ensureStateDir } from '../private-dir.js'
 import { countLines, headLines, overflowNotice, spillToLog } from './output-log.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } from './types.js'
 

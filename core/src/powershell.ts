@@ -44,7 +44,7 @@ export function powershellArgs(command: string): string[] {
  * caller that wants the tree gone must not use them: it runs its own timer and its own
  * abort listener, and calls this.
  */
-export async function killTree(child: { pid?: number | undefined; kill: () => unknown }): Promise<void> {
+async function killTree(child: { pid?: number | undefined; kill: () => unknown }): Promise<void> {
   const pid = child.pid
   if (pid !== undefined && process.platform === 'win32') {
     try {

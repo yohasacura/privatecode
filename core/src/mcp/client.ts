@@ -29,11 +29,11 @@ import {
  * indistinguishable to the user from the model being slow.
  */
 
-export const INITIALIZE_TIMEOUT_MS = 20_000
-export const LIST_TIMEOUT_MS = 20_000
+const INITIALIZE_TIMEOUT_MS = 20_000
+const LIST_TIMEOUT_MS = 20_000
 /** A tool call may legitimately be slow (a query, a build). The turn's own signal is the
  * user's way out; this is only a backstop against a server that has stopped answering. */
-export const CALL_TIMEOUT_MS = 120_000
+const CALL_TIMEOUT_MS = 120_000
 
 export interface McpTimeouts {
   initializeMs?: number

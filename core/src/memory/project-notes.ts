@@ -24,7 +24,7 @@ import { PRIVATE_DIR } from '../private-dir.js'
  * knowledge that needs a human in the loop to be recorded does not get recorded.
  */
 
-export const NOTES_FILE = 'project-notes.md'
+const NOTES_FILE = 'project-notes.md'
 
 /** Permanent prompt cost, like the other message-0 blocks. ~10k tokens at worst — sized
  * to fit a couple of full-length notes plus the usual short ones, per the project's own
@@ -67,7 +67,7 @@ export function notesPath(workspaceRoot: string): string {
 
 /** First 12 hex characters of the SHA-256 of the file's bytes — enough that a change is
  * certain to show and short enough to read in the file. */
-export function hashFile(absolute: string): string | null {
+function hashFile(absolute: string): string | null {
   try {
     return createHash('sha256').update(readFileSync(absolute)).digest('hex').slice(0, 12)
   } catch {
@@ -116,7 +116,7 @@ const EVIDENCE = /^<!-- from: (.+) -->$/
  * a document first and a data structure second — which is the right way round for something
  * whose main safety property is that a human can look at it.
  */
-export function renderNotes(notes: readonly ProjectNote[]): string {
+function renderNotes(notes: readonly ProjectNote[]): string {
   const lines = [
     '# What PrivateCode has learned about this project',
     '',

@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
  * than only the exe.
  */
 
-export const SQL_ENV = 'PRIVATECODE_SQL'
+const SQL_ENV = 'PRIVATECODE_SQL'
 
 /**
  * The native siblings a single-file publish leaves outside the exe.
@@ -64,6 +64,8 @@ function spawnHelper(exePath: string) {
   })
 }
 
+/** Exported because `sqlProcess()` returns it: a caller that wants to write the type down
+ * has to be able to name it, and TypeScript does not complain when it cannot. */
 export class SqlProcess {
   private child: ReturnType<typeof spawnHelper> | undefined
   private readonly pending = new Map<number, Pending>()

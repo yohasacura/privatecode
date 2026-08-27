@@ -57,18 +57,18 @@ const MAX_FILE_BYTES = 1_000_000
 
 /** `%APPDATA%\PrivateCode\AGENTS.md` — notes that apply to every workspace. Read with
  * plain `fs`, the same documented jail exception `settings.ts` takes for `%APPDATA%`. */
-export function userMemoryPath(): string {
+function userMemoryPath(): string {
   const appData = process.env['APPDATA'] ?? join(homedir(), 'AppData', 'Roaming')
   return join(appData, 'PrivateCode', 'AGENTS.md')
 }
 
 /** `<root>\AGENTS.md` — the cross-tool convention, checked in with the project. */
-export function projectMemoryPath(root: string): string {
+function projectMemoryPath(root: string): string {
   return join(root, 'AGENTS.md')
 }
 
 /** `<root>\AGENTS.local.md` — personal notes, not for the repository. */
-export function localMemoryPath(root: string): string {
+function localMemoryPath(root: string): string {
   return join(root, 'AGENTS.local.md')
 }
 

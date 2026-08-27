@@ -43,11 +43,6 @@ export function findBrowser(preferred?: string): string | null {
   return candidatePaths().find((p) => existsSync(p)) ?? null
 }
 
-/** What `findBrowser` searched, for an error message that tells the user how to fix it. */
-export function searchedPaths(): string[] {
-  return candidatePaths()
-}
-
 export interface LaunchedBrowser {
   wsUrl: string
   exePath: string

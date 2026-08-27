@@ -27,7 +27,7 @@ function inTauri(): boolean {
 /** Focused windows get nothing: you are already looking at it. `document.hasFocus()` is the
  * honest question — not `visibilityState`, which is still 'visible' for a window sitting
  * behind another one. */
-export function windowIsWatched(): boolean {
+function windowIsWatched(): boolean {
   return typeof document !== 'undefined' && document.hasFocus()
 }
 

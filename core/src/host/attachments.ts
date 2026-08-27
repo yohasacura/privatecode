@@ -22,7 +22,7 @@ import type { Workspace } from '../workspace.js'
  * triggers a compaction. */
 export const ATTACH_BUDGET_CHARS = 40_000
 /** No single file may eat the whole budget while others get nothing. */
-export const ATTACH_PER_FILE_CHARS = 24_000
+const ATTACH_PER_FILE_CHARS = 24_000
 
 export interface Attachment {
   path: string

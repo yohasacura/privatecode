@@ -48,7 +48,7 @@ interface RawCheck {
  * "could not find out" — the caller has nothing useful to do with the difference, and an
  * offline tool that complains about being offline is a bug.
  */
-export async function checkForUpdate(): Promise<UpdateAvailable | null> {
+async function checkForUpdate(): Promise<UpdateAvailable | null> {
   if (!inTauri()) return null
   try {
     const raw = await invoke<RawCheck>('check_for_update')

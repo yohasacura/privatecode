@@ -427,7 +427,7 @@ export interface MappedFolder {
  * folder does not use passed to the next one — so a two-file folder cannot sit on a fifth of
  * the map, and a folder that came up short gets a second pass at the leftovers.
  */
-export function renderMultiRepoMap(
+function renderMultiRepoMap(
   folders: readonly MappedFolder[], budget = DEFAULT_MAP_BUDGET,
 ): string {
   const present = folders.filter((f) => f.ranked.length > 0)

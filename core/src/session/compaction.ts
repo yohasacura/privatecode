@@ -594,7 +594,7 @@ function readBodies(
  * the edited regions of files too big to carry whole. The first line of every edit-family
  * tool result is `--- <path>`, which is the pairing this reads.
  */
-export function diffsByPath(messages: readonly ChatMessage[]): Map<string, string> {
+function diffsByPath(messages: readonly ChatMessage[]): Map<string, string> {
   const out = new Map<string, string>()
   for (const m of messages) {
     if (m.role !== 'tool' || typeof m.content !== 'string' || !m.content.startsWith('--- ')) continue

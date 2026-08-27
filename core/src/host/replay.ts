@@ -1,5 +1,5 @@
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import {
   CONTINUE_NUDGE, MAX_STEPS_PREFIX, STEP_TIMEOUT_PREFIX, TALKED_INSTEAD_OF_ACTING,
   TRUNCATED_TWICE,

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { ensurePrivateDir, PRIVATE_DIR } from './private-dir.js'
 import type { AgentMode } from './permissions/engine.js'
@@ -137,7 +137,7 @@ export function readProfile(
   return { ...(mode !== undefined ? { mode } : {}), verify, problems }
 }
 
-export const WORKSPACE_FILE = 'workspace.json'
+const WORKSPACE_FILE = 'workspace.json'
 
 /** Anything that is not one of these becomes `-`, so a name can never be read as a path. */
 const UNSAFE_IN_NAME = /[^A-Za-z0-9._-]+/g
@@ -350,7 +350,3 @@ export function saveWorkspaceFile(primaryRoot: string, file: WorkspaceFile): voi
   writeFileSync(workspaceFilePath(primaryRoot), `${JSON.stringify(file, null, 2)}\n`, 'utf8')
 }
 
-/** Whether this folder has a workspace definition at all. */
-export function hasWorkspaceFile(primaryRoot: string): boolean {
-  return existsSync(workspaceFilePath(primaryRoot))
-}

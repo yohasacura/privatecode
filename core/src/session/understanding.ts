@@ -113,7 +113,7 @@ const READING_MAX_TOKENS = 1_500
 /** How many contested points are ever put to a person. Past three this stops being a
  * question and becomes a form, and the whole point is that answering is cheaper than
  * discovering the misunderstanding later. */
-export const MAX_CONTESTED = 3
+const MAX_CONTESTED = 3
 
 /** Lines shorter than this carry no content to match on — "fix it", "the bug" — and would
  * pair with anything. Dropped rather than asked about. */
@@ -124,16 +124,6 @@ export interface Understanding {
   shared: string[]
   /** What at least one reading saw and at least one other did not. */
   contested: string[]
-}
-
-function parseReading(argsJson: string, lens: LensName): Reading | null {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(argsJson)
-  } catch {
-    return null
-  }
-  return readReading(parsed, lens)
 }
 
 function readReading(parsed: unknown, lens: LensName): Reading | null {

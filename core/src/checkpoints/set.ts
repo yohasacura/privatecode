@@ -1,5 +1,5 @@
 import { appendFileSync, readFileSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, relative, resolve } from 'node:path'
 import { ensureStateDir, statePath } from '../private-dir.js'
 import { type Checkpoint, CheckpointStore } from './store.js'
 import type { SnapshotUnit } from './units.js'

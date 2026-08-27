@@ -150,7 +150,7 @@ test('props() maps all fields from /props correctly', async () => {
     chat_template: '{% for message in messages %}...{% endfor %}',
   }
 
-  const fake = await startFakeServer((body, req) => {
+  const fake = await startFakeServer((_body, req) => {
     if (req.url === '/props') {
       return propsPayload
     }

@@ -1,5 +1,4 @@
 import { appendFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { PRIVATE_DIR, STATE_DIR, ensureStateDir, statePath } from '../private-dir.js'
 
 /**
