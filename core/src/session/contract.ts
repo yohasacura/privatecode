@@ -67,6 +67,16 @@ export interface TaskContract {
    * repro flips green or it does not, no 3B-judgement involved.
    */
   kind?: 'bugfix' | 'feature' | 'other'
+  /**
+   * Whether finishing this means changing source that has to build and pass tests.
+   *
+   * A separate forced question rather than something read off `kind`, because they are two
+   * judgements and letting two judgements collapse into one is precisely how the reviewer's
+   * out-of-scope escape hatch worked. `other` covers a refactor (code) and an email (not),
+   * so a gate keyed on it would be guessing. Asked LAST, with the goal and the criteria
+   * already written.
+   */
+  changesCode?: boolean
   /** One sentence: what the user actually wants to exist at the end. */
   goal: string
   /** Checkable statements — each one answerable yes/no by looking at the workspace or
@@ -100,7 +110,7 @@ export function looksLikeTask(text: string): boolean {
  * a `response_format` schema is never rendered. */
 export const CONTRACT_SCHEMA: Record<string, unknown> = {
   type: 'object',
-  required: ['goal', 'rules', 'criteria', 'constraints', 'interfaces', 'kind'],
+  required: ['goal', 'rules', 'criteria', 'constraints', 'interfaces', 'kind', 'changesCode'],
   additionalProperties: false,
   properties: {
     goal: { type: 'string' },
@@ -122,6 +132,9 @@ export const CONTRACT_SCHEMA: Record<string, unknown> = {
     // treats an empty string and an absent one identically.
     interfaces: { type: 'string' },
     kind: { type: 'string', enum: ['bugfix', 'feature', 'other'] },
+    // LAST, so it is answered with the goal and the criteria already written rather than
+    // from the request alone — the same property-order lever the acceptance schema uses.
+    changesCode: { type: 'boolean' },
   },
 }
 
@@ -256,6 +269,9 @@ export async function distillContract(
         'they agree ON, pinned now. Empty otherwise.\n\n' +
         'kind — "bugfix" ONLY when the request reports existing behaviour as broken and asks ' +
         'to repair it; "feature" for new capability; "other" for the rest.\n\n' +
+        'changesCode — true when finishing this means changing source that has to build and ' +
+        'pass tests. False when the work is writing, answering, explaining or producing a ' +
+        'document. Writing a FILE is not the test: an email saved to disk is still false.\n\n' +
         'Answer with JSON only.]',
     },
   ]
@@ -316,6 +332,11 @@ function readContract(parsed: unknown): TaskContract | null {
   if (o['kind'] === 'bugfix' || o['kind'] === 'feature' || o['kind'] === 'other') {
     contract.kind = o['kind']
   }
+  // Only an explicit `false` turns the build gate off. An absent or malformed answer leaves
+  // it undefined, and every consumer treats undefined as "code" — a distillation that came
+  // back wrong must not be able to silence a check by omission, which is the failure mode
+  // that matters here: skipping a build nobody asked to skip is invisible.
+  if (typeof o['changesCode'] === 'boolean') contract.changesCode = o['changesCode']
   // The reproduction-first criterion is appended by the HARNESS, never trusted to the
   // distillation: for a repair, "the repro failed before and passes after" is the one
   // deterministic definition of fixed, and the skeptic gate refuses it without evidence.

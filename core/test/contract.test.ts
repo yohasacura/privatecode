@@ -833,3 +833,43 @@ test('the distiller clips a write-heavy tail, where the bulk is in tool_call arg
   // Nowhere near the 50k it used to carry.
   expect(wire.length).toBeLessThan(12_000)
 })
+
+describe('whether the work changes code', () => {
+  test('an explicit false is carried, and only an explicit false', () => {
+    // The asymmetry is the point. `changesCode: false` turns off the build gate, so a
+    // distillation that came back malformed must not be able to do that by omission — a
+    // check silenced by an absent field is invisible, which is the one failure mode here
+    // that nobody would ever notice.
+    const withFalse = parseContract(JSON.stringify({
+      goal: 'write the release email', rules: [], criteria: ['the email names the new date'],
+      constraints: [], interfaces: '', kind: 'other', changesCode: false,
+    }))
+    expect(withFalse?.changesCode).toBe(false)
+
+    const withTrue = parseContract(JSON.stringify({
+      goal: 'fix the slug helper', rules: [], criteria: ['slug("a&b") returns "a-b"'],
+      constraints: [], interfaces: '', kind: 'bugfix', changesCode: true,
+    }))
+    expect(withTrue?.changesCode).toBe(true)
+
+    for (const bad of [undefined, null, 'false', 0]) {
+      const c = parseContract(JSON.stringify({
+        goal: 'something', rules: [], criteria: ['a criterion'],
+        constraints: [], interfaces: '', kind: 'other', changesCode: bad,
+      }))
+      expect(c?.changesCode, `changesCode: ${JSON.stringify(bad)}`).toBeUndefined()
+    }
+  })
+
+  test('it is asked as its own question, not read off kind', () => {
+    // Measured on the live model (spike/changes-code-probe.mts, 6/6): `kind` came back as
+    // `other` for BOTH an email and a class rename. A gate keyed on it would have been
+    // guessing, which is why this is a separate forced boolean.
+    expect(CONTRACT_SCHEMA['required']).toContain('changesCode')
+    const props = CONTRACT_SCHEMA['properties'] as Record<string, unknown>
+    expect(props['changesCode']).toEqual({ type: 'boolean' })
+    // Last in the schema, so the grammar makes the model write the goal and the criteria
+    // before it classifies — the same property-order lever the acceptance schema uses.
+    expect(Object.keys(props).at(-1)).toBe('changesCode')
+  })
+})

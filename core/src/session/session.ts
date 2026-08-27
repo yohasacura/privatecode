@@ -966,6 +966,18 @@ export class Session {
       return await this.acceptanceGate(result, signal)
     }
 
+    // Work that does not change code has no build to break, and running one is not merely
+    // wasted: reported from the running app — "составь email" spent a `dotnet build` on a
+    // task with no source in it. The distiller answers `changesCode` as its own forced
+    // question, and only an explicit `false` skips: an absent or malformed answer leaves it
+    // undefined and the build runs, because a check silenced by omission is invisible.
+    //
+    // The CONTRACT gate still runs. "Did I do what you asked" is as true of an email as of a
+    // refactor; it is the build that has nothing to say about one.
+    if (this.meta.contract?.changesCode === false) {
+      return await this.acceptanceGate(result, signal)
+    }
+
     // Only the folders this turn actually wrote to, each with its own command. Running every
     // folder's suite after a one-line edit in one of them turns a thirty-second turn into
     // three minutes, and the folders that were not touched cannot have been broken.
@@ -1322,6 +1334,10 @@ export class Session {
     contract: NonNullable<SessionMeta['contract']>, signal?: AbortSignal,
   ): Promise<string | undefined> {
     if (contract.premisesChecked === true) return undefined
+    // Nothing to settle against the files when the work is not about the files. The premise
+    // check asks what the model believes about the CODE and verifies it there; for an email
+    // or an explanation it has no subject.
+    if (contract.changesCode === false) return undefined
     // Marked before the generation, like the understanding check and for the same reason: an
     // attempt that is aborted or throws has still been spent, and re-firing it on the next
     // write would pay for it again.
