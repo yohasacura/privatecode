@@ -9,7 +9,7 @@ import { listDirTool } from '../src/tools/list-dir.js'
 import { BackgroundTasks, backgroundTaskTool } from '../src/tools/background-task.js'
 import { runCommandTool } from '../src/tools/run-command.js'
 import { searchCodeTool } from '../src/tools/search-code.js'
-import { Workspace } from '../src/workspace.js'
+import { canonicalize, Workspace } from '../src/workspace.js'
 
 /**
  * What the model can see once a workspace is several folders.
@@ -158,7 +158,12 @@ describe('where a command runs', () => {
   test('a bare command starts in the first folder, and the reply says so', async () => {
     const r = await run({ command: '(Get-Location).Path' })
     expect(r.ok).toBe(true)
-    expect(r.content).toContain(mounts[0]!.root)
+    // Canonicalised, because the two sides are spelled by different things: the shell prints
+    // the name the filesystem reports, while `mounts[0].root` is however mkdtemp wrote it.
+    // On a GitHub runner those differ — TEMP is under `RUNNER~1` and PowerShell answers
+    // `runneradmin` — so written without this the test passed here and failed there. Which
+    // is, exactly, the defect the code under test exists to fix.
+    expect(r.content).toContain(canonicalize(mounts[0]!.root))
     // The part that closes the loop. Without it a wrong guess about the directory and a
     // genuinely missing file are the same reply, and the only way to tell them apart is
     // another command.
@@ -213,7 +218,7 @@ describe('where a command runs', () => {
       const id = /id: (\S+?)\./.exec(started.content)?.[1]
       expect(id).toBeTruthy()
       const polled = await call({ action: 'poll', id, wait_seconds: 10 })
-      expect(polled.content).toContain(mounts[1]!.root)
+      expect(polled.content).toContain(canonicalize(mounts[1]!.root))
     } finally {
       await tasks.stopAll()
     }
