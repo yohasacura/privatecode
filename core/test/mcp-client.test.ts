@@ -1,4 +1,7 @@
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import { McpClient } from '../src/mcp/client.js'
@@ -14,6 +17,16 @@ import type { StdioServerSpec } from '../src/mcp/transport.js'
  */
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/mcp-server.mjs', import.meta.url))
+
+/** Whether a pid still names a running process. Signal 0 checks without touching it. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
 
 const open: { close(): Promise<void> }[] = []
 const servers: Server[] = []
@@ -131,10 +144,33 @@ describe('stdio', () => {
     // `shell: true` is required on Windows for npx/uvx `.cmd` shims, which means the direct
     // child is cmd.exe and `child.kill()` kills the shim while the server keeps running with
     // our pipes open. Measured before the tree kill: still alive five seconds later.
-    const client = await stdio('--slow-call')
-    const started = Date.now()
+    //
+    // This asked `close()` to finish inside four seconds, which is not what the name
+    // promises and not what the comment above describes: it never looked for the process,
+    // and the old broken behaviour — kill the shim, orphan the server — would have been
+    // FASTER, not slower. What it actually measured was how quickly `taskkill` runs, so it
+    // passed here and failed on a loaded CI runner at 5158 ms.
+    //
+    // The server now writes its own pid down, and this asks the operating system.
+    const pidFile = join(mkdtempSync(join(tmpdir(), 'pc-mcp-pid-')), 'pid')
+    // `--survive` is what makes this test able to fail. A well-behaved server exits on its
+    // own when the pipes close, so with the ordinary fixture the process was gone whatever
+    // `close()` did — checked, twice: the rewritten test still passed with the tree kill
+    // removed, and passed again with `child.kill()` removed as well.
+    const client = await stdio('--slow-call', '--survive', '--pid-file', pidFile)
+    const pid = Number(readFileSync(pidFile, 'utf8'))
+    expect(Number.isInteger(pid)).toBe(true)
+    expect(alive(pid)).toBe(true)
+
     await client.close()
-    expect(Date.now() - started).toBeLessThan(4_000)
+
+    // Polled rather than asserted once: the tree kill is asynchronous, and how long the OS
+    // takes to reap is exactly the machine-speed question this test used to be about by
+    // accident. The vitest timeout is what catches a genuine hang.
+    for (let i = 0; i < 100 && alive(pid); i++) {
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    expect(alive(pid), 'the server process should be gone after close()').toBe(false)
   })
 })
 

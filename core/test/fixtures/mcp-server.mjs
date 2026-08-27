@@ -9,10 +9,20 @@
  *   --silent      accepts initialize and never answers, to exercise the timeout
  *   --ask         sends the client a request it does not serve, to prove it is answered
  *   --slow-call   takes 5 s to answer tools/call, to exercise cancellation
+ *   --pid-file P  writes this process's pid to P, so a test can check it is really gone
+ *   --survive     ignores stdin closing and holds a timer open, so only a real kill ends it
  */
 
 const mode = process.argv.slice(2)
 const has = (flag) => mode.includes(flag)
+
+// Written before anything else can go wrong, so a test that asks whether this process
+// survived a close has something to ask about.
+const pidFileAt = mode.indexOf('--pid-file')
+if (pidFileAt !== -1 && mode[pidFileAt + 1]) {
+  const { writeFileSync } = await import('node:fs')
+  writeFileSync(mode[pidFileAt + 1], String(process.pid), 'utf8')
+}
 
 if (has('--crash')) {
   process.stderr.write('Error: MCP_TOKEN is not set\n    at start (server.js:12:9)\n')
@@ -41,6 +51,15 @@ const TOOLS = [
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`)
 
 let buffer = ''
+// A well-behaved server exits when its pipes close, which makes it useless for asking
+// whether `close()` actually KILLS anything — the process would be gone either way.
+// `--survive` is the badly-behaved one the tree kill exists for: it holds an interval
+// open so nothing but a signal ends it.
+if (has('--survive')) {
+  setInterval(() => {}, 1_000)
+  process.stdin.on('end', () => {})
+}
+
 process.stdin.setEncoding('utf8')
 process.stdin.on('data', (chunk) => {
   buffer += chunk
