@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { ROLE_NAMES } from '../src/agent/subagent.js'
+import { ROLES, ROLE_NAMES, runSubAgent } from '../src/agent/subagent.js'
 import { delegateTool } from '../src/tools/delegate.js'
 import { buildRegistry } from '../src/tools/default-set.js'
 import type { SubAgentOutcome } from '../src/agent/subagent.js'
@@ -124,5 +124,43 @@ describe('the tool as the registry sees it', () => {
     expect(key.tool).toBe('delegate')
     expect(key.command).toContain('investigate')
     expect(key.command).toContain('slug')
+  })
+})
+
+describe('a worker that could act', () => {
+  test('is refused when nothing was passed to gate it', async () => {
+    // The loaded gun this closes: `Agent` gates a call only when it HAS an engine — with
+    // none there is no gate at all, not a strict one. Today every role is plan-mode, and
+    // plan mode intersects the tool list with the read-only names, so the missing engine
+    // cannot bite. That safety lived in the role table, which is the wrong place for it: a
+    // role added with `mode: 'normal'` and a write tool would have written with no gate, no
+    // approval and no rules, and nothing about adding it would have looked wrong.
+    const acting = {
+      name: 'implement', purpose: 'x', brief: 'x',
+      tools: ['write_file'], mode: 'normal' as const, maxSteps: 4,
+    }
+    const out = await runSubAgent(
+      { client: null as never, registry: null as never, workspace: new Workspace(root) },
+      acting,
+      'write something to a file in the workspace',
+    )
+    expect(out.problem).toContain('needs the permission engine')
+    // Refused BEFORE anything ran: no client was even provided above, and a role that got
+    // as far as building an Agent would have thrown on it.
+    expect(out.steps).toBe(0)
+    expect(out.text).toBe('')
+  })
+
+  test('every role that ships today is read-only, so the guard is not load-bearing yet', () => {
+    // Both statements are asserted because they protect each other: the guard above is the
+    // net, and this is the floor. Losing either silently would leave the other looking
+    // sufficient.
+    for (const role of ROLES) {
+      expect(role.mode, `${role.name} should be plan mode`).toBe('plan')
+      const registry = buildRegistry()
+      for (const tool of role.tools) {
+        expect(registry.readOnlyNames(), `${role.name} may not offer ${tool}`).toContain(tool)
+      }
+    }
   })
 })

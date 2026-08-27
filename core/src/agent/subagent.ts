@@ -1,6 +1,6 @@
 import { Agent, type AgentOptions } from './loop.js'
 import type { LlamaClient } from '../llama/client.js'
-import type { AgentMode } from '../permissions/engine.js'
+import type { AgentMode, PermissionEngine } from '../permissions/engine.js'
 import { ReadMemory } from '../tools/read-memory.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import { Transcript } from '../transcript/transcript.js'
@@ -113,6 +113,20 @@ export interface SubAgentDeps {
   workspace: Workspace
   /** Ceiling on one step's tool results, sized from the window — see the reviewer's note. */
   stepResultBudgetChars?: number
+  /**
+   * The session's own permission engine, REQUIRED for any role that is not plan-mode.
+   *
+   * `Agent` gates a tool call only when it has an engine — `if (engine)` in `loop.ts`, and
+   * with none there is no gate at all, not a strict one. Today's roles are plan-mode, and
+   * plan mode intersects the tool list with the registry's read-only names, so nothing
+   * dangerous is even offered and the missing engine cannot bite.
+   *
+   * That safety lives in the role TABLE, which is a bad place for it: the first role written
+   * with `mode: 'normal'` and a write tool would write with no gate, no approval and no
+   * rules, and nothing about adding it would look wrong. So `runSubAgent` refuses that
+   * combination outright. Passing an engine is what unlocks a worker that can act.
+   */
+  permissions?: PermissionEngine
 }
 
 /**
@@ -125,6 +139,15 @@ export async function runSubAgent(
   deps: SubAgentDeps, role: SubAgentRole, task: string, signal?: AbortSignal,
 ): Promise<SubAgentOutcome> {
   const started = Date.now()
+  // Checked here rather than trusted to the table above. See `SubAgentDeps.permissions`.
+  if (role.mode !== 'plan' && deps.permissions === undefined) {
+    return {
+      role: role.name, text: '', steps: 0, ms: 0,
+      problem: `role "${role.name}" is ${role.mode}, not plan — it can act, and a worker ` +
+        'that can act needs the permission engine passed to it. Refusing rather than ' +
+        'running it ungated.',
+    }
+  }
   const transcript = new Transcript()
   const options: AgentOptions = {
     client: deps.client,
@@ -136,6 +159,7 @@ export async function runSubAgent(
     },
     transcript,
     mode: role.mode,
+    ...(deps.permissions !== undefined ? { permissions: deps.permissions } : {}),
     allowedTools: [...role.tools],
     maxSteps: role.maxSteps,
     // Load-bearing rather than cosmetic: streaming is opt-in on one of these being present,
