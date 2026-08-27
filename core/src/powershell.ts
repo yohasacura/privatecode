@@ -15,6 +15,41 @@ const UTF8_PRELUDE =
   'try { $__pcUtf8 = New-Object System.Text.UTF8Encoding; ' +
   '[Console]::OutputEncoding = $__pcUtf8; $OutputEncoding = $__pcUtf8 } catch {}; '
 
+/**
+ * Stop at the first statement that fails, instead of running the rest and reporting the exit
+ * code of whatever happened to be last.
+ *
+ * The reported shape: the model writes `cd engine; dotnet build`, the `cd` fails because
+ * `engine` is a workspace FOLDER name and not a directory under the one the shell started in,
+ * and PowerShell's `;` is a separator rather than a conditional — so the build ran anyway, in
+ * the wrong project, and the reply said `exit 0`. Measured, on a two-folder workspace: the
+ * command answered `ok=true` and returned the contents of the wrong file.
+ *
+ * That is the same defect as this project's own CI gate, which passed while sixty tests
+ * failed because a multi-line PowerShell `run:` reports only the last command's code. A
+ * harness that says a build passed when it built something else is worse than one that
+ * wastes a round trip.
+ *
+ * `Stop` and not something narrower, and the boundaries were measured rather than assumed
+ * (`spike/compound-failure-probe.mts`):
+ *
+ *   cd to a missing path, then echo   exit 1, and the echo never runs   <- the fix
+ *   an explicit `-ErrorAction Continue`   still continues               <- the escape hatch
+ *   a native program writing to stderr and exiting 0   unaffected       <- the deciding case
+ *
+ * The last row is the one that could have made this a bad trade: `git`, `npm` and `dotnet`
+ * all write progress and warnings to stderr, and PowerShell 5.1 wraps a native command's
+ * stderr in ErrorRecords when it is redirected INSIDE the shell. It is not redirected inside
+ * the shell here — execa reads the child's pipes directly — and a native stderr write with a
+ * zero exit behaves identically with `Stop` and without it.
+ *
+ * What this does NOT cover: a NATIVE command that exits non-zero mid-command
+ * (`npm test; npm run build`). Native exit codes produce no ErrorRecord, so the rest still
+ * runs and the reported code is the last one's. Fixing that means injecting a check between
+ * statements, which means parsing the command, and a shell command is not something to parse.
+ */
+const STOP_ON_ERROR = "$ErrorActionPreference = 'Stop'; "
+
 export const POWERSHELL_EXE = 'powershell.exe'
 
 /** argv for `powershell.exe <command>`. The prelude lives inside the same -Command string
@@ -22,7 +57,7 @@ export const POWERSHELL_EXE = 'powershell.exe'
  * come from the command. */
 export function powershellArgs(command: string): string[] {
   return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
-    UTF8_PRELUDE + command]
+    UTF8_PRELUDE + STOP_ON_ERROR + command]
 }
 
 /**

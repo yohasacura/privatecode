@@ -57,6 +57,23 @@ function whereRan(workspace: Workspace, resolved: string, asked: string | undefi
   return ` · in ${shown === '.' ? 'the workspace root' : `${shown}/`}`
 }
 
+/**
+ * A command that opens by changing directory, which is the shape behind the report.
+ *
+ * `cd engine; dotnet build` is what a model taught `engine/src/x.cs` writes, and `engine` is a
+ * workspace FOLDER name — not a directory under the one the shell started in. The `cd` now
+ * fails the whole command (see `STOP_ON_ERROR`) instead of letting the build run somewhere
+ * else, which is the important half. This is the other half: a bare "Cannot find path" says
+ * what went wrong and not what to do instead, and the thing to do instead is a tool argument
+ * rather than a shell command.
+ *
+ * Deliberately only a HINT, appended to a failure. Rewriting `cd X; rest` into
+ * `cwd: X` + `rest` was the tempting version and it is guesswork about shell syntax: the
+ * separator may be inside a quoted string, the target may be a variable, and a wrong rewrite
+ * runs a command the caller never wrote.
+ */
+const OPENS_BY_CHANGING_DIRECTORY = /^\s*(cd|chdir|sl|set-location)\s+\S/i
+
 export const runCommandTool: Tool<RunCommandArgs> = {
   name: 'run_command',
   readOnly: false,
@@ -253,10 +270,15 @@ export const runCommandTool: Tool<RunCommandArgs> = {
     }
     const code = result.exitCode ?? -1
     const header = `exit ${code} in ${seconds} s${whereRan(ctx.workspace, cwd, args.cwd)}\n`
+    const hint = code !== 0 && OPENS_BY_CHANGING_DIRECTORY.test(args.command)
+      ? '\n\nThis command began by changing directory. Set the `cwd` argument instead — it ' +
+        'takes the same folder-prefixed path every other tool argument takes, and a `cd` ' +
+        'inside the command does not.'
+      : ''
     return {
       ok: code === 0,
-      content: `${header}${out || '(no output)'}`,
-      display: `${header}${full || '(no output)'}`,
+      content: `${header}${out || '(no output)'}${hint}`,
+      display: `${header}${full || '(no output)'}${hint}`,
     }
   },
 }

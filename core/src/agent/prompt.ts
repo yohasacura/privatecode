@@ -113,7 +113,10 @@ export function buildSystemPrompt(opts: PromptOptions): string {
         `A command starts in ${opts.folders![0]!.name}/ unless you set cwd, and inside the`,
         'command itself paths are plain shell paths from there — the folder prefix belongs to',
         'tool arguments, not to the shell. To build or test another folder, set cwd to its',
-        'name rather than writing ../ paths.',
+        // `cd` named explicitly, because that is what actually gets written — the earlier
+        // wording said "rather than ../ paths" and the reported shape was `cd engine;
+        // dotnet build`, which is not a `../` path and read as permitted.
+        'name — not a `cd` at the front of the command, and not a ../ path.',
         ...(opts.folders!.some((f) => f.access === 'read')
           ? [
             'A read-only folder is there to be read, searched and quoted from. Nothing can be',

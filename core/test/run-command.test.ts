@@ -163,3 +163,57 @@ describe('permission surface', () => {
       .toEqual({ tool: 'run_command', command: 'git status' })
   })
 })
+
+describe('a command whose first half fails', () => {
+  it('stops there, rather than running the rest and reporting the last exit code', async () => {
+    // The reported shape, and the reason it mattered: `cd engine; dotnet build` on a
+    // multi-folder workspace failed the `cd` (a folder NAME is not a directory under the one
+    // the shell starts in), built whatever was in the current folder, and answered `exit 0`.
+    // Measured before this: the command returned the contents of the wrong file, marked ok.
+    const r = await run({ command: 'cd no-such-directory; Write-Output "the second half ran"' })
+    expect(r.ok).toBe(false)
+    expect(r.content).toContain('exit 1')
+    expect(r.content).not.toContain('the second half ran')
+  }, 30_000)
+
+  it('and says what to use instead, when the failing half was a directory change', async () => {
+    const r = await run({ command: 'cd no-such-directory; Write-Output hi' })
+    expect(r.content).toContain('Set the `cwd` argument instead')
+  }, 30_000)
+
+  it('says nothing of the sort when the failure had nothing to do with a directory', async () => {
+    // The hint is attached to a shape, not to every failure — advice that arrives when it
+    // does not apply is how a model learns to ignore advice.
+    const r = await run({ command: 'cmd /c exit 3' })
+    expect(r.ok).toBe(false)
+    expect(r.content).not.toContain('Set the `cwd` argument instead')
+  }, 30_000)
+
+  it('leaves a command that merely WARNS alone', async () => {
+    // `Stop` turns unhandled cmdlet errors terminating. A warning is not an error, and a
+    // build that prints one has not failed.
+    const r = await run({ command: 'Write-Warning "careful"; Write-Output "still ran"' })
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('still ran')
+  }, 30_000)
+
+  it('leaves an explicitly tolerated error alone', async () => {
+    // The escape hatch: a caller who says `-ErrorAction Continue` means it, and the
+    // preference must not override the argument. This is what keeps `Stop` from being a
+    // blunt instrument.
+    const r = await run({
+      command: 'Get-Item C:\definitely-not-here -ErrorAction Continue; Write-Output "carried on"',
+    })
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('carried on')
+  }, 30_000)
+
+  it('leaves a native program that writes to stderr and exits zero alone', async () => {
+    // The case that could have made this a bad trade: git, npm and dotnet all write progress
+    // and warnings to stderr. Measured to be unaffected, and asserted so it stays that way —
+    // a regression here would fail every build that printed a warning.
+    const r = await run({ command: 'cmd /c "echo a warning 1>&2 & exit 0"; Write-Output "reached the end"' })
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('reached the end')
+  }, 30_000)
+})
