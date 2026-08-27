@@ -5,6 +5,7 @@ import type { BrowserManager } from '../browser/manager.js'
 import type { LoadedSkills } from '../skills/skills.js'
 import type { ReadMemory } from './read-memory.js'
 import type { DatabaseSettings } from '../sql/settings.js'
+import type { SubAgentOutcome } from '../agent/subagent.js'
 
 export interface ToolContext {
   workspace: Workspace
@@ -53,6 +54,19 @@ export interface ToolContext {
    * what a one-shot caller and most tests want. See `read-memory.ts`.
    */
   reads?: ReadMemory
+  /**
+   * Runs one narrow job in a worker with its own conversation, and returns what it
+   * concluded. See `agent/subagent.ts`.
+   *
+   * A function rather than the client and the registry, because a tool that held those
+   * could build any agent it liked; this one can only ask for a role that exists. The
+   * session owns the machinery, which is also where the window size and the abort
+   * signal already live.
+   *
+   * Absent for hosts with no model to run one with, and `delegate` says so plainly
+   * rather than failing: the caller can do the reading itself.
+   */
+  delegate?: (role: string, task: string, signal?: AbortSignal) => Promise<SubAgentOutcome>
 }
 
 export interface ToolResult {

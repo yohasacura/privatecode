@@ -5,6 +5,7 @@ import {
   type AgentEvents, type AgentOptions, type StepInfo, type StepPreamble, type TurnResult,
 } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
+import { ROLES, ROLE_NAMES, runSubAgent, type SubAgentOutcome } from '../agent/subagent.js'
 import type { Checkpoint } from '../checkpoints/store.js'
 import { CheckpointSet } from '../checkpoints/set.js'
 import { soleUnit, type SnapshotUnit } from '../checkpoints/units.js'
@@ -3655,6 +3656,43 @@ export class Session {
       : registry.schemas()
   }
 
+  /**
+   * Runs one narrow job in a worker with its own conversation — see `agent/subagent.ts`.
+   *
+   * Lives here because the session owns the client, the registry and the window size, and
+   * because a worker must inherit the same step-result ceiling the main agent gets: one of
+   * its steps can batch several reads at 60,000 characters each, and appending that on top
+   * of a brief is how a request reaches the server's window limit and 400s.
+   *
+   * An unknown role is a message and not a throw. The tool validates against `ROLE_NAMES`
+   * before it ever gets here, so reaching this line means something else called it — and a
+   * caller that got the name wrong is better told than crashed.
+   */
+  private async runWorker(
+    role: string, task: string, signal?: AbortSignal,
+  ): Promise<SubAgentOutcome> {
+    const found = ROLES.find((r) => r.name === role)
+    if (found === undefined) {
+      return {
+        role, text: '', steps: 0, ms: 0,
+        problem: `no such worker: ${role}. Available: ${ROLE_NAMES.join(', ')}`,
+      }
+    }
+    return await runSubAgent(
+      {
+        client: this.opts.client,
+        registry: this.opts.toolset.registry,
+        workspace: this.workspace,
+        ...(this.opts.compaction !== undefined
+          ? { stepResultBudgetChars: tailBudgetTokens(this.opts.compaction.contextLength) * 4 }
+          : {}),
+      },
+      found,
+      task,
+      signal,
+    )
+  }
+
   private buildAgent(signal?: AbortSignal, sampling?: import('../llama/types.js').Sampling): Agent {
     const context: ToolContext = {
       workspace: this.workspace,
@@ -3679,6 +3717,9 @@ export class Session {
     // one place and blocks in the other would stall the run on whichever path came first.
     const port = this.interactionPort()
     if (port) context.interaction = port
+    // A bound function, not the client and the registry: a tool holding those could
+    // build any agent it liked, and this one can only ask for a role that exists.
+    context.delegate = (role, task, sig) => this.runWorker(role, task, sig)
 
     const agentOpts: AgentOptions = {
       client: this.opts.client,

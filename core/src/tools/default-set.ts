@@ -71,6 +71,19 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   // Free, and unmeasured: no claim is made here that position is what routes the choice.
   // `web` sits beside the search family for the same unmeasured reason: it answers "find
   // out", and the model reaching for information should meet it before run_command.
+  // `delegateTool` is deliberately NOT here, and the reason is measured rather than
+  // stylistic. A worker answers a self-contained question well — 16.6 s and 13.6 s,
+  // three steps each, both right (`spike/delegate-live-probe.mts`). The caller never
+  // asks for one: 0/2 on jobs where delegating was the sensible move, and 0/3 again
+  // with a line in the SYSTEM prompt telling it to (`spike/delegate-nudge-probe.mts`).
+  // Which is this project's law where it always is — the description asks for a
+  // JUDGEMENT, and judgements are what prose does not route on this model.
+  //
+  // The tool is not free while it waits: its schema renders at the FRONT of every
+  // prompt, ~1,020 tokens, on every request, for something never called. So the
+  // machinery stays (`agent/subagent.ts`) and the door stays shut until something
+  // STRUCTURAL opens it — a forced field in the contract schema, the way `changesCode`
+  // works, rather than a tool the model has to think to reach for.
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webTool, csharpNavTool, databaseTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool, sqlDeployTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
