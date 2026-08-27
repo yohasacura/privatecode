@@ -6,6 +6,8 @@ import { buildSystemPrompt } from '../src/agent/prompt.js'
 import type { Mount } from '../src/mounts.js'
 import { findFilesTool } from '../src/tools/find-files.js'
 import { listDirTool } from '../src/tools/list-dir.js'
+import { BackgroundTasks, backgroundTaskTool } from '../src/tools/background-task.js'
+import { runCommandTool } from '../src/tools/run-command.js'
 import { searchCodeTool } from '../src/tools/search-code.js'
 import { Workspace } from '../src/workspace.js'
 
@@ -133,5 +135,99 @@ describe('the system prompt', () => {
     })
     expect(withOne).toBe(before)
     expect(before).toContain('working in the local workspace D:\\p')
+  })
+})
+
+/**
+ * Running a command in a workspace made of several folders.
+ *
+ * The reported symptom was three or four commands spent working out where the shell is and
+ * what path `dotnet build` needs. The cause is that this workspace has TWO path languages and
+ * nothing said so: a tool argument is folder-prefixed (`engine/Engine.csproj`), while the
+ * text of a command is an ordinary shell path from wherever the shell started — which is the
+ * FIRST folder. The first two tests below are the two halves of that, asserted rather than
+ * described, so the shape cannot drift without something failing.
+ */
+describe('where a command runs', () => {
+  const run = async (args: Record<string, unknown>) => {
+    const v = runCommandTool.validate(args)
+    if (!v.ok) throw new Error(`validate refused: ${v.error}`)
+    return runCommandTool.execute(v.args, { workspace: ws })
+  }
+
+  test('a bare command starts in the first folder, and the reply says so', async () => {
+    const r = await run({ command: '(Get-Location).Path' })
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain(mounts[0]!.root)
+    // The part that closes the loop. Without it a wrong guess about the directory and a
+    // genuinely missing file are the same reply, and the only way to tell them apart is
+    // another command.
+    expect(r.content).toContain('· in app/')
+  }, 30_000)
+
+  test('the folder prefix does NOT work inside the command text, and cwd is how you move',
+    async () => {
+      // Measured, and the reason the system prompt now spends three lines on it: this is
+      // exactly what a model taught `engine/src/x.ts` will write first.
+      const wrong = await run({ command: 'Test-Path engine/src/boot.ts' })
+      expect(wrong.content).toContain('False')
+
+      const right = await run({ command: 'Test-Path src/boot.ts', cwd: 'engine' })
+      expect(right.content).toContain('True')
+      expect(right.content).toContain('· in engine/')
+    }, 30_000)
+
+  test('a cwd without a folder name is refused, in words that say what to write instead',
+    async () => {
+      // The refusal is the one part of this that already taught the rule. It is asserted so
+      // it stays that way: an error that only said "denied" would send the model back to
+      // probing.
+      const r = await run({ command: 'Get-Location', cwd: 'src' })
+      expect(r.ok).toBe(false)
+      expect(r.content).toContain('app')
+      expect(r.content).toContain('engine')
+    }, 30_000)
+
+  test('a background task takes the same cwd, and the same refusal', async () => {
+    // The pair has to agree. A `cwd` on one and not the other teaches the trick and then
+    // takes it away: the model would be back to `cd ../engine; npm run dev` inside the
+    // command, which is the same confusion somewhere harder to see.
+    //
+    // Driven through `execute`, not `validate`. Validate never touches the workspace, so a
+    // test that stopped there would pass with the resolution wired to nothing.
+    const tasks = new BackgroundTasks()
+    const tool = backgroundTaskTool(tasks)
+    const call = async (args: Record<string, unknown>) => {
+      const v = tool.validate(args)
+      if (!v.ok) throw new Error(`validate refused: ${v.error}`)
+      return tool.execute(v.args, { workspace: ws })
+    }
+    try {
+      const refused = await call({ action: 'start', command: 'Get-Location', cwd: 'src' })
+      expect(refused.ok).toBe(false)
+      expect(refused.content).toContain('app')
+      expect(refused.content).toContain('engine')
+
+      const started = await call({ action: 'start', command: 'Get-Location', cwd: 'engine' })
+      expect(started.ok).toBe(true)
+      const id = /id: (\S+?)\./.exec(started.content)?.[1]
+      expect(id).toBeTruthy()
+      const polled = await call({ action: 'poll', id, wait_seconds: 10 })
+      expect(polled.content).toContain(mounts[1]!.root)
+    } finally {
+      await tasks.stopAll()
+    }
+  }, 30_000)
+
+  test('the prompt states the rule the file-path rule contradicts', () => {
+    const prompt = buildSystemPrompt({
+      workspaceRoot: mounts[0]!.root,
+      mode: 'normal',
+      folders: mounts.map((m) => ({ name: m.name, access: m.access })),
+    })
+    expect(prompt).toContain('A command starts in app/ unless you set cwd')
+    expect(prompt).toContain('plain shell paths')
+    // Still no disk paths, which the block above this one also guards.
+    expect(prompt).not.toContain(base)
   })
 })

@@ -4,6 +4,7 @@ import { execa } from 'execa'
 import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import { countLines, headLines, overflowNotice, spillToLog } from './output-log.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
+import type { Workspace } from '../workspace.js'
 
 export interface RunCommandArgs {
   command: string
@@ -35,6 +36,27 @@ export function clipOutput(text: string, limit = MAX_OUTPUT_CHARS): string {
     `output is capped at ${limit}) ...\n${text.slice(-tail)}`
 }
 
+/**
+ * ` · in engine/`, or nothing at all.
+ *
+ * Where a command ran was the one fact the result never carried, and on a multi-folder
+ * workspace it is the fact the model was missing: a bare command starts in the FIRST folder,
+ * and inside the command text `engine/Engine.csproj` — the language every other tool argument
+ * uses — does not resolve. Measured on a two-folder workspace: that `Test-Path` answers False
+ * while `../engine/Engine.csproj` answers True. With nothing in the reply saying where it had
+ * been, a wrong guess looked exactly like a missing file, and the way out was `pwd`, then
+ * `dir`, then a third command to check the guess.
+ *
+ * Silent when the workspace is one folder and no cwd was asked for, which is most commands in
+ * most workspaces: there is one place it could have run and the model already knows it from
+ * the system prompt.
+ */
+function whereRan(workspace: Workspace, resolved: string, asked: string | undefined): string {
+  if (!workspace.multi && asked === undefined) return ''
+  const shown = workspace.display(resolved)
+  return ` · in ${shown === '.' ? 'the workspace root' : `${shown}/`}`
+}
+
 export const runCommandTool: Tool<RunCommandArgs> = {
   name: 'run_command',
   readOnly: false,
@@ -53,7 +75,13 @@ export const runCommandTool: Tool<RunCommandArgs> = {
       },
       cwd: {
         type: 'string',
-        description: 'Workspace-relative directory to run in. Default: the workspace root.',
+        description:
+          'Which directory to run in, named the way every other tool argument is: ' +
+          'folder-prefixed in a multi-folder workspace (`engine`, `engine/src`), plain ' +
+          'workspace-relative in a single-folder one. Defaults to the FIRST folder. Paths ' +
+          'inside the command itself are ordinary shell paths from that directory, not ' +
+          'folder-prefixed — so reach another folder by setting this, not by writing ../ ' +
+          'in the command.',
       },
     },
     required: ['command'],
@@ -84,7 +112,10 @@ export const runCommandTool: Tool<RunCommandArgs> = {
     const oneLine = args.command.replace(/\s+/g, ' ').trim()
     return {
       summary: oneLine.length > 80 ? `${oneLine.slice(0, 77)}...` : oneLine,
-      detail: `Run in PowerShell (cwd: ${args.cwd ?? 'workspace root'}):\n${args.command}`,
+      // "workspace root" was the wording, and it names nothing a person can point at once the
+      // workspace is several folders — the default is the FIRST of them. No `ctx` reaches
+      // here to say which, so it says which one it means rather than naming it.
+      detail: `Run in PowerShell (cwd: ${args.cwd ?? 'the first workspace folder'}):\n${args.command}`,
     }
   },
   async execute(args, ctx) {
@@ -221,7 +252,7 @@ export const runCommandTool: Tool<RunCommandArgs> = {
       }
     }
     const code = result.exitCode ?? -1
-    const header = `exit ${code} in ${seconds} s\n`
+    const header = `exit ${code} in ${seconds} s${whereRan(ctx.workspace, cwd, args.cwd)}\n`
     return {
       ok: code === 0,
       content: `${header}${out || '(no output)'}`,

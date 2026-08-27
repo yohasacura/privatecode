@@ -103,6 +103,17 @@ export function buildSystemPrompt(opts: PromptOptions): string {
         `Every path starts with one of those folder names: ${opts.folders![0]!.name}/src/thing.ts,`,
         'not src/thing.ts. A path with no folder name is refused, so there is no way to edit',
         'the wrong project by accident.',
+        // Three lines, in a prompt kept short on purpose, because this is the one place the
+        // workspace has TWO path languages and nothing said so. Tool arguments are
+        // folder-prefixed; the text of a command is a plain shell path from wherever the
+        // shell started. Measured on a two-folder workspace: `Test-Path engine/Engine.csproj`
+        // — the language the lines above teach — answers False, while
+        // `../engine/Engine.csproj` answers True. The model writes what it was taught, is
+        // told the file is not there, and starts probing with pwd and dir.
+        `A command starts in ${opts.folders![0]!.name}/ unless you set cwd, and inside the`,
+        'command itself paths are plain shell paths from there — the folder prefix belongs to',
+        'tool arguments, not to the shell. To build or test another folder, set cwd to its',
+        'name rather than writing ../ paths.',
         ...(opts.folders!.some((f) => f.access === 'read')
           ? [
             'A read-only folder is there to be read, searched and quoted from. Nothing can be',

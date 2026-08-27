@@ -18,6 +18,8 @@ export interface BackgroundTaskArgs {
   command?: string
   id?: string
   wait_seconds?: number
+  /** start only. Workspace-addressed, resolved through the model's jail — see `execute`. */
+  cwd?: string
   ready_when?: ReadyWhen
 }
 
@@ -287,6 +289,13 @@ export function backgroundTaskTool(tasks: BackgroundTasks): Tool<BackgroundTaskA
           type: 'integer',
           description: `poll only: wait up to this long for exit or readiness (max ${MAX_WAIT_S}).`,
         },
+        cwd: {
+          type: 'string',
+          description:
+            'start only: which directory to run in, named the way every other tool argument ' +
+            'is — folder-prefixed in a multi-folder workspace (`engine`), plain ' +
+            'workspace-relative in a single-folder one. Defaults to the FIRST folder.',
+        },
         ready_when: {
           type: 'object',
           description: 'start only: readiness condition to poll against.',
@@ -319,6 +328,15 @@ export function backgroundTaskTool(tasks: BackgroundTasks): Tool<BackgroundTaskA
       if (r.command !== undefined) args.command = r.command
       if (r.id !== undefined) args.id = r.id
       if (r.wait_seconds !== undefined) args.wait_seconds = r.wait_seconds
+      // Added alongside `run_command`'s, because a tool pair where one takes a cwd and the
+      // other does not teaches the wrong lesson twice: the model learns "set cwd to move"
+      // from one and then has to `cd ../engine` inside the command on the other.
+      if (r.cwd !== undefined) {
+        if (typeof r.cwd !== 'string' || r.cwd.trim() === '') {
+          return { ok: false, error: 'cwd must be a non-empty workspace-relative path when given' }
+        }
+        args.cwd = r.cwd
+      }
       // VALIDATED, not cast. `ready_when: {}` is schema-valid and grammar-reachable, and
       // `isReady` falls through all three branches to `false` — forever — while the tool's
       // own description promises "poll until it reports ready". The whole reason this tool
@@ -375,12 +393,24 @@ export function backgroundTaskTool(tasks: BackgroundTasks): Tool<BackgroundTaskA
       const cmd = (args.command ?? '').replace(/\s+/g, ' ').trim()
       return {
         summary: `background: ${cmd.length > 68 ? `${cmd.slice(0, 65)}...` : cmd}`,
-        detail: `Start in the background (workspace root):\n${args.command ?? ''}`,
+        // "workspace root" named nothing a person could point at once the workspace was
+        // several folders, and the default is the FIRST of them.
+        detail: `Start in the background (cwd: ${args.cwd ?? 'the first workspace folder'}):\n${args.command ?? ''}`,
       }
     },
     async execute(args, ctx) {
       if (args.action === 'start') {
-        const entry = tasks.start(args.command!, args.ready_when ?? null, ctx.workspace.root)
+        let cwd = ctx.workspace.root
+        if (args.cwd !== undefined) {
+          // Through the model's own jail, exactly as `run_command` resolves its cwd: a
+          // background process is no less able to touch the disk than a foreground one.
+          try {
+            cwd = ctx.workspace.resolve(args.cwd)
+          } catch (e) {
+            return { ok: false, content: (e as Error).message }
+          }
+        }
+        const entry = tasks.start(args.command!, args.ready_when ?? null, cwd)
         const ready = args.ready_when
           ? ' Poll until it reports ready: YES before relying on it.'
           : ''
