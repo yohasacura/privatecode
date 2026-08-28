@@ -85,21 +85,42 @@ export type FailureKind =
  * is also a failed command, and "file not found" is also just an error.
  */
 export function classify(text: string): FailureKind {
-  const t = text.toLowerCase()
+  // The FIRST LINE only, and this is not tidiness.
+  //
+  // Our failure messages lead with the reason and then quote what went wrong — a near-miss
+  // window out of the file, the path, the command, the user's own declined-with-a-comment.
+  // Substring-matching the whole thing therefore lets the USER'S CONTENT steer the
+  // classification: an inventory measured `search_text was not found…` returning `not-found`
+  // normally and `denied` when the quoted window happened to contain the word "permission".
+  // That is not a leak — the return type still cannot carry text — but it makes the counts
+  // noise, which is worse than useless in a document somebody forwards as evidence. The
+  // diagnosis is in the first line; the evidence comes after it.
+  const t = (text.split('\n')[0] ?? '').slice(0, 300).toLowerCase()
   if (t.includes('token \'&&\'') || t.includes("token '&&'") || t.includes('is not a valid statement separator')
     || (t.includes('&&') && t.includes('parsererror'))) return 'shell-operator'
+  // `escapes the workspace` and `resolves outside` are what `Workspace` actually says
+  // (`workspace.ts:315`, `:402`, `:416`); without them this category was structurally
+  // unreachable for all four write tools, and every jail violation counted as `other`.
   if (t.includes('outside the workspace') || t.includes('not inside this workspace')
-    || t.includes('must stay inside')) return 'outside-workspace'
+    || t.includes('must stay inside') || t.includes('escapes the workspace')
+    || t.includes('resolves outside')) return 'outside-workspace'
+  // `attached read-only` is a refusal that named neither denial nor permission, so it fell
+  // through to `other` — a whole class of "the model wrote where it may not" made invisible.
   if (t.includes('denied') || t.includes('not allowed') || t.includes('refused by the user')
-    || t.includes('permission')) return 'denied'
+    || t.includes('permission') || t.includes('attached read-only')
+    || t.includes('read-only')) return 'denied'
   if (t.includes('not found') || t.includes('enoent') || t.includes('no such file')
     || t.includes('does not exist')) return 'not-found'
   if (t.includes('timed out') || t.includes('timeout')) return 'timeout'
   if (t.includes('too large') || t.includes('refuses files larger')
     || t.includes('exceeds')) return 'too-large'
+  // `Invalid arguments for X:` and `could not be parsed as JSON` are the registry's own two
+  // spellings (`registry.ts:70`, `:78`, `:81`) and neither matched — so the category whose
+  // doc comment claims it covers invalid JSON never once fired for invalid JSON.
   if (t.includes('invalid glob') || t.includes('not a valid regular expression')
-    || t.includes('must be a') || t.includes('unparseable')
-    || t.includes('could not parse')) return 'bad-arguments'
+    || t.includes('must be a') || t.includes('must have') || t.includes('unparseable')
+    || t.includes('could not parse') || t.includes('could not be parsed')
+    || t.includes('invalid arguments')) return 'bad-arguments'
   if (t.includes('is binary') || t.includes('byte-order mark')
     || t.includes('not a regular file')) return 'not-text'
   if (t.includes('is not available') || t.includes('no worker is available')
@@ -153,6 +174,16 @@ export interface Diagnosis {
    * blamed. Counted apart rather than guessed at: attributing them made the failure rate
    * exceed 100%, and dropping them silently would have made a broken transcript look clean. */
   unattributedFailures: number
+  /**
+   * Failures counted by READING the result rather than by a recorded outcome.
+   *
+   * A session whose `.ui.jsonl` is missing has no per-call verdict, so failure has to be
+   * inferred from the text — and inference is a guess. Reported rather than folded in
+   * silently, because the sessions most likely to be missing that file are the ones that
+   * crashed, and a diagnosis that quietly estimated the most interesting sessions would be
+   * confident exactly where it is weakest.
+   */
+  estimatedFailures: number
   /** Per session, so a report from a heavy user and a light one can be compared. */
   callsPerSession: number
   /** Modes the work was done in, by session count. */
@@ -264,6 +295,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
   let toolCalls = 0
   let toolFailures = 0
   let unattributedFailures = 0
+  let estimatedFailures = 0
   let compactions = 0
   let contractSessions = 0
   let manualGateSessions = 0
@@ -360,10 +392,20 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         const id = (m as { tool_call_id?: string }).tool_call_id
         const name = typeof id === 'string' ? pending.get(id) : undefined
         const ok = typeof id === 'string' && outcomes.has(id) ? outcomes.get(id) : undefined
-        // `ok === undefined` means the outcomes file did not have this call; fall back to
-        // the text, which is what the outcomes file was derived from in the first place.
-        const failed = ok === false || (ok === undefined && classify(m.content) !== 'other'
-          && /error|failed|refus|could not|cannot|denied|not found/i.test(m.content))
+        // `ok === undefined` means the outcomes file did not have this call. The fallback
+        // used to demand BOTH a recognised category AND a keyword, and an inventory measured
+        // what that cost: over 59 real failure literals from the write path, 11 were counted
+        // and 48 vanished. The two conditions failed independently — every `validate()`
+        // refusal classifies correctly as `bad-arguments` and then carries none of the seven
+        // keywords, so it was categorised right and counted as a success.
+        //
+        // OR, not AND. And it is still a guess, which is why sessions that needed it are
+        // counted and said out loud: the sessions most likely to be missing their outcomes
+        // sidecar are the ones that crashed, which are the ones worth diagnosing.
+        const guessed = ok === undefined
+        const failed = ok === false || (guessed && (classify(m.content) !== 'other'
+          || /error|failed|refus|could not|cannot|denied|not found|invalid|no such/i.test(m.content)))
+        if (failed && guessed) estimatedFailures++
         if (failed) {
           const kind = classify(m.content)
           // A result whose call was never announced cannot be attributed, and inventing a
@@ -402,6 +444,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
     toolCalls,
     toolFailures,
     unattributedFailures,
+    estimatedFailures,
     callsPerSession: sessions === 0 ? 0 : Math.round((toolCalls / sessions) * 10) / 10,
     modes,
     versions,
@@ -433,6 +476,10 @@ export function renderDiagnosis(d: Diagnosis): string {
     `handed back    ${d.harnessMessages} turns the gates gave back to the model` +
       (d.userMessages === 0 ? '' : ` — ${Math.round((d.harnessMessages / d.userMessages) * 100)}% of what the person sent`),
     `tool calls     ${d.toolCalls} (${d.callsPerSession} per session), ${d.toolFailures} failed — ${pct(d.toolFailures, d.toolCalls)}`,
+    ...(d.estimatedFailures > 0
+      ? [`estimated      ${d.estimatedFailures} of those failures were read from the result text, ` +
+         'not from a recorded outcome — treat them as approximate']
+      : []),
     ...(d.unattributedFailures > 0
       ? [`orphan results ${d.unattributedFailures} failed results had no call to attribute them to`]
       : []),

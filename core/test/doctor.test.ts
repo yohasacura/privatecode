@@ -382,3 +382,78 @@ describe('membership, not shape', () => {
     expect(d.tools.every((t) => t.calls > 0)).toBe(true)
   })
 })
+
+/**
+ * The classifier against the messages this codebase ACTUALLY produces.
+ *
+ * An adversarial inventory ran `classify` over the real literals and found it was matching
+ * substrings nobody writes. `outside-workspace` was structurally unreachable for all four
+ * write tools, because `Workspace` says "path escapes the workspace", not "outside the
+ * workspace". `bad-arguments` never once fired for invalid JSON, though its own doc comment
+ * claims it covers exactly that, because the registry says "could not be parsed as JSON" and
+ * the classifier looked for "could not parse". A category that cannot be reached is worse
+ * than a missing one: it makes `other` look like the unknown-unknowns bucket when it is
+ * really the we-spelled-it-wrong bucket.
+ *
+ * Every literal below is copied from the source, so this test fails when a message is
+ * reworded — which is the only way the two can be kept in step.
+ */
+describe('classify against the real messages', () => {
+  const cases: [string, string][] = [
+    // core/src/workspace.ts:315, :402, :416 — all four write tools reach these.
+    ['path escapes the workspace: a.ts is not inside any of its folders (app, core)', 'outside-workspace'],
+    ['path escapes the workspace: ../x resolves outside D:/ws', 'outside-workspace'],
+    ['path escapes the workspace: x resolves outside D:/ws once links are followed', 'outside-workspace'],
+    // core/src/workspace.ts:372 — a read-only mount, which named neither denial nor permission.
+    ['"docs" is attached read-only, so nothing can be written to docs/a.md.', 'denied'],
+    // core/src/tools/registry.ts:70, :78
+    ['Arguments for edit_file could not be parsed as JSON: Unexpected token', 'bad-arguments'],
+    ['Invalid arguments for edit_file: path must be a non-empty workspace-relative path', 'bad-arguments'],
+    // The ones that already worked, kept so a rewrite of the list cannot lose them.
+    ['File not found: src/a.ts', 'not-found'],
+    ['the command timed out after 60s', 'timeout'],
+    ["The token '&&' is not a valid statement separator in this version.", 'shell-operator'],
+  ]
+
+  for (const [message, expected] of cases) {
+    test(`"${message.slice(0, 46)}…" is ${expected}`, () => {
+      expect(classify(message)).toBe(expected)
+    })
+  }
+})
+
+test('the user\'s own content cannot steer the classification', () => {
+  // `edit_file` quotes the near-miss window out of THEIR file into the message. Matching the
+  // whole string made the category depend on what happened to be in that window: measured,
+  // the same hint returned `not-found` normally and `denied` when the quoted lines contained
+  // the word "permission". Not a leak — the return type still cannot carry text — but counts
+  // that move with the user's code are noise in a document forwarded as evidence.
+  const hint = 'search_text was not found anywhere in the file. The closest match is:'
+  expect(classify(hint)).toBe('not-found')
+  expect(classify(`${hint}\n  if (!user.permission) denied();`)).toBe('not-found')
+})
+
+test('a failure survives a missing outcomes file, and is labelled as estimated', async () => {
+  // The worst of the inventory's findings, and it was a disappearance rather than a
+  // mis-bucketing: the fallback demanded BOTH a recognised category AND one of seven
+  // keywords, and over 59 real failure literals it counted 11. The two conditions failed
+  // independently — a `validate()` refusal classifies correctly and carries no keyword, so
+  // it was categorised right and then counted as a success.
+  const metas = [session('s1', [
+    {
+      role: 'assistant',
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'edit_file', arguments: '{}' } }],
+    },
+    // No keyword from the old list anywhere in this sentence.
+    { role: 'tool', tool_call_id: 'c1', content: 'Invalid arguments for edit_file: path must be a non-empty workspace-relative path' },
+  ])] // deliberately no outcomes sidecar — the shape a crashed session leaves behind
+
+  const d = diagnose(root, metas)
+
+  expect(d.toolFailures).toBe(1)
+  expect(d.tools.find((t) => t.name === 'edit_file')?.failures['bad-arguments']).toBe(1)
+  // And said out loud, because a guess presented as a count is worse where it matters most:
+  // the sessions missing this file are the ones that crashed.
+  expect(d.estimatedFailures).toBe(1)
+  expect(renderDiagnosis(d)).toContain('treat them as approximate')
+})
