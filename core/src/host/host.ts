@@ -1206,12 +1206,13 @@ export class SessionHost {
     try {
       const work = session.runGate(params.gate, this.currentAbort.signal)
       this.currentTurn = work
-      const { turn, outcome } = await work
+      const { turn, outcome, reported } = await work
       return {
         turn: {
           steps: turn.steps, finalText: turn.finalText, stoppedBecause: turn.stoppedBecause,
         },
         outcome,
+        reported,
       }
     } finally {
       this.sending = false

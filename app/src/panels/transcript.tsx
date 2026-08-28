@@ -547,7 +547,10 @@ const TranscriptRow = memo(function TranscriptRow({
 
     case 'error':
       return (
-        <Row kind="error" marker={Icon.alert()}>
+        <Row
+          kind={item.tone === 'info' ? 'note' : 'error'}
+          marker={item.tone === 'info' ? Icon.check() : Icon.alert()}
+        >
           <div class="notice-title">{item.message}</div>
         </Row>
       )

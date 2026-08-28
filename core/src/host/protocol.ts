@@ -216,6 +216,14 @@ export interface GatesRunResult {
    * the transcript (nothing to review, no command configured), and a command somebody typed
    * cannot be allowed to answer with silence. */
   outcome: string
+  /**
+   * Whether the gate put a row in the transcript.
+   *
+   * The caller uses it to decide whether to say anything itself. It cannot be inferred from
+   * the turn: a build that PASSES runs no fixer, so it comes back with zero steps and empty
+   * text — which reads as "nothing happened" and is the opposite of the truth.
+   */
+  reported: boolean
 }
 export type SetModeResult = Empty
 

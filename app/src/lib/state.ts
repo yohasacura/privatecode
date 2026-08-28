@@ -102,7 +102,20 @@ export type ChatItem =
   /** A `send`/`abort` RPC call itself came back an error reply (e.g. "a turn is already
    * running", "no active session") -- rendered as a one-line note rather than silently
    * dropped, which is what a naive `.catch(() => {})` would otherwise do. */
-  | { kind: 'error'; id: number; message: string }
+  | {
+    kind: 'error'
+    id: number
+    message: string
+    /**
+     * Whether this is bad news.
+     *
+     * It always was, until `/check` reported a build that PASSED through the same channel
+     * and the window drew it in alert red under the green row that had just said the same
+     * thing. The kind stays `error` because that is what nearly every one of these is and
+     * renaming it would touch every producer; the tone is what the row is drawn from.
+     */
+    tone?: 'info'
+  }
   /** What an `approval.request` card COLLAPSES INTO once answered -- the plan's own
    * phrase for it -- so the transcript keeps a permanent one-line record after the live
    * card (rendered separately, above the input; see `approvals.tsx`) disappears. */
@@ -476,7 +489,7 @@ export type ChatAction =
    * `turnRunning` guard, and left thinking rows pulsing forever. An error NOTE appends the
    * row and touches nothing else.
    */
-  | { type: 'error-note'; message: string }
+  | { type: 'error-note'; message: string; tone?: 'info' }
   /** Dispatched after every successful `init`/`sessions.new`/`sessions.resume` call --
    * every one of those is either this app run's first session or a deliberate switch to a
    * different one, so this always resets the whole transcript/turn/pending-card/todos
@@ -1192,7 +1205,10 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'error-note': {
       // The row and nothing else — see the action's doc comment for why this must not
       // touch turnRunning/currentStep or close writing cards.
-      const item: ChatItem = { kind: 'error', id: state.nextId, message: action.message }
+      const item: ChatItem = {
+        kind: 'error', id: state.nextId, message: action.message,
+        ...(action.tone !== undefined ? { tone: action.tone } : {}),
+      }
       return { ...state, items: [...state.items, item], nextId: state.nextId + 1 }
     }
 

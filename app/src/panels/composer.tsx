@@ -631,16 +631,20 @@ export function Composer({
       const manual = text.trim().toLowerCase() === GATES_OFF
       setInput('')
       setMention(null)
-      client.call('gates.set', { mode: manual ? 'manual' : 'auto' })
-        .then(() => dispatch({
-          type: 'error-note',
-          message: manual
-            ? 'Automatic checks are off for this session. Nothing builds, audits or reviews '
-              + 'until you ask: /check runs the build and tests, /review runs the '
-              + 'independent read of the diff.'
-            : 'Automatic checks are back on for this session.',
-        }))
-        .catch((e: Error) => dispatch({ type: 'error-note', message: e.message }))
+      // Through the SAME setter the chip uses. It did not, and the two disagreed: the
+      // command changed the session and the chip went on showing the old state, which is
+      // worse than having no chip — an indicator that is sometimes wrong is one you have to
+      // stop believing.
+      setGateMode(manual ? 'manual' : 'auto')
+      dispatch({
+        type: 'error-note',
+        tone: 'info',
+        message: manual
+          ? 'Automatic checks are off for this session. Nothing builds, audits or reviews '
+            + 'until you ask: /check runs the build and tests, /review runs the '
+            + 'independent read of the diff.'
+          : 'Automatic checks are back on for this session.',
+      })
       return
     }
 
@@ -779,8 +783,12 @@ export function Composer({
         // the stage line flashed past in under a second and the person was left wondering
         // whether the command had even been recognised. Only when the transcript is silent,
         // so a review that reported findings does not get a redundant summary under them.
-        if (r.turn.steps === 0 && r.turn.finalText === '') {
-          dispatch({ type: 'error-note', message: `/${gate === 'build' ? 'check' : 'review'}: ${r.outcome}` })
+        if (!r.reported) {
+          dispatch({
+            type: 'error-note',
+            tone: 'info',
+            message: `/${gate === 'build' ? 'check' : 'review'}: ${r.outcome}`,
+          })
         }
       })
       .catch((e: unknown) => {

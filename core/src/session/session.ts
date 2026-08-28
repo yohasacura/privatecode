@@ -2169,7 +2169,7 @@ export class Session {
    */
   async runGate(
     which: 'build' | 'review', signal?: AbortSignal,
-  ): Promise<{ turn: TurnResult; outcome: string }> {
+  ): Promise<{ turn: TurnResult; outcome: string; reported: boolean }> {
     // The outcome is CAPTURED rather than returned by each branch, because the branches
     // already report it — every exit closes its stage with a sentence, and a second copy
     // assembled at the return would be a second thing to keep true. Watched live: `/review`
@@ -2177,14 +2177,29 @@ export class Session {
     // account of what happened flashed past in a status line and the person was left with
     // silence. A gate somebody ASKED for has to answer.
     let outcome = 'done'
+    // Whether the gate put a ROW in the transcript. The caller needs this to decide whether
+    // to say anything itself, and it cannot be inferred from the turn: a build that passes
+    // runs no fixer, so it returns zero steps and empty text — which the first version read
+    // as "nothing happened" and announced "/check: passed" as an error note, under the
+    // green verify row that had just said the same thing. Reported, not guessed.
+    let reported = false
+    const outerVerify = this.opts.onVerify
+    const outerAccept = this.opts.onAcceptance
+    this.opts.onVerify = (info) => { reported = true; outerVerify?.(info) }
+    this.opts.onAcceptance = (info) => { reported = true; outerAccept?.(info) }
+
     const outer = this.opts.onStage
     this.opts.onStage = (info) => {
       if (info.state === 'done' && info.outcome !== undefined) outcome = info.outcome
       outer?.(info)
     }
     try {
-      return { turn: await this.runGateInner(which, signal), outcome }
+      return { turn: await this.runGateInner(which, signal), outcome, reported }
     } finally {
+      if (outerVerify === undefined) delete this.opts.onVerify
+      else this.opts.onVerify = outerVerify
+      if (outerAccept === undefined) delete this.opts.onAcceptance
+      else this.opts.onAcceptance = outerAccept
       // Deleted rather than assigned back: `exactOptionalPropertyTypes` treats an explicit
       // `undefined` as a different thing from an absent key, and this option is optional.
       if (outer === undefined) delete this.opts.onStage

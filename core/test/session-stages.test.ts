@@ -188,7 +188,34 @@ test('a gate that does nothing still reports why', async () => {
   const review = await session.runGate('review')
   expect(review.turn.steps).toBe(0)
   expect(review.outcome).toContain('nothing to review')
+  expect(review.reported).toBe(false)
 
   const build = await session.runGate('build')
   expect(build.outcome).toContain('no verify command')
+  expect(build.reported).toBe(false)
+})
+
+test('a build that PASSES reports itself, so the window stays quiet', async () => {
+  const root = newWorkspace()
+  const fake = await makeServer(() => answered())
+  stop = fake.close
+  const session = new Session({
+    client: new LlamaClient({ baseUrl: fake.url, model: 'm' }),
+    toolset: { registry: new ToolRegistry() } as Toolset,
+    workspaceRoot: root,
+    mode: 'autopilot',
+    store: new SessionStore(root),
+    verify: { command: 'echo hello', timeoutMs: 20_000, source: 'the test' },
+  })
+
+  const build = await session.runGate('build')
+
+  // The bug this pins: a passing build runs no fixer, so it comes back with zero steps and
+  // empty text. The first version read that as "nothing happened" and announced
+  // "/check: passed" as an ERROR note, in alert red, directly under the green verify row
+  // that had just said the same thing. `reported` is the fact, asked rather than inferred.
+  expect(build.turn.steps).toBe(0)
+  expect(build.turn.finalText).toBe('')
+  expect(build.reported).toBe(true)
+  expect(build.outcome).toBe('passed')
 })

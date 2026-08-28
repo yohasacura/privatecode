@@ -944,6 +944,12 @@ kbd {
 .row-error .row-gutter { color: var(--red); }
 .row-error .notice-title { color: var(--red); }
 
+/* The same row shape, without the alarm. `/check` reporting a build that PASSED came
+   through the error channel and was drawn in alert red under the green row that had just
+   said the same thing — the note was right and its colour was a lie. */
+.row-note .row-gutter { color: var(--green); }
+.row-note .notice-title { color: var(--text-dim); }
+
 .row-stopped .row-gutter { color: var(--yellow); }
 /* word-break like every other text surface in the transcript: these rows carry raw error
    messages and approval rules — an ENOENT with an unbroken node_modules path, an
