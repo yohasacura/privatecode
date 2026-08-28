@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { diagnose, renderDiagnosis } from '../src/doctor/diagnose.js'
+import { classify, diagnose, renderDiagnosis } from '../src/doctor/diagnose.js'
 import { answerFrom, gateStatsFrom, renderGates, type GateEvent } from '../src/doctor/gates.js'
 import { splitUserMessage } from '../src/host/replay.js'
 import { ACCEPTANCE_FIXER_PREFIX, REVIEW_FIXER_PREFIX } from '../src/session/contract.js'
@@ -120,9 +120,22 @@ describe('what the model did about it', () => {
 
   test('an unrecognised tool understates a fix rather than inventing one', () => {
     // `unknown-tool` is what a hallucinated or MCP name collapses to. It may well have
-    // changed a file; calling that an edit would be a guess reported as a count.
-    expect(answerFrom(1, ['unknown-tool'])).toBe('looked')
-    expect(answerFrom(1, ['mcp-tool'])).toBe('looked')
+    // changed a file; calling that an edit would be a guess reported as a count. But
+    // `looked` is a claim that NOTHING changed, and it cannot be made about a tool we do
+    // not recognise either — so the honest middle is that it did something.
+    expect(answerFrom(1, ['unknown-tool'])).toBe('ran')
+    expect(answerFrom(1, ['mcp-tool'])).toBe('ran')
+  })
+
+  test('"only looked" is granted by membership, never by falling through', () => {
+    // An audit found this asserting "changed nothing" about a check answered by delegating
+    // the fix to a sub-agent. Every one of these can change the workspace; none is an
+    // editing tool, and under the old fall-through all four printed as `only looked`.
+    for (const tool of ['delegate', 'sql_deploy', 'background_task', 'browser']) {
+      expect(answerFrom(1, [tool])).toBe('ran')
+    }
+    // And one read-only tool mixed in does not launder the rest.
+    expect(answerFrom(1, ['read_file', 'delegate'])).toBe('ran')
   })
 
   test('replying in prose to a build log is counted, per check', () => {
@@ -243,9 +256,7 @@ describe('the report itself', () => {
   test('notes are reported apart from hand-backs, never inside them', () => {
     const rendered = renderGates(gateStatsFrom([
       { kind: 'verify', answer: 'edited', refired: false, outcomeKnown: true, round: 1, steps: 1, calls: 1 },
-      { kind: 'note', answer: 'nothing', refired: false, outcomeKnown: true, round: 1, steps: 0, calls: 0 },
-      { kind: 'note', answer: 'nothing', refired: false, outcomeKnown: true, round: 1, steps: 0, calls: 0 },
-    ]))
+    ]), 2)
     const text = rendered.join('\n')
     expect(text).toContain('build or tests failed')
     expect(text).toContain('status notes')
@@ -395,4 +406,125 @@ test('a percentage is not printed off a sample too small to carry one', () => {
     calls('edit_file'),
   ]))
   expect(many).toMatch(/% of what the person sent/)
+})
+
+/**
+ * What an adversarial audit found, pinned so it cannot come back.
+ *
+ * Each of these was a report making a confident, specific, WRONG statement — not a missing
+ * number. That is the failure mode this whole module is written against, because the page is
+ * forwarded as evidence and nobody who receives it can check it against the machine it came
+ * from.
+ */
+describe('the audit findings', () => {
+  test('a compaction does not double every gate number, nor invent a run', async () => {
+    const { COMPACTION_BRIEFING_PREFIX, COMPACTION_ACK_TEXT } =
+      await import('../src/session/compaction.js')
+
+    // The file a swap actually leaves behind: the whole history, a marker, then the new
+    // transcript — which re-appends the retained tail that is already above the marker.
+    const tail = [
+      harness(`${VERIFY_FAILED_PREFIX}\nred`),
+      calls('edit_file'),
+      { role: 'tool', tool_call_id: 'c0', content: 'edited' },
+      says('fixed it'),
+    ]
+    const d = diagnosisOf([
+      { role: 'system', content: 'you are an agent' },
+      person('please fix the build'),
+      calls('read_file'),
+      { role: 'tool', tool_call_id: 'c0', content: '1\tx' },
+      ...tail,
+      // 8 messages so far; the tail starts at index 4, floor is 1, so droppedMessages is 3.
+      { __event: 'compaction', summary: 's', droppedMessages: 3, at: '2026-08-20T09:00:00.000Z' },
+      { role: 'system', content: 'you are an agent' },
+      harness(`${COMPACTION_BRIEFING_PREFIX}\n\nearlier history`),
+      says(COMPACTION_ACK_TEXT),
+      ...tail,
+    ])
+
+    const verify = d.gates.find((g) => g.kind === 'verify')
+    expect(verify?.fired).toBe(1)              // not 2
+    expect(verify?.longestRun).toBe(1)         // not 2 — the run was pure fabrication
+    expect(verify?.refired).toBe(0)            // not 1
+    expect(verify?.steps).toBe(2)              // not 4
+    expect(verify?.calls).toBe(1)              // not 2
+    // And the report's own waste metric stops inventing a repeat the model never made.
+    expect(d.tools.find((t) => t.name === 'edit_file')?.repeats).toBe(0)
+    expect(d.compactions).toBe(1)
+  })
+
+  test('a status note between a check and the answer does not steal the answer', () => {
+    // `beforeStep` writes a bracketed note before the model's FIRST generation of a turn, so
+    // on any session with a contract this is the ordinary order on disk. Closing the check
+    // on it reported every gate at `cost 0 model turns and 0 tool calls`, as `preempted`,
+    // with the real work charged to `note` — which the report then hides.
+    const d = diagnosisOf([
+      person('make it build'),
+      harness(`${ACCEPTANCE_FIXER_PREFIX}\n- the tests still fail`),
+      harness('[Plan focus — step 2 of 5: fix the parser]'),
+      calls('read_file', 'edit_file'),
+      says('done'),
+      person('thanks'),
+    ])
+    const gate = d.gates.find((g) => g.kind === 'acceptance')
+    expect(gate?.steps).toBe(2)
+    expect(gate?.calls).toBe(2)
+    expect(gate?.answers['edited']?.times).toBe(1)
+    expect(gate?.answers['preempted']).toBeUndefined()
+    // The note is still reported, just not as a check that took a turn back.
+    expect(d.harnessNotes).toBe(1)
+    expect(renderGates(d.gates, d.harnessNotes).join('\n')).toContain('1 status note')
+  })
+
+  test('a build log full of brackets cannot turn a hand-back into a user request', async () => {
+    const { MIDTURN_VERIFY_PREFIX } = await import('../src/verify/runner.js')
+    // Real compiler output: an MSBuild project tag and a timestamp, neither of which
+    // balances against the wrapper's own bracket. The depth scan gave up and returned the
+    // whole build log as something the person had typed.
+    const log = `[${MIDTURN_VERIFY_PREFIX}${VERIFY_FAILED_PREFIX}\n` +
+      'Program.cs(9,5): error CS1002: ; expected [D:/w/App.csproj\n' +
+      '[12:34:56] build ended]'
+    expect(splitUserMessage(log).harnessKind).toBe('verify-working')
+
+    const d = diagnosisOf([person('fix it'), { role: 'user', content: log }, calls('edit_file')])
+    expect(d.userMessages).toBe(1)
+    expect(d.gates.find((g) => g.kind === 'verify-working')?.fired).toBe(1)
+  })
+
+  test('the suppressed repeat survives a command with brackets in it', async () => {
+    const { STILL_FAILING_SUFFIX } = await import('../src/verify/runner.js')
+    // The command is the user's own and sits between two constants, so only the suffix can
+    // be matched — and it must be matched before the depth scan, not after.
+    const msg = `[dotnet test /p:Filter="Category!=[Slow]"${STILL_FAILING_SUFFIX}]`
+    expect(splitUserMessage(msg).harnessKind).toBe('verify-unchanged')
+  })
+
+  test('an overnight run\'s nudges are the runner, not the person', async () => {
+    const { nudgeFor } = await import('../src/cli/unattended.js')
+    const withTodos = nudgeFor([{ text: 'finish the parser', status: 'pending' }] as never)
+    const withNone = nudgeFor([])
+    expect(splitUserMessage(withTodos).harnessKind).toBe('unattended-nudge')
+    expect(splitUserMessage(withNone).harnessKind).toBe('unattended-nudge')
+
+    // And the consequence that made it matter: a nudge read as the person ENDS the turn, so
+    // a build refusing three times running was reported as three satisfied first firings.
+    const d = diagnosisOf([
+      person('work through the list'),
+      harness(`${VERIFY_FAILED_PREFIX}\nred`), says('looking'),
+      harness(withTodos), calls('edit_file'),
+      harness(`${VERIFY_FAILED_PREFIX}\nred`), says('looking'),
+      harness(withTodos), calls('edit_file'),
+      harness(`${VERIFY_FAILED_PREFIX}\nred`), calls('edit_file'),
+      person('stop'),
+    ])
+    expect(d.userMessages).toBe(2)
+    expect(d.gates.find((g) => g.kind === 'verify')?.longestRun).toBe(3)
+  })
+
+  test('a premise veto is its own category, not the `other` bucket', async () => {
+    const { PREMISE_FAILURE_PREFIX } = await import('../src/session/premises.js')
+    expect(classify(`${PREMISE_FAILURE_PREFIX}\n\nsrc/a.ts does not contain that line`))
+      .toBe('unverified-premise')
+  })
 })

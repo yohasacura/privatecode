@@ -15,6 +15,10 @@
  */
 import type { ApprovalDecision, ApprovalRequest, TodoItem, UserQuestion } from '../interaction.js'
 import type { AgentMode } from '../permissions/engine.js'
+// Type-only, so the cycle with `replay.ts` (which imports `TranscriptEntry` from here) is
+// erased at compile time and no module actually depends on the other at runtime. The
+// vocabulary lives beside the constants that produce it; a second copy here would drift.
+import type { HarnessKind } from './replay.js'
 import type { SessionMeta } from '../session/store.js'
 
 // ---------------------------------------------------------------------------------------
@@ -154,7 +158,17 @@ export type TranscriptEntry =
    * conflating them is what made a resumed session show four "your messages" when the
    * person had sent two.
    */
-  | { kind: 'user'; text: string; harness?: true }
+  /**
+   * `harnessKind` says WHICH part of the harness wrote it, when `harness` is set.
+   *
+   * Declared because it is on the wire. `replayEntries` pushes `splitUserMessage`'s result
+   * straight through, so the field ships whether or not this type mentions it, and a wire
+   * contract that quietly carries an undeclared field is how the next person to read this
+   * file gets a wrong idea of what arrives. The window ignores it today; it is what a row
+   * would need to say "the build failed" rather than the undifferentiated dimmed grey every
+   * harness message currently gets.
+   */
+  | { kind: 'user'; text: string; harness?: true; harnessKind?: HarnessKind }
   | { kind: 'reasoning'; step: number; text: string }
   | { kind: 'tool-call'; name: string; args: string }
   /** `ok` for calls made before this feature existed is unknown and reported as `true`;

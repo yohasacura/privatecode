@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { statePath } from '../private-dir.js'
 import { splitUserMessage } from '../host/replay.js'
-import { COMPACTION_ACK_TEXT } from '../session/compaction.js'
+import { COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX } from '../session/compaction.js'
+import { PREMISE_FAILURE_PREFIX } from '../session/premises.js'
 import { BUILT_IN_TOOL_NAMES, MCP_TOOL_PREFIX } from '../tools/built-in-names.js'
 import { episodesFrom, patternsOf, renderPatterns, type Episode, type RawAttempt } from './episodes.js'
 import { answerFrom, gateStatsFrom, renderGates, type GateEvent } from './gates.js'
@@ -78,6 +79,16 @@ export type FailureKind =
   | 'unavailable'
   /** The tool refused because the model was told to do something else instead. */
   | 'wrong-tool'
+  /**
+   * The premise check vetoed the call: the model was about to act on something it claimed
+   * was in the files and was not.
+   *
+   * Its own category because it is the only failure here that is a GATE speaking through a
+   * tool result. An audit found it landing in `other` — the veto's first line matches none
+   * of the buckets above — so the check with the strongest claim to being worth its cost
+   * was invisible in the report, and `other` rose without anybody knowing why.
+   */
+  | 'unverified-premise'
   | 'other'
 
 /**
@@ -99,6 +110,10 @@ export function classify(text: string): FailureKind {
   // noise, which is worse than useless in a document somebody forwards as evidence. The
   // diagnosis is in the first line; the evidence comes after it.
   const t = (text.split('\n')[0] ?? '').slice(0, 300).toLowerCase()
+  // Before `denied` and before `not-found`, both of which it falls into once it is
+  // recognised at all. Matched on the gate's own exported constant rather than on a copy of
+  // its wording, so rewording the veto cannot quietly return it to `other`.
+  if (t.startsWith(PREMISE_FAILURE_PREFIX.toLowerCase())) return 'unverified-premise'
   if (t.includes('token \'&&\'') || t.includes("token '&&'") || t.includes('is not a valid statement separator')
     || (t.includes('&&') && t.includes('parsererror'))) return 'shell-operator'
   // `escapes the workspace` and `resolves outside` are what `Workspace` actually says
@@ -208,6 +223,9 @@ export interface Diagnosis {
   gates: ReturnType<typeof gateStatsFrom>
   /** Compactions, counted from the markers left in the transcripts. */
   compactions: number
+  /** Bracketed status lines the harness wrote. Counted apart from the hand-backs in
+   * `gates`, and reported apart, because one is a line and the other is a turn of work. */
+  harnessNotes: number
   tools: ToolStat[]
   /**
    * The recurring stories: a failure, what the model did next, and whether that worked.
@@ -237,6 +255,16 @@ export interface Diagnosis {
  * cannot travel. That the fallback is dull is the point — a report saying `unknown-tool 3`
  * is a small loss, and it is the only outcome that cannot become a leak.
  */
+/**
+ * Harness messages that are NOT hand-backs and must be transparent to the gate walk.
+ *
+ * A note is a status line and a briefing is the machine talking to itself. Neither takes a
+ * turn back from the model, and — because `beforeStep` writes a note between a gate and the
+ * model's first step — treating either as a turn boundary hands the gate's whole answer to
+ * something the report then hides.
+ */
+const PASS_THROUGH_KINDS: ReadonlySet<string> = new Set(['note', 'compaction-briefing'])
+
 const KNOWN_MODES = new Set(['normal', 'plan', 'auto-edit', 'autopilot'])
 /**
  * Digits and dots, and at most a short dotless tail.
@@ -319,6 +347,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
   const allEpisodes: Episode[] = []
   const allGateEvents: GateEvent[] = []
   let compactions = 0
+  let harnessNotes = 0
   let contractSessions = 0
   let manualGateSessions = 0
   let oldest = Number.POSITIVE_INFINITY
@@ -364,6 +393,33 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
       problems.push('one session had no recorded outcomes, so its failures were read from the results themselves')
     }
 
+    // --- the same messages, twice ------------------------------------------------------
+    //
+    // The `.jsonl` is append-only and a compaction writes a marker followed by the ENTIRE
+    // new transcript — which begins with a fresh system message, the briefing, an
+    // acknowledgement, and then the RETAINED TAIL of the old one. Those tail messages are
+    // already on disk from before the swap. `SessionStore.load()` never notices because it
+    // slices at the last marker and reads only what follows; this walk reads the whole file
+    // and counted every one of them twice.
+    //
+    // It was not a doubling, it was a fabrication. Two copies of one hand-back land in the
+    // same person-turn, so the run counter reads them as a check that refused TWICE, and
+    // the report asserts `worst run 2 · 1 not satisfied · changed files: 2, which satisfied
+    // the check 0 of 1` about a check that fired once and was satisfied. An inflated count
+    // is bad in a document forwarded as evidence; an invented failure is worse.
+    //
+    // The length is recoverable exactly, without comparing any text. `selectCompactionTail`
+    // returns `droppedMessages = start - floor`, where `floor` is 1 whenever the transcript
+    // opened on a system message, so
+    //
+    //     tail length = (messages in this segment) - droppedMessages - 1
+    //
+    // and the duplicates are the next that many NON-SYNTHETIC messages after the marker.
+    // Counted rather than matched on purpose: `clipToBudget` and `collapseSupersededReads`
+    // rewrite the content of some tail messages on the way out, so a byte comparison would
+    // silently miss exactly the largest ones.
+    let segmentMessages = 0
+    let skipDuplicates = 0
     const seen = new Set<string>()
     /** This session's calls in order, so a failure can be read together with what came
      * next. Values live here and are discarded with the session. */
@@ -434,6 +490,32 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
       } catch {
         continue
       }
+      // The marker is not a message. Everything after it re-states a tail already walked.
+      if ((m as { __event?: string }).__event === 'compaction') {
+        compactions++
+        const dropped = (m as { droppedMessages?: unknown }).droppedMessages
+        if (typeof dropped === 'number' && Number.isFinite(dropped)) {
+          skipDuplicates = Math.max(0, segmentMessages - dropped - 1)
+        } else {
+          // A marker with no count cannot be reconciled, and guessing would be the one
+          // thing this module refuses to do. Say so instead: an inflated number a reader
+          // has been warned about is recoverable; a silent one is not.
+          problems.push('one session compacted without recording how much history it folded away, so the messages the swap re-appended are counted twice in it')
+        }
+        segmentMessages = 0
+        continue
+      }
+      segmentMessages++
+      // A re-appended tail message: already counted on the far side of the marker. The
+      // three synthetic messages the swap writes are NOT duplicates and pass through.
+      if (skipDuplicates > 0
+        && m.role !== 'system'
+        && m.content !== COMPACTION_ACK_TEXT
+        && !(m.role === 'user' && typeof m.content === 'string'
+          && m.content.startsWith(COMPACTION_BRIEFING_PREFIX))) {
+        skipDuplicates--
+        continue
+      }
       messages++
       if (m.role === 'user') {
         // The harness talks in the user's role — the chat template has nowhere else to put
@@ -441,16 +523,37 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         // text goes no further than `splitUserMessage`, whose answer is a boolean and a
         // member of a literal union.
         const split = typeof m.content === 'string' ? splitUserMessage(m.content) : null
-        // Whatever wrote this message, it ends the previous check's answer.
-        closeGate(split?.harness === true)
         if (split?.harness === true) {
           harnessMessages++
           const kind = split.harnessKind ?? 'other-harness'
+          // A status note is not a turn boundary, and treating it as one was the most
+          // damaging thing in this walk.
+          //
+          // `beforeStep` writes a bracketed note — a plan focus line, a context-fullness
+          // warning — BEFORE the model's first generation of a turn. So on a session with
+          // a contract, the order on disk is: the gate hands back, the note lands, THEN
+          // the model works. Closing the gate on the note meant every check in such a
+          // session closed with zero steps, was reported as `preempted` at `cost 0 model
+          // turns and 0 tool calls`, and the entire real answer — the turns, the calls, the
+          // edits — was charged to `note`, which the report then hides as "a line, not a
+          // hand-back". The section built to say what the checking costs said it costs
+          // nothing, in exactly the sessions where it costs most.
+          //
+          // Notes and compaction briefings pass through: counted as harness turns, never
+          // opening or closing one. `verify-working` and `verify-unchanged` are bracketed
+          // too and are NOT here — they are build failures handed back, which is the whole
+          // reason they were given names of their own.
+          if (PASS_THROUGH_KINDS.has(kind)) {
+            if (kind === 'note') harnessNotes++
+            continue
+          }
+          closeGate(true)
           const round = (runs.get(kind) ?? 0) + 1
           runs.set(kind, round)
           openGate = { kind, steps: 0, calls: 0, tools: [], round }
         } else {
           userMessages++
+          closeGate(false)
           closeTurn()
         }
       }
@@ -465,8 +568,6 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         assistantMessages++
         if (openGate !== null) openGate.steps++
       }
-      if ((m as { __event?: string }).__event === 'compaction') compactions++
-
       for (const call of m.tool_calls ?? []) {
         const raw = call.function?.name
         if (typeof raw !== 'string' || raw === '') continue
@@ -576,6 +677,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
     manualGateSessions,
     gates: gateStatsFrom(allGateEvents),
     compactions,
+    harnessNotes,
     tools: [...byTool.values()].sort((a, b) => b.calls - a.calls),
     patterns: patternsOf(allEpisodes),
     problems: [...new Set(problems)],
@@ -653,7 +755,7 @@ export function renderDiagnosis(d: Diagnosis): string {
       (kinds === '' ? '' : `\n      ${kinds}`),
     )
   }
-  out.push(...renderGates(d.gates))
+  out.push(...renderGates(d.gates, d.harnessNotes))
   const stories = renderPatterns(d.patterns)
   if (stories.length > 0) {
     out.push(

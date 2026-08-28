@@ -1554,6 +1554,24 @@ export function parseReview(argsJson: string): ReviewIssue[] | null {
   return listed
 }
 
+/**
+ * The two things the unattended runner says to keep an overnight run going.
+ *
+ * Here rather than at the site that composes them (`cli/unattended.ts`) for the same reason
+ * `saysFinished` moved here: `replay.ts` has to recognise them, and `host -> cli -> session
+ * -> host` is a runtime cycle. This module is already a leaf that `replay.ts` imports.
+ *
+ * Recognising them is not cosmetic. Every turn of an overnight run after the first opens
+ * with one of these, and without them each read as the PERSON speaking — inflating the
+ * count of what the person asked for, and, because a person speaking ends a turn, clearing
+ * every gate run in progress. A build that refused three times running was reported as
+ * three separate first firings, each satisfied. Overnight runs are the sessions with the
+ * most gate activity in them and the least human attention on it.
+ */
+export const NUDGE_WITH_TODOS_PREFIX = 'Continue. These are still open:'
+/** See `NUDGE_WITH_TODOS_PREFIX`. Sent when nothing is left on the todo list. */
+export const NUDGE_PLAIN_PREFIX = 'Continue with the task. If everything you were asked to do is finished'
+
 /** Same job as `ACCEPTANCE_FIXER_PREFIX`, for the diff reviewer's findings. */
 export const REVIEW_FIXER_PREFIX = 'An independent review of this turn\'s diff found problems:'
 

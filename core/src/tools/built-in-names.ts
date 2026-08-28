@@ -46,6 +46,28 @@ export const BUILT_IN_TOOL_NAMES: ReadonlySet<string> = new Set([
 export const MCP_TOOL_PREFIX = 'mcp__'
 
 /**
+ * The tools that change nothing, as the registry itself declares.
+ *
+ * A duplicate of `readOnlyNames()` for the reason the whole file exists — reading the
+ * registry from the doctor would close an import cycle — and pinned by `default-set.test.ts`
+ * against the real thing.
+ *
+ * It is here because MEMBERSHIP is the only honest way to say "the model went and looked
+ * and changed nothing". Deciding that by falling through — not an editing tool, not
+ * `run_command`, therefore read-only — asserted it of `delegate`, `sql_deploy`,
+ * `background_task`, `browser`, `remember` and every MCP tool, so a check answered by
+ * delegating the fix to a sub-agent that rewrote four files was reported as `only looked`,
+ * whose stated meaning is that nothing changed. An audit found it; the fallback is now the
+ * other way round, and an unrecognised tool reads as having done something.
+ */
+
+export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'ask_user', 'csharp_nav', 'database', 'doctor', 'find_files', 'git_status', 'list_dir',
+  'read_file', 'recall', 'search_code', 'search_history', 'symbol_outline', 'todo_write',
+  'use_skill',
+])
+
+/**
  * The tools that CHANGE FILES, as opposed to the ones that merely write something.
  *
  * Narrower than "not read-only" on purpose, and the narrowing is the whole point. `remember`

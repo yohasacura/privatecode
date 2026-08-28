@@ -1,6 +1,8 @@
 import { expect, test } from 'vitest'
 import { buildRegistry } from '../src/tools/default-set.js'
-import { BUILT_IN_TOOL_NAMES, EDITING_TOOL_NAMES } from '../src/tools/built-in-names.js'
+import {
+  BUILT_IN_TOOL_NAMES, EDITING_TOOL_NAMES, READ_ONLY_TOOL_NAMES,
+} from '../src/tools/built-in-names.js'
 
 /**
  * Pins the readOnly set of the eight REAL tools, not synthetic stand-ins.
@@ -91,4 +93,20 @@ test('EDITING_TOOL_NAMES are registered tools that are not read-only', () => {
     expect(registry.names()).toContain(name)
     expect(readOnly.has(name)).toBe(false)
   }
+})
+
+/**
+ * The read-only set, pinned against the registry's own declaration.
+ *
+ * It decides when the report may say a check was answered by "only looking, changing
+ * nothing" — a claim about the workspace, made in a document forwarded as evidence. Drift
+ * makes that claim false rather than missing: a tool dropped from here starts reading as
+ * having changed something, and a tool wrongly added here makes a real change invisible.
+ */
+test('READ_ONLY_TOOL_NAMES is exactly what buildRegistry() declares read-only', () => {
+  expect([...READ_ONLY_TOOL_NAMES].sort()).toEqual(buildRegistry().readOnlyNames().sort())
+})
+
+test('the two sets cannot overlap', () => {
+  for (const name of EDITING_TOOL_NAMES) expect(READ_ONLY_TOOL_NAMES.has(name)).toBe(false)
 })

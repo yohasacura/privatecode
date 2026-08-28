@@ -1,4 +1,4 @@
-import { EDITING_TOOL_NAMES } from '../tools/built-in-names.js'
+import { EDITING_TOOL_NAMES, READ_ONLY_TOOL_NAMES } from '../tools/built-in-names.js'
 import type { HarnessKind } from '../host/replay.js'
 
 /**
@@ -127,9 +127,10 @@ export interface GateStat {
  * What the model did in one gap between a check and the next turn boundary.
  *
  * Tool names arrive already membership-checked (`safeToolName`), so `unknown-tool` and
- * `mcp-tool` are the only two that are not ours — both count as work done, neither can be
- * called an edit, which is the conservative direction: an unrecognised tool that did change
- * a file will read as `ran`, understating fixes rather than inventing them.
+ * `mcp-tool` are the only two that are not ours. Neither can be called an edit, which is
+ * the conservative direction — an unrecognised tool that did change a file reads as `ran`,
+ * understating fixes rather than inventing them — and neither can be called `looked`
+ * either, because that word asserts nothing changed.
  */
 export function answerFrom(
   steps: number, toolNames: readonly string[], preempted = false,
@@ -137,8 +138,12 @@ export function answerFrom(
   if (steps === 0) return preempted ? 'preempted' : 'nothing'
   if (toolNames.length === 0) return 'words-only'
   if (toolNames.some((n) => EDITING_TOOL_NAMES.has(n))) return 'edited'
-  if (toolNames.includes('run_command')) return 'ran'
-  return 'looked'
+  // `looked` is a CLAIM that nothing changed, so it is granted only when every tool used is
+  // one we ship and declare read-only. Everything else — `delegate`, `sql_deploy`,
+  // `background_task`, an MCP tool, a name we do not recognise — did something, and saying
+  // so is the conservative direction: it understates how much, never what.
+  if (toolNames.every((n) => READ_ONLY_TOOL_NAMES.has(n))) return 'looked'
+  return 'ran'
 }
 
 /** Rolls the events of every session into one record per check. */
@@ -175,7 +180,8 @@ const GATE_LABEL: Record<HarnessKind, string> = {
   'verify-working': 'build failed while the model worked',
   'verify-unchanged': 'build still failing, errors unchanged',
   'overflow-retry': 'context filled, turn retried',
-  continue: 'nudged to keep going',
+  continue: 'a step ran out of room and was continued',
+  'unattended-nudge': 'an overnight run was told to keep going',
   truncation: 'output truncated twice',
   'talked-not-acted': 'talked instead of acting',
   'step-timeout': 'step hit its time limit',
@@ -187,7 +193,7 @@ const GATE_LABEL: Record<HarnessKind, string> = {
 
 const ANSWER_LABEL: Record<GateAnswer, string> = {
   edited: 'changed files',
-  ran: 'ran something',
+  ran: 'did something that may have changed the workspace',
   looked: 'only looked',
   'words-only': 'replied in words, called nothing',
   nothing: 'did not reply',
@@ -203,12 +209,13 @@ const ANSWER_LABEL: Record<GateAnswer, string> = {
  * and a report where those inflate the gate count says the checking is expensive when it is
  * not.
  */
-export function renderGates(stats: readonly GateStat[]): string[] {
-  // Neither of these is a hand-back. A note is a status line, and a compaction briefing is
-  // the machine talking to itself — listing either as a check that took a turn back would
-  // say the checking is expensive in sessions where it is not.
+export function renderGates(stats: readonly GateStat[], notes = 0): string[] {
+  // Neither a note nor a compaction briefing reaches here any more — the walk passes both
+  // through without opening a check — so the filter is a belt, and `notes` is counted by
+  // the caller. It stays because a kind added to `HarnessKind` and to the pass-through set
+  // but not to this filter would otherwise print as a check that took a turn back.
   const handBacks = stats.filter((s) => s.kind !== 'note' && s.kind !== 'compaction-briefing')
-  if (handBacks.length === 0) return []
+  if (handBacks.length === 0 && notes === 0) return []
   const pct = (n: number, of: number): string => (of === 0 ? '0%' : `${Math.round((n / of) * 100)}%`)
   /** Grammar is not decoration here. This page is forwarded as evidence, and "1 times" in
    * the middle of it invites the reader to discount the numbers beside it. */
@@ -236,9 +243,11 @@ export function renderGates(stats: readonly GateStat[]): string[] {
       (answers === '' ? '' : `\n      ${answers}`),
     )
   }
-  const notes = stats.find((s) => s.kind === 'note')
-  if (notes !== undefined) {
-    out.push(`  (${plural(notes.fired, 'status note')} not counted above: a note is a line, not a hand-back)`)
+  if (notes > 0) {
+    // Printed even when nothing handed a turn back, which is the healthy case and was
+    // previously rendered as no section at all — leaving `harness turns 9` on the summary
+    // line with nowhere in the report to see what those nine were.
+    out.push(`  (${plural(notes, 'status note')} not counted above: a note is a line, not a hand-back)`)
   }
   return out
 }

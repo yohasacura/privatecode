@@ -11,7 +11,9 @@ import { REVERT_FILE_PREFIX, ROLLBACK_PREFIX } from '../session/checkpoint-notic
 import {
   COMPACTION_ACK_TEXT, COMPACTION_BRIEFING_PREFIX, OVERFLOW_RETRY_NOTE,
 } from '../session/compaction.js'
-import { ACCEPTANCE_FIXER_PREFIX, REVIEW_FIXER_PREFIX } from '../session/contract.js'
+import {
+  ACCEPTANCE_FIXER_PREFIX, NUDGE_PLAIN_PREFIX, NUDGE_WITH_TODOS_PREFIX, REVIEW_FIXER_PREFIX,
+} from '../session/contract.js'
 import { PREMISE_FAILURE_PREFIX } from '../session/premises.js'
 import {
   MIDTURN_VERIFY_PREFIX, STILL_FAILING_SUFFIX, VERIFY_FAILED_PREFIX, VERIFY_PROBLEM_PREFIX,
@@ -206,8 +208,12 @@ export type HarnessKind =
   | 'verify-broken'
   /** The context filled and the turn was retried after a compaction. */
   | 'overflow-retry'
-  /** The loop nudged an unattended run to keep going. */
+  /** The agent loop's truncation continuation — the step ran out of room mid-thought and
+   * was told to carry on. Named for what it is: an audit found the label calling it the
+   * unattended nudge, which is a different message from a different layer. */
   | 'continue'
+  /** The unattended RUNNER asking for another turn overnight, with or without a todo list. */
+  | 'unattended-nudge'
   /** Output was truncated twice over. */
   | 'truncation'
   /** The model talked instead of acting — this project's own named failure, and the one
@@ -252,10 +258,28 @@ const HARNESS_OPENERS: readonly { opener: string; kind: HarnessKind }[] = [
   // every consumer of `splitUserMessage` gets the same answer `replayEntries` already got
   // from its own `briefingIn` guard.
   { opener: COMPACTION_BRIEFING_PREFIX, kind: 'compaction-briefing' },
+  // WITH the opening bracket, and matched here rather than inside the bracket analysis.
+  //
+  // The mid-turn verifier wraps a raw build log in brackets, and the bracket walk below
+  // counts depth — so a log containing `[` or `]` that does not balance (an MSBuild
+  // `[/path/to/x.csproj]` fragment, a `[12:34:56]` timestamp, a stray `]` from a stack
+  // trace) leaves the scan with `end === -1`, and the whole hand-back was returned as
+  // something the PERSON typed. The check then never fired in the diagnosis, the person's
+  // turn was closed, and every run in progress was reset — a build failure turned into a
+  // user request by a square bracket in a compiler's output.
+  //
+  // A `startsWith` on the opener cannot be broken by anything downstream of it, which is
+  // the whole point: the log is arbitrary text and must never be parsed to find out who
+  // wrote the message.
+  { opener: `[${MIDTURN_VERIFY_PREFIX}`, kind: 'verify-working' },
   // The agent loop's own six. Each was measured replaying as the person's message, under a
   // `## You` heading, with no test covering any of them: the app suite is green and does not
   // look at harness attribution at all.
   { opener: CONTINUE_NUDGE, kind: 'continue' },
+  // The unattended runner's own two. Every turn of an overnight run after the first opens
+  // with one of them, and without these they read as the person speaking.
+  { opener: NUDGE_WITH_TODOS_PREFIX, kind: 'unattended-nudge' },
+  { opener: NUDGE_PLAIN_PREFIX, kind: 'unattended-nudge' },
   { opener: TRUNCATED_TWICE, kind: 'truncation' },
   { opener: TALKED_INSTEAD_OF_ACTING, kind: 'talked-not-acted' },
   { opener: STEP_TIMEOUT_PREFIX, kind: 'step-timeout' },
@@ -276,6 +300,18 @@ function openerFor(text: string): HarnessKind | null {
 }
 
 /**
+ * The suppressed mid-turn repeat, which is a SUFFIX match rather than a prefix one.
+ *
+ * `[${where}${command}: still failing, same errors as before.]` opens with the folder and
+ * the user's own command, so there is no prefix to match — but it ends with a constant, and
+ * the bracket is the last character. Checked before the depth scan for the same reason the
+ * prefix is: the command in the middle is the user's and may contain anything.
+ */
+function isStillFailing(text: string): boolean {
+  return text.startsWith('[') && text.endsWith(`${STILL_FAILING_SUFFIX}]`)
+}
+
+/**
  * What a WHOLE-MESSAGE bracketed note actually is.
  *
  * Everything in brackets was a `note`, and that quietly mis-sorted the check this app runs
@@ -290,6 +326,9 @@ function openerFor(text: string): HarnessKind | null {
  * these gets a differently-labelled harness row and nothing worse.
  */
 function noteKindFor(inside: string): HarnessKind {
+  // Both mid-turn shapes are caught before the depth scan now (`HARNESS_OPENERS` and
+  // `isStillFailing`); this remains so a balanced one reached by any other route still
+  // lands on the right kind rather than on `note`.
   if (inside.startsWith(MIDTURN_VERIFY_PREFIX)) return 'verify-working'
   if (inside.endsWith(STILL_FAILING_SUFFIX)) return 'verify-unchanged'
   return 'note'
@@ -315,6 +354,9 @@ export function splitUserMessage(
   const opener = openerFor(unprefixed)
   if (opener !== null) {
     return { kind: 'user', text: content, harness: true, harnessKind: opener }
+  }
+  if (isStillFailing(unprefixed)) {
+    return { kind: 'user', text: content, harness: true, harnessKind: 'verify-unchanged' }
   }
   // Then the attachment wrapper, which is the one case where the stored message legitimately
   // contains more than the person wrote and the row should show LESS. Checked after the

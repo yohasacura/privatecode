@@ -1,7 +1,9 @@
 import type { TodoItem } from '../interaction.js'
 import type { Session } from '../session/session.js'
 import type { TurnResult } from '../agent/loop.js'
-import { saysFinished } from '../session/contract.js'
+import {
+  NUDGE_PLAIN_PREFIX, NUDGE_WITH_TODOS_PREFIX, saysFinished,
+} from '../session/contract.js'
 
 /**
  * Turn after turn, until the work is done or something says stop.
@@ -85,11 +87,10 @@ const SERVER_FAILURE_LIMIT = 3
 export function nudgeFor(todos: readonly TodoItem[]): string {
   const pending = todos.filter((t) => t.status !== 'completed')
   if (pending.length === 0) {
-    return 'Continue with the task. If everything you were asked to do is finished, say so ' +
-      'plainly and stop.'
+    return `${NUDGE_PLAIN_PREFIX}, say so plainly and stop.`
   }
   const list = pending.map((t) => `- ${t.text}${t.status === 'in_progress' ? ' (in progress)' : ''}`)
-  return 'Continue. These are still open:\n' + list.join('\n') +
+  return `${NUDGE_WITH_TODOS_PREFIX}\n` + list.join('\n') +
     '\n\nWork on the next one. If they are all actually finished, say so plainly and stop.'
 }
 

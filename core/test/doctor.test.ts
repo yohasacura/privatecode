@@ -305,7 +305,11 @@ test('a gate handing work back is counted apart from the person asking for it', 
   // build is a turn of work handed back; a bracketed note is a status line. The report
   // separates them, and the ratio worth carrying off the machine is the first one.
   expect(d.gates.find((g) => g.kind === 'verify')?.fired).toBe(1)
-  expect(d.gates.find((g) => g.kind === 'note')?.fired).toBe(1)
+  // A note never becomes a check. It is counted on its own, because `beforeStep` writes one
+  // BETWEEN a check and the model's answer — so a note that closed the open check handed it
+  // a cost of zero and charged the real work to something the report hides.
+  expect(d.gates.find((g) => g.kind === 'note')).toBeUndefined()
+  expect(d.harnessNotes).toBe(1)
   const report = renderDiagnosis(d)
   expect(report).toContain('harness turns')
   expect(report).toContain('build or tests failed')
