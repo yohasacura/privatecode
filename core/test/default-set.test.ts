@@ -26,7 +26,14 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
      // written against what the code claims the schema is, rather than what it is, is the
      // plan that fails at the first migration.
      'database',
-     'find_files', 'git_status', 'list_dir', 'read_file', 'search_code',
+     'find_files', 'git_status', 'list_dir', 'read_file',
+     // Reads back the notes `remember` wrote, through the SAME freshness filter that puts
+     // them in message 0. Read-only, and in plan mode deliberately: what earlier sessions
+     // worked out about this project is most of what a plan should be built on, and the
+     // alternative the model reached for without it was reading the notes file directly —
+     // which returns the stale notes the filter exists to drop.
+     'recall',
+     'search_code',
      'symbol_outline', 'todo_write',
      // Reads a file the user wrote and returns its text; it runs nothing. Read-only is
      // what makes it available in PLAN mode, which is where reading a procedure before
