@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest'
 import { buildRegistry } from '../src/tools/default-set.js'
+import { BUILT_IN_TOOL_NAMES } from '../src/tools/built-in-names.js'
 
 /**
  * Pins the readOnly set of the eight REAL tools, not synthetic stand-ins.
@@ -59,4 +60,17 @@ test('sql_deploy is deliberately not read-only, so plan mode cannot reach it', (
   const registry = buildRegistry()
   expect(registry.readOnlyNames()).not.toContain('sql_deploy')
   expect(registry.names()).toContain('sql_deploy')
+})
+
+/**
+ * The shipped tool names, kept in step with the registry.
+ *
+ * `BUILT_IN_TOOL_NAMES` is what `doctor` prints a name from, and it is a hand-written list
+ * rather than a read of the registry because reading the registry would close an import
+ * cycle. This is what stops it drifting: a tool added without touching that file fails here,
+ * loudly, instead of quietly rendering as `unknown-tool` in every diagnosis from then on.
+ */
+test('BUILT_IN_TOOL_NAMES is exactly what buildRegistry() ships', () => {
+  const registered = buildRegistry().schemas().map((s) => s.function.name).sort()
+  expect([...BUILT_IN_TOOL_NAMES].sort()).toEqual(registered)
 })

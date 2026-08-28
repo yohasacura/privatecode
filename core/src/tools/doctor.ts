@@ -18,8 +18,11 @@ export interface DoctorArgs {
  * before trusting this: the report is built only from numbers and from a closed set of
  * category names declared in that file, so there is no code path by which a path, a command,
  * a line of code or a sentence of anybody's conversation could appear in it. That is a
- * property of the types, not a promise about behaviour, which is what makes "send it as it
- * is" a sentence anybody can act on without auditing the output first.
+ * property of the code's shape rather than of its care — every value that is printed as
+ * itself is either written in that file or checked for MEMBERSHIP of a set written in it.
+ * That distinction is not pedantry: the first version checked those values for the right
+ * SHAPE instead, and an adversarial review broke it in one line, because an MCP tool is
+ * named after a server in the user's own config and looks exactly like a tool name.
  */
 export const doctorTool: Tool<DoctorArgs> = {
   name: 'doctor',
@@ -49,7 +52,10 @@ export const doctorTool: Tool<DoctorArgs> = {
       // Rejected rather than ignored: a misspelled date compares as a plain string against
       // an ISO timestamp and would silently narrow the scan to nothing, which reads as a
       // healthy agent with no history.
-      return { ok: false, error: `since must be a date as YYYY-MM-DD, not "${String(r.since)}"` }
+      // The VALUE is not echoed. It is model output, and this message lands in a transcript
+      // that `doctor` itself later reads — quoting an argument back is how a path the model
+      // invented gets a second life. Naming the shape is the whole of what helps anyway.
+      return { ok: false, error: 'since must be a date written as YYYY-MM-DD' }
     }
     return { ok: true, args: r?.since !== undefined ? { since: r.since } : {} }
   },

@@ -295,3 +295,90 @@ test('a gate handing work back is counted apart from the person asking for it', 
   // the work, and how much was the checking of it.
   expect(renderDiagnosis(d)).toContain('handed back')
 })
+
+/**
+ * What an adversarial review broke, pinned so it cannot come back.
+ *
+ * The first version checked the three disk-sourced strings for the right SHAPE. Four
+ * independent reviewers broke it, and the sharpest finding needed no tampering at all: an
+ * MCP tool is called `mcp__<server>__<tool>` where the server is a key out of the user's own
+ * config, so a correctly configured machine printed a client's name on the ordinary path.
+ */
+describe('membership, not shape', () => {
+  const withToolNamed = (name: string): SessionMeta[] => [session('s1', [{
+    role: 'assistant',
+    tool_calls: [{ id: 'c1', type: 'function', function: { name, arguments: '{}' } }],
+  }])]
+
+  test('an MCP tool collapses to the prefix, which is ours, not the server name', () => {
+    // The exact leak the audit reproduced: no hallucination, no edited file, just a
+    // configured server called after the client.
+    const report = renderDiagnosis(diagnose(root, withToolNamed('mcp__acmebank_prod__query_ledger')))
+    expect(report).not.toContain('acmebank')
+    expect(report).not.toContain('query_ledger')
+    // The count survives: that MCP is used, and how much, is worth knowing and says nothing
+    // about whose server it is.
+    expect(report).toContain('mcp-tool')
+  })
+
+  test('a hallucinated name that LOOKS like a tool is still refused', () => {
+    // Reaches disk because the agent loop appends the assistant message before the registry
+    // is consulted, so "it would never be called" is not a defence.
+    const report = renderDiagnosis(diagnose(root, withToolNamed('read_halcyon_nda_client_src')))
+    expect(report).not.toContain('halcyon')
+    expect(report).toContain('unknown-tool')
+  })
+
+  test('a version with a dotted tail cannot smuggle a path', () => {
+    // `0.1.5-ProjectAtlas.MergerWith.ZebraCorp.billing.ts` passed the first regex whole, as
+    // did a two-thousand-character tail. Dots are what had to go.
+    for (const bad of [
+      '0.1.5-ProjectAtlas.MergerWith.ZebraCorp.billing.ts',
+      '1.0-billingsecrets.ts',
+      '9-zebracorp.acme.q3',
+      `1-${'x'.repeat(2000)}`,
+    ]) {
+      const report = renderDiagnosis(diagnose(root, [
+        session(`s-${bad.length}`, [{ role: 'user', content: 'hi' }],
+          { appVersion: bad } as Partial<SessionMeta>),
+      ]))
+      expect(report).not.toContain('billing')
+      expect(report).not.toContain('zebracorp')
+      expect(report).not.toContain('ProjectAtlas')
+      expect(report).toContain('unrecognised-version')
+    }
+  })
+
+  test('the versions we actually ship still print', () => {
+    for (const good of ['0.1.5', '1.0', '2.10.3.4', '0.1.5-beta']) {
+      const report = renderDiagnosis(diagnose(root, [
+        session('s1', [{ role: 'user', content: 'hi' }], { appVersion: good } as Partial<SessionMeta>),
+      ]))
+      expect(report).toContain(good)
+    }
+  })
+
+  test('an orphan failure cannot push the failure rate over 100%', () => {
+    const metas = [session('s1', [
+      {
+        role: 'assistant',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'c1', content: 'File not found: a' },
+      // A result whose call was never announced. Attributing it produced "1 calls, 2 failed
+      // — 200%", and a percentage over a hundred discredits every number beside it.
+      { role: 'tool', tool_call_id: 'ghost', content: 'File not found: b' },
+    ], {}, [{ id: 'c1', ok: false }, { id: 'ghost', ok: false }])]
+
+    const d = diagnose(root, metas)
+
+    expect(d.toolCalls).toBe(1)
+    expect(d.toolFailures).toBe(1)
+    expect(d.unattributedFailures).toBe(1)
+    const report = renderDiagnosis(d)
+    expect(report).not.toContain('200%')
+    expect(report).toContain('orphan results')
+    // And no phantom row claiming zero calls.
+    expect(d.tools.every((t) => t.calls > 0)).toBe(true)
+  })
+})

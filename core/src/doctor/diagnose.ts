@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { statePath } from '../private-dir.js'
 import { splitUserMessage } from '../host/replay.js'
+import { BUILT_IN_TOOL_NAMES, MCP_TOOL_PREFIX } from '../tools/built-in-names.js'
 import type { SessionMeta } from '../session/store.js'
 
 /**
@@ -19,12 +20,21 @@ import type { SessionMeta } from '../session/store.js'
  * "probably fine" — none. A report is worthless if it has to be reviewed before sending,
  * because the whole point is that it can be sent without a review.
  *
- * That is not a promise here, it is the shape of the code. Every field of `Diagnosis` is a
- * number, a boolean, or a value from a closed union declared in this file. The only strings
- * that can appear are TOOL NAMES (ours, from our registry) and `FailureKind` (a literal
- * union, twelve values). `classify` is the only function that ever sees transcript text and
- * its return type is `FailureKind` — so there is no expression anywhere in this module whose
- * type would allow a fragment of somebody's code, prose, path or command to be carried out.
+ * That is not a promise here, it is the shape of the code. Every printed string is either
+ * WRITTEN in this file, or checked for MEMBERSHIP of a set written in this file. Nothing is
+ * printed because it looked right. `classify` is the only function that ever sees transcript
+ * text and its return type is a twelve-value literal union, so there is no expression here
+ * whose type would let a fragment of somebody's code, prose, path or command be carried out.
+ *
+ * The membership-not-shape rule was learned the hard way and is the thing to keep in front
+ * of whoever edits this. The first version checked the disk-sourced strings for the right
+ * SHAPE — a tool name looking like `[a-z][a-z0-9_]*`, a version looking like a version — and
+ * an adversarial review broke both in one line each. A tool name comes off the TRANSCRIPT,
+ * which stores model output before the registry is ever consulted, so a hallucinated name
+ * naming the codebase is on disk and passes. And an MCP tool is called
+ * `mcp__<server>__<tool>`, where the server is a key out of the user's own config — so the
+ * ordinary path, on a correctly configured machine, with nothing tampered with, printed a
+ * client's name. Shape admits anything shaped right. Membership admits what we shipped.
  *
  * The things deliberately NOT read at all, though they sit right beside what is:
  *   - `SessionMeta.title`, which is the user's own first message
@@ -100,8 +110,8 @@ export function classify(text: string): FailureKind {
   return 'other'
 }
 
-/** One tool's record. The name is read from the transcript and shape-checked on the way
- * in (`safeToolName`), because model output is not registry output. */
+/** One tool's record. The name is read from the transcript and checked for MEMBERSHIP of
+ * the shipped set on the way in (`safeToolName`) — model output is not registry output. */
 export interface ToolStat {
   name: string
   calls: number
@@ -139,6 +149,10 @@ export interface Diagnosis {
   assistantMessages: number
   toolCalls: number
   toolFailures: number
+  /** Failed results whose call was never announced in the transcript, so no tool could be
+   * blamed. Counted apart rather than guessed at: attributing them made the failure rate
+   * exceed 100%, and dropping them silently would have made a broken transcript look clean. */
+  unattributedFailures: number
   /** Per session, so a report from a heavy user and a light one can be compared. */
   callsPerSession: number
   /** Modes the work was done in, by session count. */
@@ -172,12 +186,38 @@ export interface Diagnosis {
  * cannot travel. That the fallback is dull is the point — a report saying `unknown-tool 3`
  * is a small loss, and it is the only outcome that cannot become a leak.
  */
-const TOOL_NAME = /^[a-z][a-z0-9_]{0,31}$/
 const KNOWN_MODES = new Set(['normal', 'plan', 'auto-edit', 'autopilot'])
-const VERSION = /^\d+(\.\d+){0,3}(-[a-z0-9.]+)?$/i
+/**
+ * Digits and dots, and at most a short dotless tail.
+ *
+ * The first version allowed `(-[a-z0-9.]+)?` with the `i` flag, which an adversarial review
+ * broke in one line: `0.1.5-ProjectAtlas.MergerWith.ZebraCorp.billing.ts` passed and printed
+ * whole, as did a two-thousand-character tail. A path survives that pattern the moment its
+ * separators are dots. Dots are what had to go, and the length cap is the belt: a version is
+ * a short thing, and anything long enough to be a sentence is not one.
+ */
+const VERSION = /^\d{1,4}(\.\d{1,4}){0,3}(-[a-z0-9]{1,12})?$/
 
+/**
+ * MEMBERSHIP, not shape — and the difference is the whole guarantee.
+ *
+ * A shape check was the first version and it was wrong in a way worth recording, because it
+ * looked obviously sufficient. A tool name arriving here comes off the TRANSCRIPT, which
+ * stores model output before the registry has ever been consulted (`agent/loop.ts` appends
+ * the assistant message, then resolves), so a hallucinated `read_halcyon_nda_client_src` is
+ * on disk and looks exactly like a tool name. Worse, and with no hallucination needed at
+ * all: an MCP tool is called `mcp__<server>__<tool>`, and `<server>` is a key out of the
+ * user's own config file — their client's name, their project's codename. That fires on the
+ * ordinary path, on a correctly configured machine, with nothing tampered with.
+ *
+ * So a name is printed only if it is one we ship. An MCP tool collapses to the prefix, which
+ * is ours: the report still says MCP tools were used and how often, and says nothing about
+ * whose. Everything else becomes `unknown-tool`, which loses a name and cannot leak one.
+ */
 function safeToolName(name: string): string {
-  return TOOL_NAME.test(name) ? name : 'unknown-tool'
+  if (BUILT_IN_TOOL_NAMES.has(name)) return name
+  if (name.startsWith(MCP_TOOL_PREFIX)) return 'mcp-tool'
+  return 'unknown-tool'
 }
 function safeMode(mode: string): string {
   return KNOWN_MODES.has(mode) ? mode : 'unrecognised-mode'
@@ -223,6 +263,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
   let assistantMessages = 0
   let toolCalls = 0
   let toolFailures = 0
+  let unattributedFailures = 0
   let compactions = 0
   let contractSessions = 0
   let manualGateSessions = 0
@@ -324,11 +365,20 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         const failed = ok === false || (ok === undefined && classify(m.content) !== 'other'
           && /error|failed|refus|could not|cannot|denied|not found/i.test(m.content))
         if (failed) {
-          toolFailures++
-          const stat = byTool.get(name ?? 'unknown')
-            ?? { name: name ?? 'unknown', calls: 0, failed: 0, repeats: 0, failures: {} }
-          stat.failed++
           const kind = classify(m.content)
+          // A result whose call was never announced cannot be attributed, and inventing a
+          // row for it was a real bug rather than an untidiness: the row had `calls: 0`
+          // while `toolFailures` still rose, so a transcript with one orphan rendered
+          // "1 calls, 2 failed — 200%". A percentage over a hundred in a report somebody
+          // forwards as evidence discredits every number beside it.
+          if (name === undefined) {
+            unattributedFailures++
+            continue
+          }
+          toolFailures++
+          const stat = byTool.get(name)
+            ?? { name, calls: 0, failed: 0, repeats: 0, failures: {} }
+          stat.failed++
           stat.failures[kind] = (stat.failures[kind] ?? 0) + 1
           byTool.set(stat.name, stat)
         }
@@ -351,6 +401,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
     assistantMessages,
     toolCalls,
     toolFailures,
+    unattributedFailures,
     callsPerSession: sessions === 0 ? 0 : Math.round((toolCalls / sessions) * 10) / 10,
     modes,
     versions,
@@ -382,6 +433,9 @@ export function renderDiagnosis(d: Diagnosis): string {
     `handed back    ${d.harnessMessages} turns the gates gave back to the model` +
       (d.userMessages === 0 ? '' : ` — ${Math.round((d.harnessMessages / d.userMessages) * 100)}% of what the person sent`),
     `tool calls     ${d.toolCalls} (${d.callsPerSession} per session), ${d.toolFailures} failed — ${pct(d.toolFailures, d.toolCalls)}`,
+    ...(d.unattributedFailures > 0
+      ? [`orphan results ${d.unattributedFailures} failed results had no call to attribute them to`]
+      : []),
     `compactions    ${d.compactions}`,
     `contracts      ${d.contractSessions} of ${d.sessions} sessions distilled one`,
   ]
