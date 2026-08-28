@@ -30,7 +30,9 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 
 /** Builds one session on disk out of chat messages and returns the diagnosis of it. */
-function diagnosisOf(lines: unknown[]): ReturnType<typeof diagnose> {
+function diagnosisOf(
+  lines: unknown[], extraMeta: Partial<SessionMeta> = {},
+): ReturnType<typeof diagnose> {
   writeFileSync(
     join(root, '.privatecode', 'state', 'sessions', 's.jsonl'),
     lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8',
@@ -39,6 +41,7 @@ function diagnosisOf(lines: unknown[]): ReturnType<typeof diagnose> {
   const meta: SessionMeta = {
     id: 's', title: 'something confidential', createdAt: '2026-08-01T10:00:00.000Z',
     updatedAt: '2026-08-02T10:00:00.000Z', workspaceRoot: root, mode: 'normal',
+    ...extraMeta,
   }
   return diagnose(root, [meta])
 }
@@ -526,5 +529,47 @@ describe('the audit findings', () => {
     const { PREMISE_FAILURE_PREFIX } = await import('../src/session/premises.js')
     expect(classify(`${PREMISE_FAILURE_PREFIX}\n\nsrc/a.ts does not contain that line`))
       .toBe('unverified-premise')
+  })
+})
+
+/**
+ * The version, checked by membership rather than by shape — third attempt.
+ *
+ * An audit refuted the leak on reachability: `appVersion` is written by our own shell from
+ * Tauri's `getVersion()`, so nobody hostile chooses it. The refutation is sound and the
+ * check was still wrong, because the law in this file is not "is it reachable" — it is
+ * `membership admits what we shipped`, and a twelve-character lowercase tail is a shape.
+ * Twice now that shape has been tightened rather than replaced, and twice a reviewer has
+ * walked through what was left.
+ */
+describe('app version', () => {
+  const versionsIn = (appVersion: string): string => {
+    const d = diagnosisOf([person('hi')], { appVersion })
+    return renderDiagnosis(d)
+  }
+
+  test('a plain version prints, and so does a pre-release tag we ship', () => {
+    expect(versionsIn('0.1.5')).toContain('0.1.5')
+    expect(versionsIn('1.2.3.4')).toContain('1.2.3.4')
+    expect(versionsIn('0.2.0-rc1')).toContain('0.2.0-rc1')
+    expect(versionsIn('0.2.0-beta')).toContain('0.2.0-beta')
+  })
+
+  test('a tag we do not ship a name for is dropped, and the loss is declared', () => {
+    const report = versionsIn('0.1.5-zebracorp')
+    expect(report).not.toContain('zebracorp')
+    // The numbers survive, because they answer the only question anybody asks of this line.
+    expect(report).toContain('0.1.5')
+    // And the reader is told, so two builds do not silently collapse into one.
+    expect(report).toContain('does not ship a name for')
+  })
+
+  test('anything that is not a version at all loses everything', () => {
+    for (const bad of ['D:/clients/zebracorp', 'ProjectAtlas.MergerWith.ZebraCorp', '']) {
+      const report = versionsIn(bad)
+      for (const secret of ['zebracorp', 'ZebraCorp', 'clients', 'Atlas', 'Merger']) {
+        expect(report).not.toContain(secret)
+      }
+    }
   })
 })

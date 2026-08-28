@@ -365,7 +365,13 @@ describe('membership, not shape', () => {
       expect(report).not.toContain('billing')
       expect(report).not.toContain('zebracorp')
       expect(report).not.toContain('ProjectAtlas')
-      expect(report).toContain('unrecognised-version')
+      expect(report).not.toContain('x'.repeat(20))
+      // What SURVIVES is the numeric core, which cannot carry a word, and a line saying a
+      // tag was dropped. The check is membership now rather than a tightened shape: a tag
+      // is printed only if it is one we ship, so the sentinel is no longer the only
+      // outcome — but nothing recognisable gets through either way, which is the property
+      // this test exists for.
+      expect(report).toContain('does not ship a name for')
     }
   })
 

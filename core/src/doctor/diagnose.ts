@@ -275,7 +275,20 @@ const KNOWN_MODES = new Set(['normal', 'plan', 'auto-edit', 'autopilot'])
  * separators are dots. Dots are what had to go, and the length cap is the belt: a version is
  * a short thing, and anything long enough to be a sentence is not one.
  */
-const VERSION = /^\d{1,4}(\.\d{1,4}){0,3}(-[a-z0-9]{1,12})?$/
+const VERSION_CORE = /^\d{1,4}(\.\d{1,4}){0,3}$/
+/**
+ * Pre-release tags we ship, with an optional number after them.
+ *
+ * The third and last version of this check, and the first one that obeys the file's own
+ * law. `(-[a-z0-9]{1,12})?` survived the audit's reachability argument — `appVersion` is
+ * written by our own shell from Tauri's `getVersion()`, so nobody hostile is choosing it —
+ * but the law here is not "is it reachable", it is `membership admits what we shipped`. A
+ * twelve-character lowercase tail is a shape, and `0.1.5-zebracorp` printed whole.
+ *
+ * Twice now a shape has been tightened rather than replaced, and twice a reviewer has walked
+ * through what was left. The tag is a closed set now; the digits after it carry no letters.
+ */
+const KNOWN_PRERELEASE = /^(alpha|beta|rc|dev|nightly|preview|canary)\d{0,3}$/
 
 /**
  * MEMBERSHIP, not shape — and the difference is the whole guarantee.
@@ -301,8 +314,28 @@ function safeToolName(name: string): string {
 function safeMode(mode: string): string {
   return KNOWN_MODES.has(mode) ? mode : 'unrecognised-mode'
 }
-function safeVersion(version: string): string {
-  return VERSION.test(version) ? version : 'unrecognised-version'
+/**
+ * Returns the version, the version without an unrecognised tag, or nothing recognisable.
+ *
+ * Dropping just the tag rather than the whole string is deliberate: the numeric core is the
+ * answer to the question anybody actually asks of this line — "did that get better after
+ * 0.1.5" — and it cannot carry a word. When a tag IS dropped the caller is told, because a
+ * silent loss is the one thing this module refuses: a reader comparing two reports would
+ * otherwise see two builds silently collapse into one.
+ */
+function safeVersion(version: string): { version: string; droppedTag: boolean } {
+  if (VERSION_CORE.test(version)) return { version, droppedTag: false }
+  const dash = version.indexOf('-')
+  if (dash > 0) {
+    const core = version.slice(0, dash)
+    const tag = version.slice(dash + 1)
+    if (VERSION_CORE.test(core)) {
+      return KNOWN_PRERELEASE.test(tag)
+        ? { version, droppedTag: false }
+        : { version: core, droppedTag: true }
+    }
+  }
+  return { version: 'unrecognised-version', droppedTag: false }
 }
 
 /** Cheap, stable, and one-way: only used to tell "these two calls were identical" apart
@@ -366,7 +399,10 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
     const version = (meta as { appVersion?: string }).appVersion
     if (typeof version === 'string' && version !== '') {
       const v = safeVersion(version)
-      versions[v] = (versions[v] ?? 0) + 1
+      versions[v.version] = (versions[v.version] ?? 0) + 1
+      if (v.droppedTag) {
+        problems.push('a session recorded a build tag this report does not ship a name for, so only the numbers of its version are shown')
+      }
     }
     if (meta.contract !== undefined) contractSessions++
     if ((meta as { gateMode?: string }).gateMode === 'manual') manualGateSessions++
@@ -716,10 +752,15 @@ export function renderDiagnosis(d: Diagnosis): string {
     // written into a document whose whole purpose is to be forwarded as evidence. A ratio
     // off one or two messages is noise; below the threshold the count still travels and the
     // invitation to over-read it does not.
+    // Says what it is made of, because an audit found the number standing alone with
+    // nowhere in the report to account for it — a reader told the machine took nine turns
+    // and given no way to see what any of them were. The three parts each have their own
+    // line or section below, so the total reconciles.
     `harness turns  ${d.harnessMessages} turns the machine took, not the person` +
+      ' — checks, status notes and compaction briefings, each broken out below' +
       (d.userMessages < RATIO_MIN_MESSAGES
         ? ''
-        : ` — ${Math.round((d.harnessMessages / d.userMessages) * 100)}% of what the person sent`),
+        : `\n               ${Math.round((d.harnessMessages / d.userMessages) * 100)}% of what the person sent`),
     `tool calls     ${d.toolCalls} (${d.callsPerSession} per session), ${d.toolFailures} failed — ${pct(d.toolFailures, d.toolCalls)}`,
     ...(d.estimatedFailures > 0
       ? [`estimated      ${d.estimatedFailures} of those failures were read from the result text, ` +
