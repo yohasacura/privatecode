@@ -87,3 +87,67 @@ describe('attaching files to a message', () => {
     expect(notes[0]).toMatch(/could not be read/)
   })
 })
+
+/**
+ * Attaching a FOLDER.
+ *
+ * Before this existed the path went straight to `readFile`, which fails on a directory with
+ * EISDIR, so dropping a folder onto the window produced "could not be read (EISDIR: illegal
+ * operation on a directory)" — an implementation detail offered as an answer to a reasonable
+ * request. A folder attaches as the LISTING of what is in it, because contents would spend
+ * the whole budget on whichever files were walked first.
+ */
+describe('attaching a folder', () => {
+  test('a folder attaches as the files under it, not their contents', async () => {
+    mkdirSync(join(root, 'src', 'deep'), { recursive: true })
+    write('src/a.ts', 'export const a = 1')
+    write('src/deep/b.ts', 'SHOULD-NOT-APPEAR-VERBATIM')
+
+    const r = await attachFiles(ws, ['src'], 'what is in there?')
+
+    expect(r.text).toContain('src/a.ts')
+    expect(r.text).toContain('src/deep/b.ts')
+    // The whole point of a listing: the bodies stay on disk until read_file asks for one.
+    expect(r.text).not.toContain('SHOULD-NOT-APPEAR-VERBATIM')
+    expect(r.text).toContain('what is in there?')
+    expect(r.notes.join(' ')).toContain('2 files')
+  })
+
+  test('the EISDIR message is gone', async () => {
+    mkdirSync(join(root, 'empty-ish'), { recursive: true })
+    write('empty-ish/x.txt', 'x')
+    const r = await attachFiles(ws, ['empty-ish'], 'hi')
+    expect(r.notes.join(' ')).not.toContain('EISDIR')
+    expect(r.notes.join(' ')).not.toContain('could not be read')
+  })
+
+  test('a folder with no files says so rather than attaching nothing', async () => {
+    mkdirSync(join(root, 'hollow'), { recursive: true })
+    const r = await attachFiles(ws, ['hollow'], 'hi')
+    expect(r.notes.join(' ')).toContain('no files in it')
+  })
+
+  test('the listing skips dependency directories', async () => {
+    mkdirSync(join(root, 'proj', 'node_modules', 'pkg'), { recursive: true })
+    write('proj/node_modules/pkg/index.js', 'x')
+    mkdirSync(join(root, 'proj', 'src'), { recursive: true })
+    write('proj/src/main.ts', 'y')
+
+    const r = await attachFiles(ws, ['proj'], 'hi')
+
+    expect(r.text).toContain('proj/src/main.ts')
+    expect(r.text).not.toContain('node_modules')
+  })
+
+  test('a file and a folder attach together', async () => {
+    write('src/a.ts', 'export const a = 1')
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    write('docs/readme.md', '# hi')
+
+    const r = await attachFiles(ws, ['src/a.ts', 'docs'], 'both please')
+
+    // The file arrives with its contents, numbered; the folder as paths.
+    expect(r.text).toContain('export const a = 1')
+    expect(r.text).toContain('docs/readme.md')
+  })
+})

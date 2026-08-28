@@ -256,6 +256,27 @@ export interface FsFindParams { query: string; limit?: number }
 export interface FsFindResult { paths: string[] }
 
 /**
+ * Absolute paths from a drag-and-drop, turned into the spelling `send`'s `attach` takes.
+ *
+ * The window cannot do this itself and should not try. A dropped path arrives from the OS
+ * as `D:\work\engine\src\main.rs`; `attach` wants `engine/src/main.rs`, and the mapping
+ * lives in `Workspace` — which mount owns the path, what that mount is called, and whether
+ * the path escapes the jail once symlinks and 8.3 aliases are resolved. Answering that in
+ * the UI would mean shipping a second, worse copy of the containment rules.
+ *
+ * Rejections come back per path rather than failing the batch: dropping four files of
+ * which one sits outside the workspace should attach three and say why the fourth did not.
+ */
+export interface AttachResolveParams { paths: string[] }
+export interface AttachResolveResult {
+  /** Workspace-relative, forward slashes, mount-prefixed in a multi-folder workspace —
+   * ready to hand straight back as `send`'s `attach`. `dir` drives the chip's label; the
+   * expansion itself happens core-side at send time. */
+  resolved: { path: string; dir: boolean }[]
+  rejected: { path: string; reason: string }[]
+}
+
+/**
  * The working tree, for the Changes panel.
  *
  * Separate from the model's read-only `git_status` tool, which returns prose for a context
@@ -504,6 +525,7 @@ export interface HostMethodMap {
   'question.reply': { params: QuestionReplyParams; result: QuestionReplyResult }
   'fs.tree': { params: FsTreeParams; result: FsTreeResult }
   'fs.find': { params: FsFindParams; result: FsFindResult }
+  'attach.resolve': { params: AttachResolveParams; result: AttachResolveResult }
   'checkpoints.restoreFile': {
     params: CheckpointsRestoreFileParams; result: CheckpointsRestoreFileResult
   }

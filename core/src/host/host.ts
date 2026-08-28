@@ -6,6 +6,7 @@ import type { AgentEvents } from '../agent/loop.js'
 import { HEALTH_CHECK_TIMEOUT_MS } from '../cli/render.js'
 import type { ApprovalDecision, InteractionPort } from '../interaction.js'
 import { LlamaClient, LlamaRequestError } from '../llama/client.js'
+import { fsErrorReason } from '../tools/atomic-write.js'
 import { looksLikeTask } from '../session/contract.js'
 import { PermissionEngine } from '../permissions/engine.js'
 import {
@@ -71,6 +72,8 @@ import type {
   FsReadParams,
   FsReadResult,
   FsTreeEntry,
+  AttachResolveParams,
+  AttachResolveResult,
   FsFindParams,
   FsFindResult,
   GitCommitParams,
@@ -453,6 +456,7 @@ export class SessionHost {
       case 'question.reply': return this.questionReply(params as QuestionReplyParams)
       case 'fs.tree': return this.fsTree((params ?? {}) as FsTreeParams)
       case 'fs.find': return this.fsFind(params as FsFindParams)
+      case 'attach.resolve': return this.attachResolve(params as AttachResolveParams)
       case 'workspace.get': return this.workspaceGet()
       case 'workspace.set': return this.workspaceSet(params as WorkspaceSetParams)
       case 'prompt.improve': return this.promptImprove(params as PromptImproveParams)
@@ -1427,6 +1431,47 @@ export class SessionHost {
     }
     const limit = Math.min(Math.max(params.limit ?? 20, 1), 100)
     return { paths: rankFiles(this.fileIndex, params.query, limit).map((m) => m.path) }
+  }
+
+  /**
+   * Dropped OS paths, mapped into the workspace.
+   *
+   * `workspace.display` is the whole mapping, and it is asked for one path at a time so a
+   * batch survives a bad member: dropping a folder plus a file from Downloads attaches the
+   * folder and says why the other one did not. `display` throws for anything outside every
+   * mount, which is the containment check — the UI never sees a path it could not have
+   * typed into `@` itself.
+   */
+  private async attachResolve(params: AttachResolveParams): Promise<AttachResolveResult> {
+    const { workspace } = this.requireInitialized()
+    const resolved: { path: string; dir: boolean }[] = []
+    const rejected: { path: string; reason: string }[] = []
+
+    for (const dropped of params.paths) {
+      // Not named `relative`: `node:path`'s `relative` is imported into this module and a
+      // local of that name would shadow it for the rest of the block.
+      let inside: string
+      try {
+        inside = workspace.display(dropped)
+      } catch {
+        rejected.push({
+          path: dropped,
+          reason: 'it is not inside this workspace — add its folder to the workspace first',
+        })
+        continue
+      }
+      // Asked of the filesystem rather than guessed from the name: an extensionless file
+      // and a directory look identical in a path, and the chip has to say which it is.
+      let dir: boolean
+      try {
+        dir = (await stat(workspace.resolve(inside))).isDirectory()
+      } catch (e) {
+        rejected.push({ path: dropped, reason: fsErrorReason(dropped, e) })
+        continue
+      }
+      resolved.push({ path: inside, dir })
+    }
+    return { resolved, rejected }
   }
 
   /** The folders this workspace is made of, with what git is under each. */

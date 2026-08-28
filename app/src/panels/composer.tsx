@@ -5,6 +5,7 @@ import type { ProtocolClient } from '../lib/client'
 import { pendingTool, type ChatAction, type ChatState } from '../lib/state'
 import { formatDuration, formatProgress } from '../lib/format'
 import { applyMention, mentionAtCaret, type Mention } from '../lib/mentions'
+import { pathDrag, subscribePathDrag, within, type PathDrag } from '../lib/drag'
 import { Icon } from '../components/icons'
 import { carryAcceptance, commandShaped, glueSuggestions, lintPrompt, lintShaped, taskShaped, type DraftSuggestions } from '../lib/prompt-lint'
 
@@ -195,6 +196,121 @@ export function Composer({
       .catch(() => { if (!cancelled) setMentionHits([]) })
     return () => { cancelled = true }
   }, [client, mention?.query])
+
+  /**
+   * Attaches paths the person did not type: a drop from Explorer, a drag out of the tree.
+   *
+   * Both halves are required and neither is optional. `attached` is the list `submit` sends;
+   * the text is what keeps it there, because `liveAttachments` filters `attached` by what is
+   * still written in the box (see its comment). Appended at the END rather than at the caret
+   * — a drop has no caret, and splicing into the middle of a half-written sentence is not
+   * what anyone means by dropping a file on a window.
+   */
+  function attachPaths(paths: string[]): void {
+    if (paths.length === 0) return
+    setAttached((a) => [...new Set([...a, ...paths])])
+    setInput((text) => {
+      const fresh = paths.filter((p) => !text.includes(`@${p}`))
+      if (fresh.length === 0) return text
+      const mentions = fresh.map((p) => `@${p}`).join(' ')
+      // The space before matters: `mentionAtCaret` only opens the picker on an `@` that
+      // starts a word, so gluing a mention onto the previous word would make a token that
+      // reads as a mention to `liveAttachments` and as prose to everything else.
+      return text === '' ? `${mentions} ` : `${text.replace(/\s+$/, '')} ${mentions} `
+    })
+    requestAnimationFrame(() => textareaRef.current?.focus())
+  }
+
+  /**
+   * Files and folders dropped onto the window from outside the app.
+   *
+   * Tauri's own drag-drop event, not HTML5. That is not a preference: the webview
+   * intercepts OS drops by default (`dragDropEnabled`, on since the window was created), so
+   * an HTML5 `drop` handler never fires on Windows — and even with the interception turned
+   * off, a WebView2 renderer is handed `File` objects with no filesystem path, while
+   * `attach` is a list of paths. The Tauri route gives absolute OS paths, which is exactly
+   * what the host can map into the workspace.
+   *
+   * Imported lazily and failing quietly, because the dev bridge (`?ws=`) is a plain browser
+   * tab with no Tauri IPC at all. Dropping a file there does nothing, which is honest — the
+   * alternative is a boot-time crash in the one mode used for UI work.
+   */
+  const [dropping, setDropping] = useState(false)
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    let cancelled = false
+
+    void (async () => {
+      try {
+        const { getCurrentWebview } = await import('@tauri-apps/api/webview')
+        const stop = await getCurrentWebview().onDragDropEvent((event) => {
+          const payload = event.payload
+          if (payload.type === 'enter' || payload.type === 'over') { setDropping(true); return }
+          if (payload.type === 'leave') { setDropping(false); return }
+
+          setDropping(false)
+          if (payload.paths.length === 0) return
+          client.call('attach.resolve', { paths: payload.paths })
+            .then((r) => {
+              attachPaths(r.resolved.map((x) => x.path))
+              // Said out loud, one line each. A file that silently failed to attach is the
+              // failure mode that matters here: you would send the message believing the
+              // model had been shown something it never saw.
+              for (const bad of r.rejected) {
+                dispatch({ type: 'settings-problem', text: `${bad.path} was not attached: ${bad.reason}` })
+              }
+            })
+            .catch((e: Error) => dispatch({ type: 'settings-problem', text: `Drop failed: ${e.message}` }))
+        })
+        if (cancelled) stop()
+        else unlisten = stop
+      } catch {
+        // Not running under Tauri. Nothing to listen to, and nothing wrong.
+      }
+    })()
+
+    return () => { cancelled = true; unlisten?.() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- attachPaths is re-created per render by design
+  }, [client, dispatch])
+
+  /**
+   * Paths dragged out of the workspace tree, which cannot use the route above.
+   *
+   * Tauri's event only sees drags arriving from OUTSIDE the app; a drag that starts and
+   * ends inside the window never reaches it. Nor can that half use HTML5 drag-and-drop —
+   * the same `dragDropEnabled` that makes the Explorer drop deliver PATHS is documented by
+   * Tauri as disabling HTML5 DnD on Windows, so the two features would trade places rather
+   * than coexist. Pointer events belong to neither mechanism and so work alongside both;
+   * `lib/drag.ts` carries the reasoning and the store.
+   *
+   * Capture phase, deliberately: the tree's own pointerup ends the drag, and this listener
+   * has to read it first. Capture on `window` runs before any bubble-phase listener for the
+   * same event, which makes that an ordering guarantee instead of a race.
+   */
+  const composerRef = useRef<HTMLDivElement>(null)
+  /** The drag in flight, or null. Held as state (not read from the store on render) so the
+   * chip follows the cursor: the store notifies on every move, and this is what turns that
+   * into a re-render. */
+  const [carried, setCarried] = useState<PathDrag | null>(null)
+  const carrying = carried !== null
+  useEffect(() => subscribePathDrag((drag) => {
+    setCarried(drag)
+    setDropping(drag !== null && within(composerRef.current, drag.x, drag.y))
+  }), [])
+
+  useEffect(() => {
+    function onUp(e: PointerEvent): void {
+      const drag = pathDrag()
+      if (drag === null) return
+      if (!within(composerRef.current, e.clientX, e.clientY)) return
+      attachPaths(drag.paths)
+    }
+    window.addEventListener('pointerup', onUp, { capture: true })
+    return () => window.removeEventListener('pointerup', onUp, { capture: true })
+    // `attachPaths` is captured once, and that is safe rather than overlooked: its body
+    // touches only its argument, the two state setters (stable by identity) and a ref. It
+    // reads no render-scoped value, so a fresh closure per render would behave identically.
+  }, [])
 
   /** Replaces the `@…` being typed with the chosen path, and remembers the attachment. */
   function choose(path: string): void {
@@ -839,7 +955,29 @@ export function Composer({
   }
 
   return (
-    <div class="composer">
+    <div
+      ref={composerRef}
+      /* Two independent sources for one highlight: `dropping` is set by Tauri's OS-level
+         drag event (a file from Explorer) and by a tree row being carried over this box.
+         `carrying` is the weaker state — something is in flight somewhere on screen — and
+         it is what makes the target findable while the pointer is still elsewhere. */
+      class={`composer${carrying ? ' composer-carrying' : ''}${dropping ? ' composer-dropping' : ''}`}
+    >
+      {/* What is being carried, under the cursor. A pointer drag has no browser-supplied
+          drag image, so without this the gesture is invisible and indistinguishable from a
+          stuck click. Rendered here rather than in App because the composer already owns
+          the drag subscription; `position: fixed` makes its place in the tree irrelevant. */}
+      {carried !== null && (
+        <div
+          class="drag-chip"
+          style={{ left: `${carried.x + 12}px`, top: `${carried.y + 12}px` }}
+          aria-hidden="true"
+        >
+          {carried.paths.length === 1
+            ? (carried.paths[0] as string).split('/').pop()
+            : `${carried.paths.length} paths`}
+        </div>
+      )}
       {pendingAutopilot && (
         <div class="autopilot-confirm">
           <span>Autopilot edits files and runs commands with no further prompts.</span>

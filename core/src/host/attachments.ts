@@ -1,6 +1,7 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { ATTACHMENT_PREAMBLE } from '../session/attachment-text.js'
 import type { Workspace } from '../workspace.js'
+import { walkFiles } from './file-search.js'
 
 /**
  * Files the user attached to a message with `@`.
@@ -24,6 +25,20 @@ export const ATTACH_BUDGET_CHARS = 40_000
 /** No single file may eat the whole budget while others get nothing. */
 const ATTACH_PER_FILE_CHARS = 24_000
 
+/**
+ * A folder attaches as a LISTING of the files under it, not as their contents.
+ *
+ * Contents was the obvious reading of "attach this folder" and it is the wrong one: a
+ * source directory is routinely megabytes, so every folder attachment would spend the whole
+ * budget on whichever files happened to be walked first and report the rest as dropped.
+ * What the model actually needs from a folder is which files are IN it — from there
+ * `read_file` fetches the two that matter, at the moment it knows which two those are.
+ *
+ * Walked with the same skip list and the same ceiling the `@` picker uses (`file-search.ts`),
+ * so a folder cannot attach a dependency tree and the walk cannot run away on a monorepo.
+ */
+const ATTACH_LISTING_MAX_FILES = 300
+
 export interface Attachment {
   path: string
   /** Rendered block, or `null` when the file could not be read at all. */
@@ -38,6 +53,43 @@ export interface AttachedMessage {
   text: string
   /** One line per attachment for the window to show. Empty when nothing was attached. */
   notes: string[]
+}
+
+/**
+ * One folder, rendered as the files under it.
+ *
+ * Deliberately NOT numbered like a file body: numbering says "these are lines of a
+ * document", and reading a path off a numbered list invites the model to cite `folder:12`
+ * as if that addressed something. Plain paths, one per line, in the same slash-separated
+ * spelling every other tool takes back.
+ */
+async function folderListing(
+  path: string, absolute: string,
+): Promise<{ body: string; note?: string }> {
+  let files: string[]
+  try {
+    // One over the cap, so "there were exactly this many" and "there were more" are
+    // distinguishable — the same trick `search_code` plays on ripgrep's `--max-count`.
+    files = await walkFiles(absolute, ATTACH_LISTING_MAX_FILES + 1)
+  } catch (e) {
+    return {
+      body: '', note: `${path} could not be listed (${e instanceof Error ? e.message : String(e)})`,
+    }
+  }
+  if (files.length === 0) {
+    return { body: '', note: `${path} is a folder with no files in it` }
+  }
+
+  const clipped = files.length > ATTACH_LISTING_MAX_FILES
+  const shown = files.slice(0, ATTACH_LISTING_MAX_FILES).sort()
+  const body = shown.map((f) => `${path}/${f}`).join('\n')
+  return clipped
+    ? {
+        body,
+        note: `folder listing, first ${ATTACH_LISTING_MAX_FILES} files of more; ` +
+          'find_files can narrow it',
+      }
+    : { body: body, note: `folder listing, ${shown.length} ${shown.length === 1 ? 'file' : 'files'}` }
 }
 
 function numbered(body: string): { text: string; lines: number } {
@@ -76,9 +128,43 @@ export async function attachFiles(
       continue
     }
 
+    let absolute: string
+    try {
+      absolute = workspace.resolve(path)
+    } catch (e) {
+      const note = `${path} could not be read (${e instanceof Error ? e.message : String(e)})`
+      attachments.push({ path, body: null, note })
+      notes.push(note)
+      continue
+    }
+
+    // Directories, before the read. Without this the `readFile` below returned EISDIR and
+    // the person who dropped a folder onto the window got "could not be read (EISDIR:
+    // illegal operation on a directory)" — an error message describing an implementation
+    // detail of a thing they were entitled to ask for.
+    let directory = false
+    try {
+      directory = (await stat(absolute)).isDirectory()
+    } catch {
+      // Left to `readFile` below to report: it fails on the same path for the same reason
+      // and its message names the file, where a stat failure here would name only itself.
+    }
+
+    if (directory) {
+      const listing = await folderListing(path, absolute)
+      spent += listing.body.length
+      if (listing.note !== undefined) {
+        attachments.push({ path, body: listing.body, note: listing.note })
+        notes.push(listing.note)
+      } else {
+        attachments.push({ path, body: listing.body })
+      }
+      continue
+    }
+
     let raw: string
     try {
-      raw = await readFile(workspace.resolve(path), 'utf8')
+      raw = await readFile(absolute, 'utf8')
     } catch (e) {
       const note = `${path} could not be read (${e instanceof Error ? e.message : String(e)})`
       attachments.push({ path, body: null, note })

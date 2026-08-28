@@ -1548,6 +1548,44 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 }
 .composer > * { max-width: var(--read); margin-left: auto; margin-right: auto; }
 
+/* Dropping a file or folder onto the window.
+
+   The composer is what lights up, not the window, because the composer is where the thing
+   will land: a full-screen tint says "we caught it" and leaves you looking for what it did.
+   Set from two independent places — Tauri's OS-level drag event for a drop from Explorer,
+   and ordinary HTML5 dragover for a row dragged out of the tree — which is why it is a
+   state flag rather than a `:has()` selector on a drag that only one of the two produces. */
+.composer-dropping .composer-shell {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.composer-dropping .composer-input::placeholder { color: var(--accent); }
+
+/* Something is being carried somewhere on screen. A dashed edge rather than the full
+   accent glow: the target has to be findable before the pointer reaches it, and a box
+   that already looks armed from across the window leaves nothing for arrival to say. */
+.composer-carrying .composer-shell { border-style: dashed; }
+
+/* The thing under the cursor during a pointer drag. `fixed`, because it is positioned in
+   viewport coordinates straight from the pointer event, and `pointer-events: none` so it
+   cannot become the element the drop lands on. */
+.drag-chip {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  padding: 3px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
 /* Positioned wrapper the run-config popover anchors to — OUTSIDE the shell's clip box.
    Anchored inside the shell it was cut to the sliver poking above the composer bar. */
 .composer-anchor { position: relative; }

@@ -5,6 +5,7 @@ import { compareTreeRows, type ChangeDecor } from '../lib/path-tree'
 import type { ChatItem } from '../lib/state'
 import { describeMark, type GhostRow, type GitMark } from '../lib/git-scm'
 import { Icon } from '../components/icons'
+import { DRAG_THRESHOLD_PX, beginPathDrag, endPathDrag, movePathDrag } from '../lib/drag'
 
 /**
  * The file tree panel (Plan 4 Task 7): lazy-loaded directories over `fs.tree`, refreshed
@@ -61,6 +62,64 @@ export function affectedDirectories(name: string, argsJson: string): string[] {
     return typeof path === 'string' ? [dirOf(path)] : []
   }
   return []
+}
+
+/**
+ * Press, move, drop: one tree row on its way to the composer.
+ *
+ * A module-level function, not a hook, because none of it is component state — the drag
+ * store is module-level and the listeners live on `window` for exactly as long as the
+ * button is held. Written as press-then-threshold rather than starting on the press itself
+ * so that a row remains, first and foremost, a button you click to open a file.
+ */
+function startRowDrag(e: PointerEvent, path: string): void {
+  // Left button only. A right-click opens no menu here today, but starting a drag from one
+  // would be wrong the moment it does, and middle-drag is a scroll gesture on many mice.
+  if (e.button !== 0) return
+
+  const startX = e.clientX
+  const startY = e.clientY
+  let dragging = false
+
+  function move(ev: PointerEvent): void {
+    if (!dragging) {
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD_PX) return
+      dragging = true
+      beginPathDrag([path], ev.clientX, ev.clientY)
+      return
+    }
+    movePathDrag(ev.clientX, ev.clientY)
+  }
+
+  function up(): void {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    window.removeEventListener('pointercancel', cancel)
+    if (!dragging) return
+
+    // Ends the drag whatever happened to it — dropped on the composer, dropped on nothing,
+    // dropped on another panel. The composer got its chance already: its listener is
+    // registered in the CAPTURE phase on window, which the DOM runs before any bubble-phase
+    // listener on the same event, so "the composer decides, then this cleans up" is an
+    // ordering guarantee rather than a hope about registration order.
+    endPathDrag()
+
+    // The row's click fires after pointerup, and after a drag it would ALSO open the file
+    // in a tab — two outcomes from one gesture. Swallowed once, on the way up.
+    const swallow = (c: Event): void => { c.stopPropagation(); c.preventDefault() }
+    window.addEventListener('click', swallow, { capture: true, once: true })
+  }
+
+  function cancel(): void {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    window.removeEventListener('pointercancel', cancel)
+    if (dragging) endPathDrag()
+  }
+
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+  window.addEventListener('pointercancel', cancel)
 }
 
 /** A workspace mount, as the tree's top-level row knows it. */
@@ -507,6 +566,16 @@ function DirChildren({
             onClick={() => (entry.dir ? onToggle(childPath) : onOpenFile(childPath))}
             title={childPath}
             aria-expanded={entry.dir ? isExpanded : undefined}
+            /* Drag a row onto the composer to attach it. Directories too: a folder
+               attaches as a listing of what is in it, which is what you actually mean by
+               dragging `src` at a question. `childPath` is already in the exact spelling
+               `attach` takes — the tree builds it that way for the host — so nothing is
+               converted on the way.
+
+               Pointer events rather than `draggable`, because HTML5 drag-and-drop does not
+               work in this window at all; see `lib/drag.ts` for why, and why that is not
+               a preference. */
+            onPointerDown={(e) => startRowDrag(e, childPath)}
           >
             <span class="tree-chevron">
               {entry.dir ? (isExpanded ? Icon.chevronDown() : Icon.chevronRight()) : null}
