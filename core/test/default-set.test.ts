@@ -26,6 +26,10 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
      // written against what the code claims the schema is, rather than what it is, is the
      // plan that fails at the first migration.
      'database',
+     // Reads this workspace's own stored sessions and returns counts. Read-only in the
+     // strongest sense available: `doctor/diagnose.ts` is built so that nothing but numbers
+     // and a closed set of category names can come out of it.
+     'doctor',
      'find_files', 'git_status', 'list_dir', 'read_file',
      // Reads back the notes `remember` wrote, through the SAME freshness filter that puts
      // them in message 0. Read-only, and in plan mode deliberately: what earlier sessions

@@ -76,6 +76,10 @@ export interface TurnSummary {
 export interface InitParams {
   workspaceRoot: string
   serverUrl: string
+  /** The shell's own version, stamped onto every session this run creates. The sidecar has
+   * no way to know it — it is a Tauri build number, and the sidecar is a Node process the
+   * shell spawns — so the window has to say. See `SessionMeta.appVersion`. */
+  appVersion?: string
   /** Session id to resume instead of starting fresh. */
   resume?: string
   /**

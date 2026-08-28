@@ -296,6 +296,9 @@ export interface SessionOptions {
    * a spinner nobody can clear.
    */
   onStage?(info: StageInfo): void
+  /** The shell's version, stamped onto sessions this process creates. See
+   * `SessionMeta.appVersion`. Absent for callers with no app around them. */
+  appVersion?: string
   /**
    * Snapshot the workspace after every turn that changed it, and record what changed in
    * a work log. Absent means neither happens, which is what every caller that predates
@@ -829,6 +832,10 @@ export class Session {
         updatedAt: now,
         workspaceRoot: opts.workspaceRoot,
         mode: opts.mode ?? opts.engine?.mode ?? 'normal',
+        // Stamped at creation and never updated: the question `doctor` answers is which
+        // build this session RAN under, and a session resumed under a newer one did not
+        // run under it.
+        ...(opts.appVersion !== undefined ? { appVersion: opts.appVersion } : {}),
       }
       this.transcript = new Transcript()
       this.loadedCompaction = null

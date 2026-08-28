@@ -27,6 +27,15 @@ export interface SessionMeta {
    * silently turned them back on, which is the same surprise arriving from the other side.
    */
   gateMode?: 'auto' | 'manual'
+  /**
+   * Which build of the app this session ran under.
+   *
+   * Recorded so `doctor` can say whether a failure pattern belongs to a version — the
+   * question "did that get better after 0.1.5" is unanswerable without it, and it is the
+   * first question anybody asks of a diagnosis. Absent on sessions written before this
+   * existed, and on any caller that has no app around it (the CLI, tests).
+   */
+  appVersion?: string
 }
 
 /** One compaction swap's audit-trail marker line -- see the class doc comment below. */

@@ -293,6 +293,9 @@ export class SessionHost {
    * rebuilt per keystroke. Cleared by `init`, which replaces the whole host state. */
   /** Files AND directories: the `@` picker offers both, because a folder is a thing
    * you can attach. See `fsFind`. */
+  /** The shell's version, from `init`. Stamped onto every session this run creates so
+   * `doctor` can attribute a pattern to a build. */
+  private appVersion: string | undefined
   private fileIndex: { path: string; dir: boolean }[] | undefined
   /**
    * The project map, built once per WORKSPACE rather than per session.
@@ -549,6 +552,7 @@ export class SessionHost {
     phase('teardown')
 
     this.workspaceRoot = params.workspaceRoot
+    this.appVersion = params.appVersion
     // BEFORE anything opens a session store or a checkpoint store: this renames directories,
     // and renaming a path a live object already holds is how a migration eats history. Every
     // teardown above has already run, so nothing of the OLD workspace is holding these.
@@ -945,6 +949,7 @@ export class SessionHost {
     // Unconditional, unlike `onVerify`: every one of these stages runs in workspaces with
     // no verify command at all, and they are exactly the ones that produce the long silences.
     sessionOpts.onStage = (info) => this.emit('stage', info)
+    if (this.appVersion !== undefined) sessionOpts.appVersion = this.appVersion
     sessionOpts.onAcceptance = (info) => {
       const detail = info.kind === 'review'
         ? `${info.unmet} finding${info.unmet === 1 ? '' : 's'}`

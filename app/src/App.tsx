@@ -376,7 +376,18 @@ export default function App() {
       // `continueLast`: opening a workspace picks up where it was left, rather than
       // discarding the conversation you were in the middle of when you closed the window.
       // Starting clean is the New session button, one click away.
-      const init = await c.call('init', { workspaceRoot: workspace, serverUrl, continueLast: true })
+      // The shell's own version, so every session records which build it ran under and
+      // `doctor` can attribute a failure pattern to one. Imported lazily and allowed to
+      // fail: the dev bridge is a plain browser tab with no Tauri IPC, and a diagnosis
+      // missing a version number is worth more than a boot that crashed getting it.
+      let appVersion: string | undefined
+      try {
+        appVersion = await (await import('@tauri-apps/api/app')).getVersion()
+      } catch { /* not running under Tauri */ }
+      const init = await c.call('init', {
+        workspaceRoot: workspace, serverUrl, continueLast: true,
+        ...(appVersion !== undefined ? { appVersion } : {}),
+      })
       setWorkspaceLabel({ name: init.workspaceName, folders: init.folderCount })
       dispatch({
         type: 'session-switched',
