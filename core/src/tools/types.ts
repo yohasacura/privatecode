@@ -9,6 +9,15 @@ import type { SubAgentOutcome } from '../agent/subagent.js'
 
 export interface ToolContext {
   workspace: Workspace
+  /**
+   * Which session this call belongs to, when the caller knows.
+   *
+   * Only `search_history` reads it, and only to tell "this conversation" from "every other
+   * one" — a distinction that matters because the two answer different questions: the
+   * middle of THIS session that compaction summarised away, against where something was
+   * done before. Absent for the one-shot CLI and most tests, which have no session to be in.
+   */
+  sessionId?: string
   signal?: AbortSignal
   /**
    * Live output, for tools that produce it over time — run_command's stdout/stderr as it

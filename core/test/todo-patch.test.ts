@@ -153,3 +153,58 @@ test('add cannot walk the plan past the ceiling the whole-list form enforces', a
   // And it did not half-apply: the plan is exactly as it was.
   expect(s.list()).toHaveLength(50)
 })
+
+/**
+ * Closing the plan.
+ *
+ * There was no way to do it. `todos: []` is refused as "at least 1 item", and the only two
+ * callers that could empty the plan are the window's own button and the acceptance gate
+ * retiring a satisfied contract. So a model that had finished could tick every box and leave
+ * a completed card on screen, or replace the plan with a different one — which is what the
+ * owner watched it do, and reported as "it cannot close a plan, only recreate one".
+ */
+test('clear closes the plan', async () => {
+  const s = new TodoStore()
+  s.set([
+    { text: 'one', status: 'completed' },
+    { text: 'two', status: 'completed' },
+  ])
+
+  const r = await call(s, { clear: true })
+
+  expect(r.ok).toBe(true)
+  expect(s.list()).toEqual([])
+  expect(r.content).toContain('2 steps are gone')
+})
+
+test('clearing nothing says so rather than pretending', async () => {
+  const s = new TodoStore()
+  const r = await call(s, { clear: true })
+  expect(r.ok).toBe(true)
+  expect(r.content).toContain('no plan to close')
+})
+
+test('clear cannot be combined with edits to the plan it closes', async () => {
+  const s = new TodoStore()
+  s.set([{ text: 'one', status: 'pending' }])
+
+  // Two different intentions in one call: applying them needs an order, and either order is
+  // a guess about what was meant.
+  const r = await call(s, { clear: true, complete: [1] })
+
+  expect(r.ok).toBe(false)
+  expect(r.content).toContain('cannot be combined')
+  expect(s.list()).toHaveLength(1)
+})
+
+test('an empty todos list is still refused, so the two ways cannot be confused', async () => {
+  const s = new TodoStore()
+  s.set([{ text: 'one', status: 'pending' }])
+
+  // `todos: []` reads as "restructure the plan into nothing", which is the same outcome by
+  // a route that says something else. Closing is its own verb.
+  const r = await call(s, { todos: [] })
+
+  expect(r.ok).toBe(false)
+  expect(s.list()).toHaveLength(1)
+})

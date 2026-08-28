@@ -2,6 +2,8 @@ import type { Tool } from './types.js'
 import type { TodoItem } from '../interaction.js'
 
 export interface TodoWriteArgs {
+  /** Close the plan and remove it. Exclusive with every other field. */
+  clear?: boolean
   todos?: TodoItem[]
   complete?: number[]
   start?: number
@@ -107,10 +109,20 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
     'To CREATE or restructure the plan, send `todos` with the full list; that replaces it. ' +
     'Give each step a done_when: what will actually show it is finished.\n' +
     'The plan survives compaction and app restarts, so on a long task this is what ' +
-    'remembers the shape of the work when the conversation no longer does.',
+    'remembers the shape of the work when the conversation no longer does.\n' +
+    'To CLOSE it, send `clear: true` — when the task is done, or when it turned out not to ' +
+    'need a plan. A finished plan left on screen is a card the person has to dismiss and a ' +
+    'shape the next task has to work around.',
   parameters: {
     type: 'object',
     properties: {
+      clear: {
+        type: 'boolean',
+        description:
+          'Close the plan and remove it. Use when the work it described is finished, or ' +
+          'when it turned out not to need a plan at all. Cannot be combined with the other ' +
+          'fields — closing a plan and editing it are different intentions.',
+      },
       complete: {
         type: 'array',
         items: { type: 'number' },
@@ -159,6 +171,28 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
   },
   validate(raw) {
     const r = raw as Partial<TodoWriteArgs>
+    // Closing, first and alone.
+    //
+    // There was no way to do it at all: `todos: []` is refused as "at least 1 item", and the
+    // only two callers that could empty the plan are the window's own button and the
+    // acceptance gate retiring a satisfied contract. So a model that had finished could
+    // either tick every box and leave a completed card on screen, or replace the plan with a
+    // different one — which is what the owner watched it do.
+    //
+    // Exclusive rather than merged with the rest, because "close this" and "edit this" are
+    // different intentions and a call that did both would have to pick an order to apply
+    // them in, and either order is a guess about what was meant.
+    if (r?.clear === true) {
+      if (r.todos !== undefined || r.complete !== undefined || r.start !== undefined
+        || r.add !== undefined) {
+        return {
+          ok: false,
+          error: 'clear closes the plan and cannot be combined with edits to it — send ' +
+            'the edits first, or send clear on its own',
+        }
+      }
+      return { ok: true, args: { clear: true } }
+    }
     // The index-sized edits, checked first because they are the common call. Several may
     // arrive together — "finished 2, starting 3" is one thought and should be one call.
     if (r?.todos === undefined) {
@@ -251,6 +285,18 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
   async execute(args, ctx) {
     if (!ctx.todos) {
       return { ok: false, content: 'todo list is not available in this session' }
+    }
+
+    if (args.clear === true) {
+      const had = ctx.todos.list().length
+      ctx.todos.set([])
+      ctx.interaction?.todosChanged?.(ctx.todos.list())
+      return {
+        ok: true,
+        content: had === 0
+          ? 'There was no plan to close.'
+          : `Plan closed; ${had} ${had === 1 ? 'step is' : 'steps are'} gone.`,
+      }
     }
 
     if (args.todos === undefined) {

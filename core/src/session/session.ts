@@ -4104,6 +4104,8 @@ export class Session {
   private buildAgent(signal?: AbortSignal, sampling?: import('../llama/types.js').Sampling): Agent {
     const context: ToolContext = {
       workspace: this.workspace,
+      // So `search_history` can tell this conversation from every other one.
+      sessionId: this.meta.id,
       todos: this.opts.toolset.todos,
       // The toolset owns it, so it survives a session switch: closing a page the user is
       // looking at because they clicked Resume would be its own small betrayal.
