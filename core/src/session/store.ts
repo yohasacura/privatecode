@@ -18,6 +18,15 @@ export interface SessionMeta {
    * `session/contract.ts`. In the meta rather than the transcript because it must survive
    * every compaction swap verbatim and be re-promotable into each rebuilt system prompt. */
   contract?: import('./contract.js').TaskContract
+  /**
+   * Whether the post-turn gates run by themselves. Absent means they do.
+   *
+   * Stored, not merely held in memory, because the decision outlives the process. The owner
+   * turned the checks off, worked for a couple of hours, and then could not remember whether
+   * they were off — and on the old in-memory-only field, closing the window would have
+   * silently turned them back on, which is the same surprise arriving from the other side.
+   */
+  gateMode?: 'auto' | 'manual'
 }
 
 /** One compaction swap's audit-trail marker line -- see the class doc comment below. */

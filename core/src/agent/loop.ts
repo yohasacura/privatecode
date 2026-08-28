@@ -214,11 +214,14 @@ export interface AgentEvents {
    * same opt-in rule as the other delta callbacks, and is throttled in the client.
    */
   onProgress?(progress: StreamProgress): void
-  onToolCall?(name: string, args: string): void
+  /** `agent` names the WORKER that made the call, and is absent for the main model. A
+   * delegated read and a read the model did itself are the same event with a different
+   * author, and the window has to be able to say which. */
+  onToolCall?(name: string, args: string, agent?: string): void
   /** `callId` is the model's own id for this call. Passed because the host records how each
    * call ended in a file beside the session -- the transcript keeps the result TEXT, which
    * is all the model needs, and loses whether it worked, which is all the window needs. */
-  onToolResult?(name: string, result: ToolResult, callId: string): void
+  onToolResult?(name: string, result: ToolResult, callId: string, agent?: string): void
   onAssistantText?(text: string): void
   /** Emitted once the model call(s) of the step are over, before the tool runs. */
   onStepDone?(info: StepInfo): void

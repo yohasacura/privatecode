@@ -2147,7 +2147,14 @@ export class Session {
    * of work in front of you, not about the project. A new session starts automatic again,
    * which is the safer default to forget.
    */
-  gateMode: 'auto' | 'manual' = 'auto'
+  get gateMode(): 'auto' | 'manual' {
+    return this.meta.gateMode ?? 'auto'
+  }
+
+  set gateMode(mode: 'auto' | 'manual') {
+    this.meta.gateMode = mode
+    this.opts.store?.saveMeta(this.meta)
+  }
 
   /**
    * Runs the post-turn gates now, on the work as it stands.
@@ -3999,6 +4006,39 @@ export class Session {
    * before it ever gets here, so reaching this line means something else called it — and a
    * caller that got the name wrong is better told than crashed.
    */
+  /**
+   * The worker's events, relabelled as the worker's.
+   *
+   * A worker was handed the caller's whole event set, so its reads and its writes arrived on
+   * the same channels as the main model's and were indistinguishable from them on screen —
+   * the owner's words: "you cannot tell where the sub-agent is acting and where the main
+   * model is". Two different fixes, because the two kinds of event are wrong in two
+   * different ways.
+   *
+   * ACTIONS are relabelled, not hidden. A worker reading eight files is the most useful
+   * thing on screen during a delegation, and the only problem with those rows was the name
+   * on them. They now carry the role, and the window indents them under the `delegate` call
+   * that caused them.
+   *
+   * SPEECH is dropped. A worker's reasoning and its prose were streamed into the assistant
+   * message the MAIN model is writing — not mislabelled but merged, so the two were one
+   * paragraph with no seam. Nothing is lost by dropping it: a worker's conclusion is the
+   * `delegate` tool's result, which lands in the transcript a moment later and is the thing
+   * the main model actually reads.
+   */
+  private workerEvents(role: string, events: AgentEvents): AgentEvents {
+    return {
+      onToolCall: (name, args) => events.onToolCall?.(name, args, role),
+      onToolResult: (name, result, callId) => events.onToolResult?.(name, result, callId, role),
+      onToolOutput: (name, text) => events.onToolOutput?.(name, text),
+      // Present and deliberately empty: `Agent` opts into streaming on one of the delta
+      // callbacks existing, and the step clock re-arms on them — an Agent with none gets its
+      // first-token budget applied to the whole request. The reviewer's own events carry the
+      // same comment and the same no-op for the same reason.
+      onTextDelta: () => {},
+    }
+  }
+
   private async runWorker(
     role: string, task: string, context: ToolContext, events: AgentEvents, signal?: AbortSignal,
   ): Promise<SubAgentOutcome> {
@@ -4014,7 +4054,7 @@ export class Session {
         client: this.opts.client,
         registry: this.opts.toolset.registry,
         context,
-        events,
+        events: this.workerEvents(role, events),
         // Without this a worker in any mode but plan is refused outright, which is the
         // point: the capability and its gate arrive together or not at all.
         ...(this.opts.engine ? { permissions: this.opts.engine } : {}),

@@ -87,7 +87,9 @@ export function Palette({
   useEffect(() => {
     let cancelled = false
     client.call('fs.find', { query, limit: 8 })
-      .then((r) => { if (!cancelled) setFiles(r.paths) })
+      // Files only here. The palette OPENS what it lists, and a directory is not a thing
+      // this window can open in a tab — the `@` picker wants both because it ATTACHES.
+      .then((r) => { if (!cancelled) setFiles(r.entries.filter((e) => !e.dir).map((e) => e.path)) })
       .catch(() => { if (!cancelled) setFiles([]) })
     return () => { cancelled = true }
   }, [client, query])

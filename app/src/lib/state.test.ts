@@ -494,7 +494,7 @@ describe('reduceChat: step reset', () => {
    */
   it('seeds the context reading from a restored session, marked as an estimate', () => {
     const restored = reduceChat(initialChatState(), {
-      type: 'session-switched',
+      type: 'session-switched', gateMode: 'auto',
       sessionId: 's1',
       mode: 'normal',
       contextLength: 131_072,
@@ -545,7 +545,7 @@ describe('reduceChat: step reset', () => {
     })
     expect(reading.viewing).not.toBeNull()
     const adopted = reduceChat(reading, {
-      type: 'session-switched',
+      type: 'session-switched', gateMode: 'auto',
       sessionId: 'older',
       mode: 'normal',
       contextLength: null,
@@ -556,7 +556,7 @@ describe('reduceChat: step reset', () => {
 
   it('prefers the server\'s own count over the estimate when this process has one', () => {
     const restored = reduceChat(initialChatState(), {
-      type: 'session-switched',
+      type: 'session-switched', gateMode: 'auto',
       sessionId: 's1',
       mode: 'normal',
       contextLength: 131_072,
@@ -784,9 +784,11 @@ describe('reduceChat: step.done stats used by the status bar', () => {
 describe('reduceChat: session switching', () => {
   it('sets session info on session-switched', () => {
     const state = reduceChat(initialChatState(), {
-      type: 'session-switched', sessionId: 's1', mode: 'normal', contextLength: 131072, title: 'my session',
+      type: 'session-switched', gateMode: 'auto', sessionId: 's1', mode: 'normal', contextLength: 131072, title: 'my session',
     })
-    expect(state.session).toEqual({ sessionId: 's1', mode: 'normal', contextLength: 131072, title: 'my session' })
+    expect(state.session).toEqual({
+      sessionId: 's1', mode: 'normal', contextLength: 131072, title: 'my session', gateMode: 'auto',
+    })
   })
 
   it('wipes the transcript, pending cards, and todos on session-switched', () => {
@@ -800,17 +802,19 @@ describe('reduceChat: session switching', () => {
     expect(busy.todos).not.toEqual([])
 
     const switched = reduceChat(busy, {
-      type: 'session-switched', sessionId: 's2', mode: 'plan', contextLength: null, title: 'fresh',
+      type: 'session-switched', gateMode: 'auto', sessionId: 's2', mode: 'plan', contextLength: null, title: 'fresh',
     })
     expect(switched.items).toEqual([])
     expect(switched.pendingApproval).toBeNull()
     expect(switched.todos).toEqual([])
-    expect(switched.session).toEqual({ sessionId: 's2', mode: 'plan', contextLength: null, title: 'fresh' })
+    expect(switched.session).toEqual({
+      sessionId: 's2', mode: 'plan', contextLength: null, title: 'fresh', gateMode: 'auto',
+    })
   })
 
   it('mode-changed updates the session mode badge without touching anything else', () => {
     const withSession = reduceChat(initialChatState(), {
-      type: 'session-switched', sessionId: 's1', mode: 'normal', contextLength: 1000, title: 't',
+      type: 'session-switched', gateMode: 'auto', sessionId: 's1', mode: 'normal', contextLength: 1000, title: 't',
     })
     const withMessage = reduceChat(withSession, { type: 'user-message', text: 'hi' })
     const changed = reduceChat(withMessage, { type: 'mode-changed', mode: 'autopilot' })
@@ -841,7 +845,7 @@ describe('reduceChat: configuration problems', () => {
     ])
 
     const switched = reduceChat(state, {
-      type: 'session-switched', sessionId: 's2', mode: 'normal', contextLength: null, title: '',
+      type: 'session-switched', gateMode: 'auto', sessionId: 's2', mode: 'normal', contextLength: null, title: '',
     })
     expect(switched.problems).toEqual([])
   })
@@ -874,7 +878,7 @@ describe('reduceChat: a turn that outlived its session', () => {
       { type: 'text.delta', text: 'half an answer' },
     ])
     const switched = reduceChat(midTurn, {
-      type: 'session-switched', sessionId: 's2', mode: 'normal', contextLength: null, title: '',
+      type: 'session-switched', gateMode: 'auto', sessionId: 's2', mode: 'normal', contextLength: null, title: '',
     })
     const late = reduceChat(switched, { type: 'turn.done', stoppedBecause: 'aborted' })
     expect(late.items).toEqual([])
@@ -890,7 +894,7 @@ describe('reduceChat: a turn that outlived its session', () => {
       { type: 'tool.call', name: 'write_file', args: '{"path":"a.ts"}' },
     ])
     const switched = reduceChat(first, {
-      type: 'session-switched', sessionId: 's2', mode: 'normal', contextLength: null, title: '',
+      type: 'session-switched', gateMode: 'auto', sessionId: 's2', mode: 'normal', contextLength: null, title: '',
     })
     const after = reduceChat(switched, { type: 'user-message', text: 'two' })
     expect(after.items[0]?.id).toBeGreaterThan(first.items[first.items.length - 1]?.id ?? 0)

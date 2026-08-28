@@ -63,6 +63,14 @@ export type ChatItem =
     name: string
     args: string
     /**
+     * The WORKER that made this call, absent when the main model made it.
+     *
+     * Rendered as a badge and an indent under the `delegate` row that caused it. Without it
+     * a delegation looked like the main model suddenly reading eight files by itself — the
+     * owner's report: you cannot tell where the sub-agent acts and where the main model does.
+     */
+    agent?: string
+    /**
      * The call is still being GENERATED — `args` is a partial JSON document, not yet valid.
      *
      * A large edit is written into the argument a token at a time, and that is most of the
@@ -269,6 +277,15 @@ export interface SessionInfo {
   mode: AgentMode
   contextLength: number | null
   title: string
+  /**
+   * Whether the post-turn gates run by themselves in this session.
+   *
+   * On screen because it has to be findable: it is a decision taken once and lived with for
+   * hours, and until it was shown, "did I turn the checks off?" had no answer anywhere in
+   * the window. Carried on the session rather than as a loose flag because that is what it
+   * belongs to — switching sessions must not carry one session's judgement into another.
+   */
+  gateMode: 'auto' | 'manual'
 }
 
 /**
@@ -435,8 +452,8 @@ export type ChatAction =
   /** A tool call arriving as it is written: `name` opens the card, `args` fragments fill it.
    * See the `tool` ChatItem's `writing`. */
   | { type: 'tool.call.delta'; index: number; name?: string; args?: string; atMs?: number }
-  | { type: 'tool.call'; name: string; args: string; atMs?: number }
-  | { type: 'tool.result'; name: string; ok: boolean; content: string; display?: string }
+  | { type: 'tool.call'; name: string; args: string; atMs?: number; agent?: string }
+  | { type: 'tool.result'; name: string; ok: boolean; content: string; display?: string; agent?: string }
   | {
     type: 'step.done'; step: number; seconds: number; tokensPerSecond?: number
     promptTokens?: number; draftAcceptance?: number; atMs?: number
@@ -467,6 +484,7 @@ export type ChatAction =
    * have no business surviving into a new one's view. */
   | {
     type: 'session-switched'; sessionId: string; mode: AgentMode; contextLength: number | null; title: string
+    gateMode: 'auto' | 'manual'
     /** How full the context already is. A resumed session has no step in this process, so
      * without this the bar stayed blank until the first message — hiding a number the
      * host could compute from the transcript it just restored. */
@@ -518,6 +536,7 @@ export type ChatAction =
    * init/new/resume result. Both arrive for the same session -- the host emits the events
    * while building it, BEFORE the reply that carries the same strings -- so this action
    * deduplicates on exact text and the double delivery is harmless. */
+  | { type: 'gate-mode'; gateMode: 'auto' | 'manual' }
   | { type: 'settings-problem'; text: string }
   | { type: 'problems-dismissed' }
 
@@ -1043,7 +1062,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         if (completed || item.kind !== 'tool' || item.writing !== true || item.name !== action.name) return item
         completed = true
         const { writing: _w, callIndex: _c, ...rest } = item
-        return { ...rest, args: action.args }
+        return { ...rest, args: action.args, ...(action.agent !== undefined ? { agent: action.agent } : {}) }
       })
       if (completed) return { ...state, items: settled }
 
@@ -1052,6 +1071,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       const item: ChatItem = {
         kind: 'tool', id: state.nextId, name: action.name, args: action.args,
         startedAtMs: action.atMs ?? 0,
+        ...(action.agent !== undefined ? { agent: action.agent } : {}),
       }
       return { ...state, items: [...items, item], nextId: state.nextId + 1 }
     }
@@ -1302,6 +1322,12 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
     case 'todos':
       return { ...state, todos: action.items }
 
+    case 'gate-mode':
+      return {
+        ...state,
+        session: state.session ? { ...state.session, gateMode: action.gateMode } : state.session,
+      }
+
     case 'settings-problem': {
       const text = action.text.trim()
       // Capped: a settings file that fails to parse can produce one problem per rule, and
@@ -1326,7 +1352,8 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         ...initialChatState(),
         nextId: state.nextId,
         session: {
-          sessionId: action.sessionId, mode: action.mode, contextLength: action.contextLength, title: action.title,
+          sessionId: action.sessionId, mode: action.mode, contextLength: action.contextLength,
+          title: action.title, gateMode: action.gateMode,
         },
         // Seeded from the transcript that was just restored, so the context bar has
         // something true to show before the first message rather than after it.

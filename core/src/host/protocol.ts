@@ -92,6 +92,9 @@ export interface InitParams {
 export interface InitResult {
   sessionId: string
   mode: AgentMode
+  /** Whether the post-turn gates run by themselves in this session. The window shows it, so
+   * that turning them off two hours ago is a thing you can still find out. */
+  gateMode: 'auto' | 'manual'
   /** The model's context window in tokens, or null when the server never reported one. */
   contextLength: number | null
   problems: string[]
@@ -280,7 +283,18 @@ export type QuestionReplyResult = Empty
 /** Fuzzy file lookup for the composer's `@` picker and the command palette. Not the model's
  * `find_files`, which takes a glob: a person typing `@stat` is half-remembering a name. */
 export interface FsFindParams { query: string; limit?: number }
-export interface FsFindResult { paths: string[] }
+export interface FsFindResult {
+  /**
+   * Files AND directories, because a folder is a thing you can attach.
+   *
+   * It was files only, and that made attaching a folder unreachable by any spelling: the
+   * picker offers what this returns, `attached` is only ever what the picker added, and
+   * `send`'s `attach` is only ever `attached` — so typing `@src` by hand matched
+   * `src/main.ts`, never `src`, and a folder typed in full was sent as prose. `dir` is what
+   * lets the picker say which is which, and it is what the chip reads.
+   */
+  entries: { path: string; dir: boolean }[]
+}
 
 /**
  * Absolute paths from a drag-and-drop, turned into the spelling `send`'s `attach` takes.
@@ -651,6 +665,14 @@ export interface ToolCallEvent {
   name: string
   /** The raw JSON-arguments string the model produced, unparsed. */
   args: string
+  /**
+   * The WORKER that made this call, absent when the main model made it.
+   *
+   * A delegated read and a read the model did itself are the same event with a different
+   * author, and until this existed the window could not tell them apart — eight files read
+   * by a worker looked exactly like eight files read by the model that asked for it.
+   */
+  agent?: string
 }
 
 /**
@@ -686,6 +708,8 @@ export interface ToolResultEvent {
   /** The untruncated result for display, when the tool clipped `content` to protect the
    * model's context window. Absent when the two are the same. See `ToolResult.display`. */
   display?: string
+  /** The worker whose call this answers; absent for the main model's. See `ToolCallEvent`. */
+  agent?: string
 }
 
 /**

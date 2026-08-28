@@ -303,7 +303,7 @@ export function SettingsModal({
       .then((r) => {
         client.call('config.set', { serverUrl: url, recentWorkspace: root }).catch(() => {})
         onSessionSwitched({
-          sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
+          sessionId: r.sessionId, mode: r.mode, gateMode: r.gateMode, contextLength: r.contextLength, title: r.title,
           problems: r.problems, items: r.items, workspaceRoot: root,
           workspaceName: r.workspaceName, folderCount: r.folderCount,
           contextUsed: r.contextUsed,

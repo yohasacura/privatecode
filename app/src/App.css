@@ -1686,6 +1686,36 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 .command-item:hover { background: var(--bg-hover); color: var(--text); }
 .command-name { font-family: var(--mono); color: var(--accent); flex: none; }
 .command-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What attaching this row will actually do, said on the row that would do it. A folder and
+   a file look the same in a path, and they are not the same attachment: one sends contents,
+   the other sends a listing of what is inside. */
+.command-hint { color: var(--text-faint); }
+
+/* The gates chip. Reads as ordinary when the checks are on — that is the state you want to
+   stop noticing — and wears the warning colour when they are off, because "off" is the state
+   that is easy to forget and expensive to be wrong about. */
+.gate-chip { margin-left: 6px; }
+
+/* A worker's action, not the main model's.
+
+   Indented and badged rather than hidden: watching a worker read is the most useful thing
+   on screen during a delegation, and the only thing wrong with those rows was the name on
+   them. The indent is what makes the grouping readable at a glance — a run of eight reads
+   under one `delegate` call reads as one act rather than eight. */
+.tool-delegated { margin-left: 18px; }
+.tool-agent {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.gate-chip-off {
+  color: var(--yellow);
+  border-color: color-mix(in srgb, var(--yellow) 45%, transparent);
+}
 .command-icon { display: flex; flex: none; color: var(--text-faint); align-self: center; }
 .command-icon .icon { width: 13px; height: 13px; }
 /* Keyboard selection, which is the way this picker is actually used -- the mouse is a

@@ -139,7 +139,10 @@ export function Composer({
    */
   const [attached, setAttached] = useState<string[]>([])
   const [mention, setMention] = useState<Mention | null>(null)
-  const [mentionHits, setMentionHits] = useState<string[]>([])
+  /** What `@` offers: files AND folders. `dir` drives the icon and the hint — attaching a
+   * folder sends a LISTING of what is in it, not every file's contents, and a picker that
+   * looked identical for the two would be promising the wrong thing. */
+  const [mentionHits, setMentionHits] = useState<{ path: string; dir: boolean }[]>([])
   const [mentionPick, setMentionPick] = useState(0)
   /** The user's own slash commands. Re-fetched whenever the box starts with `/`, because
    * these are files edited by hand while the app is open. */
@@ -155,6 +158,20 @@ export function Composer({
   /** An unknown-command check in flight; see `send()`'s slash guard. */
   const slashCheckRef = useRef(false)
   const mode: AgentMode = state.session?.mode ?? 'normal'
+  /** Whether the post-turn gates run by themselves. Read off the session, so it survives a
+   * restart and does not follow you into a different conversation. */
+  const gateMode = state.session?.gateMode ?? 'auto'
+
+  /** Flips the gates, optimistically. The host is the truth, but a chip that waits for a
+   * round trip before changing reads as a click that did nothing. */
+  function setGateMode(next: 'auto' | 'manual'): void {
+    dispatch({ type: 'gate-mode', gateMode: next })
+    client.call('gates.set', { mode: next })
+      .catch((e: Error) => {
+        dispatch({ type: 'gate-mode', gateMode })
+        dispatch({ type: 'error-note', message: e.message })
+      })
+  }
 
   // Suggestions are distilled against ONE session's transcript; a switch makes them
   // foreign context wearing familiar chips. The draft itself survives — only the model's
@@ -236,7 +253,7 @@ export function Composer({
     if (mention === null) { setMentionHits([]); return }
     let cancelled = false
     client.call('fs.find', { query: mention.query, limit: 8 })
-      .then((r) => { if (!cancelled) { setMentionHits(r.paths); setMentionPick(0) } })
+      .then((r) => { if (!cancelled) { setMentionHits(r.entries); setMentionPick(0) } })
       .catch(() => { if (!cancelled) setMentionHits([]) })
     return () => { cancelled = true }
   }, [client, mention?.query])
@@ -1149,19 +1166,22 @@ export function Composer({
 
       {mention !== null && mentionHits.length > 0 && (
         <div class="command-picker">
-          {mentionHits.map((path, i) => (
+          {mentionHits.map((hit, i) => (
             <button
-              key={path}
+              key={hit.path}
               class={`command-item ${i === mentionPick ? 'command-item-on' : ''}`}
               onMouseEnter={() => setMentionPick(i)}
-              onClick={() => choose(path)}
+              onClick={() => choose(hit.path)}
             >
-              <span class="command-icon">{Icon.file()}</span>
-              <span class="command-desc" title={path}>{path}</span>
+              <span class="command-icon">{hit.dir ? Icon.folder() : Icon.file()}</span>
+              <span class="command-desc" title={hit.path}>
+                {hit.path}
+                {hit.dir && <span class="command-hint"> — the files in it</span>}
+              </span>
             </button>
           ))}
           <div class="picker-hint">
-            <kbd>↑↓</kbd> pick · <kbd>↵</kbd> attach · the file's contents go with your message
+            <kbd>↑↓</kbd> pick · <kbd>↵</kbd> attach · a file sends its contents, a folder sends its file list
           </div>
         </div>
       )}
@@ -1348,7 +1368,7 @@ export function Composer({
               }
               if (e.key === 'Enter' || e.key === 'Tab') {
                 e.preventDefault()
-                const path = mentionHits[mentionPick]
+                const path = mentionHits[mentionPick]?.path
                 if (path !== undefined) choose(path)
                 return
               }
@@ -1529,6 +1549,31 @@ ${q}`}
             onClick={state.run ? stopRun : requestRun}
           >
             {state.run ? `Stop · turn ${state.run.turn}` : 'Run unattended'}
+          </button>
+
+          {/* What happens AFTER a turn, on the row that says what happens during one.
+
+              Here rather than buried in Settings because of how it failed: the owner turned
+              the checks off, worked for a couple of hours, and then had no way anywhere in
+              the window to find out whether they were still off. A setting whose state is
+              invisible is a setting you stop trusting. The title lists what the three gates
+              actually are — the second half of the same complaint was not knowing which
+              checks existed at all. */}
+          <button
+            class={`mode-chip gate-chip ${gateMode === 'manual' ? 'gate-chip-off' : ''}`}
+            title={gateMode === 'manual'
+              ? 'Checks are OFF for this session. Nothing runs the build, audits the work '
+                + 'against what you asked for, or reviews the diff until you ask: /check runs '
+                + 'the build and tests, /review runs the independent read. Click to turn them '
+                + 'back on.'
+              : 'After a turn that changed code: the build and tests run, the work is audited '
+                + 'against what you asked for, and a reader with a fresh context goes over the '
+                + 'diff. Click to turn all three off and run them by hand with /check and '
+                + '/review.'}
+            disabled={!state.session}
+            onClick={() => setGateMode(gateMode === 'manual' ? 'auto' : 'manual')}
+          >
+            {gateMode === 'manual' ? 'Checks off' : 'Checks on'}
           </button>
 
           <div class="composer-meta">{statusLine()}</div>

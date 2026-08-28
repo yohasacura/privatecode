@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { ROLES, ROLE_NAMES, runSubAgent } from '../src/agent/subagent.js'
 import { delegateTool } from '../src/tools/delegate.js'
+import { Session } from '../src/session/session.js'
 import { buildRegistry } from '../src/tools/default-set.js'
 import type { SubAgentOutcome } from '../src/agent/subagent.js'
 import { Workspace } from '../src/workspace.js'
@@ -189,5 +190,61 @@ describe('a worker that could act', () => {
     )
     expect(out.problem).toContain('needs the permission engine')
     expect(out.steps).toBe(0)
+  })
+})
+
+/**
+ * Whose action is whose.
+ *
+ * A worker was handed the caller's whole event set, so its reads arrived on the same
+ * channels as the main model's and were indistinguishable on screen. The owner's report:
+ * "you cannot tell where the sub-agent acts and where the main model does." Actions are
+ * relabelled; speech is dropped, because a worker's prose was being merged into the
+ * assistant message the MAIN model was writing, and its conclusion arrives as the tool
+ * result a moment later anyway.
+ */
+describe('a worker\'s events are the worker\'s', () => {
+  test('tool calls and results carry the role', () => {
+    const seen: { name: string; agent?: string }[] = []
+    const wrapped = (Session.prototype as unknown as {
+      workerEvents(role: string, events: unknown): {
+        onToolCall?: (n: string, a: string) => void
+        onToolResult?: (n: string, r: unknown, id: string) => void
+        onTextDelta?: (t: string) => void
+        onThinkingDelta?: (t: string) => void
+      }
+    }).workerEvents.call({}, 'investigate', {
+      onToolCall: (n: string, _a: string, agent?: string) => seen.push({ name: n, ...(agent !== undefined ? { agent } : {}) }),
+      onToolResult: (n: string, _r: unknown, _id: string, agent?: string) => seen.push({ name: `${n}:result`, ...(agent !== undefined ? { agent } : {}) }),
+    })
+
+    wrapped.onToolCall?.('read_file', '{}')
+    wrapped.onToolResult?.('read_file', { ok: true, content: 'x' }, 'c1')
+
+    expect(seen).toEqual([
+      { name: 'read_file', agent: 'investigate' },
+      { name: 'read_file:result', agent: 'investigate' },
+    ])
+  })
+
+  test('the worker\'s prose does not reach the main transcript', () => {
+    const spoke: string[] = []
+    const wrapped = (Session.prototype as unknown as {
+      workerEvents(role: string, events: unknown): {
+        onTextDelta?: (t: string) => void
+        onThinkingDelta?: (t: string) => void
+      }
+    }).workerEvents.call({}, 'investigate', {
+      onTextDelta: (t: string) => spoke.push(t),
+      onThinkingDelta: (t: string) => spoke.push(t),
+    })
+
+    // Present but inert. `Agent` opts into streaming on a delta callback existing and the
+    // step clock re-arms on it, so removing the callback would apply the first-token budget
+    // to a whole worker request — the same trap the reviewer's events document.
+    expect(wrapped.onTextDelta).toBeTypeOf('function')
+    wrapped.onTextDelta?.('half a sentence from the worker')
+    wrapped.onThinkingDelta?.('the worker thinking')
+    expect(spoke).toEqual([])
   })
 })

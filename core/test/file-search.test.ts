@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { rankFiles, scorePath, walkFiles } from '../src/host/file-search.js'
+import { rankFiles, scorePath, walkFiles, walkTree } from '../src/host/file-search.js'
 
 /**
  * The ranking IS the feature. A picker that puts the file you meant third is a picker you
@@ -90,5 +90,50 @@ describe('walking a workspace', () => {
   test('the walk is bounded, so a huge repository cannot hang a keystroke', async () => {
     for (let i = 0; i < 40; i++) writeFileSync(join(root, `f${i}.txt`), 'x')
     expect((await walkFiles(root, 10)).length).toBeLessThanOrEqual(10)
+  })
+})
+
+/**
+ * Directories in the walk.
+ *
+ * The `@` picker offers what `walkTree` finds, and the composer only ever attaches what the
+ * picker gave it. So while the index held files alone, attaching a folder was unreachable by
+ * ANY spelling — `@src` matched `src/main.ts` and never `src`, and a folder typed out in
+ * full went to the model as prose. The owner hit exactly that and reported it.
+ */
+describe('walking directories as well as files', () => {
+  let root: string
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'pc-walk-')) })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+
+  test('walkTree reports the directories it passes through', async () => {
+    mkdirSync(join(root, 'src', 'deep'), { recursive: true })
+    writeFileSync(join(root, 'src', 'a.ts'), 'x')
+    writeFileSync(join(root, 'src', 'deep', 'b.ts'), 'x')
+
+    const entries = await walkTree(root)
+    const dirs = entries.filter((e) => e.dir).map((e) => e.path)
+    expect(dirs).toContain('src')
+    expect(dirs).toContain('src/deep')
+    expect(entries.filter((e) => !e.dir).map((e) => e.path)).toContain('src/a.ts')
+  })
+
+  test('a skipped directory is neither entered nor offered', async () => {
+    mkdirSync(join(root, 'node_modules', 'pkg'), { recursive: true })
+    writeFileSync(join(root, 'node_modules', 'pkg', 'index.js'), 'x')
+
+    const entries = await walkTree(root)
+    expect(entries.map((e) => e.path).some((p) => p.includes('node_modules'))).toBe(false)
+  })
+
+  test('walkFiles still returns files only, unchanged', async () => {
+    mkdirSync(join(root, 'src'), { recursive: true })
+    writeFileSync(join(root, 'src', 'a.ts'), 'x')
+
+    const files = await walkFiles(root)
+    // The folder-listing path in `attachments.ts` and every existing caller reads this one,
+    // and a directory appearing in it would be attached as a file and fail to read.
+    expect(files).toContain('src/a.ts')
+    expect(files).not.toContain('src')
   })
 })

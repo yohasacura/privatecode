@@ -175,10 +175,14 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         }
         if (d.args !== undefined && d.args !== '') bufferArgs(d.index, d.args)
       }),
-      client.on('tool.call', (d) => emit({ type: 'tool.call', name: d.name, args: d.args, atMs: Date.now() })),
+      client.on('tool.call', (d) => emit({
+        type: 'tool.call', name: d.name, args: d.args, atMs: Date.now(),
+        ...(d.agent !== undefined ? { agent: d.agent } : {}),
+      })),
       client.on('tool.result', (d) => emit({
         type: 'tool.result', name: d.name, ok: d.ok, content: d.content,
         ...(d.display !== undefined ? { display: d.display } : {}),
+        ...(d.agent !== undefined ? { agent: d.agent } : {}),
       })),
       client.on('stage', (d) => emit({
         type: 'stage',

@@ -29,9 +29,31 @@ export interface FileMatch {
   score: number
 }
 
-/** Every file under `root`, relative and slash-separated, bounded by `MAX_WALKED`. */
+/** One thing the walk found: a workspace-relative path, and whether it is a directory. */
+export interface WalkedEntry {
+  path: string
+  dir: boolean
+}
+
+/**
+ * Every file under `root`, relative and slash-separated, bounded by `MAX_WALKED`.
+ *
+ * Directories are walked but not reported — the callers that want them ask `walkTree`.
+ */
 export async function walkFiles(root: string, max = MAX_WALKED): Promise<string[]> {
-  const out: string[] = []
+  return (await walkTree(root, max)).filter((e) => !e.dir).map((e) => e.path)
+}
+
+/**
+ * The same walk, reporting the directories it passes through as well as the files.
+ *
+ * Split out for the `@` picker, which could not offer a folder because the index it
+ * searched had never contained one: typing `@src` matched `src/main.ts` and never `src`,
+ * so attaching a folder was unreachable however you spelled it. The budget counts files
+ * and directories together, because the ceiling exists to bound the WALK.
+ */
+export async function walkTree(root: string, max = MAX_WALKED): Promise<WalkedEntry[]> {
+  const out: WalkedEntry[] = []
   const queue: string[] = ['']
 
   while (queue.length > 0 && out.length < max) {
@@ -46,11 +68,13 @@ export async function walkFiles(root: string, max = MAX_WALKED): Promise<string[
       if (entry.name.startsWith('.') && entry.name !== '.github') continue
       const child = rel === '' ? entry.name : `${rel}/${entry.name}`
       if (entry.isDirectory()) {
-        if (!SKIP.has(entry.name)) queue.push(child)
+        if (SKIP.has(entry.name)) continue
+        queue.push(child)
+        out.push({ path: child, dir: true })
       } else if (entry.isFile()) {
-        out.push(child)
-        if (out.length >= max) break
+        out.push({ path: child, dir: false })
       }
+      if (out.length >= max) break
     }
   }
   return out

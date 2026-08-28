@@ -129,7 +129,7 @@ import type {
 } from './protocol.js'
 import { loadUiConfig, saveUiConfig } from './ui-config.js'
 import { replayEntries, toolOutcomes } from './replay.js'
-import { rankFiles, walkFiles } from './file-search.js'
+import { rankFiles, walkTree } from './file-search.js'
 import { attachFiles } from './attachments.js'
 import { indexRepo, renderIndex, type ReferenceEdges, type RepoIndex } from '../outline/repo-map.js'
 import { harvestReferenceEdges } from '../csharp/reference-edges.js'
@@ -290,7 +290,9 @@ export class SessionHost {
   private serverUrl: string | undefined
   /** Built once per workspace on the first `fs.find`; see that method for why it is not
    * rebuilt per keystroke. Cleared by `init`, which replaces the whole host state. */
-  private fileIndex: string[] | undefined
+  /** Files AND directories: the `@` picker offers both, because a folder is a thing
+   * you can attach. See `fsFind`. */
+  private fileIndex: { path: string; dir: boolean }[] | undefined
   /**
    * The project map, built once per WORKSPACE rather than per session.
    *
@@ -1037,6 +1039,10 @@ export class SessionHost {
     return {
       sessionId: session.id,
       mode: session.mode,
+      // Carried on init and on resume, because the decision is the session's and the window
+      // has to be able to SHOW it. Held only in memory and only in core, a person who turned
+      // the checks off two hours ago had no way left to find out that they had.
+      gateMode: session.gateMode,
       contextLength: this.contextLength,
       workspaceName: this.workspaceName,
       folderCount: this.mounts.length,
@@ -1403,15 +1409,18 @@ export class SessionHost {
       onThinkingDelta: (text) => this.emit('thinking.delta', { text }),
       onTextDelta: (text) => this.emit('text.delta', { text }),
       onToolCallDelta: (info) => this.emit('tool.call.delta', info),
-      onToolCall: (name, args) => this.emit('tool.call', { name, args }),
+      onToolCall: (name, args, agent) => this.emit('tool.call', {
+        name, args, ...(agent !== undefined ? { agent } : {}),
+      }),
       // Recording which calls worked is `Session`'s job now, not this host's — every front
       // end reaches the model through a Session, and only this one ever recorded.
-      onToolResult: (name, result, _callId) => {
+      onToolResult: (name, result, _callId, agent) => {
         this.emit('tool.result', {
           name,
           ok: result.ok,
           content: result.content,
           ...(result.display !== undefined ? { display: result.display } : {}),
+          ...(agent !== undefined ? { agent } : {}),
         })
       },
       onAssistantText: (text) => this.emit('assistant.text', { text }),
@@ -1464,17 +1473,27 @@ export class SessionHost {
     if (this.fileIndex === undefined) {
       // Every folder, prefixed — otherwise `@` would only ever reach the primary one, and a
       // picker that silently covers a fifth of the workspace is worse than no picker.
-      const all: string[] = []
+      //
+      // Directories are in the index now. Without them, attaching a folder was unreachable
+      // by any spelling: the picker offers what this returns, the composer only ever attaches
+      // what the picker gave it, so `@src` matched `src/main.ts` and a folder typed out in
+      // full went to the model as prose.
+      const all: { path: string; dir: boolean }[] = []
       for (const mount of workspace.mounts) {
-        const files = await walkFiles(mount.root)
-        all.push(...(workspace.multi
-          ? files.map((f) => `${mount.name}/${f.split(/[\\/]/).join('/')}`)
-          : files))
+        for (const entry of await walkTree(mount.root)) {
+          const path = entry.path.split(/[\\/]/).join('/')
+          all.push({ path: workspace.multi ? `${mount.name}/${path}` : path, dir: entry.dir })
+        }
       }
       this.fileIndex = all
     }
     const limit = Math.min(Math.max(params.limit ?? 20, 1), 100)
-    return { paths: rankFiles(this.fileIndex, params.query, limit).map((m) => m.path) }
+    // Ranked on the paths, then re-joined to their kind through a map: `rankFiles` scores a
+    // string and has no business knowing what is on disk, and the sort would otherwise have
+    // to carry a second field through it.
+    const kind = new Map(this.fileIndex.map((e) => [e.path, e.dir]))
+    const ranked = rankFiles(this.fileIndex.map((e) => e.path), params.query, limit)
+    return { entries: ranked.map((m) => ({ path: m.path, dir: kind.get(m.path) ?? false })) }
   }
 
   /**

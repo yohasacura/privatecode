@@ -384,6 +384,7 @@ export default function App() {
         mode: init.mode,
         contextLength: init.contextLength,
         title: init.title,
+        gateMode: init.gateMode,
         contextUsed: init.contextUsed, ...(init.compactAt !== undefined ? { compactAt: init.compactAt } : {}),
       })
       // AFTER session-switched, never before: that action resets the transcript, and the
@@ -579,7 +580,7 @@ export default function App() {
     const r = await client.call('sessions.resume', { id })
     onSessionSwitched({
       sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength, title: r.title,
-      problems: r.problems, items: r.items, contextUsed: r.contextUsed, ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
+      gateMode: r.gateMode, problems: r.problems, items: r.items, contextUsed: r.contextUsed, ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
     })
     setSessionsKey((k) => k + 1)
   }
@@ -616,7 +617,7 @@ export default function App() {
         c.call('sessions.resume', { id: action.id })
           .then((r) => onSessionSwitched({
             sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength,
-            title: r.title, problems: r.problems, items: r.items,
+            title: r.title, gateMode: r.gateMode, problems: r.problems, items: r.items,
             contextUsed: r.contextUsed,
             ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
           }))
@@ -643,7 +644,7 @@ export default function App() {
         c.call('sessions.new', {})
           .then((r) => onSessionSwitched({
             sessionId: r.sessionId, mode: r.mode, contextLength: r.contextLength,
-            title: r.title, problems: r.problems, items: r.items,
+            title: r.title, gateMode: r.gateMode, problems: r.problems, items: r.items,
             contextUsed: r.contextUsed,
             ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
           }))

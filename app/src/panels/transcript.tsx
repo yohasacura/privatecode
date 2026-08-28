@@ -905,7 +905,8 @@ function ToolCard({
   // whole point of the gutter, and it buys the header the room to show the actual target.
   return (
     <Row
-      kind={`tool tool-${pending ? 'pending' : result.ok ? 'ok' : 'fail'}`}
+      kind={`tool tool-${pending ? 'pending' : result.ok ? 'ok' : 'fail'}`
+        + (item.agent !== undefined ? ' tool-delegated' : '')}
       marker={pending
         ? <span class="pulse-dot" />
         : result.ok ? Icon.check() : Icon.x()}
@@ -916,6 +917,14 @@ function ToolCard({
           onClick={() => { if (!pending) setOpen(!isOpen) }}
           disabled={pending}
         >
+          {/* Whose action this is. Absent for the main model, so the common case is
+              unchanged and the badge means something when it appears: a worker reading
+              eight files used to be indistinguishable from the model reading them itself. */}
+          {item.agent !== undefined && (
+            <span class="tool-agent" title={`Done by the ${item.agent} worker, not the main model`}>
+              {item.agent}
+            </span>
+          )}
           <span class="tool-icon">{KIND_ICON[p.kind]()}</span>
           <span class="tool-verb">{p.verb}</span>
           {/* A command is NOT summarised in the header -- it goes in the body below, whole
