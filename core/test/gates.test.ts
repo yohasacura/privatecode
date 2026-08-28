@@ -637,7 +637,7 @@ describe('did it get better', () => {
       { role: 'tool', tool_call_id: 'c0', content: 'File not found: src/a.ts' },
     ], { appVersion: '0.2.0' })
     const buildLine = renderDiagnosis(d).split('\n').find((l) => l.includes('0.2.0'))
-    expect(buildLine).toContain('too few calls to rate')
+    expect(buildLine).toContain('too few to rate')
     // The per-tool table above still rates that one call at 100%, which is fine there — it
     // is not read as a comparison between builds, and the raw counts sit beside it.
     expect(buildLine).not.toContain('%')

@@ -828,9 +828,12 @@ export function renderDiagnosis(d: Diagnosis): string {
         `  ${String(s.toolCalls).padStart(5)} calls` +
         // A rate off a handful of calls is noise, and this block exists to be compared
         // across builds — which is exactly where noise reads as a regression.
-        (s.toolCalls < VERSION_MIN_CALLS
-          ? `  ${s.toolFailures} failed (too few calls to rate)`
-          : `  ${String(s.toolFailures).padStart(4)} failed (${pct(s.toolFailures, s.toolCalls)})`) +
+        // Padded to one width so the last column lines up between builds — the block is
+        // meant to be read down, and a ragged column is read as unrelated rows.
+        '  ' + (s.toolCalls < VERSION_MIN_CALLS
+          ? `${String(s.toolFailures).padStart(4)} failed (too few to rate)`
+          : `${String(s.toolFailures).padStart(4)} failed (${pct(s.toolFailures, s.toolCalls)})`
+        ).padEnd(26) +
         `  ${String(s.handBacks).padStart(4)} turn${s.handBacks === 1 ? '' : 's'} handed back`,
       )
     }
