@@ -285,10 +285,36 @@ export interface ViewedSession {
   items: ChatItem[]
 }
 
+/** The stages of a turn that are not the model answering. Mirrors core's `StageName`;
+ * kept as a literal union here rather than imported so the window's own state does not
+ * depend on a core module, the same rule the rest of this file follows. */
+export type StageName =
+  'contract' | 'premises' | 'understanding' | 'build' | 'acceptance' | 'review'
+
+/** One gate, while it runs. `startedAtMs` is the WINDOW's clock, so the elapsed reading
+ * keeps moving between events — a gate that emits `started` and nothing for four minutes
+ * still has to look alive. */
+export interface RunningStage {
+  stage: StageName
+  detail: string | undefined
+  at: { index: number; total: number } | undefined
+  startedAtMs: number
+}
+
 export interface ChatState {
   items: ChatItem[]
   turnRunning: boolean
   currentStep: StepTiming | null
+  /**
+   * The gate running right now, or null.
+   *
+   * One at a time, not a stack: these stages never nest — the chain is strictly
+   * contract -> premises -> understanding -> build -> acceptance -> review, and a fixer
+   * turn inside one of them re-enters `build`, which is the same stage saying so again.
+   * A `done` for a stage that is not the one on screen is ignored rather than trusted,
+   * because that pairing can only mean events arrived out of order.
+   */
+  runningStage: RunningStage | null
   /** The text of a message the host reported as never delivered (turn.done with
    * delivered:false — Esc during contract distillation). The composer drains it back
    * into the input box and dispatches `draft-restored`; null the rest of the time. */
@@ -362,7 +388,7 @@ const LIVE_OUTPUT_TAIL_CHARS = 16_000
 
 export function initialChatState(): ChatState {
   return {
-    items: [], turnRunning: false, currentStep: null, restoreDraft: null, lastStepDone: null, viewing: null, nextId: 1,
+    items: [], turnRunning: false, currentStep: null, runningStage: null, restoreDraft: null, lastStepDone: null, viewing: null, nextId: 1,
     pendingApproval: null, pendingQuestion: null, todos: [], session: null, lastCompaction: null,
     problems: [], pendingDecisions: 0, run: null, lastRun: null,
   }
@@ -392,6 +418,8 @@ export type ChatAction =
   | { type: 'step.retry'; atMs: number; firstTokenTimeoutMs?: number }
   /** Where a running generation has got to — the turn's step, or the background compaction.
    * Purely a readout: it moves no clock and closes no card. */
+  | { type: 'stage'; stage: StageName; state: 'started' | 'progress' | 'done'
+      detail?: string; at?: { index: number; total: number }; outcome?: string; ms?: number }
   | { type: 'generation.progress'; scope: 'step' | 'compaction'; progress: StepProgress }
   /** Something streamed, so the step is alive: restarts the silence countdown. Dispatched
    * once per animation frame by whichever buffer had content, mirroring the core's
@@ -739,6 +767,34 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         },
       }
 
+    case 'stage': {
+      if (action.state === 'done') {
+        // Only the stage that is actually showing. An out-of-order `done` — or the second
+        // `done` of a gate that legitimately re-entered — must not blank a stage that has
+        // since started, which would leave a running gate invisible for its whole length.
+        if (state.runningStage?.stage !== action.stage) return state
+        return { ...state, runningStage: null }
+      }
+      if (action.state === 'started') {
+        return {
+          ...state,
+          runningStage: {
+            stage: action.stage,
+            detail: action.detail,
+            at: action.at,
+            startedAtMs: Date.now(),
+          },
+        }
+      }
+      // `progress` for a stage nobody announced: keep the clock honest by treating it as
+      // the start. Losing a `started` to a reconnect should degrade the elapsed reading,
+      // not hide the gate entirely.
+      const base = state.runningStage?.stage === action.stage
+        ? state.runningStage
+        : { stage: action.stage, startedAtMs: Date.now(), detail: undefined, at: undefined }
+      return { ...state, runningStage: { ...base, detail: action.detail, at: action.at } }
+    }
+
     case 'generation.progress': {
       if (action.scope === 'compaction') {
         // Onto the one running compaction row, if there is one. Searched from the end
@@ -1080,7 +1136,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         return {
           ...state,
           items: lastUser === -1 ? state.items : state.items.filter((_, i) => i !== lastUser),
-          turnRunning: false, currentStep: null,
+          turnRunning: false, currentStep: null, runningStage: null,
           restoreDraft: row !== null && 'text' in row ? (row as { text: string }).text : null,
           pendingApproval: null, pendingQuestion: null,
         }

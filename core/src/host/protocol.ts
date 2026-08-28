@@ -187,6 +187,26 @@ export type AbortParams = Empty
 export type AbortResult = Empty
 
 export interface SetModeParams { mode: AgentMode }
+
+/**
+ * Whether the post-turn gates run by themselves, and running one on demand.
+ *
+ * Two methods rather than one with a flag, because they answer to two different moments:
+ * `gates.set` is a standing decision about this session, `gates.run` is "I have finished,
+ * check it now". Coupling them would mean turning the gates back on in order to run one.
+ *
+ * Only the gates that fire AFTER the work can be turned off. The three before it — the
+ * contract, the premise check, the understanding check — shape what gets written and cost
+ * one generation each; these three check what was written and cost, between them, up to
+ * three agent turns, four command runs and a cold prefill on the next turn.
+ */
+export interface GatesSetParams { mode: 'auto' | 'manual' }
+export type GatesSetResult = Empty
+export interface GatesRunParams { gate: 'build' | 'review' }
+/** The same three fields `send` reports, because running a gate can run fixer TURNS: the
+ * build hands failures back to the model, the review hands findings back. A caller that
+ * ignored this would lose the fact that the model wrote code while the gate ran. */
+export interface GatesRunResult { turn: TurnSummary }
 export type SetModeResult = Empty
 
 export type SessionsListParams = Empty
@@ -509,6 +529,8 @@ export interface HostMethodMap {
   send: { params: SendParams; result: SendResult }
   abort: { params: AbortParams; result: AbortResult }
   setMode: { params: SetModeParams; result: SetModeResult }
+  'gates.set': { params: GatesSetParams; result: GatesSetResult }
+  'gates.run': { params: GatesRunParams; result: GatesRunResult }
   'sessions.list': { params: SessionsListParams; result: SessionsListResult }
   'sessions.new': { params: SessionsNewParams; result: SessionsNewResult }
   'sessions.resume': { params: SessionsResumeParams; result: SessionsResumeResult }
@@ -745,6 +767,33 @@ export interface GenerationProgressEvent {
   generated?: { tokens: number; perSecond?: number }
 }
 
+/**
+ * Which stage of the turn is running, and what it is doing inside it.
+ *
+ * The one event that answers "what is it DOING". Everything else on this protocol reports a
+ * result — a check ran, a criterion was met, a step finished — and between those results a
+ * turn can spend minutes in gates that emit nothing at all. The reviewer is the extreme
+ * case: its sub-agent is built with no-op events on purpose, so its six reading steps were
+ * invisible by construction and the last thing on screen stayed the MAIN agent's tool row,
+ * which reads as a step that has hung.
+ *
+ * `started` is followed by any number of `progress` and always by exactly one `done`,
+ * including on abort and on the "there was nothing to do after all" exits. A front end can
+ * therefore treat `started` as "show this" and `done` as "stop showing it" with no timeout
+ * of its own.
+ */
+export interface StageEvent {
+  stage: 'contract' | 'premises' | 'understanding' | 'build' | 'acceptance' | 'review'
+  state: 'started' | 'progress' | 'done'
+  /** The file being read, the command being run, the lens being applied. */
+  detail?: string
+  /** Position inside the stage where it has one: lens 2 of 4, attempt 1 of 2. */
+  at?: { index: number; total: number }
+  /** `done` only. */
+  ms?: number
+  outcome?: string
+}
+
 export interface SettingsProblemEvent { text: string }
 
 /** Same three fields as `send`'s `SendResult.turn`, flattened -- see `TurnSummary`. */
@@ -772,6 +821,7 @@ export interface HostEventMap {
   'tool.output': ToolOutputEvent
   todos: TodosEvent
   compaction: CompactionEvent
+  stage: StageEvent
   'settings.problem': SettingsProblemEvent
   'turn.done': TurnDoneEvent
   'run.turn': RunTurnEvent

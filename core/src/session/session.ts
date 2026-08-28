@@ -139,6 +139,43 @@ export interface CompactionEvent {
   }
 }
 
+/**
+ * The stages of a turn that are not the model answering you.
+ *
+ * Named as a closed set rather than free text because these names are addressed elsewhere:
+ * the window labels them, and `/gates` turns them off by name. A string would let the two
+ * ends drift apart silently, which is the failure this project keeps rediscovering.
+ *
+ * The order is execution order, which is also the order they are worth explaining in.
+ */
+export type StageName =
+  /** Distilling the request into a contract, before anything runs. */
+  | 'contract'
+  /** What must already be true of the code — checked at the first write. */
+  | 'premises'
+  /** Reading the request through three lenses to find the disagreement worth asking about. */
+  | 'understanding'
+  /** The project's own verify command: build, tests, whatever the workspace configured. */
+  | 'build'
+  /** Auditing the finished work against the contract's criteria. */
+  | 'acceptance'
+  /** A reviewer with a fresh context reading the diff and the code around it. */
+  | 'review'
+
+export interface StageInfo {
+  stage: StageName
+  state: 'started' | 'progress' | 'done'
+  /** What it is on right now: the lens being read, the command being run, the file the
+   * reviewer opened. The difference between "working" and "reading session.ts". */
+  detail?: string
+  /** Position inside the stage, where the stage knows one — lens 2 of 3, round 1 of 2. */
+  at?: { index: number; total: number }
+  /** `done` only: how long the stage took, and one line on what came of it. A stage that
+   * cost ninety seconds and changed nothing is worth knowing about. */
+  ms?: number
+  outcome?: string
+}
+
 export interface SessionOptions {
   client: LlamaClient
   toolset: Toolset // from createToolset()
@@ -241,6 +278,24 @@ export interface SessionOptions {
    * follows. `unmet > 0` means a fix round follows. `kind: 'review'` is the fresh-context
    * diff review, where `unmet` counts the issues it raised. */
   onAcceptance?(info: { met: number; unmet: number; round: number; kind: 'criteria' | 'review' }): void
+  /**
+   * Which stage of the turn is running right now, and what it is doing inside it.
+   *
+   * The gates were built to report their RESULTS — `onVerify` says a check ran and what it
+   * said, `onAcceptance` says how many criteria were met. None of them reported that they
+   * had STARTED, and the gap between those two facts is where the whole complaint lives: a
+   * turn can spend several minutes between the last visible token and the first gate result,
+   * during which the window says "working" and nothing else. On the reviewer it is worse
+   * than nothing — its sub-agent is deliberately built with no-op events, so its six reading
+   * steps are invisible by construction, and the last tool row still on screen is whatever
+   * the MAIN agent was doing, which reads as a step that has hung.
+   *
+   * Emitted in pairs. `started` may be followed by any number of `progress` (a lens, a
+   * criterion, a file the reviewer opened) and is always followed by exactly one `done`,
+   * including when the stage was aborted or skipped — a stage that starts and never ends is
+   * a spinner nobody can clear.
+   */
+  onStage?(info: StageInfo): void
   /**
    * Snapshot the workspace after every turn that changed it, and record what changed in
    * a work log. Absent means neither happens, which is what every caller that predates
@@ -933,10 +988,55 @@ export class Session {
    * configuration problem rather than as "your change broke the build", which would send
    * the model rewriting working code.
    */
+  /**
+   * Opens a stage, and hands back the one function that closes it.
+   *
+   * Shaped this way so the close cannot be forgotten on the paths that matter. Every gate
+   * here has several exits — aborted, skipped for want of a contract, short-circuited
+   * because nothing was written — and those are precisely the exits where a
+   * fire-and-forget `started` would leave a spinner running forever. A closure that the
+   * compiler makes you hold is harder to drop than a second call you have to remember.
+   *
+   * The clock starts here rather than at the first model call: the question the window has
+   * to answer is "how long have I been waiting", and the person is already waiting.
+   */
+  private beginStage(stage: StageName, detail?: string): (outcome?: string) => void {
+    const startedAt = Date.now()
+    this.opts.onStage?.({ stage, state: 'started', ...(detail !== undefined ? { detail } : {}) })
+    let closed = false
+    return (outcome?: string) => {
+      // Idempotent because several of these gates end twice on paper: a fixer round that
+      // re-enters the build, an acceptance pass that returns early from inside a loop. A
+      // second `done` would blank a stage that has legitimately restarted.
+      if (closed) return
+      closed = true
+      this.opts.onStage?.({
+        stage, state: 'done', ms: Date.now() - startedAt,
+        ...(outcome !== undefined ? { outcome } : {}),
+      })
+    }
+  }
+
+  /** A step inside an already-open stage. Silent when nothing is listening. */
+  private stageProgress(stage: StageName, detail: string, at?: { index: number; total: number }): void {
+    this.opts.onStage?.({
+      stage, state: 'progress', detail, ...(at !== undefined ? { at } : {}),
+    })
+  }
+
   private async verifyAndFix(
     result: TurnResult, writesThisTurn: number, signal?: AbortSignal,
   ): Promise<TurnResult> {
     if (result.stoppedBecause !== 'done') return result
+    // Manual gates stop the whole post-turn chain here — build, acceptance and review — and
+    // SAY so rather than going quiet, because a check that silently stopped happening is
+    // indistinguishable from a check that silently passes. One line per turn, on the same
+    // channel the gates themselves report on.
+    if (this.gateMode === 'manual' && writesThisTurn > 0) {
+      const endStage = this.beginStage('build', 'gates are set to manual')
+      endStage('not run — ask for /check or /review when you are ready')
+      return result
+    }
     // A turn that wrote nothing cannot have broken the build — but it CAN be the turn
     // that claims the task finished. Found by the first giant unattended probe: turn 1
     // did all the work, turn 3 claimed the task fully finished with zero writes, and
@@ -1039,8 +1139,15 @@ export class Session {
     // `[contract, acceptance]`, both ending `done`).
     let outcome: 'clean' | 'unmet' | 'could-not-run' = 'unmet'
     const writesAtGateStart = this.writeCount
+    const criteria = contract.criteria?.length ?? 0
+    const endStage = this.beginStage(
+      'acceptance',
+      criteria === 0 ? 'auditing the work' : `auditing ${criteria} criteri${criteria === 1 ? 'on' : 'a'}`,
+    )
+    try {
     for (let round = 1; round <= MAX_ACCEPTANCE_ROUNDS; round++) {
       if (signal?.aborted) return current
+      this.stageProgress('acceptance', `round ${round}`, { index: round, total: MAX_ACCEPTANCE_ROUNDS })
       // No cache flag any more, and that is the point of the rewrite: the check used to send
       // a one-tool `tools` array, which renders at the FRONT of the prompt and dropped the
       // server's prefix match to zero. It now sends the session's own array unchanged and
@@ -1094,6 +1201,16 @@ export class Session {
         current = await this.verifyOne(job, current, signal)
         if (current.stoppedBecause !== 'done') return current
       }
+    }
+    } finally {
+      // In a `finally` because the loop above returns from four places — aborted, met,
+      // could-not-run, out of rounds — and this stage must close on every one of them. The
+      // outcome word is read after the loop rather than passed in, which is the point: it
+      // is the same variable the caller branches on, so the window cannot be told one thing
+      // while the code does another.
+      endStage(outcome === 'clean'
+        ? 'every criterion met'
+        : outcome === 'unmet' ? 'handed work back' : 'could not run')
     }
     // Not on a turn the audit just handed back for more work. The reviewer costs up to
     // REVIEW_MAX_STEPS reads plus REVIEW_MAX_TOKENS of generation (~286s at the measured 42
@@ -1164,6 +1281,12 @@ export class Session {
     // between it and the cliff whenever compaction postpones. A numeric guard, not a
     // judgement: when the conversation plus a reviewer-sized brief does not fit, the
     // independent read is skipped and SAID to be skipped, and the acceptance gate still ran.
+    // Opened before the room check, not after: "the review was skipped because the context
+    // is nearly full" is the single most useful thing this stage ever says, and it was
+    // written only into the transcript, where nothing renders it until the session is
+    // reloaded. Now it is also a `done` with a reason on it.
+    const endStage = this.beginStage('review', `reading the diff (${Math.round(diff.length / 1000)}k characters)`)
+
     const window = this.opts.compaction?.contextLength
     const used = this.usedTokens(false)
     if (window !== undefined && used !== null && used + REVIEW_PROMPT_ROOM > window) {
@@ -1171,11 +1294,15 @@ export class Session {
         role: 'user',
         content: REVIEW_SKIPPED_NOTE,
       })
+      endStage('skipped — not enough context left to review in')
       return result
     }
     this.compactionDisplacedCache = true
     this.promptCacheCold = true
     const issues = await this.runReviewer(contract, diff, signal)
+    endStage(issues === null
+      ? 'stopped before it reached a verdict'
+      : issues.length === 0 ? 'no findings' : `${issues.length} finding${issues.length === 1 ? '' : 's'}`)
     if (issues !== null) {
       this.lastUnmetCount = Math.max(this.lastUnmetCount ?? 0, issues.length)
       this.opts.onAcceptance?.({ met: 0, unmet: issues.length, round: 1, kind: 'review' })
@@ -1212,6 +1339,41 @@ export class Session {
    * is worth a cold prefill: the writing context believes its own work, and no amount of
    * prompting talks it out of that — it is what holding a plan in context IS.
    */
+  /**
+   * One reviewer tool call, in the words a person would use for it.
+   *
+   * The raw call is `search_code {"pattern":"applyCompactionSwap","max_results":40}`, which
+   * is fine in a tool row and wrong in a one-line status. What matters while waiting is
+   * WHICH FILE or WHICH TERM, so that is all this keeps — and it keeps it short, because a
+   * status line that wraps pushes the composer around while you are trying to type in it.
+   */
+  private static reviewerDetail(name: string, argsJson: string): string {
+    let args: Record<string, unknown> = {}
+    try {
+      const parsed: unknown = JSON.parse(argsJson)
+      if (typeof parsed === 'object' && parsed !== null) args = parsed as Record<string, unknown>
+    } catch {
+      // A half-streamed call. The tool name alone is still worth saying.
+    }
+    const of = (key: string): string | undefined =>
+      typeof args[key] === 'string' ? (args[key] as string) : undefined
+    const clip = (s: string): string => (s.length > 60 ? `${s.slice(0, 57)}...` : s)
+
+    const path = of('path') ?? of('file')
+    if (name === 'read_file' && path !== undefined) return `reading ${clip(path)}`
+    if (name === 'search_code') {
+      const pattern = of('pattern')
+      return pattern === undefined ? 'searching' : `searching for ${clip(pattern)}`
+    }
+    if (name === 'find_files') {
+      const glob = of('glob')
+      return glob === undefined ? 'looking for files' : `looking for ${clip(glob)}`
+    }
+    if (name === 'list_dir' && path !== undefined) return `listing ${clip(path)}`
+    if (name === 'symbol_outline' && path !== undefined) return `outlining ${clip(path)}`
+    return name
+  }
+
   private async runReviewer(
     contract: NonNullable<SessionMeta['contract']>,
     diff: string,
@@ -1223,6 +1385,10 @@ export class Session {
     // as the writer did.
     const brief = `${REVIEW_SYSTEM}\n\n${buildReviewBrief(contract, diff, contract.request)}`
     const transcript = new Transcript()
+    /** Counted here rather than read off the Agent: `onToolCall` fires per CALL and a step
+     * may batch several, so the step number is not derivable from the callback alone. It is
+     * clamped at the ceiling because the count is an upper bound on the step, not the step. */
+    const reviewSteps = { count: 0 }
     const agentOpts: AgentOptions = {
       client: this.opts.client,
       registry: this.opts.toolset.registry,
@@ -1255,7 +1421,21 @@ export class Session {
       // Agent built without one: on a large diff its own reading turn would die on a
       // deadline meant to catch a hung server. Watched once as a probe that ran past ten
       // minutes and had to be killed.
-      events: { onTextDelta: () => {} },
+      //
+      // `onToolCall` was added for a second reason, and it is the reason this whole stage
+      // was invisible: these six steps are the longest silence in a turn, and the ONLY
+      // signal a person had was the main agent's last tool row still sitting on screen —
+      // which reads as a step that has hung, on precisely the turns where nothing is wrong.
+      // Reporting each file the reviewer opens turns four silent minutes into four minutes
+      // of watching somebody read.
+      events: {
+        onTextDelta: () => {},
+        onToolCall: (name, args) => {
+          this.stageProgress('review', Session.reviewerDetail(name, args), {
+            index: Math.min(reviewSteps.count += 1, REVIEW_MAX_STEPS), total: REVIEW_MAX_STEPS,
+          })
+        },
+      },
       ...(signal ? { signal } : {}),
     }
     // The same ceiling the main agent gets, and for the same reason its comment gives: one
@@ -1348,17 +1528,29 @@ export class Session {
     // with a sampler schema, so it is an append onto the warm prompt rather than a new
     // prefix. See the acceptance gate above.
 
+    // Opened only HERE, after every early return above. A gate that announces itself and
+    // then discovers it had nothing to do is a flicker on screen for a stage that never ran.
+    const endStage = this.beginStage('premises', 'checking what the plan assumes about the code')
+
     let premises: Premise[] | null
     try {
       premises = await statePremises(
         this.opts.client, this.transcript.messages(), signal, this.stepSchemas(),
       )
     } catch {
+      endStage('could not run')
       return undefined
     }
-    if (premises === null || signal?.aborted) return undefined
+    if (premises === null || signal?.aborted) {
+      endStage('stopped')
+      return undefined
+    }
     const check = verifyPremises(premises, this.workspace)
-    if (check.unverified.length === 0) return undefined
+    if (check.unverified.length === 0) {
+      endStage(`${premises.length} assumption${premises.length === 1 ? '' : 's'} hold`)
+      return undefined
+    }
+    endStage(`${check.unverified.length} of ${premises.length} do not hold — the write is vetoed`)
     return premiseFailureMessage(check)
   }
 
@@ -1409,15 +1601,30 @@ export class Session {
     // No cache flag, for the same reason as the two gates above: the readings ride the
     // session's own unchanged tool array now, so all three are appends onto the warm prompt.
 
+    const endStage = this.beginStage('understanding', 'reading the request three ways')
+
     let understanding: Understanding | null
     try {
       understanding = await readThroughLenses(
         this.opts.client, this.transcript.messages(), request, signal, this.stepSchemas(),
+        (lens, index, total) => this.stageProgress(
+          'understanding',
+          lens === 'grouping' ? 'comparing the readings' : `the ${lens} reading`,
+          { index, total },
+        ),
       )
     } catch {
+      endStage('could not run')
       return undefined
     }
-    if (understanding === null || signal?.aborted) return undefined
+    if (understanding === null || signal?.aborted) {
+      endStage('stopped')
+      return undefined
+    }
+    // Closed here rather than at the end of the method: what follows is a question put to a
+    // PERSON, and leaving the stage open through it would report the model as busy for
+    // however long the person takes to answer.
+    endStage('read')
 
     // Do not ask what the contract already answers. The lenses compare readings with each
     // OTHER and never with the contract, so a reading the contract already states reaches the
@@ -1506,10 +1713,19 @@ export class Session {
   }
 
   /** The verify commands that apply to what this turn wrote, in mount order. */
-  private verifyJobs(): { spec: VerifySpec; root: string; folder: string }[] {
+  /**
+   * `everywhere` is for the gate somebody ASKED for.
+   *
+   * The automatic path checks only folders this session wrote to, which is the whole reason
+   * it is affordable — a four-folder workspace does not run four builds because one file
+   * changed. That filter is wrong the moment the check is explicit: "I have finished, run
+   * the tests" can follow work done in a previous session, or by hand in another editor,
+   * and answering it with "no verify command is configured" would be false.
+   */
+  private verifyJobs(everywhere = false): { spec: VerifySpec; root: string; folder: string }[] {
     const jobs: { spec: VerifySpec; root: string; folder: string }[] = []
     for (const mount of this.workspace.mounts) {
-      if (!this.writtenMounts.has(mount.name)) continue
+      if (!everywhere && !this.writtenMounts.has(mount.name)) continue
       // The workspace profile wins for a folder that has an entry; otherwise the primary
       // folder falls back to its own settings files, which is what a single-folder workspace
       // has always used. An ATTACHED folder never supplies its own command: a verify command
@@ -1527,14 +1743,24 @@ export class Session {
     signal?: AbortSignal,
   ): Promise<TurnResult> {
     let current = result
+    // The command, not the word "build". Waiting on `dotnet build ./src/Engine` and waiting
+    // on `npm test` feel like the same silence and are not the same wait, and the person
+    // watching is the one who wrote the command into the settings file.
+    const endStage = this.beginStage('build', `${job.spec.command} in ${job.folder}`)
+    let verdict = 'stopped'
+    try {
     for (let attempt = 1; attempt <= MAX_VERIFY_ROUNDS; attempt++) {
       if (signal?.aborted) return current
+      this.stageProgress('build', attempt === 1 ? 'running' : `running again (attempt ${attempt})`,
+        { index: attempt, total: MAX_VERIFY_ROUNDS })
       // This check covers everything written up to now, so record that — the end-of-turn
       // verify used to leave the counter where the mid-turn one had put it, which made
       // "are there writes nobody has checked" answer yes forever once a mid-turn check was
       // skipped. Re-captured each round because the fixer turn below writes too.
       this.writesAtLastVerify = this.writeCount
       const outcome = await runVerify(job.spec, job.root, signal)
+      verdict = outcome.problem !== undefined
+        ? `could not run — ${outcome.problem}` : outcome.ok ? 'passed' : 'failed'
       this.opts.onVerify?.({
         command: job.spec.command,
         ok: outcome.ok,
@@ -1592,6 +1818,7 @@ export class Session {
     current = { ...retried, steps: current.steps + retried.steps }
     if (current.stoppedBecause !== 'done' || signal?.aborted) return current
     const final = await runVerify(job.spec, job.root, signal)
+    verdict = final.ok ? 'passed after the escalation' : 'still failing'
     this.opts.onVerify?.({
       command: job.spec.command, ok: final.ok, attempt: MAX_VERIFY_ROUNDS + 2,
       ...(this.workspace.multi ? { folder: job.folder } : {}),
@@ -1599,6 +1826,13 @@ export class Session {
       ...(final.problem !== undefined ? { problem: final.problem } : {}),
     })
     return current
+    } finally {
+      // `finally`, because this method returns from nine places — passed, unrunnable,
+      // aborted, out of rounds, a fixer turn that did not finish. `verdict` is written
+      // wherever a check actually produced a result, so what the window is told is the last
+      // thing the command really said rather than a guess made at one exit.
+      endStage(verdict)
+    }
   }
 
   /** Records the folder a successful write landed in, from the tool call's raw arguments. */
@@ -1896,6 +2130,65 @@ export class Session {
     this.meta.mode = mode
     if (this.opts.engine) this.opts.engine.mode = mode
     this.pendingModeNote = noteFor(mode)
+  }
+
+  /**
+   * Whether the end-of-turn gates run by themselves, or only when asked.
+   *
+   * `'manual'` stops the three that fire AFTER the work: the build, the acceptance audit
+   * and the diff review. The three before it — contract, premises, understanding — stay on,
+   * and that asymmetry is the point rather than an oversight. The pre-turn gates shape what
+   * gets written and cost one generation each; the post-turn gates check what was written
+   * and cost, between them, up to three full agent turns, four command runs and a cold
+   * prefill on the NEXT turn. It is the second group that turns "change these three lines"
+   * into a five-minute wait, and the second group whose answer keeps until you are done.
+   *
+   * Held on the session rather than in a settings file: it is a judgement about the piece
+   * of work in front of you, not about the project. A new session starts automatic again,
+   * which is the safer default to forget.
+   */
+  gateMode: 'auto' | 'manual' = 'auto'
+
+  /**
+   * Runs the post-turn gates now, on the work as it stands.
+   *
+   * The other half of `gateMode: 'manual'`, and the reason turning them off is not the same
+   * as throwing them away: "I have finished, now check it" is a thing you say once, at the
+   * end, instead of paying for it after every edit along the way.
+   *
+   * `which` is deliberately not "all": the build and the review answer different questions
+   * and cost differently, and being made to run a four-minute review to find out whether the
+   * tests pass is exactly the coupling this exists to break.
+   */
+  async runGate(which: 'build' | 'review', signal?: AbortSignal): Promise<TurnResult> {
+    // A synthetic "done" turn: the gates all key off `stoppedBecause === 'done'`, which is
+    // their way of saying "the model believes it has finished" — and being asked by hand is
+    // a stronger version of the same claim.
+    const asked: TurnResult = { steps: 0, finalText: '', stoppedBecause: 'done' }
+
+    if (which === 'build') {
+      let current = asked
+      const jobs = this.verifyJobs(true)
+      if (jobs.length === 0) {
+        const endStage = this.beginStage('build', 'looking for a check to run')
+        endStage('no verify command is configured for this workspace')
+        return current
+      }
+      for (const job of jobs) current = await this.verifyOne(job, current, signal)
+      return current
+    }
+
+    const contract = this.meta.contract
+    if (contract === undefined) {
+      const endStage = this.beginStage('review', 'looking for a change to review')
+      endStage('no contract on this session — there is nothing to review it against')
+      return asked
+    }
+    // `satisfied` would make `freshReview` skip its own guard chain; cleared so an explicit
+    // ask always runs. The flag means "the gates decided this is finished", and the person
+    // asking again is overriding exactly that.
+    contract.satisfied = false
+    return await this.freshReview(contract, asked, signal)
   }
 
   approxTokens(): number {
@@ -2228,9 +2521,16 @@ export class Session {
       const todosBefore = this.opts.toolset.todos?.list()
       let turnText = userText
       if ((sendOpts?.distill ?? looksLikeTask(text)) && looksLikeTask(text)) {
+        // The very first thing a long message pays for, and it happens BEFORE the model
+        // says a word — so on a task-shaped request the window's first ten to sixty
+        // seconds used to be blank. Naming it is most of the fix.
+        const endDistill = this.beginStage('contract', 'working out what you asked for')
         const contract = await distillContract(
           this.opts.client, this.transcript.messages(), userText, signal, this.stepSchemas(),
         )
+        endDistill(contract === null
+          ? 'no contract — the turn runs without one'
+          : `${contract.criteria?.length ?? 0} criteri${(contract.criteria?.length ?? 0) === 1 ? 'on' : 'a'}`)
         if (contract !== null) {
           // The user's own words ride along with the distillation of them: the understanding
           // check reads the request, never the summary, because a summary is where the

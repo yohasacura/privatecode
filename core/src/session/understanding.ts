@@ -329,13 +329,26 @@ export async function readThroughLenses(
   signal?: AbortSignal,
   /** The session's own tool array, unchanged, so the three readings stay pure appends. */
   tools?: readonly ToolSchema[],
+  /**
+   * Called before each reading, so a caller can say which one is running.
+   *
+   * This is the longest silence in a turn — three readings and a grouping, four generations
+   * back to back, with nothing streamed because every one of them is a forced JSON answer.
+   * Without it the window can only say that something is happening; with it, it can say
+   * which of the four, and how many are left.
+   */
+  onLens?: (lens: LensName | 'grouping', index: number, total: number) => void,
 ): Promise<Understanding | null> {
   const readings: Reading[] = []
-  for (const lens of LENSES) {
+  for (const [i, lens] of LENSES.entries()) {
     if (signal?.aborted) return null
+    onLens?.(lens.name, i + 1, LENSES.length + 1)
     const reading = await readOnce(client, transcript, request, lens, signal, tools)
     if (reading !== null) readings.push(reading)
   }
+  // The grouping is the fourth generation and it is not free — counted in the total above
+  // so "3 of 4" does not sit on screen while a fourth call runs.
+  onLens?.('grouping', LENSES.length + 1, LENSES.length + 1)
   if (readings.length < 2) return null
   if (signal?.aborted) return null
 

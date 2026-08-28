@@ -116,6 +116,10 @@ import type {
   PromptExpandResult,
   WorkspaceSetParams,
   WorkspaceSetResult,
+  GatesRunParams,
+  GatesRunResult,
+  GatesSetParams,
+  GatesSetResult,
   SetModeParams,
   SetModeResult,
   StatusResult,
@@ -444,6 +448,8 @@ export class SessionHost {
       case 'send': return this.send(params as SendParams)
       case 'abort': return this.abort()
       case 'setMode': return this.setMode(params as SetModeParams)
+      case 'gates.set': return this.gatesSet(params as GatesSetParams)
+      case 'gates.run': return this.gatesRun(params as GatesRunParams)
       case 'sessions.list': return this.sessionsList()
       case 'sessions.new': return this.sessionsNew()
       case 'sessions.resume': return this.sessionsResume(params as SessionsResumeParams)
@@ -932,6 +938,9 @@ export class SessionHost {
     // failed check is `exited ${exitCode ?? '?'}`, and a gate has no exit code — so every
     // unmet result rendered as "contract check: 4 met, 2 unmet — exited ?", in the
     // transcript and in the markdown export. A gate does not exit, it reports.
+    // Unconditional, unlike `onVerify`: every one of these stages runs in workspaces with
+    // no verify command at all, and they are exactly the ones that produce the long silences.
+    sessionOpts.onStage = (info) => this.emit('stage', info)
     sessionOpts.onAcceptance = (info) => {
       const detail = info.kind === 'review'
         ? `${info.unmet} finding${info.unmet === 1 ? '' : 's'}`
@@ -1163,6 +1172,40 @@ export class SessionHost {
       this.currentTurn = work
       await work
       return { applied: this.lastCompactionApplied }
+    } finally {
+      this.sending = false
+      this.currentAbort = undefined
+      this.currentTurn = undefined
+    }
+  }
+
+  private gatesSet(params: GatesSetParams): GatesSetResult {
+    this.requireSession().gateMode = params.mode
+    return {}
+  }
+
+  /**
+   * Runs one post-turn gate on demand.
+   *
+   * Through the same single-slot bookkeeping a turn and a manual compaction use, and for
+   * the same reasons spelled out on `compact()`: a gate makes model calls, the build hands
+   * failures back to the model as full fixer TURNS, and without the signal Escape would
+   * fire a controller nothing listens to while the gate went on holding the server.
+   */
+  private async gatesRun(params: GatesRunParams): Promise<GatesRunResult> {
+    const session = this.requireSession()
+    if (this.sending) throw new Error('a turn is already running in this session')
+    this.sending = true
+    this.currentAbort = new AbortController()
+    try {
+      const work = session.runGate(params.gate, this.currentAbort.signal)
+      this.currentTurn = work
+      const turn = await work
+      return {
+        turn: {
+          steps: turn.steps, finalText: turn.finalText, stoppedBecause: turn.stoppedBecause,
+        },
+      }
     } finally {
       this.sending = false
       this.currentAbort = undefined

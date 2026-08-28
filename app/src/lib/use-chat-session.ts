@@ -180,6 +180,15 @@ export function useChatSession(client: ProtocolClient | null): [ChatState, (acti
         type: 'tool.result', name: d.name, ok: d.ok, content: d.content,
         ...(d.display !== undefined ? { display: d.display } : {}),
       })),
+      client.on('stage', (d) => emit({
+        type: 'stage',
+        stage: d.stage,
+        state: d.state,
+        ...(d.detail !== undefined ? { detail: d.detail } : {}),
+        ...(d.at !== undefined ? { at: d.at } : {}),
+        ...(d.outcome !== undefined ? { outcome: d.outcome } : {}),
+        ...(d.ms !== undefined ? { ms: d.ms } : {}),
+      })),
       client.on('generation.progress', (d) => emit({
         type: 'generation.progress',
         scope: d.scope,

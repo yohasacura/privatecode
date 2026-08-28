@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { AgentMode } from '@core/permissions/engine'
 import type { ProtocolClient } from '../lib/client'
-import { pendingTool, type ChatAction, type ChatState } from '../lib/state'
+import { pendingTool, type ChatAction, type ChatState, type StageName } from '../lib/state'
 import { formatDuration, formatProgress } from '../lib/format'
 import { applyMention, mentionAtCaret, type Mention } from '../lib/mentions'
 import { pathDrag, subscribePathDrag, within, type PathDrag } from '../lib/drag'
@@ -30,8 +30,40 @@ const MODES: readonly { value: AgentMode; label: string; hint: string }[] = [
  * here, visibly, is the cheap honest guard. */
 const MAX_SEND_CHARS = 500_000
 
+/**
+ * What each gate is called on screen.
+ *
+ * Written as what it is DOING rather than what it is NAMED. "acceptance gate" is the name
+ * in the code and means nothing to somebody watching a progress line; "checking the work
+ * against what you asked for" is the same fact in the words the person would use, and the
+ * words are what makes the wait tolerable.
+ */
+const STAGE_LABEL: Record<StageName, string> = {
+  contract: 'reading your request',
+  premises: 'checking what the plan assumes',
+  understanding: 'making sure it understood you',
+  build: 'building and testing',
+  acceptance: 'checking the work against what you asked for',
+  review: 'a second reader is going over the change',
+}
+
 /** The one window-owned slash command; see `send()`. */
 const COMPACT_COMMAND = '/compact'
+
+/**
+ * The gate commands, and why they are window-owned like `/compact` rather than model-facing.
+ *
+ * None of them is a message to anybody. The model has no tool that runs a build or starts a
+ * reviewer, so a `/review` that reached it as chat would be answered with a confident
+ * account of a review that never happened — the same failure `/compact` produced when it
+ * was typed twice.
+ */
+const GATE_COMMANDS: Record<string, 'build' | 'review'> = {
+  '/check': 'build',
+  '/review': 'review',
+}
+const GATES_OFF = '/gates off'
+const GATES_ON = '/gates on'
 
 export function Composer({
   client, state, dispatch, modalOpen, onAdoptViewed,
@@ -175,6 +207,15 @@ export function Composer({
   const BUILT_IN = [{
     name: 'compact',
     description: 'Summarise the conversation now and free the context it occupies',
+  }, {
+    name: 'check',
+    description: "Run this workspace's build and tests now, on the work as it stands",
+  }, {
+    name: 'review',
+    description: 'Have a reader with a fresh context go over the change now',
+  }, {
+    name: 'gates',
+    description: 'gates off — stop building, auditing and reviewing after every turn. gates on — resume',
   }]
   const matching = slashPrefix === null || commandsDismissed
     ? []
@@ -401,7 +442,11 @@ export function Composer({
     // Entries were guarded when they were typed (the slash check runs before queueing), so
     // the drain only routes: a queued /compact runs as the command it is, everything else
     // sends. One entry per drain — sending starts a turn, and the next entry waits for it.
+    // Same three-way branch as `send`: a queued entry is drained through the same paths it
+    // would have taken had the session been idle when it was typed.
+    const queuedGate = GATE_COMMANDS[next!.text]
     if (next!.text === COMPACT_COMMAND) runCompact()
+    else if (queuedGate !== undefined) runGate(queuedGate)
     else submit(next!.text, next!.attach)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- submit is recreated per render
   }, [state.turnRunning, state.run, compacting, improving, queued, state.session?.sessionId])
@@ -547,6 +592,38 @@ export function Composer({
       return
     }
 
+    // The gate commands, handled here for the same reason `/compact` is: none of them is a
+    // message to anyone, and sending one as chat would have the model announce it had done
+    // something it has no tool for. They queue behind a running turn, also like `/compact` —
+    // the server has one slot, and a gate makes model calls.
+    const gate = GATE_COMMANDS[text.trim().toLowerCase()]
+    if (gate !== undefined) {
+      setInput('')
+      setMention(null)
+      if (busy) {
+        setQueued((q) => [...q, { text: text.trim().toLowerCase(), attach: [] }])
+        return
+      }
+      runGate(gate)
+      return
+    }
+    if (text.trim().toLowerCase() === GATES_OFF || text.trim().toLowerCase() === GATES_ON) {
+      const manual = text.trim().toLowerCase() === GATES_OFF
+      setInput('')
+      setMention(null)
+      client.call('gates.set', { mode: manual ? 'manual' : 'auto' })
+        .then(() => dispatch({
+          type: 'error-note',
+          message: manual
+            ? 'Automatic checks are off for this session. Nothing builds, audits or reviews '
+              + 'until you ask: /check runs the build and tests, /review runs the '
+              + 'independent read of the diff.'
+            : 'Automatic checks are back on for this session.',
+        }))
+        .catch((e: Error) => dispatch({ type: 'error-note', message: e.message }))
+      return
+    }
+
     // A slash command that is not one does NOT go to the model as chat. Watched live: a
     // stray "/compact/compact" reached the model as text, and the model — having no
     // compaction tool at all — confidently announced "the context is now compacted". A
@@ -556,6 +633,17 @@ export function Composer({
     const slash = /^\/([a-z0-9-]+)(?:\s|$)/i.exec(text)
     if (slash) {
       const name = slash[1]!.toLowerCase()
+      // A built-in reaching here means it was written with arguments it does not take
+      // (`/review now`), or `/gates` without on|off. Same NOTE treatment as `/compact`:
+      // send-failed would end a turn that is streaming perfectly well.
+      if (name === 'check' || name === 'review') {
+        dispatch({ type: 'error-note', message: `/${name} takes no arguments. Nothing was sent.` })
+        return
+      }
+      if (name === 'gates') {
+        dispatch({ type: 'error-note', message: '/gates takes "on" or "off". Nothing was sent.' })
+        return
+      }
       if (name === 'compact') {
         // `/compact` alone was handled above, so this is `/compact <something>`. A NOTE,
         // not send-failed: this can fire mid-turn, and send-failed would end a turn that
@@ -566,7 +654,8 @@ export function Composer({
       const knownIn = (list: { name: string }[]): boolean =>
         list.some((c) => c.name.toLowerCase() === name)
       const refuse = (available: { name: string }[]): void => {
-        const known = ['/compact', ...available.map((c) => `/${c.name}`)].join(', ')
+        const known = ['/compact', ...BUILT_IN.slice(1).map((c) => `/${c.name}`),
+          ...available.map((c) => `/${c.name}`)].join(', ')
         dispatch({
           type: 'error-note',
           message: `/${name} is not a command here (${known}). Nothing was sent — the model cannot run commands it does not have.`,
@@ -647,6 +736,23 @@ export function Composer({
   function runCompact(): void {
     setCompacting(true)
     client.call('compact', {})
+      .catch((e: unknown) => {
+        dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
+      })
+      .finally(() => setCompacting(false))
+  }
+
+  /**
+   * Runs one gate on demand, and holds the turn flag while it does.
+   *
+   * `compacting` is reused rather than a second flag of its own: it means "this window is
+   * holding the host's single slot for something that is not a chat turn", which is exactly
+   * what a gate does. A second boolean would have to be checked everywhere this one already
+   * is, and the first place it was forgotten would let a message be sent into a busy host.
+   */
+  function runGate(gate: 'build' | 'review'): void {
+    setCompacting(true)
+    client.call('gates.run', { gate })
       .catch((e: unknown) => {
         dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
       })
@@ -861,6 +967,8 @@ export function Composer({
   // `npm test` executing for three minutes under the label `running write_file` is the
   // shape of it. `pendingTool` is the same rule the reducer uses to route a result.
   const runningTool = pendingTool(state.items)?.name ?? null
+  /** The gate running right now. Outranks every other reading in `statusLine`. */
+  const stage = state.runningStage
 
   /**
    * The one line of live state, shown INSIDE the control rather than on a strip above it.
@@ -910,6 +1018,23 @@ export function Composer({
       // by `lastCompaction` (the last EVENT seen, not a live flag) is what left "compacting…"
       // on screen next to a running step, and next to a queued message, with no way to tell
       // whether anything was happening at all.
+      // A gate outranks BOTH readings below, and that is the whole point of the event.
+      // During the premise and understanding gates the main agent has already announced the
+      // write it is about to attempt, so `runningTool` says "running edit_file" for a write
+      // that has not started and may be vetoed outright — an affirmative false statement,
+      // which is worse than the bare "working" the other gates produced. The stage is the
+      // one thing on screen that is actually true at that moment.
+      if (stage !== null) {
+        return (
+          <span class="status-live">
+            {STAGE_LABEL[stage.stage]} · {formatDuration(now - stage.startedAtMs)}
+            {stage.at !== undefined && (
+              <span class="status-quiet"> · {stage.at.index}/{stage.at.total}</span>
+            )}
+            {stage.detail !== undefined && <span class="status-quiet"> · {stage.detail}</span>}
+          </span>
+        )
+      }
       if (!step) return <span class="status-live">{runningTool ? `running ${runningTool}` : 'working'}</span>
       return (
         <span class="status-live">
