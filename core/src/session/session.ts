@@ -2902,6 +2902,9 @@ export class Session {
         ...(this.workspace.multi
           ? { folders: this.workspace.mounts.map((m) => ({ name: m.name, access: m.access })) }
           : {}),
+        // Same computation the Agent makes: the paragraph must describe a call the model
+        // can make in THIS mode, and plan mode filters `delegate` (not read-only) out.
+        delegation: this.delegationAvailable(),
       }),
     }, ...messages]
   }
@@ -3225,6 +3228,9 @@ export class Session {
         ...(this.workspace.multi
           ? { folders: this.workspace.mounts.map((m) => ({ name: m.name, access: m.access })) }
           : {}),
+        // Same computation the Agent makes: the paragraph must describe a call the model
+        // can make in THIS mode, and plan mode filters `delegate` (not read-only) out.
+        delegation: this.delegationAvailable(),
       }),
     })
     // The generated briefing, then the facts it is not allowed to get wrong. Computed from
@@ -3695,6 +3701,12 @@ export class Session {
       task,
       signal,
     )
+  }
+
+  /** Whether the model in this session's mode is actually offered `delegate`. */
+  private delegationAvailable(): boolean {
+    if (this.meta.mode === 'plan') return false
+    return this.opts.toolset.registry.schemas().some((t) => t.function.name === 'delegate')
   }
 
   private buildAgent(signal?: AbortSignal, sampling?: import('../llama/types.js').Sampling): Agent {

@@ -236,3 +236,18 @@ describe('where a command runs', () => {
     expect(prompt).not.toContain(base)
   })
 })
+
+describe('the delegation paragraph', () => {
+  test('appears only when a worker is actually on offer', () => {
+    // Of five framings measured live, this is the one that moved the choice (8/12 against
+    // three 0/6s), so it ships — but only beside a callable tool. A prompt telling the
+    // model to delegate in plan mode, where the tool is filtered out, would be an
+    // instruction to do the impossible.
+    const withIt = buildSystemPrompt({ workspaceRoot: 'D:\p', mode: 'normal', delegation: true })
+    expect(withIt).toContain('your FIRST call is delegate')
+
+    const without = buildSystemPrompt({ workspaceRoot: 'D:\p', mode: 'normal' })
+    expect(without).not.toContain('delegate')
+    expect(without).toBe(buildSystemPrompt({ workspaceRoot: 'D:\p', mode: 'normal', delegation: false }))
+  })
+})

@@ -108,15 +108,16 @@ describe('what comes back', () => {
 })
 
 describe('the tool as the registry sees it', () => {
-  test('it is NOT in the default set, and that is measured rather than an oversight', () => {
-    // A worker answers well — 16.6 s and 13.6 s, three steps each, both right. The caller
-    // never asks for one: 0/2 where delegating was the sensible move, and 0/3 again with a
-    // line in the system prompt telling it to. Meanwhile the schema renders at the front of
-    // every prompt at ~1,020 tokens, on every request, for something never called.
-    //
-    // Asserted so that re-registering it is a deliberate act with a failing test in front of
-    // it, rather than something that looks like wiring somebody forgot.
-    expect(buildRegistry().schemas().map((s) => s.function.name)).not.toContain('delegate')
+  test('it is registered, and worth what it costs, because the prompt routes to it', () => {
+    // This flipped twice, both times on a measurement. The model never picks delegate by
+    // judgement — 0 calls across 72 in two real turns — so it was unregistered rather than
+    // spend ~1,020 prompt tokens on something never called. Then the owner insisted the
+    // wording was the problem, and it was: of five system-prompt framings, a rule mapping
+    // request-shape to FIRST call went 8/12 with 0/3 false positives while judgement, role
+    // and cost framings went 0/6 (spike/delegate-prompt-probe.mts). The tool and its prompt
+    // paragraph now arrive together: `delegation:` in buildSystemPrompt is computed from
+    // this registration.
+    expect(buildRegistry().schemas().map((s) => s.function.name)).toContain('delegate')
   })
 
   test('its permission key names the role and the job', () => {

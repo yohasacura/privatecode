@@ -71,6 +71,23 @@ export interface PromptOptions {
    */
   folders?: { name: string; access: 'write' | 'read' }[]
   /**
+   * Whether the `delegate` tool is actually on offer, which is what earns the paragraph
+   * below its place. Five framings were measured against the live model
+   * (`spike/delegate-prompt-probe.mts`), same jobs, same tools:
+   *
+   *   bare                            0/6
+   *   "a question that needs several files read goes to a worker"   0/6
+   *   a rule mapping request-shape to FIRST call                    8/12, 0/3 false
+   *   "you coordinate; workers read" (a role)                       0/6
+   *   "reads you keep crowd out later work" (the reason)            0/6
+   *
+   * Only the rule moved it, and the shape explains why: it asks for no judgement and grants
+   * no role — it maps a recognisable request shape onto a concrete first move, which is the
+   * nearest prose gets to structure. The judgement, role and reason framings are the 0/703
+   * law behaving exactly as documented.
+   */
+  delegation?: boolean
+  /**
    * The rendered task contract (`contract.ts`'s `renderContract`), promoted here at every
    * compaction swap. The goal and its checkable criteria are the one thing a long task
    * cannot afford to lose to a swap, and message 0 is the one place a swap rebuilds anyway
@@ -129,6 +146,19 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     'Work in small steps. Look at the result before deciding the next step, and never claim',
     'something works unless a command or test you ran says so.',
     '',
+    // Directly after "work in small steps", because it QUALIFIES it: that instruction alone
+    // reads as "do the reading yourself, incrementally", which is exactly what was observed —
+    // 72 tool calls across two real investigation turns, none of them delegate. This is the
+    // one framing of five that moved the choice; see `PromptOptions.delegation`.
+    ...(opts.delegation === true
+      ? [
+        'When the request asks you to find out, map, trace or investigate something across',
+        'the codebase, your FIRST call is delegate: hand the whole question to a worker and',
+        'continue from its answer. Read files yourself for small, specific look-ups — one',
+        'named file, one symbol, one quick check.',
+        '',
+      ]
+      : []),
     // The other half of the loop's own change. It used to say "use exactly one tool", which
     // was false in the direction that cost: the loop ran the first call and refused the rest,
     // so a step proposing three edits became three steps. It now runs them, and the model has

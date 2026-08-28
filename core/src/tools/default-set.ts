@@ -8,6 +8,7 @@ import { editFileTool } from './edit-file.js'
 import { writeFileTool } from './write-file.js'
 import { moveFileTool } from './move-file.js'
 import { deleteFileTool } from './delete-file.js'
+import { delegateTool } from './delegate.js'
 import { runCommandTool } from './run-command.js'
 import { BackgroundTasks, backgroundTaskTool } from './background-task.js'
 import { gitStatusTool } from './git-tool.js'
@@ -71,23 +72,20 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   // Free, and unmeasured: no claim is made here that position is what routes the choice.
   // `web` sits beside the search family for the same unmeasured reason: it answers "find
   // out", and the model reaching for information should meet it before run_command.
-  // `delegateTool` is deliberately NOT here, and the reason is measured rather than
-  // stylistic. A worker answers a self-contained question well — 16.6 s and 13.6 s,
-  // three steps each, both right (`spike/delegate-live-probe.mts`). The caller never
-  // asks for one: 0/2 on jobs where delegating was the sensible move, and 0/3 again
-  // with a line in the SYSTEM prompt telling it to (`spike/delegate-nudge-probe.mts`).
-  // Which is this project's law where it always is — the description asks for a
-  // JUDGEMENT, and judgements are what prose does not route on this model.
-  //
-  // The tool is not free while it waits: its schema renders at the FRONT of every
-  // prompt, ~1,020 tokens, on every request, for something never called. So the
-  // machinery stays (`agent/subagent.ts`) and the door stays shut until something
-  // STRUCTURAL opens it — a forced field in the contract schema, the way `changesCode`
-  // works, rather than a tool the model has to think to reach for.
+  // `delegateTool` earns its ~1,020 prompt tokens now, and it did not always: the model
+  // never picks it by judgement (0 delegate calls across 72 tool calls in two real
+  // turns, spike/delegate-inturn-probe.mts), so for a while it was built but not
+  // registered. What changed is the system prompt: of five framings measured against
+  // the live model (spike/delegate-prompt-probe.mts), a rule mapping request-shape to
+  // FIRST call went 8/12 on investigation jobs with 0/3 false positives, while the
+  // judgement, role and cost framings all went 0/6. The paragraph ships in
+  // `buildSystemPrompt` under `delegation:`, which is computed from THIS registration —
+  // remove the tool and the paragraph goes with it.
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webTool, csharpNavTool, databaseTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool, sqlDeployTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
-                   symbolOutlineTool, browserTool, useSkillTool, rememberTool]) {
+                   symbolOutlineTool, browserTool, useSkillTool, rememberTool,
+                   delegateTool]) {
     registry.register(t)
   }
   return { registry, background, todos, browser, webRenderer, reads }

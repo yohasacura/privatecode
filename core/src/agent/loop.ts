@@ -653,6 +653,12 @@ export class Agent {
           // Read from the registry rather than passed in by the caller: the prompt must
           // describe the tools that exist, and the registry is the only thing that knows.
           external: describeExternalTools(opts.registry, this.opts.allowedTools),
+          // From the RESOLVED tool list, after plan mode has narrowed it: the paragraph must
+          // describe a call the model can actually make, and in plan mode `delegate` (not
+          // read-only) has already been filtered out by the constructor above. A worker's own
+          // context strips `delegate` too, so a worker never reads an offer to spawn workers.
+          delegation: (this.opts.allowedTools ?? opts.registry.schemas().map((s) => s.function.name))
+            .includes('delegate') && opts.context.delegate !== undefined,
           // Conditional spread, not `memory: opts.memory`: tsconfig sets
           // exactOptionalPropertyTypes, so an explicit undefined is not the same as absent.
           ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
