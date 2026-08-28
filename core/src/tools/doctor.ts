@@ -1,4 +1,7 @@
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { diagnose, renderDiagnosis } from '../doctor/diagnose.js'
+import { PRIVATE_DIR } from '../private-dir.js'
 import { SessionStore } from '../session/store.js'
 import type { Tool } from './types.js'
 
@@ -85,6 +88,35 @@ export const doctorTool: Tool<DoctorArgs> = {
           'there is nothing to measure.',
       }
     }
-    return { ok: true, content: renderDiagnosis(d) }
+    const report = renderDiagnosis(d)
+
+    // Written to a FILE as well as returned, and the file is the point.
+    //
+    // What travels has to be the artifact, not a retelling. The model has the whole
+    // conversation in context while it reads this, so a report it paraphrases could pick up
+    // a detail from anywhere — and "do not add anything" is an instruction, which this
+    // project has measured at 0 for 703. A file the person attaches is structure: whatever
+    // the model says about it afterwards, the thing that leaves the machine is this text.
+    let written: string | null = join(PRIVATE_DIR, 'diagnosis.md')
+    try {
+      writeFileSync(join(root, written), `${report}
+`, 'utf8')
+    } catch {
+      // Not fatal, and not silent. The report in the reply is still complete and still safe;
+      // only the convenience of having it as a file is lost.
+      written = null
+    }
+
+    return {
+      ok: true,
+      content: written === null
+        ? `${report}
+
+(the report could not be written to a file, so copy it from here)`
+        : `${report}
+
+Saved to ${written} — send that file. It is the whole report, and ` +
+          'it contains nothing that is not above.',
+    }
   },
 }

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { statePath } from '../private-dir.js'
 import { splitUserMessage } from '../host/replay.js'
 import { BUILT_IN_TOOL_NAMES, MCP_TOOL_PREFIX } from '../tools/built-in-names.js'
+import { episodesFrom, patternsOf, renderPatterns, type Episode, type RawAttempt } from './episodes.js'
 import type { SessionMeta } from '../session/store.js'
 
 /**
@@ -197,6 +198,14 @@ export interface Diagnosis {
   /** Compactions, counted from the markers left in the transcripts. */
   compactions: number
   tools: ToolStat[]
+  /**
+   * The recurring stories: a failure, what the model did next, and whether that worked.
+   *
+   * The counting fields above say what happens a lot. These say what it MEANT — and the
+   * `invented` count in each is the one to read first, because a value the model was never
+   * shown is not a tool-description problem and no amount of rewording will touch it.
+   */
+  patterns: ReturnType<typeof patternsOf>
   /** Anything the scan itself could not do, so a thin report is never mistaken for a
    * healthy one. */
   problems: string[]
@@ -296,6 +305,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
   let toolFailures = 0
   let unattributedFailures = 0
   let estimatedFailures = 0
+  const allEpisodes: Episode[] = []
   let compactions = 0
   let contractSessions = 0
   let manualGateSessions = 0
@@ -343,6 +353,9 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
     }
 
     const seen = new Set<string>()
+    /** This session's calls in order, so a failure can be read together with what came
+     * next. Values live here and are discarded with the session. */
+    const attempts: RawAttempt[] = []
     /** Call id -> tool name, so a `tool` RESULT can be attributed when it arrives. */
     const pending = new Map<string, string>()
     let messages = 0
@@ -382,7 +395,12 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         if (seen.has(key)) stat.repeats++
         else seen.add(key)
         byTool.set(name, stat)
-        if (typeof call.id === 'string') pending.set(call.id, name)
+        if (typeof call.id === 'string') {
+          pending.set(call.id, name)
+          // Recorded with its arguments so the NEXT attempt can be compared against it.
+          // Nothing here is reported; `episodesFrom` turns pairs into categories.
+          attempts.push({ what: name, args: call.function?.arguments ?? '', ok: true, result: '' })
+        }
       }
 
       // A `tool` message is one call's result. Its content is read ONLY by `classify`, whose
@@ -406,6 +424,18 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         const failed = ok === false || (guessed && (classify(m.content) !== 'other'
           || /error|failed|refus|could not|cannot|denied|not found|invalid|no such/i.test(m.content)))
         if (failed && guessed) estimatedFailures++
+        // Attach the outcome to the attempt this result answers, so the episode builder
+        // sees the sequence as it happened.
+        if (name !== undefined) {
+          for (let k = attempts.length - 1; k >= 0; k--) {
+            const at = attempts[k] as RawAttempt
+            if (at.what === name && at.result === '') {
+              at.ok = !failed
+              at.result = m.content
+              break
+            }
+          }
+        }
         if (failed) {
           const kind = classify(m.content)
           // A result whose call was never announced cannot be attributed, and inventing a
@@ -426,6 +456,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         }
       }
     }
+    allEpisodes.push(...episodesFrom(attempts))
     // One system message and nothing else: opened, never used.
     if (messages <= 1) emptySessions++
   }
@@ -452,6 +483,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
     manualGateSessions,
     compactions,
     tools: [...byTool.values()].sort((a, b) => b.calls - a.calls),
+    patterns: patternsOf(allEpisodes),
     problems: [...new Set(problems)],
   }
 }
@@ -508,6 +540,14 @@ export function renderDiagnosis(d: Diagnosis): string {
       `  ${String(t.failed).padStart(4)} failed (${pct(t.failed, t.calls)})` +
       `  ${String(t.repeats).padStart(4)} repeats` +
       (kinds === '' ? '' : `\n      ${kinds}`),
+    )
+  }
+  const stories = renderPatterns(d.patterns)
+  if (stories.length > 0) {
+    out.push(
+      '',
+      'what went wrong and what happened next — each line is a pattern, not one incident:',
+      ...stories,
     )
   }
   if (d.problems.length > 0) {

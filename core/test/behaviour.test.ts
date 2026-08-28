@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
-  SUBJECT_KEYS, factsAbout, keyFacts, lengthBucket, repairBetween, subjectsOf,
+  SUBJECT_KEYS, factsAbout, keyFacts, lengthBucket, nextMoveBetween, subjectsOf,
   type Fact,
 } from '../src/doctor/behaviour.js'
 
@@ -61,33 +61,33 @@ describe('a fact can never carry the value it describes', () => {
 describe('the relation between two attempts, across different kinds', () => {
   test('narrowed — the owner\'s own example, and the same relation elsewhere', () => {
     // A path that lost a leading segment: the multi-folder "which folder am I in" mistake.
-    expect(repairBetween('src/Engine/Program.cs', 'Engine/Program.cs', 'location')).toBe('narrowed')
+    expect(nextMoveBetween('src/Engine/Program.cs', 'Engine/Program.cs', 'location')).toBe('narrowed')
     // The identical relation in a NAME: a symbol that dropped its namespace. Same finding,
     // different tool, and this is why the relation is not called "dropped-path-segment".
-    expect(repairBetween('Acme.Ledger.Posting', 'Ledger.Posting', 'name')).toBe('narrowed')
+    expect(nextMoveBetween('Acme.Ledger.Posting', 'Ledger.Posting', 'name')).toBe('narrowed')
   })
 
   test('broadened is its mirror', () => {
-    expect(repairBetween('Engine/Program.cs', 'src/Engine/Program.cs', 'location')).toBe('broadened')
+    expect(nextMoveBetween('Engine/Program.cs', 'src/Engine/Program.cs', 'location')).toBe('broadened')
   })
 
   test('rejoined — the same pieces, put together differently', () => {
     // A separator confusion, which is a different bug from a wrong path and needs a
     // different fix.
-    expect(repairBetween('src\\Engine\\a.cs', 'src/Engine/a.cs', 'location')).toBe('rejoined')
+    expect(nextMoveBetween('src\\Engine\\a.cs', 'src/Engine/a.cs', 'location')).toBe('rejoined')
   })
 
   test('changed-operator — the habit this project has watched most', () => {
-    expect(repairBetween('cd x && dotnet build', 'cd x; dotnet build', 'command'))
+    expect(nextMoveBetween('cd x && dotnet build', 'cd x; dotnet build', 'command'))
       .toBe('changed-operator')
   })
 
   test('retried-identically — the failure taught nothing', () => {
-    expect(repairBetween('same', 'same', 'location')).toBe('retried-identically')
+    expect(nextMoveBetween('same', 'same', 'location')).toBe('retried-identically')
   })
 
   test('guessed-again — no structural relation at all', () => {
-    expect(repairBetween('src/a.cs', 'tests/helpers/b.ts', 'location')).toBe('guessed-again')
+    expect(nextMoveBetween('src/a.cs', 'tests/helpers/b.ts', 'location')).toBe('guessed-again')
   })
 })
 

@@ -66,19 +66,29 @@ describe('nothing from the transcript can reach the report', () => {
       'SECRET-SESSION-TITLE',
       'SECRET-SYSTEM-PROMPT',
     ]
-    const metas = [session('s1', [
+    // Repeated, so the PATTERN renderer runs too — the prose half is where the temptation
+    // to quote the offending value is strongest, and a leak test that only exercised the
+    // table would miss exactly the code most likely to leak.
+    const lines: Line[] = [
       { role: 'system', content: 'workspace at C:/SECRET-SYSTEM-PROMPT' },
       { role: 'user', content: 'please fix SECRET-USER-PROSE in the billing module' },
-      {
-        role: 'assistant',
-        content: 'I will look at SECRET-ASSISTANT-PROSE',
-        tool_calls: [{
-          id: 'c1', type: 'function',
-          function: { name: 'read_file', arguments: '{"path":"src/SECRET-ARGUMENT-PATH.ts"}' },
-        }],
-      },
-      { role: 'tool', tool_call_id: 'c1', content: 'File not found: src/SECRET-TOOL-OUTPUT.ts' },
-    ], { title: 'SECRET-SESSION-TITLE' }, [{ id: 'c1', ok: false }])]
+    ]
+    const outcomes: { id: string; ok: boolean }[] = []
+    for (let i = 0; i < 3; i++) {
+      lines.push(
+        {
+          role: 'assistant',
+          content: 'I will look at SECRET-ASSISTANT-PROSE',
+          tool_calls: [{
+            id: `c${i}`, type: 'function',
+            function: { name: 'read_file', arguments: `{"path":"src/SECRET-ARGUMENT-PATH${i}.ts"}` },
+          }],
+        },
+        { role: 'tool', tool_call_id: `c${i}`, content: `File not found: src/SECRET-TOOL-OUTPUT${i}.ts` },
+      )
+      outcomes.push({ id: `c${i}`, ok: false })
+    }
+    const metas = [session('s1', lines, { title: 'SECRET-SESSION-TITLE' }, outcomes)]
 
     const report = renderDiagnosis(diagnose(root, metas))
 
@@ -456,4 +466,151 @@ test('a failure survives a missing outcomes file, and is labelled as estimated',
   // the sessions missing this file are the ones that crashed.
   expect(d.estimatedFailures).toBe(1)
   expect(renderDiagnosis(d)).toContain('treat them as approximate')
+})
+
+/**
+ * The stories, which are the reason this is a diagnosis and not a dashboard.
+ *
+ * A count says a mistake happened. A failure read together with what the model did NEXT says
+ * what the model thought the mistake was, and the outcome says whether it was right. Those
+ * three are what a person means by "diagnose it" — and none of them is a value, so all three
+ * can leave the machine.
+ *
+ * Nothing here repairs anything. The next move is an OBSERVATION of what the model did; what
+ * to do about it is a person's call, made with the report in hand.
+ */
+describe('failure, what happened next, and whether it worked', () => {
+  const call = (id: string, name: string, args: string) => ({
+    role: 'assistant',
+    tool_calls: [{ id, type: 'function' as const, function: { name, arguments: args } }],
+  })
+
+  test('the owner\'s own example comes out as a sentence with no path in it', () => {
+    // Read a path with a leading folder that is not there; then read it without. Twice, so
+    // it is a pattern rather than an incident.
+    const lines: Line[] = []
+    const outcomes: { id: string; ok: boolean }[] = []
+    for (const [i, name] of ['Program', 'Startup'].entries()) {
+      const bad = `c${i}a`
+      const good = `c${i}b`
+      lines.push(
+        call(bad, 'read_file', JSON.stringify({ path: `src/Engine/${name}.cs` })),
+        { role: 'tool', tool_call_id: bad, content: `File not found: src/Engine/${name}.cs` },
+        call(good, 'read_file', JSON.stringify({ path: `Engine/${name}.cs` })),
+        { role: 'tool', tool_call_id: good, content: '1\tnamespace Engine;' },
+      )
+      outcomes.push({ id: bad, ok: false }, { id: good, ok: true })
+    }
+    const report = renderDiagnosis(diagnose(root, [session('s1', lines, {}, outcomes)]))
+
+    expect(report).toContain('read_file · not-found on a place in the workspace — 2 times')
+    expect(report).toContain('dropped a leading part of it, which worked 2 of 2 times')
+    // The finding is the RELATION. Neither path appears.
+    expect(report).not.toContain('Engine')
+    expect(report).not.toContain('Program.cs')
+  })
+
+  test('a value the model was never shown is called out as invented', () => {
+    // The sharpest question in the report, and the cheapest: before blaming a tool's
+    // description, ask whether the model was working from anything at all.
+    const lines: Line[] = []
+    const outcomes: { id: string; ok: boolean }[] = []
+    for (let i = 0; i < 2; i++) {
+      lines.push(
+        call(`x${i}`, 'read_file', JSON.stringify({ path: `src/Invented${i}.cs` })),
+        { role: 'tool', tool_call_id: `x${i}`, content: `File not found: src/Invented${i}.cs` },
+        call(`y${i}`, 'read_file', JSON.stringify({ path: `other/Guess${i}.cs` })),
+        { role: 'tool', tool_call_id: `y${i}`, content: `File not found: other/Guess${i}.cs` },
+      )
+      outcomes.push({ id: `x${i}`, ok: false }, { id: `y${i}`, ok: false })
+    }
+    const report = renderDiagnosis(diagnose(root, [session('s1', lines, {}, outcomes)]))
+
+    expect(report).toContain('the value had never appeared in anything it had been shown')
+    expect(report).toContain('a better tool description would not have helped')
+    expect(report).not.toContain('Invented')
+  })
+
+  test('a path the model HAD been shown is not called invented', () => {
+    // The other half, or the finding above would be true of everything and mean nothing.
+    const listing = 'src/Real.cs\nsrc/Other.cs'
+    const lines: Line[] = [
+      call('a1', 'list_dir', JSON.stringify({ path: 'src' })),
+      { role: 'tool', tool_call_id: 'a1', content: listing },
+    ]
+    const outcomes = [{ id: 'a1', ok: true }]
+    for (let i = 0; i < 2; i++) {
+      lines.push(
+        call(`b${i}`, 'read_file', JSON.stringify({ path: 'src/Real.cs' })),
+        { role: 'tool', tool_call_id: `b${i}`, content: 'File not found: src/Real.cs' },
+        call(`c${i}`, 'read_file', JSON.stringify({ path: 'Real.cs' })),
+        { role: 'tool', tool_call_id: `c${i}`, content: 'File not found: Real.cs' },
+      )
+      outcomes.push({ id: `b${i}`, ok: false }, { id: `c${i}`, ok: false })
+    }
+    const d = diagnose(root, [session('s1', lines, {}, outcomes)])
+
+    // It was in the listing it was given, so the fault is not that it made the name up.
+    const shown = d.patterns.find((p) => p.what === 'read_file' && p.invented === 0)
+    expect(shown).toBeDefined()
+  })
+
+  test('retrying the identical call is its own story', () => {
+    const lines: Line[] = []
+    const outcomes: { id: string; ok: boolean }[] = []
+    for (let i = 0; i < 3; i++) {
+      lines.push(
+        call(`r${i}`, 'run_command', JSON.stringify({ commands: ['dotnet build'] })),
+        { role: 'tool', tool_call_id: `r${i}`, content: 'exit 1: build failed' },
+      )
+      outcomes.push({ id: `r${i}`, ok: false })
+    }
+    const report = renderDiagnosis(diagnose(root, [session('s1', lines, {}, outcomes)]))
+
+    // The failure taught it nothing, three times — which is a finding about the MESSAGE we
+    // sent back, not about the command.
+    expect(report).toContain('tried the exact same thing again')
+  })
+
+  test('a one-off is not reported as a pattern', () => {
+    // A single incident is noise. The report is for what recurs; anything else fills it with
+    // things nobody can act on.
+    const lines: Line[] = [
+      call('c1', 'read_file', JSON.stringify({ path: 'src/Once.cs' })),
+      { role: 'tool', tool_call_id: 'c1', content: 'File not found: src/Once.cs' },
+    ]
+    const report = renderDiagnosis(diagnose(root, [session('s1', lines, {}, [{ id: 'c1', ok: false }])]))
+    expect(report).not.toContain('what went wrong and what happened next')
+  })
+})
+
+test('provenance is only asked where the answer means something', async () => {
+  // Measured on a demo run: a command is ALWAYS "invented" — the model composes it, it was
+  // never in a result — so the line fired on every command pattern and drowned the one case
+  // where the word carries weight. A location could have been observed; choosing one that
+  // never was is the model working from nothing.
+  const lines: Line[] = []
+  const outcomes: { id: string; ok: boolean }[] = []
+  for (let i = 0; i < 2; i++) {
+    lines.push(
+      {
+        role: 'assistant',
+        tool_calls: [{
+          id: `k${i}`, type: 'function',
+          function: { name: 'run_command', arguments: JSON.stringify({ commands: ['dotnet build'] }) },
+        }],
+      },
+      { role: 'tool', tool_call_id: `k${i}`, content: 'exit 1: build failed' },
+    )
+    outcomes.push({ id: `k${i}`, ok: false })
+  }
+  const d = diagnose(root, [session('s1', lines, {}, outcomes)])
+
+  // Across every run_command story, not one of them: the LAST failure has no sequel, so it
+  // groups as `gave-up` and is its own pattern. That split is correct and is why the
+  // assertion is over all of them.
+  const commandPatterns = d.patterns.filter((p) => p.what === 'run_command')
+  expect(commandPatterns.length).toBeGreaterThan(0)
+  expect(commandPatterns.every((p) => p.invented === 0)).toBe(true)
+  expect(renderDiagnosis(d)).not.toContain('it was invented')
 })

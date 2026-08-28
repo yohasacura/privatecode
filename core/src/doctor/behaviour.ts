@@ -35,12 +35,16 @@
  * like THIS, it then changed THAT, and here is whether that worked* — with X, THIS and THAT
  * all rendered as categories.
  *
+ * Nothing here CHANGES anything. This module reads and counts; every "next move" is an
+ * observation of what the model did, never something done on its behalf. The report is the
+ * whole product — what to do about it is a person's call, made with the report in hand.
+ *
  * ============================================================================
  * ACTORS, BECAUSE GATES FAIL TOO
  * ============================================================================
  *
  * A gate is an actor like the model is. Its "attempt" is a check, its "outcome" is a
- * verdict, and its "repair" is the fixer turn it forced. A gate that hands the same class of
+ * verdict, and its next move is the fixer turn it forced. A gate that hands the same class of
  * thing back three times is exactly as much a finding as a tool called wrong three times,
  * and it is more expensive. The vocabulary differs; the method does not.
  */
@@ -225,7 +229,7 @@ function firstWord(statement: string): string | null {
  * for paths, because the same relation appears in a search pattern that dropped a
  * qualifier and in a symbol name that dropped a namespace.
  */
-export type Repair =
+export type NextMove =
   /** Byte for byte the same. The failure taught nothing. */
   | 'retried-identically'
   /** The new value's parts are a suffix of the old one's: something in front was dropped. */
@@ -252,9 +256,9 @@ export type Repair =
  * catch-alls, because "it dropped a leading part" is a finding and "it changed something" is
  * not.
  */
-export function repairBetween(
+export function nextMoveBetween(
   before: string, after: string, kind: SubjectKind,
-): Repair {
+): NextMove {
   if (before === after) return 'retried-identically'
 
   const b = partsOf(before, kind)
