@@ -464,6 +464,7 @@ export function WorkspaceTab({
           git={marks}
           gitActions={gitActions}
           ghosts={ghosts}
+          reloadKey={reloadKey}
         />
       </div>
     </div>

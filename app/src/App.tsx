@@ -223,6 +223,35 @@ export default function App() {
   const [reviewed, setReviewed] = useState<ReadonlyMap<string, number>>(new Map())
   /** Bumped by a Put back so git status re-reads itself: the revert changed the disk. */
   const [reverts, setReverts] = useState(0)
+  /**
+   * Bumped when this window regains focus, because the disk is not ours alone.
+   *
+   * Everything the workspace panel shows — branch, staged and dirty sets, the file tree —
+   * was read once and then only ever re-read after WE changed something: a write tool, a
+   * Put back, a stage or a commit. Switch branch in VS Code, stash from a terminal, pull:
+   * PrivateCode kept showing the old branch and the old file list until the app was
+   * restarted, because no timer, no watcher and no manual refresh existed anywhere in the
+   * codebase to notice.
+   *
+   * Focus is the trigger rather than a poll for two reasons. It is exactly when staleness
+   * starts to matter — you cannot act on this panel without focusing the window first —
+   * and it costs nothing while you work in another app, where a poll would be spawning git
+   * every few seconds to redraw a panel nobody is looking at.
+   */
+  const [externalChanges, setExternalChanges] = useState(0)
+  useEffect(() => {
+    const bump = (): void => setExternalChanges((n) => n + 1)
+    // Both, deliberately. `focus` covers alt-tab between windows; `visibilitychange` covers
+    // the window being restored from minimised or its virtual desktop being switched back,
+    // which does not always raise `focus`.
+    const onVisible = (): void => { if (!document.hidden) bump() }
+    window.addEventListener('focus', bump)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', bump)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [])
   const liveSessionId = chatState.session?.sessionId ?? ''
   useEffect(() => { setReviewed(new Map()) }, [liveSessionId])
 
@@ -851,7 +880,7 @@ export default function App() {
                     client={client}
                     items={chatState.items}
                     changes={changes}
-                    reloadKey={workspaceMutations + reverts}
+                    reloadKey={workspaceMutations + reverts + externalChanges}
                     onOpenFile={openTab}
                     hasSession={chatState.session !== null}
                     workspaceRoot={workspaceRoot}

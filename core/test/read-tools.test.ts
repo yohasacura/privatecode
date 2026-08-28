@@ -691,3 +691,39 @@ test('clearing the memory makes everything a first read again', async () => {
   expect(after.content).toContain('export const a = 1')
   expect(after.content).not.toMatch(/unchanged since/)
 })
+
+// --- The walk is pruned, and the prune is opt-out-able -----------------------------
+// Measured before this existed: `**/*.ts` in the app's own repository visited 3028 files
+// to return 248, and `**/*.cs` on a .NET tree returned 104 of which 74 lived under bin/
+// and obj/. The fixture's `bin/` stands in for both halves.
+
+test('P1 a broad pattern does not descend into build output', async () => {
+  const r = await findFilesTool.execute({ glob: '**/*.bin' }, ctx)
+  expect(r.ok).toBe(true)
+  // big/huge.bin is the control: same extension, ordinary directory, still found.
+  expect(r.content).toContain('big/huge.bin')
+  expect(r.content).not.toContain('bin/blob.bin')
+})
+
+test('P1 naming the directory opts back into it', async () => {
+  const r = await findFilesTool.execute({ glob: 'bin/**' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(r.content).toContain('bin/blob.bin')
+  expect(r.content).toContain('bin/utf16.txt')
+})
+
+test('P1 a glob segment is not a name, so **/*.bin does not opt in', async () => {
+  // The escape hatch keys on LITERAL segments. If it keyed on substrings, the pattern
+  // above would count as naming `bin` and the prune would never apply to the case it
+  // exists for.
+  const r = await findFilesTool.execute({ glob: '**/blob.bin' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(r.content).toMatch(/^No files match/)
+})
+
+test('P1 an empty result says the walk was pruned', async () => {
+  const r = await findFilesTool.execute({ glob: '**/*.nothing' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(r.content).toMatch(/^No files match/)
+  expect(r.content).toContain('bin/**')
+})

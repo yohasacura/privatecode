@@ -147,9 +147,20 @@ function GitCluster({
 
 export function TreePanel({
   client, toolItems, onOpenFile, workspaceRoot, decor, mounts, mountActions,
-  filterChanged, reviewedPaths, onOpenDiff, git, gitActions, ghosts,
+  filterChanged, reviewedPaths, onOpenDiff, git, gitActions, ghosts, reloadKey,
 }: {
   client: ProtocolClient
+  /**
+   * Bumped when something OUTSIDE this session touched the disk — a Put back, or the
+   * window regaining focus after a branch switch in another editor.
+   *
+   * The tree used to refresh only where a write TOOL had been, so a branch switch left it
+   * showing files that no longer existed and hiding files that now did. Re-fetching only
+   * the directories already loaded (rather than resetting to the root) is what makes this
+   * usable: the expanded shape of a tree is a place you navigated to, and throwing it away
+   * on every alt-tab would be a worse bug than the stale rows.
+   */
+  reloadKey: number
   toolItems: ChatItem[]
   onOpenFile: (path: string) => void
   /**
@@ -218,6 +229,17 @@ export function TreePanel({
     loadDir('')
     // eslint-disable-next-line react-hooks/exhaustive-deps -- loadDir is stable per client
   }, [client, workspaceRoot])
+
+  // An external change re-reads every directory the tree is currently showing, and leaves
+  // `expanded` alone. Skipped on the first render (`reloadKey` starts at 0 and the mount
+  // effect above already fetched the root) so this does not double-fetch on open.
+  const lastReload = useRef(reloadKey)
+  useEffect(() => {
+    if (lastReload.current === reloadKey) return
+    lastReload.current = reloadKey
+    for (const path of Object.keys(dirsRef.current)) loadDir(path)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadDir is stable per client
+  }, [reloadKey])
 
   // Refresh: a write-family tool succeeding against a directory the tree ALREADY has
   // loaded gets that one directory re-fetched. `processedToolIds` guards against handling

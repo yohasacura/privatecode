@@ -566,13 +566,22 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
       return { ok: true, lines, stderr }
     }
 
-    // Sequential, not parallel: `--sort path` already makes each run single-threaded, and
-    // the merge is only well defined if each folder's block arrives whole.
+    // Concurrent across folders, ordered on the way out. This used to be a sequential loop,
+    // reasoned as "`--sort path` already makes each run single-threaded, and the merge is
+    // only well defined if each folder's block arrives whole" — the second half of which is
+    // what actually mattered, and it survives: each run still collects into its OWN array
+    // and the arrays are concatenated in `jobs` order below, so the merged result is
+    // byte-identical to what the loop produced. What does not survive is the first half.
+    // Single-threaded is a statement about ONE ripgrep; it is the reason to overlap the
+    // folders rather than a reason not to, because a four-folder workspace was spending
+    // four single-threaded walks end to end on a machine with cores standing idle.
+    const outcomes = await Promise.all(jobs.map(runOne))
+
     const lines: string[] = []
     const notes: string[] = []
     const failures: string[] = []
-    for (const job of jobs) {
-      const outcome = await runOne(job)
+    for (const [i, outcome] of outcomes.entries()) {
+      const job = jobs[i] as { mount: Mount; target: string }
       if (!outcome.ok) {
         failures.push(ctx.workspace.multi ? `${job.mount.name}: ${outcome.content}` : outcome.content)
         continue

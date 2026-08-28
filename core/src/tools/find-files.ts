@@ -16,6 +16,44 @@ const SEPARATOR = /[\\/]/
 const HIDDEN_SEGMENTS = new Set(['.git', 'node_modules'].map((s) => s.toLowerCase()))
 
 /**
+ * Directories the walk does not descend into, and why this is not the same list as
+ * `HIDDEN_SEGMENTS`.
+ *
+ * `HIDDEN_SEGMENTS` is a GUARANTEE, enforced on every path that comes back out. This list
+ * is a PRUNE, handed to `fs.glob` as `exclude` so it never enters these trees in the first
+ * place. The two overlap deliberately: `.git` and `node_modules` appear in both, because
+ * `exclude` matching is case-sensitive on some platforms and the post-filter is what still
+ * holds when `NODE_MODULES` arrives in a spelling the pattern missed.
+ *
+ * Measured, this repository, `**\/*.ts`: the walk visited 3028 files to return 248 — every
+ * dependency file was read from disk and then thrown away by the post-filter. With the
+ * prune it visits what it returns: 501 ms -> 156 ms, same 248 results. On a .NET tree the
+ * second half matters more than the speed: `**\/*.cs` returned 104 files of which 74 lived
+ * under `bin/` and `obj/`, so seven results in ten were build output the model then had to
+ * read to discover were generated.
+ *
+ * The same set `file-search.ts` skips for the `@` picker, kept in step with it on purpose:
+ * a file the picker will not offer and the walker will not reach is one story, not two.
+ */
+const PRUNED_SEGMENTS = ['.git', 'node_modules', '.privatecode', 'dist', 'build', 'target',
+  '.next', '.venv', '__pycache__', 'bin', 'obj']
+
+/**
+ * The prune, minus anything the caller named on purpose.
+ *
+ * `bin/**` has to keep working: naming a directory is how you say you want what is in it,
+ * exactly as `search_code`'s scoped search opts into dot-directories by being given one.
+ * Compared against the pattern's literal segments only — a segment carrying glob syntax
+ * (`*`, `?`, a brace) is not a name, so `**\/*.dll` does not count as asking for `bin`.
+ */
+function prunedFor(pattern: string): string[] {
+  const named = new Set(
+    pattern.split(SEPARATOR).filter((s) => !GLOB_META.test(s)).map((s) => s.toLowerCase()),
+  )
+  return PRUNED_SEGMENTS.filter((s) => !named.has(s)).map((s) => `**/${s}/**`)
+}
+
+/**
  * Absolute under either platform's rules, not just the host's: a pattern is model-written
  * text, and `C:/secrets/*` must be refused when the host is POSIX just as `/etc/*` must be
  * refused when the host is Windows.
@@ -130,7 +168,9 @@ export const findFilesTool: Tool<FindFilesArgs> = {
         // the caller must write an explicitly dotted pattern (e.g. ".github/**/*.yml") to see it.
         // Measured directly against fs.glob on Node v24.18.1 - passing `dot: true` is silently
         // ignored, not rejected, which is why it must not be passed at all.
-        for await (const entry of glob(job.pattern, { cwd: job.mount.root, withFileTypes: true })) {
+        for await (const entry of glob(job.pattern, {
+          cwd: job.mount.root, withFileTypes: true, exclude: prunedFor(job.pattern),
+        })) {
           // The tool is called find_files: a bare directory name is indistinguishable from
           // an extensionless file, and the model will call read_file on it.
           if (entry.isDirectory()) continue
@@ -158,7 +198,18 @@ export const findFilesTool: Tool<FindFilesArgs> = {
       }
     }
 
-    if (matches.length === 0) return { ok: true, content: `No files match ${args.glob}` }
+    // An empty result is the one place the prune can mislead, because "nothing matches" and
+    // "nothing matches outside build output" read identically and only the first is worth
+    // believing. Said here rather than on every result: on a normal hit the pruned trees are
+    // noise nobody wanted, and a standing footnote about them is its own kind of lying.
+    if (matches.length === 0) {
+      const pruned = prunedFor(args.glob)
+      const hint = pruned.length > 0
+        ? ` (dependency and build directories are not walked — name one in the pattern, ` +
+          `such as "bin/**/*.dll", to look inside)`
+        : ''
+      return { ok: true, content: `No files match ${args.glob}${hint}` }
+    }
 
     // Sort before capping, so the shown subset is genuinely the first N in sorted order
     // rather than an arbitrary slice of traversal order wearing a sorted disguise.
