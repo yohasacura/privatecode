@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { fsErrorReason } from './atomic-write.js'
 import { BOM } from './line-endings.js'
+import { notesPath } from '../memory/project-notes.js'
 import { outlineFile } from '../outline/tree-sitter.js'
 import { renderDiff } from './edit-file.js'
 import type { Tool } from './types.js'
@@ -104,6 +105,23 @@ async function shapeOf(
 /** Ceiling on the copy the APP shows (`ToolResult.display`). The model's budget bounds what
  * becomes permanent context; this one only bounds what one transcript card can weigh. */
 const MAX_DISPLAY_CHARS = 400_000
+
+/**
+ * Whether an absolute path IS the project-notes store.
+ *
+ * Compared on the resolved path rather than on the model's spelling: `.privatecode/../
+ * .privatecode/project-notes.md`, a mount-prefixed spelling and a short-name alias are all
+ * the same file, and a guard that can be spelled around is not a guard. `notesPath` is the
+ * one place that knows where the file lives, so the two cannot drift.
+ */
+function isProjectNotes(absolute: string): boolean {
+  const slash = (p: string): string => p.split('\\').join('/').toLowerCase()
+  // The store's own tail (`.privatecode/project-notes.md`), asked of the module that owns
+  // the layout so the two cannot drift. Matched as a suffix because a workspace may hold
+  // several folders and each has its own store under its own root.
+  const tail = slash(notesPath('')).replace(/^\/+/, '')
+  return slash(absolute).endsWith(tail)
+}
 
 /** Above this a file is refused outright, before it is read into memory. */
 const MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -222,6 +240,30 @@ export const readFileTool: Tool<ReadFileArgs> = {
     // Stat before read: the size must be known before the bytes are in memory, or the
     // budget is consulted after the damage is done.
     let size: number
+    // The notes file is the one file in the workspace whose CONTENTS are a trap.
+    //
+    // It holds every note ever written; `loadProjectNotes` is what re-hashes each note's
+    // evidence and drops the ones whose files have moved on. Read it directly and you get
+    // back exactly the stale, confident sentences about changed code that
+    // `memory/project-notes.ts` opens by calling "worse than no file at all, because they
+    // are read first and trusted".
+    //
+    // Refused rather than discouraged, because discouraging it did not work: asked how to
+    // read its notes, the model found this file and told the user to read it — and told
+    // them again after `recall` existed and it had used it. The recipe this project keeps
+    // relearning is to make the wrong thing inexpressible, not unattractive.
+    if (isProjectNotes(abs)) {
+      return {
+        ok: false,
+        content:
+          'That is the project-notes store, and reading it directly returns notes whose ' +
+          'evidence files have since changed — the ones that are deliberately kept OUT of ' +
+          'your context because they no longer describe the code. Use `recall`: it applies ' +
+          'the same freshness check the session start applies, and returns only what still ' +
+          'holds.',
+      }
+    }
+
     try {
       const info = await stat(abs)
       if (info.isDirectory()) {

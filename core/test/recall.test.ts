@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import { recallTool } from '../src/tools/recall.js'
+import { readFileTool } from '../src/tools/read-file.js'
 import { rememberTool } from '../src/tools/remember.js'
 import { Workspace } from '../src/workspace.js'
 import type { ToolContext } from '../src/tools/types.js'
@@ -92,4 +93,47 @@ test('it is read-only, so plan mode can use it', () => {
   // A plan built without what earlier sessions worked out is a plan that re-derives them,
   // which is the cost `remember` exists to remove.
   expect(recallTool.readOnly).toBe(true)
+})
+
+/**
+ * The workaround, made inexpressible.
+ *
+ * Discouraging it did not work. Asked how to read its notes, the model found the file and
+ * told the user `read_file('.privatecode/project-notes.md')` — and said it again in a later
+ * conversation, after `recall` existed and it had used it. The file holds every note ever
+ * written; the loader is what drops the ones whose evidence has changed. So the direct read
+ * returns exactly what the design exists to keep out of the context.
+ */
+test('read_file refuses the notes store and names the tool that does it properly', async () => {
+  await remember('a fact', ['src/a.ts'])
+
+  const r = await readFileTool.execute({ path: '.privatecode/project-notes.md' }, ctx)
+
+  expect(r.ok).toBe(false)
+  expect(r.content).toContain('recall')
+  // The refusal has to say WHY, or it reads as an arbitrary lock and the next move is to
+  // find another way in.
+  expect(r.content).toContain('evidence files have since changed')
+})
+
+test('the refusal cannot be spelled around', async () => {
+  await remember('a fact', ['src/a.ts'])
+
+  // A guard on the model's spelling rather than on the resolved path is not a guard.
+  const sneaky = await readFileTool.execute(
+    { path: '.privatecode/../.privatecode/project-notes.md' },
+    ctx,
+  )
+  expect(sneaky.ok).toBe(false)
+  expect(sneaky.content).toContain('recall')
+})
+
+test('every other file in .privatecode still reads normally', async () => {
+  writeFileSync(join(root, '.privatecode', 'settings.json'), '{"verify":{}}', 'utf8')
+
+  // The guard is one file, not the folder: settings, skills and commands are things a
+  // person wrote and the model is meant to read.
+  const r = await readFileTool.execute({ path: '.privatecode/settings.json' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(r.content).toContain('verify')
 })
