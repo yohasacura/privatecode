@@ -74,6 +74,15 @@ export interface GateEvent {
   answer: GateAnswer
   /** The same check fired again before the person's next message. */
   refired: boolean
+  /**
+   * Whether anything at all happened AFTER this firing, so `refired` means something.
+   *
+   * False for the very last firing in a session, which had nothing observed after it. A
+   * check that fired and then the file ended did not "pass" — nobody watched. Counting it
+   * as satisfied is the flattering guess, and this module's one recurring lesson is that a
+   * diagnosis is worth nothing the moment it is confident where it is weakest.
+   */
+  outcomeKnown: boolean
   /** Where this firing sat in an unbroken run of the same check — 1 for the first. */
   round: number
   /** Assistant turns spent answering it. */
@@ -93,7 +102,25 @@ export interface GateStat {
   /** Model turns and tool calls spent answering this check. */
   steps: number
   calls: number
-  answers: Partial<Record<GateAnswer, number>>
+  /**
+   * What the model did, CROSS-TABULATED with whether it worked.
+   *
+   * Two separate lists is what this replaced, and the live model itself is what showed the
+   * flaw: given `1 not satisfied` on one line and `words 1, edits 1` on another, it read
+   * the report back as "half the time it replied in words, the other half it changed files
+   * but apparently didn't get it right" — inverting which answer had worked, and inventing
+   * a second failure that the numbers say did not happen. The reader has no way to pair
+   * them, so the reader guesses.
+   *
+   * The tool half of this diagnosis never had that problem: it says "then dropped a leading
+   * part of it, WHICH WORKED 3 of 3 times". A move and its verdict belong on one line.
+   */
+  answers: Partial<Record<GateAnswer, {
+    times: number
+    /** Firings of this kind answered this way whose outcome was actually observed. */
+    observed: number
+    satisfied: number
+  }>>
 }
 
 /**
@@ -125,7 +152,13 @@ export function gateStatsFrom(events: readonly GateEvent[]): GateStat[] {
     s.longestRun = Math.max(s.longestRun, e.round)
     s.steps += e.steps
     s.calls += e.calls
-    s.answers[e.answer] = (s.answers[e.answer] ?? 0) + 1
+    const a = s.answers[e.answer] ?? { times: 0, observed: 0, satisfied: 0 }
+    a.times++
+    if (e.outcomeKnown) {
+      a.observed++
+      if (!e.refired) a.satisfied++
+    }
+    s.answers[e.answer] = a
     by.set(e.kind, s)
   }
   return [...by.values()].sort((a, b) => b.fired - a.fired)
@@ -138,6 +171,7 @@ const GATE_LABEL: Record<HarnessKind, string> = {
   premises: 'premise check refused the turn',
   verify: 'build or tests failed',
   'verify-broken': 'verification could not run',
+  'compaction-briefing': 'context compacted, history replaced',
   'verify-working': 'build failed while the model worked',
   'verify-unchanged': 'build still failing, errors unchanged',
   'overflow-retry': 'context filled, turn retried',
@@ -170,7 +204,10 @@ const ANSWER_LABEL: Record<GateAnswer, string> = {
  * not.
  */
 export function renderGates(stats: readonly GateStat[]): string[] {
-  const handBacks = stats.filter((s) => s.kind !== 'note')
+  // Neither of these is a hand-back. A note is a status line, and a compaction briefing is
+  // the machine talking to itself — listing either as a check that took a turn back would
+  // say the checking is expensive in sessions where it is not.
+  const handBacks = stats.filter((s) => s.kind !== 'note' && s.kind !== 'compaction-briefing')
   if (handBacks.length === 0) return []
   const pct = (n: number, of: number): string => (of === 0 ? '0%' : `${Math.round((n / of) * 100)}%`)
   /** Grammar is not decoration here. This page is forwarded as evidence, and "1 times" in
@@ -181,10 +218,16 @@ export function renderGates(stats: readonly GateStat[]): string[] {
     'checks and nudges — what handed a turn back, and what the model did with it:',
   ]
   for (const s of handBacks) {
-    const answers = Object.entries(s.answers).map(([a, n]) => [a, n ?? 0] as const)
-      .sort((a, b) => b[1] - a[1])
-      .map(([a, n]) => `${ANSWER_LABEL[a as GateAnswer] ?? a} ${n}`)
-      .join(', ')
+    // Each answer with its own verdict, because the answer alone does not say whether it
+    // worked and the two on separate lines get paired wrongly by whoever reads them.
+    const answers = Object.entries(s.answers)
+      .map(([a, v]) => [a, v ?? { times: 0, observed: 0, satisfied: 0 }] as const)
+      .sort((a, b) => b[1].times - a[1].times)
+      .map(([a, v]) => `${ANSWER_LABEL[a as GateAnswer] ?? a}: ${v.times}` +
+        (v.observed === 0
+          ? ', and nothing followed, so whether it worked is not known'
+          : `, which satisfied the check ${v.satisfied} of ${v.observed}`))
+      .join('\n      ')
     out.push(
       `  ${GATE_LABEL[s.kind].padEnd(34)} ${String(s.fired).padStart(4)} ${s.fired === 1 ? 'time ' : 'times'}` +
       `  ${String(s.refired).padStart(4)} not satisfied (${pct(s.refired, s.fired)})` +

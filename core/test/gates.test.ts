@@ -136,7 +136,10 @@ describe('what the model did about it', () => {
     ])
     const verify = d.gates.find((g) => g.kind === 'verify')
     expect(verify?.fired).toBe(1)
-    expect(verify?.answers['words-only']).toBe(1)
+    // Answered in prose, once — and the session ended there, so whether the check was
+    // satisfied is NOT known. Calling it satisfied would be the flattering guess, on the
+    // one line a reader uses to decide whether an answer worked.
+    expect(verify?.answers['words-only']).toEqual({ times: 1, observed: 0, satisfied: 0 })
   })
 })
 
@@ -204,7 +207,7 @@ red`),
       calls('edit_file'),
       person('ok'),
     ])
-    expect(d.gates.find((g) => g.kind === 'verify')?.answers['preempted']).toBe(1)
+    expect(d.gates.find((g) => g.kind === 'verify')?.answers['preempted']?.times).toBe(1)
     expect(d.gates.find((g) => g.kind === 'verify')?.answers['nothing']).toBeUndefined()
   })
 
@@ -214,7 +217,7 @@ red`),
       harness(`${ACCEPTANCE_FIXER_PREFIX}\n- the tests still fail`),
     ])
     const gate = d.gates.find((g) => g.kind === 'acceptance')
-    expect(gate?.answers['nothing']).toBe(1)
+    expect(gate?.answers['nothing']?.times).toBe(1)
   })
 })
 
@@ -239,9 +242,9 @@ describe('what the checking cost', () => {
 describe('the report itself', () => {
   test('notes are reported apart from hand-backs, never inside them', () => {
     const rendered = renderGates(gateStatsFrom([
-      { kind: 'verify', answer: 'edited', refired: false, round: 1, steps: 1, calls: 1 },
-      { kind: 'note', answer: 'nothing', refired: false, round: 1, steps: 0, calls: 0 },
-      { kind: 'note', answer: 'nothing', refired: false, round: 1, steps: 0, calls: 0 },
+      { kind: 'verify', answer: 'edited', refired: false, outcomeKnown: true, round: 1, steps: 1, calls: 1 },
+      { kind: 'note', answer: 'nothing', refired: false, outcomeKnown: true, round: 1, steps: 0, calls: 0 },
+      { kind: 'note', answer: 'nothing', refired: false, outcomeKnown: true, round: 1, steps: 0, calls: 0 },
     ]))
     const text = rendered.join('\n')
     expect(text).toContain('build or tests failed')
@@ -288,11 +291,108 @@ describe('the report itself', () => {
 test('every harness kind has a label', () => {
   const kinds: GateEvent['kind'][] = ['acceptance', 'review', 'premises', 'verify',
     'verify-broken', 'verify-working', 'verify-unchanged', 'overflow-retry', 'continue',
-    'truncation', 'talked-not-acted', 'step-timeout', 'max-steps', 'undone', 'note',
-    'other-harness']
+    'truncation', 'talked-not-acted', 'step-timeout', 'max-steps', 'undone',
+    'compaction-briefing', 'note', 'other-harness']
   const text = renderGates(gateStatsFrom(kinds.map((kind) => (
-    { kind, answer: 'edited', refired: false, round: 1, steps: 1, calls: 1 } as GateEvent
+    { kind, answer: 'edited', refired: false, outcomeKnown: true, round: 1, steps: 1, calls: 1 } as GateEvent
   )))).join('\n')
   expect(text).not.toContain('undefined')
   for (const line of text.split('\n')) expect(line).not.toMatch(/^ {2}\s*\d+ times/)
+})
+
+/**
+ * What a compaction does to the accounting.
+ *
+ * The swap writes two synthetic messages: a briefing in the USER role and an acknowledgement
+ * in the ASSISTANT role. `replayEntries` has always recognised both — the briefing becomes a
+ * compaction card, the ack is dropped as a message no model generated — but the diagnosis
+ * read the raw file and saw a person speaking and a model answering.
+ *
+ * That is three wrong numbers from one event: an inflated `userMessages`, an inflated
+ * `assistantMessages`, and — since a person speaking ENDS a turn — a check that refused on
+ * both sides of a compaction reported as two unrelated first firings, which is the exact
+ * opposite of the finding.
+ */
+describe('a compaction is the machine talking to itself', () => {
+  test('the briefing is not the person, and does not end the person\'s turn', async () => {
+    const { COMPACTION_BRIEFING_PREFIX, COMPACTION_ACK_TEXT } =
+      await import('../src/session/compaction.js')
+
+    const d = diagnosisOf([
+      person('make the import work'),
+      harness(`${VERIFY_FAILED_PREFIX}\nred`),
+      calls('edit_file'),
+      // The window filled and the earlier history was replaced, mid-request.
+      harness(`${COMPACTION_BRIEFING_PREFIX}\n\nThe user asked about the ledger import.`),
+      says(COMPACTION_ACK_TEXT),
+      harness(`${VERIFY_FAILED_PREFIX}\nred`),
+      calls('edit_file'),
+      person('thanks'),
+    ])
+
+    // Two person messages in this fixture — the request and the thanks. Three would mean
+    // the briefing had been counted as one of them.
+    expect(d.userMessages).toBe(2)
+    // The run survives the compaction: this is one request the build refused twice.
+    const verify = d.gates.find((g) => g.kind === 'verify')
+    expect(verify?.longestRun).toBe(2)
+    expect(verify?.refired).toBe(1)
+    // And the briefing is not listed as a check that took a turn back.
+    expect(renderGates(d.gates).join('\n')).not.toContain('context compacted')
+  })
+
+  test('the synthetic acknowledgement is not a turn the model took', async () => {
+    const { COMPACTION_BRIEFING_PREFIX, COMPACTION_ACK_TEXT } =
+      await import('../src/session/compaction.js')
+
+    const d = diagnosisOf([
+      person('go'),
+      harness(`${ACCEPTANCE_FIXER_PREFIX}\n- not met`),
+      harness(`${COMPACTION_BRIEFING_PREFIX}\n\nearlier history`),
+      says(COMPACTION_ACK_TEXT),
+      calls('edit_file'),
+      person('ok'),
+    ])
+    // The model generated exactly one assistant message here; the ack it "said" was written
+    // by the compaction code. Charging it to the open check made compaction look like a
+    // cost of checking.
+    expect(d.assistantMessages).toBe(1)
+  })
+})
+
+test('an answer is reported together with whether it worked', () => {
+  // The defect the live model found by misreading the report: given `1 not satisfied` on one
+  // line and `words 1, edits 1` on another, it concluded the edit "apparently didn't get it
+  // right" — inverting which of the two had worked. The pairing has to be on one line.
+  const d = diagnosisOf([
+    person('fix the build'),
+    harness(`${VERIFY_FAILED_PREFIX}\nred`),
+    says('That failure is unrelated to my change.'),
+    harness(`${VERIFY_FAILED_PREFIX}\nred`),
+    calls('edit_file'),
+    person('thanks'),
+  ])
+  const text = renderGates(d.gates).join('\n')
+  expect(text).toContain('replied in words, called nothing: 1, which satisfied the check 0 of 1')
+  expect(text).toContain('changed files: 1, which satisfied the check 1 of 1')
+})
+
+test('a percentage is not printed off a sample too small to carry one', () => {
+  // The live model read `400% of what the person sent` off a one-message fixture and wrote
+  // "the agent is spinning rather than making progress" into its summary for the maintainer.
+  // The count is a fact; the ratio at that sample size is an invitation to a wrong reading.
+  const one = renderDiagnosis(diagnosisOf([
+    person('go'),
+    harness(`${VERIFY_FAILED_PREFIX}\nred`),
+    calls('edit_file'),
+  ]))
+  expect(one).toContain('harness turns')
+  expect(one).not.toMatch(/% of what the person sent/)
+
+  const many = renderDiagnosis(diagnosisOf([
+    ...Array.from({ length: 6 }, () => person('go')),
+    harness(`${VERIFY_FAILED_PREFIX}\nred`),
+    calls('edit_file'),
+  ]))
+  expect(many).toMatch(/% of what the person sent/)
 })

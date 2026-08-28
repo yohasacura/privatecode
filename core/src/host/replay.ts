@@ -225,6 +225,16 @@ export type HarnessKind =
   /** The same mid-turn failure as last time, deliberately not re-quoted. A hand-back that is
    * cheap by design, and worth telling apart from one that spends the whole log again. */
   | 'verify-unchanged'
+  /**
+   * The synthetic briefing a compaction swap inserts in place of the dropped history.
+   *
+   * Named because it was being counted as the PERSON speaking, which is wrong twice over:
+   * it inflates `userMessages`, and in the gate walk a person speaking ENDS a turn — so a
+   * check that refused three times either side of a compaction was reported as two
+   * unrelated first firings. `replayEntries` never had this problem because it recognises
+   * the briefing before the role switch; nothing else did.
+   */
+  | 'compaction-briefing'
   /** A bracketed status note. Cheap, and told apart from the hand-backs on purpose. */
   | 'note'
   /** Harness-shaped and matched nothing above. Its rise is the finding that this list is
@@ -238,6 +248,10 @@ const HARNESS_OPENERS: readonly { opener: string; kind: HarnessKind }[] = [
   { opener: VERIFY_FAILED_PREFIX, kind: 'verify' },
   { opener: VERIFY_PROBLEM_PREFIX, kind: 'verify-broken' },
   { opener: OVERFLOW_RETRY_NOTE, kind: 'overflow-retry' },
+  // Not a check and not a nudge, but emphatically not the person either. Listed here so
+  // every consumer of `splitUserMessage` gets the same answer `replayEntries` already got
+  // from its own `briefingIn` guard.
+  { opener: COMPACTION_BRIEFING_PREFIX, kind: 'compaction-briefing' },
   // The agent loop's own six. Each was measured replaying as the person's message, under a
   // `## You` heading, with no test covering any of them: the app suite is green and does not
   // look at harness attribution at all.

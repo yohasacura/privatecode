@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { statePath } from '../private-dir.js'
 import { splitUserMessage } from '../host/replay.js'
+import { COMPACTION_ACK_TEXT } from '../session/compaction.js'
 import { BUILT_IN_TOOL_NAMES, MCP_TOOL_PREFIX } from '../tools/built-in-names.js'
 import { episodesFrom, patternsOf, renderPatterns, type Episode, type RawAttempt } from './episodes.js'
 import { answerFrom, gateStatsFrom, renderGates, type GateEvent } from './gates.js'
@@ -396,21 +397,30 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
       turnGateEvents.push({
         kind: openGate.kind,
         answer: answerFrom(openGate.steps, openGate.tools, byHarness),
-        // Filled in when the person's turn ends and the whole set is known.
+        // Both filled in when the turn ends and the whole set is known.
         refired: false,
+        outcomeKnown: true,
         round: openGate.round,
         steps: openGate.steps,
         calls: openGate.calls,
       })
       openGate = null
     }
-    /** A person's turn is over: a check that fired again anywhere in it was not satisfied. */
-    const closeTurn = (): void => {
+    /**
+     * A person's turn is over: a check that fired again anywhere in it was not satisfied.
+     *
+     * `endOfSession` marks the very last firing as one whose outcome nobody watched. It is
+     * not the same as a check that passed, and the difference lands on the line a reader
+     * uses to decide whether an answer worked.
+     */
+    const closeTurn = (endOfSession = false): void => {
       closeGate(false)
       for (let k = 0; k < turnGateEvents.length; k++) {
         const e = turnGateEvents[k] as GateEvent
         e.refired = turnGateEvents.slice(k + 1).some((later) => later.kind === e.kind)
       }
+      const last = turnGateEvents[turnGateEvents.length - 1]
+      if (endOfSession && last !== undefined) last.outcomeKnown = false
       allGateEvents.push(...turnGateEvents)
       turnGateEvents = []
       runs.clear()
@@ -445,6 +455,13 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         }
       }
       if (m.role === 'assistant') {
+        // The compaction ACK is the other half of one synthetic round-trip: the swap writes
+        // both the briefing and this reply, and no model ever generated a word of it.
+        // Counting it inflated `assistantMessages` and, worse, charged a free turn to
+        // whichever check happened to be open — so a compaction made the checking look more
+        // expensive than it was. `replayEntries` has dropped it from the start, for exactly
+        // this reason; the diagnosis was reading the raw file and did not.
+        if (m.content === COMPACTION_ACK_TEXT) continue
         assistantMessages++
         if (openGate !== null) openGate.steps++
       }
@@ -531,7 +548,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
     // The last check of a session has no next turn to close it: the session simply ended,
     // which is itself an answer (`nothing`) and one worth seeing — a session that ends on an
     // unanswered gate is a person who gave up on it.
-    closeTurn()
+    closeTurn(true)
     allEpisodes.push(...episodesFrom(attempts))
     // One system message and nothing else: opened, never used.
     if (messages <= 1) emptySessions++
@@ -573,6 +590,10 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
  * no interpolation of anything that came off a transcript, which is what makes "you can send
  * this as it is" a true sentence rather than a hope.
  */
+/** Below this many messages from the person, a percentage of them is noise rather than a
+ * measurement. See the `harness turns` line for what reading one off a tiny sample cost. */
+const RATIO_MIN_MESSAGES = 5
+
 export function renderDiagnosis(d: Diagnosis): string {
   const pct = (n: number, of: number): string => (of === 0 ? '0%' : `${Math.round((n / of) * 100)}%`)
   const out: string[] = [
@@ -585,8 +606,18 @@ export function renderDiagnosis(d: Diagnosis): string {
     // Deliberately "harness turns" rather than "the gates gave back". This total includes
     // status notes, which are lines and not hand-backs; calling all of it a hand-back
     // overstated the cost of checking, and the breakdown that fixes it is further down.
+    //
+    // The RATIO is printed only once there is enough history to mean anything, and the
+    // threshold is not fussiness. The live model read `400% of what the person sent` off a
+    // one-message fixture and concluded in its own summary that the agent "is spinning
+    // rather than making progress" — a claim the number cannot support at that sample size,
+    // written into a document whose whole purpose is to be forwarded as evidence. A ratio
+    // off one or two messages is noise; below the threshold the count still travels and the
+    // invitation to over-read it does not.
     `harness turns  ${d.harnessMessages} turns the machine took, not the person` +
-      (d.userMessages === 0 ? '' : ` — ${Math.round((d.harnessMessages / d.userMessages) * 100)}% of what the person sent`),
+      (d.userMessages < RATIO_MIN_MESSAGES
+        ? ''
+        : ` — ${Math.round((d.harnessMessages / d.userMessages) * 100)}% of what the person sent`),
     `tool calls     ${d.toolCalls} (${d.callsPerSession} per session), ${d.toolFailures} failed — ${pct(d.toolFailures, d.toolCalls)}`,
     ...(d.estimatedFailures > 0
       ? [`estimated      ${d.estimatedFailures} of those failures were read from the result text, ` +
