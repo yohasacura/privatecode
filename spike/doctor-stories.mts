@@ -13,6 +13,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { diagnose, renderDiagnosis } from '../core/src/doctor/diagnose.js'
+import { REVIEW_FIXER_PREFIX } from '../core/src/session/contract.js'
+import { VERIFY_FAILED_PREFIX } from '../core/src/verify/runner.js'
 import type { SessionMeta } from '../core/src/session/store.js'
 
 const root = mkdtempSync(join(tmpdir(), 'pc-stories-'))
@@ -53,6 +55,25 @@ for (let i = 0; i < 2; i++) {
 for (let i = 0; i < 3; i++) {
   result(call('run_command', { commands: ['dotnet test'] }), false, 'exit 1: 2 tests failed')
 }
+
+// 4. The checks, which are the expensive half. One request the build refused three times
+// over, with the model arguing with it once instead of fixing anything — and a review gate
+// that was satisfied first time, so the two can be told apart in the report.
+lines.push({ role: 'user', content: 'make the ledger import work' })
+for (const answer of ['edit', 'talk', 'edit'] as const) {
+  lines.push({
+    role: 'user',
+    content: `${VERIFY_FAILED_PREFIX}\nsrc/Engine/Ledger.cs(42): error CS1002: ; expected`,
+  })
+  if (answer === 'edit') {
+    result(call('edit_file', { path: 'Engine/Ledger.cs', old: 'x', new: 'y' }), true, 'edited')
+  } else {
+    lines.push({ role: 'assistant', content: 'That failure looks unrelated to my change.' })
+  }
+}
+lines.push({ role: 'user', content: `${REVIEW_FIXER_PREFIX}\n- the new field is never read` })
+result(call('edit_file', { path: 'Engine/Ledger.cs', old: 'a', new: 'b' }), true, 'edited')
+lines.push({ role: 'user', content: '[dotnet build: ok, 3.2s]' })
 
 writeFileSync(
   join(root, '.privatecode', 'state', 'sessions', 'demo.jsonl'),

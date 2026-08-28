@@ -82,6 +82,22 @@ export async function runVerify(
 export const VERIFY_FAILED_PREFIX = 'Automatic verification failed.'
 export const VERIFY_PROBLEM_PREFIX = 'Automatic verification could not run:'
 
+/**
+ * The two MID-TURN verify messages, which arrive wrapped in brackets and are hand-backs all
+ * the same.
+ *
+ * They live here rather than at the site in `session.ts` that composes them because
+ * `replay.ts` has to recognise them and `session.ts` imports `replay.ts` — putting them at
+ * the composing site would close the cycle. Naming them at all is what stopped the most
+ * frequent check in the app being reported as a status line: everything in brackets was a
+ * `note`, so a build that broke mid-turn nine times counted as nine log lines and the
+ * diagnosis said the checking cost nothing.
+ */
+export const MIDTURN_VERIFY_PREFIX = 'Checked while you work — '
+/** The suppressed repeat: the same failure, deliberately not re-quoted. A hand-back that is
+ * cheap BY DESIGN, and worth telling apart from one that spends the whole log again. */
+export const STILL_FAILING_SUFFIX = ': still failing, same errors as before.'
+
 export function verifyFailureMessage(spec: VerifySpec, outcome: VerifyOutcome): string {
   if (outcome.problem !== undefined) {
     return `Automatic verification could not run: \`${spec.command}\` — ${outcome.problem}. ` +

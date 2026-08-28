@@ -33,10 +33,13 @@ export const doctorTool: Tool<DoctorArgs> = {
   description:
     'Diagnose this agent from its own history: how many sessions and turns, which tools get ' +
     'called, how often each one fails and what KIND of failure, how much work is exact ' +
-    'repetition, which app versions the sessions ran under. Returns counts only — no paths, ' +
-    'no commands, no code, no conversation text — so the result is safe to copy out of a ' +
-    'confidential machine and send to whoever maintains this. Use it when asked how the ' +
-    'agent is doing, what it gets wrong most, or for a report to hand back.',
+    'repetition, which app versions the sessions ran under. Also which CHECKS handed a turn ' +
+    'back — a failed build, an unmet contract, a review finding — what the model did about ' +
+    'each, whether that satisfied the check, and what the answering cost in turns and calls. ' +
+    'Returns counts only — no paths, no commands, no code, no conversation text — so the ' +
+    'result is safe to copy out of a confidential machine and send to whoever maintains ' +
+    'this. Use it when asked how the agent is doing, what it gets wrong most, whether the ' +
+    'checks are worth what they cost, or for a report to hand back.',
   parameters: {
     type: 'object',
     properties: {

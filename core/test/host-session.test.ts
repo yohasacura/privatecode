@@ -1373,3 +1373,37 @@ test('delete-all clears every stored session and leaves exactly one fresh one', 
   const after = resultOf<{ sessions: { id: string }[] }>(transport, 10).sessions
   expect(after.map((s) => s.id)).toEqual([fresh])
 })
+
+/**
+ * The version the window reports actually reaches the meta file the diagnosis reads.
+ *
+ * Every existing test for this writes `appVersion` into a FABRICATED meta and then checks
+ * that `doctor` renders it — which proves the reader and says nothing about the writer. The
+ * chain is four links long (the webview asks Tauri, `init` carries it, the host holds it,
+ * `Session` stamps it at creation) and a break anywhere in it produces the same symptom: a
+ * report that says "app versions — not recorded", forever, on every machine, with no error
+ * and nothing to notice. That is the exact question the owner asked this tool to answer, so
+ * the writer gets a test of its own.
+ */
+test('a session records the app version it ran under, and doctor can read it back', async () => {
+  const { renderDiagnosis, diagnose } = await import('../src/doctor/diagnose.js')
+  const fake = await makeServer(() => ({
+    choices: [{ message: { role: 'assistant', content: 'answered' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 10, completion_tokens: 5 },
+  }))
+  stop = fake.close
+  const root = newWorkspace()
+  const store = new SessionStore(root)
+  const client = new LlamaClient({ baseUrl: fake.url, model: 'm' })
+
+  const session = new Session({
+    client, toolset: { registry: new ToolRegistry() } as Toolset, workspaceRoot: root,
+    mode: 'normal', store, appVersion: '0.1.5',
+  })
+  await session.send('hello')
+
+  // On disk, in the file `doctor` opens — not in an object this test built.
+  const metas = new SessionStore(root).list()
+  expect(metas.map((m) => (m as { appVersion?: string }).appVersion)).toEqual(['0.1.5'])
+  expect(renderDiagnosis(diagnose(root, metas))).toContain('0.1.5')
+})

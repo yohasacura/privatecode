@@ -3,6 +3,7 @@ import { statePath } from '../private-dir.js'
 import { splitUserMessage } from '../host/replay.js'
 import { BUILT_IN_TOOL_NAMES, MCP_TOOL_PREFIX } from '../tools/built-in-names.js'
 import { episodesFrom, patternsOf, renderPatterns, type Episode, type RawAttempt } from './episodes.js'
+import { answerFrom, gateStatsFrom, renderGates, type GateEvent } from './gates.js'
 import type { SessionMeta } from '../session/store.js'
 
 /**
@@ -195,6 +196,15 @@ export interface Diagnosis {
   contractSessions: number
   /** Sessions where the post-turn gates were turned off by hand. */
   manualGateSessions: number
+  /**
+   * The checks, read as actors rather than as a total.
+   *
+   * `harnessMessages` says how many turns the harness took. This says which check took them,
+   * what the model did about it, whether that satisfied the check, and what the answering
+   * cost in turns and calls. A gate that hands back three times running is more expensive
+   * than any tool failure in the report above it and, until this existed, was invisible.
+   */
+  gates: ReturnType<typeof gateStatsFrom>
   /** Compactions, counted from the markers left in the transcripts. */
   compactions: number
   tools: ToolStat[]
@@ -306,6 +316,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
   let unattributedFailures = 0
   let estimatedFailures = 0
   const allEpisodes: Episode[] = []
+  const allGateEvents: GateEvent[] = []
   let compactions = 0
   let contractSessions = 0
   let manualGateSessions = 0
@@ -360,6 +371,51 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
     const pending = new Map<string, string>()
     let messages = 0
 
+    // --- the checks, as an actor -------------------------------------------------------
+    //
+    // A check's firing is a user-role message the harness wrote; its ANSWER is everything
+    // the model did before the next turn boundary. So one is held open while the assistant
+    // messages after it are counted, and closed when the next user-role message arrives —
+    // whoever wrote that one.
+    //
+    // Runs are counted per person-turn rather than per adjacent pair, because a run is
+    // interleaved in practice: a failed build hands back, the model edits, the verify runner
+    // prints a note, the build fails again. Adjacency would call that two separate first
+    // firings; the events of a turn are buffered and compared as a set instead, which sees
+    // it as the same check refusing twice.
+    let openGate: { kind: NonNullable<ReturnType<typeof splitUserMessage>['harnessKind']>
+      steps: number; calls: number; tools: string[]; round: number } | null = null
+    const runs = new Map<string, number>()
+    let turnGateEvents: GateEvent[] = []
+    /** `byHarness` is who spoke next. A check the model never got to answer because ANOTHER
+     * check spoke — the chain moving on, a compaction retry replacing the turn — is not the
+     * same event as one nobody answered, and calling both "did not reply" would put a claim
+     * about the person giving up on a line where the machine simply carried on. */
+    const closeGate = (byHarness: boolean): void => {
+      if (openGate === null) return
+      turnGateEvents.push({
+        kind: openGate.kind,
+        answer: answerFrom(openGate.steps, openGate.tools, byHarness),
+        // Filled in when the person's turn ends and the whole set is known.
+        refired: false,
+        round: openGate.round,
+        steps: openGate.steps,
+        calls: openGate.calls,
+      })
+      openGate = null
+    }
+    /** A person's turn is over: a check that fired again anywhere in it was not satisfied. */
+    const closeTurn = (): void => {
+      closeGate(false)
+      for (let k = 0; k < turnGateEvents.length; k++) {
+        const e = turnGateEvents[k] as GateEvent
+        e.refired = turnGateEvents.slice(k + 1).some((later) => later.kind === e.kind)
+      }
+      allGateEvents.push(...turnGateEvents)
+      turnGateEvents = []
+      runs.clear()
+    }
+
     for (const line of raw.split('\n')) {
       if (line === '') continue
       let m: Line
@@ -372,14 +428,26 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
       if (m.role === 'user') {
         // The harness talks in the user's role — the chat template has nowhere else to put
         // a build log or a list of unmet criteria. Only the SHAPE is inspected here; the
-        // text goes no further than `splitUserMessage`, whose answer is a boolean.
-        if (typeof m.content === 'string' && splitUserMessage(m.content).harness === true) {
+        // text goes no further than `splitUserMessage`, whose answer is a boolean and a
+        // member of a literal union.
+        const split = typeof m.content === 'string' ? splitUserMessage(m.content) : null
+        // Whatever wrote this message, it ends the previous check's answer.
+        closeGate(split?.harness === true)
+        if (split?.harness === true) {
           harnessMessages++
+          const kind = split.harnessKind ?? 'other-harness'
+          const round = (runs.get(kind) ?? 0) + 1
+          runs.set(kind, round)
+          openGate = { kind, steps: 0, calls: 0, tools: [], round }
         } else {
           userMessages++
+          closeTurn()
         }
       }
-      if (m.role === 'assistant') assistantMessages++
+      if (m.role === 'assistant') {
+        assistantMessages++
+        if (openGate !== null) openGate.steps++
+      }
       if ((m as { __event?: string }).__event === 'compaction') compactions++
 
       for (const call of m.tool_calls ?? []) {
@@ -387,6 +455,10 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         if (typeof raw !== 'string' || raw === '') continue
         const name = safeToolName(raw)
         toolCalls++
+        if (openGate !== null) {
+          openGate.calls++
+          openGate.tools.push(name)
+        }
         const stat = byTool.get(name) ?? { name, calls: 0, failed: 0, repeats: 0, failures: {} }
         stat.calls++
         // Identical arguments to a call already made in this session. The hash is computed
@@ -456,6 +528,10 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         }
       }
     }
+    // The last check of a session has no next turn to close it: the session simply ended,
+    // which is itself an answer (`nothing`) and one worth seeing — a session that ends on an
+    // unanswered gate is a person who gave up on it.
+    closeTurn()
     allEpisodes.push(...episodesFrom(attempts))
     // One system message and nothing else: opened, never used.
     if (messages <= 1) emptySessions++
@@ -481,6 +557,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
     versions,
     contractSessions,
     manualGateSessions,
+    gates: gateStatsFrom(allGateEvents),
     compactions,
     tools: [...byTool.values()].sort((a, b) => b.calls - a.calls),
     patterns: patternsOf(allEpisodes),
@@ -505,7 +582,10 @@ export function renderDiagnosis(d: Diagnosis): string {
     `history        ${d.sessions} session${d.sessions === 1 ? '' : 's'} over ${d.spanDays} day${d.spanDays === 1 ? '' : 's'}` +
       (d.emptySessions > 0 ? `, ${d.emptySessions} never used` : ''),
     `messages       ${d.userMessages} from the person, ${d.assistantMessages} from the model`,
-    `handed back    ${d.harnessMessages} turns the gates gave back to the model` +
+    // Deliberately "harness turns" rather than "the gates gave back". This total includes
+    // status notes, which are lines and not hand-backs; calling all of it a hand-back
+    // overstated the cost of checking, and the breakdown that fixes it is further down.
+    `harness turns  ${d.harnessMessages} turns the machine took, not the person` +
       (d.userMessages === 0 ? '' : ` — ${Math.round((d.harnessMessages / d.userMessages) * 100)}% of what the person sent`),
     `tool calls     ${d.toolCalls} (${d.callsPerSession} per session), ${d.toolFailures} failed — ${pct(d.toolFailures, d.toolCalls)}`,
     ...(d.estimatedFailures > 0
@@ -542,6 +622,7 @@ export function renderDiagnosis(d: Diagnosis): string {
       (kinds === '' ? '' : `\n      ${kinds}`),
     )
   }
+  out.push(...renderGates(d.gates))
   const stories = renderPatterns(d.patterns)
   if (stories.length > 0) {
     out.push(

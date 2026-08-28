@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { buildRegistry } from '../src/tools/default-set.js'
-import { BUILT_IN_TOOL_NAMES } from '../src/tools/built-in-names.js'
+import { BUILT_IN_TOOL_NAMES, EDITING_TOOL_NAMES } from '../src/tools/built-in-names.js'
 
 /**
  * Pins the readOnly set of the eight REAL tools, not synthetic stand-ins.
@@ -73,4 +73,22 @@ test('sql_deploy is deliberately not read-only, so plan mode cannot reach it', (
 test('BUILT_IN_TOOL_NAMES is exactly what buildRegistry() ships', () => {
   const registered = buildRegistry().schemas().map((s) => s.function.name).sort()
   expect([...BUILT_IN_TOOL_NAMES].sort()).toEqual(registered)
+})
+
+/**
+ * The editing set, kept in step with what those tools actually declare.
+ *
+ * `EDITING_TOOL_NAMES` decides whether the model's answer to a failed check counts as a fix
+ * or as an argument, so drift here does not produce a missing row — it produces a WRONG
+ * verdict. If `edit_file` fell out of this set, a session where the model dutifully fixed
+ * every build failure would be reported as one where it only ever looked, and the report
+ * would be read as evidence.
+ */
+test('EDITING_TOOL_NAMES are registered tools that are not read-only', () => {
+  const registry = buildRegistry()
+  const readOnly = new Set(registry.readOnlyNames())
+  for (const name of EDITING_TOOL_NAMES) {
+    expect(registry.names()).toContain(name)
+    expect(readOnly.has(name)).toBe(false)
+  }
 })

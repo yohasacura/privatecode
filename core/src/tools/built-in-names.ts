@@ -44,3 +44,27 @@ export const BUILT_IN_TOOL_NAMES: ReadonlySet<string> = new Set([
 /** The prefix every MCP tool's name is built with (`mcp/manager.ts`'s `toolNameFor`). Ours,
  * not the user's — the part after it is theirs. */
 export const MCP_TOOL_PREFIX = 'mcp__'
+
+/**
+ * The tools that CHANGE FILES, as opposed to the ones that merely write something.
+ *
+ * Narrower than "not read-only" on purpose, and the narrowing is the whole point. `remember`
+ * writes, `browser` writes, `run_command` may write and there is no way to know — none of
+ * them answers the question this set exists for, which is asked of a gate: *the check handed
+ * the turn back, did the model then change the code, or did it explain why the check was
+ * wrong?* Counting `remember` as a fix would make arguing look like fixing.
+ *
+ * `run_command` is deliberately outside. A build command changes nothing and a script may
+ * change everything; folding it in either direction would be a guess reported as a count, so
+ * it gets its own answer category instead.
+ *
+ * Kept honest by `default-set.test.ts`: every name here must be a registered tool that does
+ * NOT declare `readOnly`, so a tool that becomes read-only, or vanishes, fails the test
+ * rather than silently dropping out of the gate analysis.
+ */
+export const EDITING_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'delete_file',
+  'edit_file',
+  'move_file',
+  'write_file',
+])

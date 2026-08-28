@@ -301,9 +301,15 @@ test('a gate handing work back is counted apart from the person asking for it', 
 
   expect(d.userMessages).toBe(1)
   expect(d.harnessMessages).toBe(2)
-  // And the ratio is the number worth carrying off the machine: how much of the work was
-  // the work, and how much was the checking of it.
-  expect(renderDiagnosis(d)).toContain('handed back')
+  // And the two are not the same thing, which the single total could not say. A failed
+  // build is a turn of work handed back; a bracketed note is a status line. The report
+  // separates them, and the ratio worth carrying off the machine is the first one.
+  expect(d.gates.find((g) => g.kind === 'verify')?.fired).toBe(1)
+  expect(d.gates.find((g) => g.kind === 'note')?.fired).toBe(1)
+  const report = renderDiagnosis(d)
+  expect(report).toContain('harness turns')
+  expect(report).toContain('build or tests failed')
+  expect(report).toContain('status note not counted above')
 })
 
 /**

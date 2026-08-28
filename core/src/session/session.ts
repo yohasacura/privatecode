@@ -21,7 +21,9 @@ import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
 import { createHookRunner, type HookRunner, type HookSpec } from '../hooks/hooks.js'
 import type { VerifySpec } from '../verify/config.js'
-import { runVerify, verifyFailureMessage } from '../verify/runner.js'
+import {
+  MIDTURN_VERIFY_PREFIX, STILL_FAILING_SUFFIX, runVerify, verifyFailureMessage,
+} from '../verify/runner.js'
 import type { InteractionPort, TodoItem } from '../interaction.js'
 import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
 import type { ChatMessage, StreamProgress } from '../llama/types.js'
@@ -2868,7 +2870,7 @@ export class Session {
         if (fingerprint === this.lastVerifyFingerprint.get(job.folder ?? '')) {
           this.transcript.append({
             role: 'user',
-            content: `[${where}${job.spec.command}: still failing, same errors as before.]`,
+            content: `[${where}${job.spec.command}${STILL_FAILING_SUFFIX}]`,
           })
           return
         }
@@ -2876,7 +2878,7 @@ export class Session {
         this.transcript.append({
           role: 'user',
           content:
-            `[Checked while you work — ${where}${verifyFailureMessage(job.spec, outcome)}\n\n` +
+            `[${MIDTURN_VERIFY_PREFIX}${where}${verifyFailureMessage(job.spec, outcome)}\n\n` +
             'This ran automatically after your recent edits, so the cause is probably in ' +
             'them and is still fresh. Fix it now if it is yours; if it was already broken ' +
             'before this turn, say so and carry on.]',

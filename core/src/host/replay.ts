@@ -13,7 +13,9 @@ import {
 } from '../session/compaction.js'
 import { ACCEPTANCE_FIXER_PREFIX, REVIEW_FIXER_PREFIX } from '../session/contract.js'
 import { PREMISE_FAILURE_PREFIX } from '../session/premises.js'
-import { VERIFY_FAILED_PREFIX, VERIFY_PROBLEM_PREFIX } from '../verify/runner.js'
+import {
+  MIDTURN_VERIFY_PREFIX, STILL_FAILING_SUFFIX, VERIFY_FAILED_PREFIX, VERIFY_PROBLEM_PREFIX,
+} from '../verify/runner.js'
 import type { TranscriptEntry } from './protocol.js'
 
 /**
@@ -176,24 +178,108 @@ function isCompactionAck(message: ChatMessage): boolean {
  * Matched on an exported constant rather than a copied string, so a reworded message cannot
  * quietly fall out of the list.
  */
-const HARNESS_OPENERS: readonly string[] = [
-  ACCEPTANCE_FIXER_PREFIX,
-  REVIEW_FIXER_PREFIX,
-  PREMISE_FAILURE_PREFIX,
-  VERIFY_FAILED_PREFIX,
-  VERIFY_PROBLEM_PREFIX,
-  OVERFLOW_RETRY_NOTE,
+/**
+ * WHICH part of the harness was talking, as a closed vocabulary.
+ *
+ * The distinction the diagnosis is built on. `harness: true` says a turn was not the
+ * person's, which is enough to render it dimmed and nowhere near enough to tune anything: an
+ * acceptance gate listing unmet criteria and a one-line "[dotnet build: ok]" note are the
+ * same boolean and nothing like the same event. One is a turn of work the person did not ask
+ * for and did pay for; the other is a status line.
+ *
+ * Named here rather than in the doctor because this is where the openers already live, and
+ * two lists would drift. Every member is matched against an imported constant, so rewording
+ * a gate's message cannot silently reclassify it — and renaming the constant breaks the
+ * build instead of quietly producing `other-harness`.
+ */
+export type HarnessKind =
+  /** The acceptance gate: criteria from the distilled contract that are not met yet. */
+  | 'acceptance'
+  /** The independent diff reviewer's findings. */
+  | 'review'
+  /** A premise check refused the turn: the model was relying on something not in the files. */
+  | 'premises'
+  /** Automatic verification ran and failed — a build log, a test failure. */
+  | 'verify'
+  /** Automatic verification could not run at all. A different problem from a red build:
+   * nothing was checked, and nobody was told louder than this. */
+  | 'verify-broken'
+  /** The context filled and the turn was retried after a compaction. */
+  | 'overflow-retry'
+  /** The loop nudged an unattended run to keep going. */
+  | 'continue'
+  /** Output was truncated twice over. */
+  | 'truncation'
+  /** The model talked instead of acting — this project's own named failure, and the one
+   * worth watching when it appears as an ANSWER to a gate. */
+  | 'talked-not-acted'
+  /** A step hit its time limit. */
+  | 'step-timeout'
+  /** The turn was stopped for running too many steps. */
+  | 'max-steps'
+  /** The person undid something: a reverted file, or a rollback to a checkpoint. */
+  | 'undone'
+  /** Verification failed WHILE the model was working, handed to it mid-turn. Bracketed like
+   * a note and nothing like one: it is a build log and a demand to fix it. */
+  | 'verify-working'
+  /** The same mid-turn failure as last time, deliberately not re-quoted. A hand-back that is
+   * cheap by design, and worth telling apart from one that spends the whole log again. */
+  | 'verify-unchanged'
+  /** A bracketed status note. Cheap, and told apart from the hand-backs on purpose. */
+  | 'note'
+  /** Harness-shaped and matched nothing above. Its rise is the finding that this list is
+   * behind the code. */
+  | 'other-harness'
+
+const HARNESS_OPENERS: readonly { opener: string; kind: HarnessKind }[] = [
+  { opener: ACCEPTANCE_FIXER_PREFIX, kind: 'acceptance' },
+  { opener: REVIEW_FIXER_PREFIX, kind: 'review' },
+  { opener: PREMISE_FAILURE_PREFIX, kind: 'premises' },
+  { opener: VERIFY_FAILED_PREFIX, kind: 'verify' },
+  { opener: VERIFY_PROBLEM_PREFIX, kind: 'verify-broken' },
+  { opener: OVERFLOW_RETRY_NOTE, kind: 'overflow-retry' },
   // The agent loop's own six. Each was measured replaying as the person's message, under a
   // `## You` heading, with no test covering any of them: the app suite is green and does not
   // look at harness attribution at all.
-  CONTINUE_NUDGE,
-  TRUNCATED_TWICE,
-  TALKED_INSTEAD_OF_ACTING,
-  STEP_TIMEOUT_PREFIX,
-  MAX_STEPS_PREFIX,
-  REVERT_FILE_PREFIX,
-  ROLLBACK_PREFIX,
+  { opener: CONTINUE_NUDGE, kind: 'continue' },
+  { opener: TRUNCATED_TWICE, kind: 'truncation' },
+  { opener: TALKED_INSTEAD_OF_ACTING, kind: 'talked-not-acted' },
+  { opener: STEP_TIMEOUT_PREFIX, kind: 'step-timeout' },
+  { opener: MAX_STEPS_PREFIX, kind: 'max-steps' },
+  { opener: REVERT_FILE_PREFIX, kind: 'undone' },
+  { opener: ROLLBACK_PREFIX, kind: 'undone' },
 ]
+
+/** The opener that matched, if one did. Longest first, so a constant that happens to be a
+ * prefix of another cannot shadow it. */
+function openerFor(text: string): HarnessKind | null {
+  let best: { length: number; kind: HarnessKind } | null = null
+  for (const { opener, kind } of HARNESS_OPENERS) {
+    if (!text.startsWith(opener)) continue
+    if (best === null || opener.length > best.length) best = { length: opener.length, kind }
+  }
+  return best === null ? null : best.kind
+}
+
+/**
+ * What a WHOLE-MESSAGE bracketed note actually is.
+ *
+ * Everything in brackets was a `note`, and that quietly mis-sorted the check this app runs
+ * most. The mid-turn verifier hands a failed build to the model DURING a turn, wrapped in
+ * brackets because that is how a mid-turn injection is written — so a build that broke nine
+ * times counted as nine status lines, and the section that exists to say what the checking
+ * costs said it cost nothing.
+ *
+ * Matched against constants exported by the verifier rather than against its prose, and the
+ * question asked here is only WHICH KIND: whatever this returns, the message has already
+ * been judged to be the harness talking, so a person who brackets a sentence quoting one of
+ * these gets a differently-labelled harness row and nothing worse.
+ */
+function noteKindFor(inside: string): HarnessKind {
+  if (inside.startsWith(MIDTURN_VERIFY_PREFIX)) return 'verify-working'
+  if (inside.endsWith(STILL_FAILING_SUFFIX)) return 'verify-unchanged'
+  return 'note'
+}
 
 /**
  * The folder prefix a multi-folder workspace puts in front of a verify failure, as a matcher
@@ -206,12 +292,15 @@ const HARNESS_OPENERS: readonly string[] = [
  */
 const FOLDER_PREFIX = /^In the "[^"]*" folder: /
 
-export function splitUserMessage(content: string): { kind: 'user'; text: string; harness?: true } {
+export function splitUserMessage(
+  content: string,
+): { kind: 'user'; text: string; harness?: true; harnessKind?: HarnessKind } {
   // Openers FIRST, and against the text with any folder prefix removed — the prefix is the
   // harness's own, so it must not be able to hide the harness's own message.
   const unprefixed = content.replace(FOLDER_PREFIX, '')
-  if (HARNESS_OPENERS.some((opener) => unprefixed.startsWith(opener))) {
-    return { kind: 'user', text: content, harness: true }
+  const opener = openerFor(unprefixed)
+  if (opener !== null) {
+    return { kind: 'user', text: content, harness: true, harnessKind: opener }
   }
   // Then the attachment wrapper, which is the one case where the stored message legitimately
   // contains more than the person wrote and the row should show LESS. Checked after the
@@ -243,7 +332,7 @@ export function splitUserMessage(content: string): { kind: 'user'; text: string;
   if (rest === '') {
     const inside = unprefixed.slice(1, end)
     return /\s/.test(inside.trim())
-      ? { kind: 'user', text: content, harness: true }
+      ? { kind: 'user', text: content, harness: true, harnessKind: noteKindFor(inside) }
       : { kind: 'user', text: content }
   }
   // A note PREFIXED to a real message is separated by a blank line, because the one site
@@ -258,8 +347,9 @@ export function splitUserMessage(content: string): { kind: 'user'; text: string;
   // exists for. It is not always: the verify escalation writes a bracketed "pick a different
   // approach" note in front of the build log, and both halves are the harness. Re-asking the
   // opener question about the remainder is what tells the two apart.
-  if (HARNESS_OPENERS.some((opener) => rest.startsWith(opener))) {
-    return { kind: 'user', text: rest, harness: true }
+  const inner = openerFor(rest)
+  if (inner !== null) {
+    return { kind: 'user', text: rest, harness: true, harnessKind: inner }
   }
   return { kind: 'user', text: rest }
 }

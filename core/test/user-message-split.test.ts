@@ -102,7 +102,11 @@ test('and the contract preamble is still split off, because it brings a blank li
 
 test('a whole-message harness note is still marked as one', () => {
   const note = '[Context is about 80% full. When it fills, the earlier part will be summarised.]'
-  expect(splitUserMessage(note)).toEqual({ kind: 'user', text: note, harness: true })
+  // And it is a NOTE, which the diagnosis counts apart from a hand-back: a note is a line,
+  // an unmet contract is a turn of work, and one number for both said the checking was
+  // expensive in sessions where it was not.
+  expect(splitUserMessage(note))
+    .toEqual({ kind: 'user', text: note, harness: true, harnessKind: 'note' })
 })
 
 /**
@@ -137,9 +141,16 @@ test('the fixer messages are the harness, not the person', async () => {
     OVERFLOW_RETRY_NOTE,
   ]
 
-  for (const m of messages) {
-    expect(splitUserMessage(m), m.slice(0, 48)).toEqual({ kind: 'user', text: m, harness: true })
-  }
+  // Each is named, not merely flagged. `harness: true` says a turn was not the person's,
+  // which is enough to dim a row and nowhere near enough to tune anything — the diagnosis
+  // has to tell a red build from an unmet contract from a context overflow, and this is
+  // where that name is decided.
+  const kinds = ['acceptance', 'review', 'premises', 'verify', 'verify-broken',
+    'overflow-retry']
+  messages.forEach((m, i) => {
+    expect(splitUserMessage(m), m.slice(0, 48))
+      .toEqual({ kind: 'user', text: m, harness: true, harnessKind: kinds[i] })
+  })
 })
 
 test('and something a person types that merely mentions one of them is still theirs', () => {
