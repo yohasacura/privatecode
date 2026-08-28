@@ -151,3 +151,35 @@ describe('attaching a folder', () => {
     expect(r.text).toContain('docs/readme.md')
   })
 })
+
+/**
+ * Mapping a dropped OS path into the workspace.
+ *
+ * These pin the distinction a live run caught the hard way: `Workspace.display` is a
+ * SPELLING, not a containment check — handed a path outside every mount it returns that
+ * path unchanged rather than refusing it. The first version of `attach.resolve` used it as
+ * the guard, so a file dropped from Downloads came back as an ordinary result and the
+ * composer wrote an absolute path into the message box. The jail still held (attachFiles
+ * resolves through `Workspace.resolve`, which does refuse), but the person was told a round
+ * trip later, by a "could not be read" note, instead of at the moment of the drop.
+ */
+describe('mapping a dropped path', () => {
+  test('display does NOT refuse a path outside the workspace', () => {
+    const outside = process.platform === 'win32' ? 'C:\Windows\System32\hosts' : '/etc/hosts'
+    // Characterisation, not endorsement: this is the behaviour the guard must not rely on.
+    expect(() => ws.display(outside)).not.toThrow()
+    expect(ws.display(outside)).toContain('hosts')
+  })
+
+  test('mountFor is the containment check, and it says no', () => {
+    const outside = process.platform === 'win32' ? 'C:\Windows\System32\hosts' : '/etc/hosts'
+    expect(ws.mountFor(outside)).toBeUndefined()
+  })
+
+  test('an inside path maps to the spelling attach takes', () => {
+    write('src/a.ts', 'export const a = 1')
+    const abs = join(root, 'src', 'a.ts')
+    expect(ws.mountFor(abs)).toBeDefined()
+    expect(ws.display(abs)).toBe('src/a.ts')
+  })
+})

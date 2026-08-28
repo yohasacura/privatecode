@@ -176,3 +176,19 @@ test('the reviewer detail says which file, not which JSON', () => {
   expect(long.length).toBeLessThan(80)
   expect(long.endsWith('...')).toBe(true)
 })
+
+test('a gate that does nothing still reports why', async () => {
+  const fake = await makeServer(() => answered())
+  stop = fake.close
+  const session = makeSession(newWorkspace(), fake.url, [])
+
+  // Found live: `/review` on a session with no contract opened and closed its stage inside
+  // a second, wrote nothing to the transcript, and left the person with no answer at all.
+  // The outcome now comes back with the result so the window can say it.
+  const review = await session.runGate('review')
+  expect(review.turn.steps).toBe(0)
+  expect(review.outcome).toContain('nothing to review')
+
+  const build = await session.runGate('build')
+  expect(build.outcome).toContain('no verify command')
+})

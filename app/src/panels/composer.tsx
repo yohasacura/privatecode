@@ -169,10 +169,13 @@ export function Composer({
   }, [sessionId])
 
   useEffect(() => {
-    if (!state.turnRunning) return
+    // A running GATE keeps the clock going too. `/check` and `/review` run with no turn, and
+    // without this their elapsed reading froze at the second the stage opened — a number
+    // that has stopped moving is exactly how a hang looks.
+    if (!state.turnRunning && state.runningStage === null) return
     const id = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(id)
-  }, [state.turnRunning])
+  }, [state.turnRunning, state.runningStage === null])
 
   // Esc-to-abort is a WINDOW listener, not the textarea's own onKeyDown: the textarea is
   // enabled during a turn now, but focus may legitimately be anywhere (a diff, the tree),
@@ -753,6 +756,16 @@ export function Composer({
   function runGate(gate: 'build' | 'review'): void {
     setCompacting(true)
     client.call('gates.run', { gate })
+      .then((r) => {
+        // A gate that wrote nothing to the transcript still has to answer. Watched live:
+        // `/review` on a session with no contract ran, closed, and left no trace at all —
+        // the stage line flashed past in under a second and the person was left wondering
+        // whether the command had even been recognised. Only when the transcript is silent,
+        // so a review that reported findings does not get a redundant summary under them.
+        if (r.turn.steps === 0 && r.turn.finalText === '') {
+          dispatch({ type: 'error-note', message: `/${gate === 'build' ? 'check' : 'review'}: ${r.outcome}` })
+        }
+      })
       .catch((e: unknown) => {
         dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
       })
@@ -1008,6 +1021,25 @@ export function Composer({
 
   function statusLine(): VNode | null {
     if (waitingOnYou) return <span class="status-live">waiting on you · nothing generating</span>
+    // A gate outranks everything below it, and it is checked BEFORE `turnRunning` rather
+    // than inside it. Two reasons, and the second was found by running the built app: a gate
+    // is the truest thing on screen during a turn — the premise and understanding gates run
+    // from `onBeforeTool`, AFTER the agent has announced the write, so `runningTool` says
+    // "running edit_file" for a write that has not started and may be vetoed outright — and
+    // a gate asked for by hand (`/check`, `/review`) runs with NO turn at all, so nested
+    // under `turnRunning` the status line stayed empty for the whole of it. Watched live:
+    // six seconds of a build running and nothing on screen saying so.
+    if (stage !== null) {
+      return (
+        <span class="status-live">
+          {STAGE_LABEL[stage.stage]} · {formatDuration(now - stage.startedAtMs)}
+          {stage.at !== undefined && (
+            <span class="status-quiet"> · {stage.at.index}/{stage.at.total}</span>
+          )}
+          {stage.detail !== undefined && <span class="status-quiet"> · {stage.detail}</span>}
+        </span>
+      )
+    }
     // Why a run ENDED outranks how the last turn went: after an unattended run the first
     // question is always "why did it stop" — which is now the RunBanner card in the
     // transcript, where it can carry the full detail and be dismissed. Repeating it here
@@ -1018,23 +1050,6 @@ export function Composer({
       // by `lastCompaction` (the last EVENT seen, not a live flag) is what left "compacting…"
       // on screen next to a running step, and next to a queued message, with no way to tell
       // whether anything was happening at all.
-      // A gate outranks BOTH readings below, and that is the whole point of the event.
-      // During the premise and understanding gates the main agent has already announced the
-      // write it is about to attempt, so `runningTool` says "running edit_file" for a write
-      // that has not started and may be vetoed outright — an affirmative false statement,
-      // which is worse than the bare "working" the other gates produced. The stage is the
-      // one thing on screen that is actually true at that moment.
-      if (stage !== null) {
-        return (
-          <span class="status-live">
-            {STAGE_LABEL[stage.stage]} · {formatDuration(now - stage.startedAtMs)}
-            {stage.at !== undefined && (
-              <span class="status-quiet"> · {stage.at.index}/{stage.at.total}</span>
-            )}
-            {stage.detail !== undefined && <span class="status-quiet"> · {stage.detail}</span>}
-          </span>
-        )
-      }
       if (!step) return <span class="status-live">{runningTool ? `running ${runningTool}` : 'working'}</span>
       return (
         <span class="status-live">

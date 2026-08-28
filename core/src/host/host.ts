@@ -1200,11 +1200,12 @@ export class SessionHost {
     try {
       const work = session.runGate(params.gate, this.currentAbort.signal)
       this.currentTurn = work
-      const turn = await work
+      const { turn, outcome } = await work
       return {
         turn: {
           steps: turn.steps, finalText: turn.finalText, stoppedBecause: turn.stoppedBecause,
         },
+        outcome,
       }
     } finally {
       this.sending = false
@@ -1479,11 +1480,18 @@ export class SessionHost {
   /**
    * Dropped OS paths, mapped into the workspace.
    *
-   * `workspace.display` is the whole mapping, and it is asked for one path at a time so a
-   * batch survives a bad member: dropping a folder plus a file from Downloads attaches the
-   * folder and says why the other one did not. `display` throws for anything outside every
-   * mount, which is the containment check — the UI never sees a path it could not have
-   * typed into `@` itself.
+   * Asked one path at a time so a batch survives a bad member: dropping a folder plus a
+   * file from Downloads attaches the folder and says why the other one did not.
+   *
+   * `mountFor` is the containment check and `display` is only the spelling. That division
+   * is not obvious and was got wrong here first: `display` does NOT refuse a path outside
+   * the workspace — it returns `pathResolve(absolutePath)` unchanged (workspace.ts:288), so
+   * a file dropped from Downloads came back as an ordinary result with an absolute path in
+   * it. The jail still held, because `attachFiles` resolves through `workspace.resolve`,
+   * which does refuse — but the person got `@C:\Users\...\notes.txt` written into their
+   * message box and a "could not be read" note a round trip later, instead of being told at
+   * the moment of the drop. `mountFor` returns undefined for exactly that case and is the
+   * question actually being asked.
    */
   private async attachResolve(params: AttachResolveParams): Promise<AttachResolveResult> {
     const { workspace } = this.requireInitialized()
@@ -1491,18 +1499,16 @@ export class SessionHost {
     const rejected: { path: string; reason: string }[] = []
 
     for (const dropped of params.paths) {
-      // Not named `relative`: `node:path`'s `relative` is imported into this module and a
-      // local of that name would shadow it for the rest of the block.
-      let inside: string
-      try {
-        inside = workspace.display(dropped)
-      } catch {
+      if (workspace.mountFor(dropped) === undefined) {
         rejected.push({
           path: dropped,
           reason: 'it is not inside this workspace — add its folder to the workspace first',
         })
         continue
       }
+      // Not named `relative`: `node:path`'s `relative` is imported into this module and a
+      // local of that name would shadow it for the rest of the block.
+      const inside = workspace.display(dropped)
       // Asked of the filesystem rather than guessed from the name: an extensionless file
       // and a directory look identical in a path, and the chip has to say which it is.
       let dir: boolean

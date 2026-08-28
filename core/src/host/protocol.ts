@@ -206,7 +206,14 @@ export interface GatesRunParams { gate: 'build' | 'review' }
 /** The same three fields `send` reports, because running a gate can run fixer TURNS: the
  * build hands failures back to the model, the review hands findings back. A caller that
  * ignored this would lose the fact that the model wrote code while the gate ran. */
-export interface GatesRunResult { turn: TurnSummary }
+export interface GatesRunResult {
+  turn: TurnSummary
+  /** How the gate ended, in the words it reported to the stage channel — "passed", "no
+   * findings", "no contract on this session". A gate can finish without writing anything to
+   * the transcript (nothing to review, no command configured), and a command somebody typed
+   * cannot be allowed to answer with silence. */
+  outcome: string
+}
 export type SetModeResult = Empty
 
 export type SessionsListParams = Empty

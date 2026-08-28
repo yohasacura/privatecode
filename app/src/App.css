@@ -2069,6 +2069,12 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   align-items: center;
   gap: 6px;
   width: 100%;
+  /* Not cosmetic, and not about tidiness: a press-and-move over selectable text starts a
+     text selection, which Chromium then escalates into an OS-level drag — and an OS drag
+     loop captures the mouse and stops delivering `pointermove` to the page. That is exactly
+     what killed the first version of dragging a row onto the composer: the press arrived,
+     the moves did not. Watched live before this line existed. */
+  user-select: none;
   /* No right padding: the trailing column's own 18px box IS the gutter, and padding on
      top of it pushed the marks off the panel's optical right edge. */
   padding: 2px 4px 2px 0;

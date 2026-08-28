@@ -2160,7 +2160,32 @@ export class Session {
    * and cost differently, and being made to run a four-minute review to find out whether the
    * tests pass is exactly the coupling this exists to break.
    */
-  async runGate(which: 'build' | 'review', signal?: AbortSignal): Promise<TurnResult> {
+  async runGate(
+    which: 'build' | 'review', signal?: AbortSignal,
+  ): Promise<{ turn: TurnResult; outcome: string }> {
+    // The outcome is CAPTURED rather than returned by each branch, because the branches
+    // already report it — every exit closes its stage with a sentence, and a second copy
+    // assembled at the return would be a second thing to keep true. Watched live: `/review`
+    // on a session with no contract opened and closed its stage inside a second, so the only
+    // account of what happened flashed past in a status line and the person was left with
+    // silence. A gate somebody ASKED for has to answer.
+    let outcome = 'done'
+    const outer = this.opts.onStage
+    this.opts.onStage = (info) => {
+      if (info.state === 'done' && info.outcome !== undefined) outcome = info.outcome
+      outer?.(info)
+    }
+    try {
+      return { turn: await this.runGateInner(which, signal), outcome }
+    } finally {
+      // Deleted rather than assigned back: `exactOptionalPropertyTypes` treats an explicit
+      // `undefined` as a different thing from an absent key, and this option is optional.
+      if (outer === undefined) delete this.opts.onStage
+      else this.opts.onStage = outer
+    }
+  }
+
+  private async runGateInner(which: 'build' | 'review', signal?: AbortSignal): Promise<TurnResult> {
     // A synthetic "done" turn: the gates all key off `stoppedBecause === 'done'`, which is
     // their way of saying "the model believes it has finished" — and being asked by hand is
     // a stronger version of the same claim.

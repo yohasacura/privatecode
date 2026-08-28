@@ -81,6 +81,16 @@ function startRowDrag(e: PointerEvent, path: string): void {
   const startY = e.clientY
   let dragging = false
 
+  // Pointer capture, so the moves keep arriving even when the pointer leaves the row — which
+  // it does immediately, since the whole gesture is about ending up somewhere else. Captured
+  // events still bubble to `window`, so the listeners below stay where they are. Guarded
+  // because a row can be removed mid-gesture by a refresh, and capturing on a detached
+  // element throws.
+  const row = e.currentTarget
+  if (row instanceof Element) {
+    try { row.setPointerCapture(e.pointerId) } catch { /* the row went away; the window listeners still work */ }
+  }
+
   function move(ev: PointerEvent): void {
     if (!dragging) {
       if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD_PX) return
