@@ -113,6 +113,7 @@ import type {
   PromptImproveParams,
   PromptImproveResult,
   PromptExpandParams,
+  PromptReplyResult,
   PromptExpandResult,
   WorkspaceSetParams,
   WorkspaceSetResult,
@@ -469,6 +470,7 @@ export class SessionHost {
       case 'workspace.set': return this.workspaceSet(params as WorkspaceSetParams)
       case 'prompt.improve': return this.promptImprove(params as PromptImproveParams)
       case 'prompt.expand': return this.promptExpand(params as PromptExpandParams)
+      case 'prompt.reply': return this.promptReply()
       case 'git.status': return this.gitStatusFor()
       case 'git.diff': return this.gitDiffFor(params as GitDiffParams)
       case 'git.stage': return this.gitStageFor(params as GitStageParams, 'stage')
@@ -1600,6 +1602,29 @@ export class SessionHost {
     this.currentAbort = new AbortController()
     try {
       return { expanded: await session.previewExpansion(params.text, this.currentAbort.signal) }
+    } finally {
+      this.sending = false
+      this.currentAbort = undefined
+    }
+  }
+
+  /**
+   * The composer's ghost suggestion.
+   *
+   * Refused rather than queued while anything is running, exactly like `prompt.expand`: the
+   * server has one slot, and a suggestion is the least important thing that could be
+   * holding it. The window treats the refusal as "no suggestion", which it is.
+   */
+  private async promptReply(): Promise<PromptReplyResult> {
+    const session = this.requireSession()
+    if (this.sending) return { reply: null }
+    this.sending = true
+    this.currentAbort = new AbortController()
+    try {
+      return { reply: await session.suggestNextReply(this.currentAbort.signal) }
+    } catch {
+      // A suggestion that could not be made is not an error anybody needs to see.
+      return { reply: null }
     } finally {
       this.sending = false
       this.currentAbort = undefined

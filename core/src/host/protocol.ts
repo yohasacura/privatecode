@@ -571,6 +571,7 @@ export interface HostMethodMap {
   'workspace.set': { params: WorkspaceSetParams; result: WorkspaceSetResult }
   'prompt.improve': { params: PromptImproveParams; result: PromptImproveResult }
   'prompt.expand': { params: PromptExpandParams; result: PromptExpandResult }
+  'prompt.reply': { params: PromptReplyParams; result: PromptReplyResult }
   compact: { params: CompactParams; result: CompactResult }
   'approval.reply': { params: ApprovalReplyParams; result: ApprovalReplyResult }
   'question.reply': { params: QuestionReplyParams; result: QuestionReplyResult }
@@ -927,6 +928,18 @@ export interface PromptImproveParams { text: string }
 export interface PromptImproveResult {
   suggestions: { criteria: string[]; constraints: string[]; questions: string[] } | null
 }
+
+/**
+ * One reply the person might send next, for the composer's ghost text.
+ *
+ * No params: the answer comes from the conversation, and the conversation is what the host
+ * already has. Asked only after a turn whose answer ended in a QUESTION — the window
+ * decides that structurally, so this is never a guess about whether a suggestion is wanted.
+ */
+export type PromptReplyParams = Empty
+/** Null when the model declined or the answer was unusable. The composer shows nothing and
+ * says nothing: there is no failure here worth a person's attention. */
+export interface PromptReplyResult { reply: string | null }
 
 export interface PromptExpandParams { text: string }
 /** The rough command rewritten as a detailed, project-grounded brief — shown as a

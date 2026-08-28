@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { AgentMode } from '@core/permissions/engine'
 import type { ProtocolClient } from '../lib/client'
-import { pendingTool, type ChatAction, type ChatState, type StageName } from '../lib/state'
+import { pendingTool, type ChatAction, type ChatItem, type ChatState, type StageName } from '../lib/state'
 import { formatDuration, formatProgress } from '../lib/format'
 import { applyMention, mentionAtCaret, type Mention } from '../lib/mentions'
 import { pathDrag, subscribePathDrag, within, type PathDrag } from '../lib/drag'
@@ -158,6 +158,132 @@ export function Composer({
   /** An unknown-command check in flight; see `send()`'s slash guard. */
   const slashCheckRef = useRef(false)
   const mode: AgentMode = state.session?.mode ?? 'normal'
+  /**
+   * Walking back through what you have already sent.
+   *
+   * The list is THIS conversation's user messages, newest last, with the harness's own
+   * `role: 'user'` notes filtered out — a verify result and a plan focus note share the role
+   * with your words and are not things you typed. Derived from `state.items` rather than
+   * kept in a parallel list, so a resumed session has its history without a second thing to
+   * restore, and it resets on a session switch for free.
+   */
+  const history = useMemo(
+    () => state.items
+      .filter((i): i is ChatItem & { kind: 'user' } => i.kind === 'user' && i.harness !== true)
+      .map((i) => i.text),
+    [state.items],
+  )
+
+  /**
+   * Where in the history we are: -1 is "not recalling, the box is your own draft".
+   *
+   * The draft is stashed on the way in and restored on the way back out past the newest
+   * entry, because losing a half-written message to a stray Up is the failure that makes
+   * people stop using history at all.
+   */
+  const [historyAt, setHistoryAt] = useState(-1)
+  const stashedDraft = useRef('')
+
+  // A new message of your own ends the walk: the box is a draft again, and the entry you
+  // had recalled is now in the history behind you.
+  useEffect(() => { setHistoryAt(-1) }, [history.length])
+
+  /** The caret is where an arrow has nothing else to do — the whole gate on recall. */
+  function atStart(el: HTMLTextAreaElement): boolean {
+    return el.selectionStart === 0 && el.selectionEnd === 0
+  }
+  function atEnd(el: HTMLTextAreaElement): boolean {
+    return el.selectionStart === el.value.length && el.selectionEnd === el.value.length
+  }
+
+  /**
+   * One step through the history, or null when there is nowhere to go.
+   *
+   * Returns the TEXT rather than moving the box itself, so the caller decides whether the
+   * key was consumed — an Up at the oldest entry must stay an ordinary Up.
+   */
+  function recall(direction: -1 | 1): string | null {
+    if (history.length === 0) return null
+    if (direction === -1) {
+      if (historyAt === -1) stashedDraft.current = input
+      const next = historyAt === -1 ? history.length - 1 : historyAt - 1
+      if (next < 0) return null
+      setHistoryAt(next)
+      return history[next] as string
+    }
+    if (historyAt === -1) return null
+    const next = historyAt + 1
+    if (next >= history.length) {
+      // Past the newest entry is your own draft, not an empty box.
+      setHistoryAt(-1)
+      return stashedDraft.current
+    }
+    setHistoryAt(next)
+    return history[next] as string
+  }
+
+  /** Puts a recalled message in the box with the caret at the END, which is where you want
+   * it: recall is nearly always "that, with a change on the end". */
+  function apply(text: string): void {
+    setInput(text)
+    setMention(null)
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (el === null) return
+      el.focus()
+      el.setSelectionRange(text.length, text.length)
+    })
+  }
+
+  /**
+   * A reply the model thinks you might send, offered as ghost text in an empty box.
+   *
+   * Asked only after an answer that ENDED IN A QUESTION. That gate is structural on
+   * purpose: the assistant asked, so a reply is the obvious next thing, and the alternative
+   * — asking after every turn — spends a generation proposing something nobody wanted.
+   * Cleared the moment you type, because a suggestion competing with your own words is
+   * noise, and cleared on a session switch, because it belongs to one conversation.
+   */
+  const [ghost, setGhost] = useState<string | null>(null)
+  useEffect(() => { setGhost(null) }, [state.session?.sessionId])
+  // Typing is the clearest possible "I do not want the suggestion". Cleared here rather
+  // than inside the input handler so a draft restored from anywhere — a queued message
+  // coming back, an undelivered turn — clears it too.
+  useEffect(() => { if (input !== '') setGhost(null) }, [input !== ''])
+
+  /** The shape that earns a suggestion: the last thing said was a question to YOU. Checked
+   * on the last non-empty line, so a long answer that closes with a question still counts
+   * and one that merely contains a rhetorical `?` in the middle does not. */
+  function endsInQuestion(text: string): boolean {
+    const lines = text.trimEnd().split('\n')
+    const last = lines[lines.length - 1]?.trim() ?? ''
+    return last.endsWith('?') || last.endsWith('？')
+  }
+
+  const newest = state.items.length > 0 ? state.items[state.items.length - 1] : undefined
+  const lastAssistantText = newest !== undefined && newest.kind === 'assistant' ? newest.text : ''
+
+  useEffect(() => {
+    if (state.turnRunning || input !== '' || lastAssistantText === '') return
+    if (!endsInQuestion(lastAssistantText)) return
+    let cancelled = false
+    client.call('prompt.reply', {})
+      .then((r) => { if (!cancelled) setGhost(r.reply) })
+      .catch(() => { /* no suggestion is a fine outcome, and not one worth reporting */ })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `input` gates entry, and
+    // re-running on every keystroke would fire a generation per character.
+  }, [client, state.turnRunning, lastAssistantText])
+
+  /** Tab takes the suggestion. The caret lands at the end, because the usual next move is
+   * to add a clause to it rather than to send it untouched. */
+  function acceptGhost(): void {
+    if (ghost === null) return
+    const text = ghost
+    setGhost(null)
+    apply(text)
+  }
+
   /** Whether the post-turn gates run by themselves. Read off the session, so it survives a
    * restart and does not follow you into a different conversation. */
   const gateMode = state.session?.gateMode ?? 'auto'
@@ -1290,7 +1416,7 @@ export function Composer({
 
         <textarea
           ref={textareaRef}
-          class="composer-input"
+          class={`composer-input${ghost !== null && input === '' ? ' has-ghost' : ''}`}
           value={input}
           rows={1}
           onInput={(e) => {
@@ -1381,12 +1507,39 @@ export function Composer({
                 return
               }
             }
+            // Tab takes the ghost suggestion. Reached only with an empty box and no picker
+            // open — both pickers claim Tab above and return — so this can never steal the
+            // key from a completion.
+            if (e.key === 'Tab' && ghost !== null && input === '') {
+              e.preventDefault()
+              acceptGhost()
+              return
+            }
+            // History, and only where an arrow has nothing better to do.
+            //
+            // Up recalls only with the caret at the very start, Down only at the very end.
+            // That is not politeness about the caret — it is what lets the same two keys
+            // stay ordinary text navigation inside a multi-line draft, which is most of
+            // what they are for. Both pickers above have already claimed the key by the
+            // time this runs, so a recall can never fight a dropdown.
+            if (e.key === 'ArrowUp' && !e.shiftKey && atStart(e.currentTarget)) {
+              const recalled = recall(-1)
+              if (recalled !== null) { e.preventDefault(); apply(recalled) }
+              return
+            }
+            if (e.key === 'ArrowDown' && !e.shiftKey && atEnd(e.currentTarget)) {
+              const recalled = recall(1)
+              if (recalled !== null) { e.preventDefault(); apply(recalled) }
+              return
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               send()
             }
           }}
-          placeholder={blockedByRun
+          placeholder={ghost !== null && !state.turnRunning && !blockedByRun
+            ? `${ghost}    (Tab)`
+            : blockedByRun
             ? 'Reading an earlier session. Wait for the running turn, or go back to it, then write here to continue this one.'
             : state.viewing !== null
               ? 'Write here to continue this session from now on — the current one stops being the active one'

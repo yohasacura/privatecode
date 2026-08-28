@@ -42,7 +42,7 @@ import {
 import {
   DIFF_REVIEW_MIN_CHARS, acceptanceFailureMessage, checkAcceptance, clipTodoText,
   decomposeTodos, distillContract,
-  expandDraft, improveDraft, looksLikeTask, renderCheckedState, renderContract,
+  expandDraft, improveDraft, looksLikeTask, renderCheckedState, renderContract, suggestReply,
   resolveReportedCriteria, withUnreportedCriteria, UNREPORTED_REASON,
   buildReviewBrief, reviewVerdict, REVIEW_SYSTEM,
 } from './contract.js'
@@ -3219,6 +3219,18 @@ export class Session {
    * and nothing more, exactly like `previewSuggestions` above. */
   async previewExpansion(text: string, signal?: AbortSignal): Promise<string | null> {
     return expandDraft(this.opts.client, this.previewContext(), text, signal, this.stepSchemas())
+  }
+
+  /**
+   * One reply the person might send, for the composer's ghost text.
+   *
+   * Same context as an expansion and for the same reason — a suggestion made without the
+   * conversation would be a guess dressed as a reading. Null whenever the model declines,
+   * which the composer treats as "no suggestion" rather than as a failure: there is nothing
+   * to recover from and nothing worth interrupting anybody about.
+   */
+  async suggestNextReply(signal?: AbortSignal): Promise<string | null> {
+    return suggestReply(this.opts.client, this.previewContext(), signal, this.stepSchemas())
   }
 
   /**

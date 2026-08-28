@@ -492,6 +492,74 @@ export async function expandDraft(
   return parsed === null ? null : readExpanded(parsed)
 }
 
+const REPLY_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['reply'],
+  additionalProperties: false,
+  properties: {
+    reply: { type: 'string' },
+  },
+}
+
+/** Long enough for "yes, fix it and rebuild", short enough that nobody reads a paragraph
+ * of ghost text before deciding whether to press Tab. */
+const REPLY_MAX_CHARS = 160
+const REPLY_MAX_TOKENS = 200
+
+/**
+ * One reply the person might send next, offered as ghost text in an empty composer.
+ *
+ * Only ever asked when the answer ENDED IN A QUESTION — the caller decides that, and the
+ * decision is structural rather than a judgement: the assistant asked, so a reply is the
+ * obvious next thing and suggesting one is not guessing at a mood. Firing on every turn
+ * would spend a generation after every answer to propose something nobody wanted.
+ *
+ * Written in the FIRST PERSON as the user, because that is what it becomes when Tab
+ * accepts it — a suggestion phrased as advice ("you could ask it to rebuild") is not a
+ * message, and pasting it into the box produces nonsense.
+ */
+export async function suggestReply(
+  client: LlamaClient,
+  transcript: readonly ChatMessage[],
+  signal?: AbortSignal,
+  /** The session's own tool array, so this stays an append onto the warm prefix rather
+   * than a new prompt — the same economics `expandDraft`'s comment describes. */
+  tools?: readonly ToolSchema[],
+): Promise<string | null> {
+  const messages: ChatMessage[] = [
+    ...distillContext(transcript),
+    {
+      role: 'user',
+      content:
+        '[Not a request — do not act. Your last message asked the user something. Write the ' +
+        'single most likely answer, AS THE USER, in their voice and in the first person: ' +
+        'one short sentence they could send verbatim. If the question offers to do ' +
+        'something, the likely answer is yes plus whatever they would add to it.\n\n' +
+        'Use the language the USER has been writing in, not the language you answered in.\n\n' +
+        'Answer with JSON only.]',
+    },
+  ]
+  const parsed = await forcedJson(client, {
+    messages,
+    name: 'reply',
+    schema: REPLY_SCHEMA,
+    maxTokens: REPLY_MAX_TOKENS,
+    disableThinking: true,
+    ...(tools ? { tools } : {}),
+    ...(signal ? { signal } : {}),
+  })
+  // `forcedJson` hands back the PARSED value, not the text of it — the same shape
+  // `readExpanded` reads a few lines up.
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const reply = (parsed as Record<string, unknown>)['reply']
+  if (typeof reply !== 'string') return null
+  const trimmed = reply.trim()
+  // Dropped rather than clipped. A half-sentence accepted with Tab is a message the person
+  // has to finish before they can send it, which is worse than no suggestion at all.
+  if (trimmed === '' || trimmed.length > REPLY_MAX_CHARS) return null
+  return trimmed
+}
+
 /**
  * The improver behind the composer's suggestion chips: the draft, distilled the way a
  * sent message would be (same transcript context, so a continuation draft is understood

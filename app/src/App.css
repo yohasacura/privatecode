@@ -1841,6 +1841,12 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   padding: 11px 14px 3px;
 }
 .composer-input::placeholder { color: var(--text-faint); }
+/* A suggested reply riding in the placeholder. Slightly brighter than the ordinary
+   placeholder, because this one is an OFFER rather than a label — it is there to be read
+   and taken, not to sit quietly until you start typing over it. It lives in the placeholder
+   at all because a suggestion only ever shows in an EMPTY box, which is exactly where the
+   placeholder already sits: no overlay, and no alignment to keep true as the font changes. */
+.composer-input.has-ghost::placeholder { color: var(--text-dim); }
 
 .composer-send {
   display: flex;
