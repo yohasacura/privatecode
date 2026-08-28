@@ -164,6 +164,16 @@ export interface ToolStat {
   failures: Partial<Record<FailureKind, number>>
 }
 
+/** One build's record. Deliberately the same three numbers as the summary line, so the
+ * two are read against each other without arithmetic. */
+export interface VersionStat {
+  sessions: number
+  toolCalls: number
+  toolFailures: number
+  /** Turns a check took back from the model under this build. */
+  handBacks: number
+}
+
 export interface Diagnosis {
   /** How many days of history this covers, and how much of it there is. Deliberately a
    * SPAN rather than dates: "28 days" says as much for tuning and names no day. */
@@ -206,8 +216,20 @@ export interface Diagnosis {
   callsPerSession: number
   /** Modes the work was done in, by session count. */
   modes: Partial<Record<string, number>>
-  /** App versions seen, by session count. Empty when no session recorded one. */
-  versions: Partial<Record<string, number>>
+  /**
+   * What each build actually did, not merely that it ran.
+   *
+   * `SessionMeta.appVersion` exists, in its own words, so the doctor "can say whether a
+   * failure pattern belongs to a version — the question 'did that get better after 0.1.5'
+   * is unanswerable without it, and it is the first question anybody asks of a diagnosis."
+   * The report recorded the version and then answered a different question: how many
+   * sessions ran under each. Which is the one thing nobody asks.
+   *
+   * Sessions with no version recorded are left out entirely rather than pooled under a
+   * label. A bucket of unknowns compared against a named build is not a comparison, and it
+   * would be read as one.
+   */
+  versions: Partial<Record<string, VersionStat>>
   /** Sessions that carried a distilled contract — the gate chain's entry condition. */
   contractSessions: number
   /** Sessions where the post-turn gates were turned off by hand. */
@@ -366,7 +388,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
   const problems: string[] = []
   const byTool = new Map<string, ToolStat>()
   const modes: Record<string, number> = {}
-  const versions: Record<string, number> = {}
+  const versions: Record<string, VersionStat> = {}
 
   let sessions = 0
   let emptySessions = 0
@@ -396,10 +418,14 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
     sessions++
     const mode = safeMode(meta.mode)
     modes[mode] = (modes[mode] ?? 0) + 1
-    const version = (meta as { appVersion?: string }).appVersion
-    if (typeof version === 'string' && version !== '') {
-      const v = safeVersion(version)
-      versions[v.version] = (versions[v.version] ?? 0) + 1
+    const rawVersion = (meta as { appVersion?: string }).appVersion
+    let versionStat: VersionStat | null = null
+    if (typeof rawVersion === 'string' && rawVersion !== '') {
+      const v = safeVersion(rawVersion)
+      versionStat = versions[v.version]
+        ?? { sessions: 0, toolCalls: 0, toolFailures: 0, handBacks: 0 }
+      versionStat.sessions++
+      versions[v.version] = versionStat
       if (v.droppedTag) {
         problems.push('a session recorded a build tag this report does not ship a name for, so only the numbers of its version are shown')
       }
@@ -584,6 +610,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
             continue
           }
           closeGate(true)
+          if (versionStat !== null) versionStat.handBacks++
           const round = (runs.get(kind) ?? 0) + 1
           runs.set(kind, round)
           openGate = { kind, steps: 0, calls: 0, tools: [], round }
@@ -609,6 +636,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
         if (typeof raw !== 'string' || raw === '') continue
         const name = safeToolName(raw)
         toolCalls++
+        if (versionStat !== null) versionStat.toolCalls++
         if (openGate !== null) {
           openGate.calls++
           openGate.tools.push(name)
@@ -674,6 +702,7 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
             continue
           }
           toolFailures++
+          if (versionStat !== null) versionStat.toolFailures++
           const stat = byTool.get(name)
             ?? { name, calls: 0, failed: 0, repeats: 0, failures: {} }
           stat.failed++
@@ -732,6 +761,10 @@ export function diagnose(workspaceRoot: string, metas: readonly SessionMeta[]): 
  * measurement. See the `harness turns` line for what reading one off a tiny sample cost. */
 const RATIO_MIN_MESSAGES = 5
 
+/** Below this many calls under one build, a failure RATE for it is noise — and this block
+ * is read as a comparison, which is exactly where noise reads as a regression. */
+const VERSION_MIN_CALLS = 20
+
 export function renderDiagnosis(d: Diagnosis): string {
   const pct = (n: number, of: number): string => (of === 0 ? '0%' : `${Math.round((n / of) * 100)}%`)
   const out: string[] = [
@@ -775,15 +808,37 @@ export function renderDiagnosis(d: Diagnosis): string {
   if (d.manualGateSessions > 0) {
     out.push(`checks off     ${d.manualGateSessions} sessions ran with the post-turn gates off`)
   }
-  const versions = Object.entries(d.versions).map(([v, n]) => [v, n ?? 0] as const)
-    .sort((a, b) => b[1] - a[1])
   out.push(
-    `app versions   ${versions.length === 0 ? 'not recorded' : versions.map(([v, n]) => `${v} (${n})`).join(', ')}`,
     `modes          ${Object.entries(d.modes).map(([m, n]) => [m, n ?? 0] as const)
       .sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} (${n})`).join(', ') || 'none'}`,
-    '',
-    'per tool — calls, failures, exact repeats:',
   )
+
+  // Sorted by version STRING, ascending, because this block is read as a before-and-after
+  // and putting the busiest build first would scramble the only ordering that matters.
+  const versions = Object.entries(d.versions)
+    .map(([v, s]) => [v, s ?? { sessions: 0, toolCalls: 0, toolFailures: 0, handBacks: 0 }] as const)
+    .sort((a, b) => a[0].localeCompare(b[0], 'en', { numeric: true }))
+  if (versions.length === 0) {
+    out.push('app versions   not recorded')
+  } else {
+    out.push('', 'per build — did it get better:')
+    for (const [v, s] of versions) {
+      out.push(
+        `  ${v.padEnd(16)} ${String(s.sessions).padStart(4)} session${s.sessions === 1 ? ' ' : 's'}` +
+        `  ${String(s.toolCalls).padStart(5)} calls` +
+        // A rate off a handful of calls is noise, and this block exists to be compared
+        // across builds — which is exactly where noise reads as a regression.
+        (s.toolCalls < VERSION_MIN_CALLS
+          ? `  ${s.toolFailures} failed (too few calls to rate)`
+          : `  ${String(s.toolFailures).padStart(4)} failed (${pct(s.toolFailures, s.toolCalls)})`) +
+        `  ${String(s.handBacks).padStart(4)} turn${s.handBacks === 1 ? '' : 's'} handed back`,
+      )
+    }
+    if (versions.length === 1) {
+      out.push('  (one build only — there is nothing here to compare it against yet)')
+    }
+  }
+  out.push('', 'per tool — calls, failures, exact repeats:')
   for (const t of d.tools) {
     const kinds = Object.entries(t.failures).map(([k, n]) => [k, n ?? 0] as const)
       .sort((a, b) => b[1] - a[1])

@@ -172,7 +172,7 @@ describe('the counting itself', () => {
       session('s3', [{ role: 'user', content: 'c' }]),
     ]
     const d = diagnose(root, metas)
-    expect(d.versions['0.1.5']).toBe(2)
+    expect(d.versions['0.1.5']?.sessions).toBe(2)
     // The third recorded none, and nothing invents one for it — a diagnosis that guessed
     // the version would answer "did it get better after 0.1.5" with fiction.
     expect(Object.keys(d.versions)).toEqual(['0.1.5'])

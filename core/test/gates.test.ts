@@ -573,3 +573,78 @@ describe('app version', () => {
     }
   })
 })
+
+/**
+ * The question the version was recorded to answer.
+ *
+ * `SessionMeta.appVersion` says in its own doc comment that it exists so the doctor can tell
+ * "whether a failure pattern belongs to a version — the question 'did that get better after
+ * 0.1.5' is unanswerable without it, and it is the first question anybody asks." The report
+ * recorded the version and then answered how many SESSIONS ran under each, which is the one
+ * thing nobody asks.
+ */
+describe('did it get better', () => {
+  /** Two builds on disk, one clumsy and one not. */
+  function twoBuilds(): ReturnType<typeof diagnose> {
+    const write = (id: string, appVersion: string, failures: number, calls: number): void => {
+      const lines: unknown[] = [person('go')]
+      const outcomes: { id: string; ok: boolean }[] = []
+      for (let i = 0; i < calls; i++) {
+        const cid = `${id}-c${i}`
+        lines.push({ role: 'assistant', tool_calls: [{ id: cid, type: 'function',
+          function: { name: 'read_file', arguments: JSON.stringify({ path: `src/a${i}.ts` }) } }] })
+        const failed = i < failures
+        lines.push({ role: 'tool', tool_call_id: cid,
+          content: failed ? `File not found: src/a${i}.ts` : `1\tconst a${i} = 1` })
+        outcomes.push({ id: cid, ok: !failed })
+      }
+      writeFileSync(join(root, '.privatecode', 'state', 'sessions', `${id}.jsonl`),
+        lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8')
+      writeFileSync(join(root, '.privatecode', 'state', 'sessions', `${id}.ui.jsonl`),
+        outcomes.map((o) => JSON.stringify(o)).join('\n') + '\n', 'utf8')
+      metas.push({
+        id, title: 'confidential', createdAt: '2026-08-01T10:00:00.000Z',
+        updatedAt: '2026-08-02T10:00:00.000Z', workspaceRoot: root, mode: 'normal',
+        appVersion,
+      } as SessionMeta)
+    }
+    const metas: SessionMeta[] = []
+    write('old', '0.1.4', 12, 40)
+    write('new', '0.1.5', 2, 40)
+    return diagnose(root, metas)
+  }
+
+  test('failures are attributed to the build that made them', () => {
+    const d = twoBuilds()
+    expect(d.versions['0.1.4']).toEqual({ sessions: 1, toolCalls: 40, toolFailures: 12, handBacks: 0 })
+    expect(d.versions['0.1.5']).toEqual({ sessions: 1, toolCalls: 40, toolFailures: 2, handBacks: 0 })
+  })
+
+  test('the report shows them oldest first, so it reads as a before and after', () => {
+    const report = renderDiagnosis(twoBuilds())
+    expect(report).toContain('per build — did it get better')
+    expect(report.indexOf('0.1.4')).toBeLessThan(report.indexOf('0.1.5'))
+    expect(report).toContain('30%')   // the old build
+    expect(report).toContain('5%')    // the new one
+  })
+
+  test('a build with too few calls is not given a rate to be compared on', () => {
+    // The failure this ordering invites: two calls, one failed, printed as 50% next to a
+    // build with four hundred — and read as a catastrophic regression.
+    const d = diagnosisOf([
+      person('go'),
+      calls('read_file'),
+      { role: 'tool', tool_call_id: 'c0', content: 'File not found: src/a.ts' },
+    ], { appVersion: '0.2.0' })
+    const buildLine = renderDiagnosis(d).split('\n').find((l) => l.includes('0.2.0'))
+    expect(buildLine).toContain('too few calls to rate')
+    // The per-tool table above still rates that one call at 100%, which is fine there — it
+    // is not read as a comparison between builds, and the raw counts sit beside it.
+    expect(buildLine).not.toContain('%')
+  })
+
+  test('one build alone says so rather than implying a trend', () => {
+    expect(renderDiagnosis(diagnosisOf([person('go')], { appVersion: '0.1.5' })))
+      .toContain('nothing here to compare it against yet')
+  })
+})
