@@ -37,7 +37,7 @@ mkdirSync(sessions, { recursive: true })
 // ---------------------------------------------------------------------------------------
 // A history with things wrong in it, and private material in every field that touches disk.
 // ---------------------------------------------------------------------------------------
-const lines: unknown[] = []
+const lines: unknown[] = [{ role: 'system', content: 'You are PrivateCode.' }]
 const outcomes: { id: string; ok: boolean }[] = []
 let n = 0
 const call = (name: string, args: unknown): string => {
@@ -85,15 +85,30 @@ result(call('edit_file', { path: 'AcmeBank/Ledger/PostingEngine.cs', old: 'x', n
 turn('now make the cutover date configurable')
 result(call('read_file', { path: 'AcmeBank/Ledger/PostingEngine.cs' }), true, '1	namespace AcmeBank.Ledger;')
 
-// The window fills mid-request and the earlier history is swapped out. Both of these are
-// written by the compaction code; neither is a person or a model turn.
+// The window fills mid-request and the earlier history is swapped out.
+//
+// Written the way a real swap writes it, which is the whole point of doing it here: a
+// marker line, then the ENTIRE new transcript — a fresh system message, the briefing, the
+// acknowledgement, and then the RETAINED TAIL, which is already above the marker. Those
+// duplicated messages were counted twice, and worse: two copies of one hand-back landed in
+// one person-turn and the report asserted a run that never happened.
 turn('and log the ZebraCorp account ids as hashes')
+const beforeMarker = lines.length          // messages so far, including the system one
+const tailStart = beforeMarker - 4         // the last four are the retained tail
+lines.push({
+  __event: 'compaction',
+  summary: 'earlier history',
+  droppedMessages: tailStart - 1,          // `start - floor`, floor being the system message
+  at: '2026-08-21T09:00:00.000Z',
+})
+lines.push({ role: 'system', content: 'You are PrivateCode.' })
 lines.push({ role: 'user',
   content: `${COMPACTION_BRIEFING_PREFIX}
 
 The user is wiring the ZebraCorp ledger import ` +
     'into AcmeBank posting, and asked for hashed account ids.' })
 said(COMPACTION_ACK_TEXT)
+for (const m of lines.slice(tailStart, beforeMarker)) lines.push(m)
 
 // Then the post-turn chain: the contract is not met, then the reviewer finds something.
 lines.push({ role: 'user', content: `${ACCEPTANCE_FIXER_PREFIX}\n- the merger cutover date is not handled` })
