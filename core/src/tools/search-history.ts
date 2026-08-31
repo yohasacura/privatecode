@@ -3,7 +3,8 @@ import { SessionStore } from '../session/store.js'
 import type { Tool } from './types.js'
 
 export interface SearchHistoryArgs {
-  query: string
+  /** Absent means LIST rather than search — see the tool's doc comment. */
+  query?: string
   regex?: boolean
   speaker?: 'user' | 'assistant' | 'any'
   scope?: 'this' | 'others' | 'all'
@@ -11,6 +12,20 @@ export interface SearchHistoryArgs {
   until?: string
   include_tool_results?: boolean
   limit?: number
+}
+
+/** The period in words, for the one line a listing opens with. Ours, not the model's. */
+function describePeriod(
+  since: string | undefined, until: string | undefined, scope: 'this' | 'others' | 'all',
+): string {
+  const where = scope === 'this' ? 'This conversation'
+    : scope === 'others' ? 'Other conversations'
+      : 'Conversations'
+  if (since !== undefined && until !== undefined) return `${where} from ${since} to ${until}`
+  if (since !== undefined) return `${where} since ${since}`
+  if (until !== undefined) return `${where} up to ${until}`
+  // No dates at all: the caller wants "lately", which the limit already answers.
+  return `${where}, the most recent`
 }
 
 /**
@@ -34,6 +49,27 @@ export interface SearchHistoryArgs {
  * it"; `scope` separates this conversation's forgotten middle from every other session;
  * `regex` reaches shapes a literal cannot; the dates cut the search to when you remember it
  * happening; `include_tool_results` opens the half that is deliberately shut.
+ *
+ * ============================================================================
+ * WITHOUT A QUERY: LISTING
+ * ============================================================================
+ *
+ * "What was I working on last Tuesday" is a question this could not answer, and the reason
+ * is worth stating because it is the same mistake in a different place: a search needs a
+ * word, and the whole point of asking about a DATE is that you have forgotten the word. The
+ * owner asked for it in exactly those terms — *can I ask the agent to gather what I was
+ * doing on certain dates* — and the honest answer was "only if you can guess a term that
+ * appeared".
+ *
+ * So `query` is optional. Without one, the dates (and `scope`) select and the tool lists
+ * what is there rather than searching inside it: one line per conversation, grouped by day.
+ * That reads only the `.meta.json` files `list()` has already parsed — no transcript is
+ * opened — so a listing over a month costs nothing, which is what makes it reasonable to
+ * reach for before knowing whether there is anything to find.
+ *
+ * It is a different ANSWER, not a degraded search: a search says where a word appears, a
+ * listing says what the days contained. The one thing it must not do is pretend to be the
+ * other, so a listing says plainly that it did not look inside.
  */
 export const searchHistoryTool: Tool<SearchHistoryArgs> = {
   name: 'search_history',
@@ -43,7 +79,11 @@ export const searchHistoryTool: Tool<SearchHistoryArgs> = {
     'earlier in THIS session after the middle of it has been compacted away. Returns the ' +
     'matching sessions with passages around each match, most-discussed first. Use it before ' +
     're-deriving something that was already worked out, and to answer "what did we decide ' +
-    'about X". Searches what people said, not tool output, unless you ask for both.',
+    'about X". Searches what people said, not tool output, unless you ask for both. ' +
+    'LEAVE query OUT to LIST conversations instead of searching them: with since/until and ' +
+    'no query it returns what was worked on in that period, one line per conversation, ' +
+    'grouped by day. That is the way to answer "what was I doing last Tuesday" or "what did ' +
+    'I work on between these dates", where there is no word to search for.',
   parameters: {
     type: 'object',
     properties: {
@@ -51,7 +91,8 @@ export const searchHistoryTool: Tool<SearchHistoryArgs> = {
         type: 'string',
         description:
           'What to look for. A literal by default — the file name, the error string, the ' +
-          'command that finally worked.',
+          'command that finally worked. OPTIONAL: leave it out to list the conversations ' +
+          'in the period instead of searching inside them.',
       },
       regex: {
         type: 'boolean',
@@ -76,7 +117,9 @@ export const searchHistoryTool: Tool<SearchHistoryArgs> = {
       },
       since: {
         type: 'string',
-        description: 'Only sessions last touched on or after this date, as YYYY-MM-DD.',
+        description:
+          'Only sessions last touched on or after this date, as YYYY-MM-DD. With no query, ' +
+          'this and until are what select the conversations to list.',
       },
       until: {
         type: 'string',
@@ -94,12 +137,19 @@ export const searchHistoryTool: Tool<SearchHistoryArgs> = {
         description: 'How many sessions to return. Default 8, maximum 30.',
       },
     },
-    required: ['query'],
+    required: [],
   },
   validate(raw) {
     const r = raw as Partial<SearchHistoryArgs>
-    if (typeof r?.query !== 'string' || r.query.trim() === '') {
-      return { ok: false, error: 'query must be a non-empty string' }
+    // An ABSENT query means "list"; an empty one means the model meant to search and had
+    // nothing to search for. Told apart, because silently listing for the second would
+    // answer a question that was not asked and look like it had been.
+    if (r?.query !== undefined && (typeof r.query !== 'string' || r.query.trim() === '')) {
+      return {
+        ok: false,
+        error: 'query must be a non-empty string, or left out entirely to list the ' +
+          'conversations in a period instead of searching them',
+      }
     }
     for (const key of ['since', 'until'] as const) {
       const v = r[key]
@@ -119,7 +169,7 @@ export const searchHistoryTool: Tool<SearchHistoryArgs> = {
     return {
       ok: true,
       args: {
-        query: r.query.trim(),
+        ...(r.query !== undefined ? { query: r.query.trim() } : {}),
         ...(r.regex !== undefined ? { regex: r.regex } : {}),
         ...(r.speaker !== undefined ? { speaker: r.speaker } : {}),
         ...(r.scope !== undefined ? { scope: r.scope } : {}),
@@ -154,6 +204,66 @@ export const searchHistoryTool: Tool<SearchHistoryArgs> = {
     }
 
     const limit = Math.min(Math.max(args.limit ?? 8, 1), 30)
+
+    // --- no query: list the period rather than search inside it ------------------------
+    if (args.query === undefined) {
+      const from = args.since !== undefined ? `${args.since}T00:00:00.000Z` : undefined
+      const to = args.until !== undefined ? `${args.until}T23:59:59.999Z` : undefined
+      const dated = inScope
+        .filter((m) => (from === undefined || m.updatedAt >= from)
+          && (to === undefined || m.updatedAt <= to))
+      if (dated.length === 0) {
+        return {
+          ok: true,
+          // The total is not padding. "Nothing that week" and "no history here at all" are
+          // different answers, and a caller told only the first will go looking for a
+          // workspace it is already in.
+          content: `${describePeriod(args.since, args.until, scope)} — none. ` +
+            `(${inScope.length} conversation${inScope.length === 1 ? '' : 's'} in this ` +
+            'workspace overall.)',
+        }
+      }
+      // The most recent `limit`, shown OLDEST FIRST. Both halves are deliberate: when a
+      // period holds more than fits, the recent end is the half worth having, and once the
+      // set is chosen a period reads forwards — it is being asked as "what happened", which
+      // is a narrative, not a ranking.
+      const sorted = [...dated].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+      const shown = sorted.slice(-limit)
+      const omitted = sorted.length - shown.length
+
+      const byDay = new Map<string, typeof shown>()
+      for (const m of shown) {
+        const day = m.updatedAt.slice(0, 10)
+        byDay.set(day, [...(byDay.get(day) ?? []), m])
+      }
+      const blocks = [...byDay.entries()].map(([day, ms]) => {
+        const rows = ms.map((m) => {
+          const here = m.id === ctx.sessionId ? ' — this conversation' : ''
+          const mode = m.mode === 'normal' ? '' : ` [${m.mode}]`
+          // The title is the person's own opening message, which is exactly what "what was
+          // I doing" wants; `list()` has already read it, so this costs no I/O.
+          return `  · ${m.title === '' ? '(untitled)' : m.title}${mode}${here}`
+        })
+        return `${day}\n${rows.join('\n')}`
+      })
+
+      const tail = omitted > 0
+        ? `\n\n(${omitted} earlier conversation${omitted === 1 ? '' : 's'} in that period ` +
+          'not shown — raise limit, or narrow the dates)'
+        : ''
+      return {
+        ok: true,
+        content:
+          `${describePeriod(args.since, args.until, scope)}, ` +
+          `${shown.length} conversation${shown.length === 1 ? '' : 's'}:\n\n` +
+          `${blocks.join('\n\n')}${tail}\n\n` +
+          // Said plainly: this is a different answer from a search, and a reader who thinks
+          // it looked inside would take silence about a topic as evidence it never came up.
+          'These are the conversations themselves, not their contents — nothing was read ' +
+          'inside them. Search one of these dates with a query to see what was said.',
+      }
+    }
+
     const options: SearchOptions = {
       // Several passages and a wider window than the picker's: the caller is not choosing a
       // row to click, it is trying to remember what was decided, and a collapsed
