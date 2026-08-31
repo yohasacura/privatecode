@@ -38,6 +38,7 @@ import {
 import { discoverUnits, type SnapshotUnit } from '../checkpoints/units.js'
 import { PRIVATE_DIR, STATE_DIR, migratePrivateDir, statePath } from '../private-dir.js'
 import { runUnattended } from '../cli/unattended.js'
+import { runDoctor } from '../doctor/report.js'
 import type {
   AbortResult,
   ApprovalReplyParams,
@@ -118,6 +119,8 @@ import type {
   WorkspaceSetParams,
   WorkspaceSetResult,
   GatesRunParams,
+  DoctorRunParams,
+  DoctorRunResult,
   GatesRunResult,
   GatesSetParams,
   GatesSetResult,
@@ -456,6 +459,7 @@ export class SessionHost {
       case 'setMode': return this.setMode(params as SetModeParams)
       case 'gates.set': return this.gatesSet(params as GatesSetParams)
       case 'gates.run': return this.gatesRun(params as GatesRunParams)
+      case 'doctor.run': return this.doctorRun(params as DoctorRunParams)
       case 'sessions.list': return this.sessionsList()
       case 'sessions.new': return this.sessionsNew()
       case 'sessions.resume': return this.sessionsResume(params as SessionsResumeParams)
@@ -1190,6 +1194,29 @@ export class SessionHost {
       this.currentAbort = undefined
       this.currentTurn = undefined
     }
+  }
+
+  /**
+   * The diagnosis, for whoever typed the command.
+   *
+   * No session and no model: it reads the stored conversations and returns counts. It works
+   * on a workspace whose session failed to open, which is exactly when somebody is most
+   * likely to be asking what has been going wrong.
+   */
+  private doctorRun(params: DoctorRunParams): DoctorRunResult {
+    const since = params?.since
+    if (since !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(since)) {
+      // Refused rather than ignored: a misspelled date compares as a plain string against an
+      // ISO timestamp and would silently narrow the scan to nothing, which reads as a
+      // healthy agent with no history.
+      throw new Error('since must be a date written as YYYY-MM-DD')
+    }
+    // No session needed, deliberately: the moment somebody most wants to know what has been
+    // going wrong is the moment a workspace failed to open.
+    if (this.workspaceRoot === undefined) {
+      throw new Error('no workspace is open, so there are no conversations to diagnose')
+    }
+    return runDoctor(this.workspaceRoot, since)
   }
 
   private gatesSet(params: GatesSetParams): GatesSetResult {

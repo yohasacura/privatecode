@@ -22,7 +22,6 @@ import { useSkillTool } from './use-skill.js'
 import { csharpNavTool } from './csharp-nav.js'
 import { databaseTool } from './database.js'
 import { sqlDeployTool } from './sql-deploy.js'
-import { doctorTool } from './doctor.js'
 import { recallTool } from './recall.js'
 import { sessionsTool } from './sessions.js'
 import { rememberTool } from './remember.js'
@@ -87,7 +86,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webTool, csharpNavTool, databaseTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool, sqlDeployTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
-                   symbolOutlineTool, browserTool, useSkillTool, rememberTool, recallTool, sessionsTool, doctorTool,
+                   symbolOutlineTool, browserTool, useSkillTool, rememberTool, recallTool, sessionsTool,
                    delegateTool]) {
     registry.register(t)
   }

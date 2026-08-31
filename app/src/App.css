@@ -967,6 +967,22 @@ kbd {
 .record-allow .row-gutter { color: var(--green); }
 .record-deny .row-gutter { color: var(--red); }
 .record-text { word-break: break-word; }
+/* The report, whole and unreflowed: its columns line up, and a renderer that wrapped or
+   collapsed the whitespace would take the table apart. Scrolls sideways on its own rather
+   than widening the transcript. */
+.diagnosis-report {
+  margin: 0;
+  white-space: pre;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.record-text .row-note {
+  margin-top: 6px;
+  color: var(--text-dim);
+  white-space: normal;
+}
 .record-text em { font-style: normal; opacity: 0.8; }
 /* A live measurement sitting inside a sentence: same faint weight the status line gives its
    own readings, and tabular figures so a count ticking four times a second does not shuffle

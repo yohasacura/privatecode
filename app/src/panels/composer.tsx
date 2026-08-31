@@ -62,6 +62,20 @@ const GATE_COMMANDS: Record<string, 'build' | 'review'> = {
   '/check': 'build',
   '/review': 'review',
 }
+/**
+ * The doctor, which is a command and no longer a tool.
+ *
+ * The model kept reaching for it and there is nothing it can do with the answer: the report
+ * describes the agent's own behaviour and is addressed to whoever maintains the agent, so a
+ * model that reads it mid-task can only act on it — a self-modification nobody asked for —
+ * or narrate it, spending a turn saying what the file already says. Taking it out of the
+ * tool array is what makes that true rather than merely asked for.
+ *
+ * Both spellings, because the owner asked for it by the Russian one and a command that is
+ * not recognised is indistinguishable from a command that did nothing.
+ */
+const DOCTOR_COMMANDS: readonly string[] = ['/doctor', '/доктор']
+
 const GATES_OFF = '/gates off'
 const GATES_ON = '/gates on'
 
@@ -742,6 +756,15 @@ export function Composer({
     // message to anyone, and sending one as chat would have the model announce it had done
     // something it has no tool for. They queue behind a running turn, also like `/compact` —
     // the server has one slot, and a gate makes model calls.
+    // The doctor runs no model calls at all — it walks the stored files — so unlike the
+    // gates it does not queue behind a turn and does not touch the one server slot.
+    if (DOCTOR_COMMANDS.includes(text.trim().toLowerCase())) {
+      setInput('')
+      setMention(null)
+      runDoctor()
+      return
+    }
+
     const gate = GATE_COMMANDS[text.trim().toLowerCase()]
     if (gate !== undefined) {
       setInput('')
@@ -900,6 +923,21 @@ export function Composer({
    * what a gate does. A second boolean would have to be checked everywhere this one already
    * is, and the first place it was forgotten would let a message be sent into a busy host.
    */
+  function runDoctor(): void {
+    client.call('doctor.run', {})
+      .then((r) => {
+        if (r.sessions === 0) {
+          // Not a page of zeroes, which reads as "this agent has done nothing wrong".
+          dispatch({ type: 'error-note', tone: 'info', message: r.report })
+          return
+        }
+        dispatch({ type: 'diagnosis', report: r.report, savedTo: r.savedTo })
+      })
+      .catch((e: unknown) => {
+        dispatch({ type: 'send-failed', message: e instanceof Error ? e.message : String(e) })
+      })
+  }
+
   function runGate(gate: 'build' | 'review'): void {
     setCompacting(true)
     client.call('gates.run', { gate })

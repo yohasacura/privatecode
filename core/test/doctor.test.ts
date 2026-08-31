@@ -630,3 +630,50 @@ test('provenance is only asked where the answer means something', async () => {
   expect(commandPatterns.every((p) => p.invented === 0)).toBe(true)
   expect(renderDiagnosis(d)).not.toContain('it was invented')
 })
+
+/**
+ * The doctor as a COMMAND, not a tool.
+ *
+ * The owner watched the model reaching for it on its own and took it away, and the reason is
+ * exact: there is nothing the model can do with the answer. The report describes the agent's
+ * own behaviour and is addressed to whoever maintains the agent, so a model that reads it
+ * mid-task can only act on it — a self-modification nobody asked for — or narrate it, which
+ * spends twenty seconds of generation saying what the file already says.
+ *
+ * Removing it from the registry is what makes that structural. A tool that is not in the
+ * array cannot be called; telling the model not to is what this project has measured at 0
+ * of 703.
+ */
+describe('run by a person', () => {
+  test('it produces the report and the artifact, with no model anywhere', async () => {
+    const { runDoctor } = await import('../src/doctor/report.js')
+    const { readFileSync } = await import('node:fs')
+    // Written to disk as a real session, meta and all: `runDoctor` goes through the store
+    // the way the window does, which is the half a direct `diagnose()` call never exercises.
+    const meta = session('s1', [
+      { role: 'user', content: 'do the thing' },
+      { role: 'assistant', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{}' } }] },
+    ])
+    writeFileSync(
+      join(root, '.privatecode', 'state', 'sessions', 's1.meta.json'),
+      JSON.stringify(meta, null, 2), 'utf8',
+    )
+    const out = runDoctor(root, undefined)
+    expect(out.sessions).toBe(1)
+    expect(out.report).toContain('PrivateCode self-diagnosis')
+    expect(out.savedTo).not.toBeNull()
+    // The artifact on disk is the report, byte for byte. What travels is the file, not a
+    // retelling of it.
+    expect(readFileSync(join(root, out.savedTo as string), 'utf8').trim()).toBe(out.report.trim())
+  })
+
+  test('an empty workspace says so instead of rendering a page of zeroes', async () => {
+    const { runDoctor } = await import('../src/doctor/report.js')
+    const out = runDoctor(root, undefined)
+    expect(out.sessions).toBe(0)
+    expect(out.report).toContain('no stored conversations')
+    // A report of zeroes reads as "this agent has done nothing wrong", which is the one
+    // conclusion an empty scan cannot support.
+    expect(out.report).not.toContain('tool calls')
+  })
+})

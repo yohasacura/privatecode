@@ -29,10 +29,6 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
      // written against what the code claims the schema is, rather than what it is, is the
      // plan that fails at the first migration.
      'database',
-     // Reads this workspace's own stored sessions and returns counts. Read-only in the
-     // strongest sense available: `doctor/diagnose.ts` is built so that nothing but numbers
-     // and a closed set of category names can come out of it.
-     'doctor',
      'find_files', 'git_status', 'list_dir', 'read_file',
      // Reads back the notes `remember` wrote, through the SAME freshness filter that puts
      // them in message 0. Read-only, and in plan mode deliberately: what earlier sessions
@@ -72,9 +68,32 @@ test('sql_deploy is deliberately not read-only, so plan mode cannot reach it', (
  * cycle. This is what stops it drifting: a tool added without touching that file fails here,
  * loudly, instead of quietly rendering as `unknown-tool` in every diagnosis from then on.
  */
-test('BUILT_IN_TOOL_NAMES is exactly what buildRegistry() ships', () => {
-  const registered = buildRegistry().schemas().map((s) => s.function.name).sort()
-  expect([...BUILT_IN_TOOL_NAMES].sort()).toEqual(registered)
+/**
+ * The shipped names, plus the ones this build has RETIRED.
+ *
+ * `BUILT_IN_TOOL_NAMES` is what the diagnosis checks a transcript's tool names against, and a
+ * transcript outlives the tool that wrote it. `doctor` was a tool until it became a slash
+ * command; every session recorded before that has real `doctor` calls in it, and dropping
+ * the name would render all of them as `unknown-tool` — quietly rewriting history in the one
+ * report whose whole value is that it can be trusted without being audited.
+ *
+ * So the assertion is containment plus an explicit account of the difference, rather than
+ * equality. A tool ADDED without touching that file still fails here, which is what the
+ * equality was protecting; a tool retired without being recorded fails too.
+ */
+test('BUILT_IN_TOOL_NAMES is what buildRegistry() ships, plus only what was retired', () => {
+  const registered = buildRegistry().schemas().map((s) => s.function.name)
+  for (const name of registered) expect(BUILT_IN_TOOL_NAMES.has(name)).toBe(true)
+  const extra = [...BUILT_IN_TOOL_NAMES].filter((n) => !registered.includes(n)).sort()
+  expect(extra).toEqual(['doctor'])
+})
+
+test('the retired doctor is not offered to the model, in any mode', () => {
+  // The point of retiring it. A tool that is not in the array cannot be called, which is
+  // what makes "the model should not run this" true rather than merely asked for.
+  const registry = buildRegistry()
+  expect(registry.names()).not.toContain('doctor')
+  expect(registry.readOnlyNames()).not.toContain('doctor')
 })
 
 /**

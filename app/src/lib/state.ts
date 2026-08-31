@@ -128,6 +128,23 @@ export type ChatItem =
       /** Which folder's check this was; absent in a single-folder workspace. */
       folder?: string
     }
+  /**
+   * A diagnosis the PERSON asked for, in place in the conversation.
+   *
+   * Its own kind rather than an `assistant` row, and the distinction is the same one this
+   * app has been careful about everywhere else: nobody generated it. Putting a machine's
+   * report under the model's voice is how a session gets misremembered — the same mistake
+   * as showing a build log as something the person typed.
+   *
+   * The report is rendered whole and unwrapped. It is counts and category names by
+   * construction, it is what gets forwarded off a confidential machine, and a version the
+   * window reflowed or truncated would not be the thing that was saved.
+   */
+  | {
+      kind: 'diagnosis'; id: number; report: string
+      /** Workspace-relative path of the saved artifact, or null when the write failed. */
+      savedTo: string | null
+    }
   /** Why a turn ended, when it did NOT end by the model deciding it was finished.
    * Appended for every `stoppedBecause` other than `'done'`, because the alternative --
    * what this app used to do -- is that the agent simply goes quiet mid-task and the only
@@ -539,6 +556,9 @@ export type ChatAction =
   | { type: 'question.request'; requestId: string; question: string; options: string[]; multiSelect?: boolean }
   | { type: 'question.answered'; answer: string }
   | { type: 'todos'; items: TodoItem[] }
+  | {
+      type: 'diagnosis'; report: string; savedTo: string | null
+    }
   | {
       type: 'verify'; command: string; ok: boolean; attempt: number
       exitCode?: number; problem?: string
@@ -1087,6 +1107,13 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         ...(action.agent !== undefined ? { agent: action.agent } : {}),
       }
       return { ...state, items: [...items, item], nextId: state.nextId + 1 }
+    }
+
+    case 'diagnosis': {
+      const item: ChatItem = {
+        kind: 'diagnosis', id: state.nextId, report: action.report, savedTo: action.savedTo,
+      }
+      return { ...state, items: [...state.items, item], nextId: state.nextId + 1 }
     }
 
     case 'verify': {

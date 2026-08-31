@@ -13,7 +13,23 @@
  * name, a project codename, whatever they called it. Checking that a name LOOKS like a tool
  * name admits every one of those. Membership is the only check that does not.
  */
+/**
+ * Tools this build no longer OFFERS but whose calls are still on disk.
+ *
+ * `doctor` was a tool until the owner took it away — the model kept reaching for it, and
+ * there is nothing it can do with the answer: the report describes the agent's own behaviour
+ * and is addressed to whoever maintains it. It is a `/doctor` command now, run by a person,
+ * costing no generation at all.
+ *
+ * It stays NAMED here because this set is what the diagnosis checks a transcript's tool
+ * names against, and every session recorded before the change has real `doctor` calls in it.
+ * Dropping the name would render all of them as `unknown-tool` and quietly rewrite history —
+ * in the one report whose entire value is that it can be trusted without being audited.
+ */
+const RETIRED_TOOL_NAMES: readonly string[] = ['doctor']
+
 export const BUILT_IN_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...RETIRED_TOOL_NAMES,
   'ask_user',
   'background_task',
   'browser',
@@ -21,7 +37,6 @@ export const BUILT_IN_TOOL_NAMES: ReadonlySet<string> = new Set([
   'database',
   'delegate',
   'delete_file',
-  'doctor',
   'edit_file',
   'find_files',
   'git_status',
@@ -62,7 +77,7 @@ export const MCP_TOOL_PREFIX = 'mcp__'
  */
 
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'ask_user', 'csharp_nav', 'database', 'doctor', 'find_files', 'git_status', 'list_dir',
+  'ask_user', 'csharp_nav', 'database', 'find_files', 'git_status', 'list_dir',
   'read_file', 'recall', 'search_code', 'sessions', 'symbol_outline', 'todo_write',
   'use_skill',
 ])

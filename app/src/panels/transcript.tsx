@@ -592,6 +592,22 @@ const TranscriptRow = memo(function TranscriptRow({
         </Row>
       )
 
+    // A diagnosis somebody asked for. Rendered whole and unwrapped: it is the text that
+    // gets forwarded, and a version the window reflowed would not be the thing that was
+    // saved. `pre` rather than markdown for the same reason — the report's columns line up
+    // and a renderer that collapsed the whitespace would take the table apart.
+    case 'diagnosis':
+      return (
+        <Row kind="record" marker={Icon.check()}>
+          <div class="record-text">
+            <pre class="diagnosis-report">{item.report}</pre>
+            {item.savedTo === null
+              ? <div class="row-note">The report could not be written to a file — copy it from here.</div>
+              : <div class="row-note">Saved to <b>{item.savedTo}</b> — that file is the whole report, and it contains nothing that is not above.</div>}
+          </div>
+        </Row>
+      )
+
     // Where the conversation the model can see was replaced by a briefing about it. Shown
     // in place, because "what does it still know" is only answerable relative to a point in
     // the conversation.

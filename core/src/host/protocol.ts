@@ -221,6 +221,31 @@ export interface SetModeParams { mode: AgentMode }
  * one generation each; these three check what was written and cost, between them, up to
  * three agent turns, four command runs and a cold prefill on the next turn.
  */
+/**
+ * The doctor, run by a PERSON.
+ *
+ * A method rather than a tool, and that is the whole point of it. The model was reaching for
+ * `doctor` on its own and there is nothing it can do with the answer: the report describes
+ * the agent's own behaviour and is addressed to whoever maintains the agent, so a model that
+ * reads it mid-task can only act on it — a self-modification nobody asked for — or narrate
+ * it, which spends a turn saying what the file already says. Out of the tool array, the call
+ * is inexpressible rather than discouraged.
+ *
+ * It costs no generation: a walk over files that measured 1.4 ms on a real history, against
+ * the twenty-odd seconds a model turn costs.
+ */
+export interface DoctorRunParams {
+  /** Only conversations last touched on or after this date, as YYYY-MM-DD. */
+  since?: string
+}
+export interface DoctorRunResult {
+  report: string
+  /** Workspace-relative path of the artifact, or null when the write failed — the report is
+   * complete either way. */
+  savedTo: string | null
+  sessions: number
+}
+
 export interface GatesSetParams { mode: 'auto' | 'manual' }
 export type GatesSetResult = Empty
 export interface GatesRunParams { gate: 'build' | 'review' }
@@ -578,6 +603,7 @@ export interface HostMethodMap {
   setMode: { params: SetModeParams; result: SetModeResult }
   'gates.set': { params: GatesSetParams; result: GatesSetResult }
   'gates.run': { params: GatesRunParams; result: GatesRunResult }
+  'doctor.run': { params: DoctorRunParams; result: DoctorRunResult }
   'sessions.list': { params: SessionsListParams; result: SessionsListResult }
   'sessions.new': { params: SessionsNewParams; result: SessionsNewResult }
   'sessions.resume': { params: SessionsResumeParams; result: SessionsResumeResult }
