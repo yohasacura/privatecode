@@ -41,10 +41,10 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
      // which returns the stale notes the filter exists to drop.
      'recall',
      'search_code',
-     // Searches stored transcripts and returns text; it changes nothing. In plan mode
-     // deliberately — "what did we decide about this last time" is a question a plan should
-     // be built on rather than re-derived around.
-     'search_history',
+     // Lists, reads and searches the stored conversations; it changes nothing. In plan mode
+     // deliberately — "what did we decide about this last time" and "what were we doing on
+     // Tuesday" are questions a plan should be built on rather than re-derived around.
+     'sessions',
      'symbol_outline', 'todo_write',
      // Reads a file the user wrote and returns its text; it runs nothing. Read-only is
      // what makes it available in PLAN mode, which is where reading a procedure before

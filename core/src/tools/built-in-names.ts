@@ -32,7 +32,7 @@ export const BUILT_IN_TOOL_NAMES: ReadonlySet<string> = new Set([
   'remember',
   'run_command',
   'search_code',
-  'search_history',
+  'sessions',
   'sql_deploy',
   'symbol_outline',
   'todo_write',
@@ -63,7 +63,7 @@ export const MCP_TOOL_PREFIX = 'mcp__'
 
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'ask_user', 'csharp_nav', 'database', 'doctor', 'find_files', 'git_status', 'list_dir',
-  'read_file', 'recall', 'search_code', 'search_history', 'symbol_outline', 'todo_write',
+  'read_file', 'recall', 'search_code', 'sessions', 'symbol_outline', 'todo_write',
   'use_skill',
 ])
 
