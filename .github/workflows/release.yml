@@ -47,15 +47,33 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
+    # The action majors below are each that action's LATEST, and they differ from one another
+    # because the projects number independently — not because one is being held back. They
+    # were bumped together off a deprecation notice: v4 of all four ran on Node 20, which
+    # GitHub now force-runs on Node 24 and will eventually stop running at all.
+    #
+    # What was checked before jumping, since these are three majors in one move:
+    #   setup-node v5 turns caching on BY ITSELF when package.json has a `packageManager`
+    #     field. Neither of ours does, so nothing changes; if one ever gains it, this step
+    #     starts caching silently and `package-manager-cache: false` is the off switch.
+    #   setup-dotnet v5 and upload-artifact v6 require an Actions runner of 2.327.1 or newer.
+    #     `windows-latest` is GitHub-hosted and far past that; a SELF-hosted runner would not
+    #     be, which is the one way this bump can bite later.
+    #   upload-artifact v7 adds an optional `archive` input and changes nothing about `name`,
+    #     `path` or `retention-days`, which is all this workflow passes.
+    #   checkout v5 through v7 carry nothing that touches a plain checkout with no inputs.
+    #
+    # Verified by a `workflow_dispatch` dry run before the next tag, rather than discovered
+    # during one: a release is the worst moment to learn that the pipeline moved.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
 
       # The two vendored helpers are `dotnet publish`ed from tools/ — see their PROVENANCE.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -130,7 +148,7 @@ jobs:
         run: node scripts/package-release.mjs
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: privatecode-${{ steps.package.outputs.version }}
           path: release/
