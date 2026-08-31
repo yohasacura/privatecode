@@ -354,7 +354,9 @@ export function Composer({
 
   // A command is expanded host-side in `send`, so this list is purely discovery: without
   // it a feature the user configured in a directory is invisible in the window.
-  const slashPrefix = /^\/[a-z0-9-]*$/i.test(input.trim()) ? input.trim().slice(1).toLowerCase() : null
+  // Any LETTER, not only a-z. It was `[a-z0-9-]`, so `/док` failed the shape test entirely
+  // and the picker never opened for the one command whose Russian spelling was asked for.
+  const slashPrefix = /^\/[\p{L}\p{N}-]*$/u.test(input.trim()) ? input.trim().slice(1).toLowerCase() : null
   useEffect(() => {
     if (slashPrefix === null) return
     let cancelled = false
@@ -376,10 +378,20 @@ export function Composer({
   }, {
     name: 'gates',
     description: 'gates off — stop building, auditing and reviewing after every turn. gates on — resume',
+  }, {
+    name: 'doctor',
+    description: 'Diagnose this agent from its own history and save an anonymous report you can send',
+    // The owner asked for it by the Russian spelling, so typing `/док` has to find it. The
+    // ALIAS matches and the canonical name is what gets completed — both run, and offering
+    // the same command twice in one list is noise rather than helpfulness.
+    aliases: ['доктор'],
   }]
   const matching = slashPrefix === null || commandsDismissed
     ? []
-    : [...BUILT_IN, ...commands].filter((c) => c.name.startsWith(slashPrefix)).slice(0, 8)
+    : [...BUILT_IN, ...commands]
+      .filter((c) => c.name.startsWith(slashPrefix)
+        || ((c as { aliases?: string[] }).aliases ?? []).some((a) => a.startsWith(slashPrefix)))
+      .slice(0, 8)
   const pickedCommand = matching[Math.min(commandPick, Math.max(0, matching.length - 1))]
 
   /** Completes the picked entry into the box, ready for arguments (or a plain Enter). */
@@ -803,12 +815,21 @@ export function Composer({
     // typo'd command answered with a fabricated success is strictly worse than an error.
     // Only a leading single-token `/name` is treated as an attempted command; a path like
     // `/etc/hosts` fails the shape test and is sent as the ordinary text it is.
-    const slash = /^\/([a-z0-9-]+)(?:\s|$)/i.exec(text)
+    // Any LETTER. It was `[a-z0-9-]`, and the moment a command got a Russian spelling that
+    // opened a hole in exactly the guard this comment describes: `/докто` matched nothing,
+    // fell straight past the refusal, and reached the model as chat — where a model with no
+    // such tool answers with a confident account of having done it. The typo is the case
+    // the guard exists for, and it was the case it stopped covering.
+    const slash = /^\/([\p{L}\p{N}-]+)(?:\s|$)/u.exec(text)
     if (slash) {
       const name = slash[1]!.toLowerCase()
       // A built-in reaching here means it was written with arguments it does not take
       // (`/review now`), or `/gates` without on|off. Same NOTE treatment as `/compact`:
       // send-failed would end a turn that is streaming perfectly well.
+      if (name === 'doctor' || name === 'доктор') {
+        dispatch({ type: 'error-note', message: `/${name} takes no arguments. Nothing was sent.` })
+        return
+      }
       if (name === 'check' || name === 'review') {
         dispatch({ type: 'error-note', message: `/${name} takes no arguments. Nothing was sent.` })
         return
