@@ -307,10 +307,10 @@ test('the context readout appears once the server answers, even if it was down a
 
   // The poll answers with a real window, and `contextUsed.approxTokens` was there all along,
   // so there is a true reading to show.
-  const readout = host.querySelector('.status-context')
+  const readout = host.querySelector('[data-status="context"]')
   expect(readout).not.toBeNull()
   expect(readout?.textContent).toContain('262.1k')
-  expect(host.querySelector('.ctx-fill')).not.toBeNull()
+  expect(host.querySelector('[data-status="fill"]')).not.toBeNull()
 })
 
 test('and when the two copies disagree, the FRESHER one wins', async () => {
@@ -326,7 +326,7 @@ test('and when the two copies disagree, the FRESHER one wins', async () => {
   render(<App />, host)
   await settle()
 
-  const readout = host.querySelector('.status-context')
+  const readout = host.querySelector('[data-status="context"]')
   expect(readout?.textContent).toContain('262.1k')
   expect(readout?.textContent).not.toContain('131.1k')
 })

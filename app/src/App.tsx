@@ -21,7 +21,10 @@ import { Composer } from './panels/composer'
 import { ContextPanel } from './panels/context-panel'
 import { FileView } from './panels/file-view'
 import { SessionsRail, type SessionSwitch } from './panels/sessions-rail'
-import { StatusBar, SettingsModal } from './panels/status'
+import { SettingsModal } from './panels/status'
+import { StatusBar } from './shell/statusbar'
+import { TitleBar } from './shell/titlebar'
+import { Toaster } from './ui/toast'
 import { WorkspaceSwitch } from './panels/workspace-switch'
 import { Palette, type PaletteAction } from './panels/palette'
 import { Transcript } from './panels/transcript'
@@ -138,65 +141,6 @@ function saveLayout(key: string, value: unknown): void {
  * a way back. This replaces the state the app was actually in the first time it was run for
  * real — "starting the agent…" forever, with no error, no diagnostics and no recovery.
  */
-/**
- * Minimize, maximize/restore, close — drawn by the window because the OS frame is off. Each
- * reaches the Tauri window API lazily and swallows its absence: in the browser dev bridge
- * there is no window to control, and the controls are not rendered there at all.
- */
-function WindowControls(): VNode {
-  const [maximized, setMaximized] = useState(false)
-  useEffect(() => {
-    let gone = false
-    let unlisten: (() => void) | undefined
-    void (async () => {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window')
-        const w = getCurrentWindow()
-        setMaximized(await w.isMaximized())
-        const off = await w.onResized(() => {
-          void w.isMaximized().then((m) => { if (!gone) setMaximized(m) })
-        })
-        if (gone) off()
-        else unlisten = off
-      } catch {
-        // Not inside Tauri.
-      }
-    })()
-    return () => { gone = true; unlisten?.() }
-  }, [])
-  const act = (what: 'minimize' | 'toggle' | 'close'): void => {
-    void (async () => {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window')
-        const w = getCurrentWindow()
-        if (what === 'minimize') await w.minimize()
-        else if (what === 'toggle') await w.toggleMaximize()
-        else await w.close()
-      } catch {
-        // Not inside Tauri.
-      }
-    })()
-  }
-  return (
-    <div class="win-controls">
-      <button class="win-btn" onClick={() => act('minimize')} title="Minimize" aria-label="Minimize">
-        {Icon.winMin()}
-      </button>
-      <button
-        class="win-btn"
-        onClick={() => act('toggle')}
-        title={maximized ? 'Restore' : 'Maximize'}
-        aria-label={maximized ? 'Restore' : 'Maximize'}
-      >
-        {maximized ? Icon.winRestore() : Icon.winMax()}
-      </button>
-      <button class="win-btn win-btn-close" onClick={() => act('close')} title="Close" aria-label="Close">
-        {Icon.winClose()}
-      </button>
-    </div>
-  )
-}
-
 function AgentDown({
   phase, isDevBridge,
 }: {
@@ -790,51 +734,22 @@ export default function App() {
 
   return (
     <div class="shell">
-      <header class={`titlebar ${isDevBridge ? 'titlebar-no-controls' : ''}`} data-tauri-drag-region>
-        <span class="brand" data-tauri-drag-region>
-          <span class="brand-mark" aria-hidden="true">{Icon.shield()}</span>
-          PrivateCode
-        </span>
-        {ready && (
-          // The NAME, not the folder: a multi-folder workspace whose titlebar showed only
-          // its primary folder would be describing a fifth of what the agent can reach.
-          <span
-            class="titlebar-workspace"
-            title={workspaceLabel.folders > 1
-              ? `${workspaceLabel.folders} folders · main: ${workspaceRoot}`
-              : workspaceRoot}
-          >
-            {workspaceLabel.name || baseName(workspaceRoot)}
-            {workspaceLabel.folders > 1 && (
-              <span class="titlebar-folders">+{workspaceLabel.folders - 1}</span>
-            )}
-          </span>
-        )}
-        {chatState.session?.title && (
-          <span class="titlebar-session" title={chatState.session.title}>{chatState.session.title}</span>
-        )}
-        <span class="titlebar-spacer" data-tauri-drag-region />
-        <span class={`conn-dot conn-${connState}`} title={`agent process: ${connState}`} />
-        {/* Reflects what is SHOWN, and is disabled when the window has no room for the
-            panel: a toggle that flips a preference nothing can act on reads as broken. */}
-        <button
-          class={`icon-button ${railShown ? 'icon-button-on' : ''}`}
-          onClick={() => setRailOpen((v) => !v)}
-          disabled={!railShown && railOpen}
-          title={!railShown && railOpen ? 'The window is too narrow for the sessions rail' : 'Sessions (Ctrl+B)'}
-        >
-          {Icon.sidebar()}
-        </button>
-        <button
-          class={`icon-button ${contextShown ? 'icon-button-on' : ''}`}
-          onClick={() => setContextOpen((v) => !v)}
-          disabled={!contextShown && contextOpen}
-          title={!contextShown && contextOpen ? 'The window is too narrow for the workspace panel' : 'Workspace panel (Ctrl+J)'}
-        >
-          {Icon.panelRight()}
-        </button>
-        {!isDevBridge && <WindowControls />}
-      </header>
+      <TitleBar
+        isDevBridge={isDevBridge}
+        ready={ready}
+        workspaceName={workspaceLabel.name || baseName(workspaceRoot)}
+        workspaceRoot={workspaceRoot}
+        folders={workspaceLabel.folders}
+        sessionTitle={chatState.session?.title ?? null}
+        connState={connState}
+        railShown={railShown}
+        railOpen={railOpen}
+        onToggleRail={() => setRailOpen((v) => !v)}
+        contextShown={contextShown}
+        contextOpen={contextOpen}
+        onToggleContext={() => setContextOpen((v) => !v)}
+        onSwitchWorkspace={() => setSwitchOpen(true)}
+      />
 
       {/* One grid item, because `.shell` declares exactly three rows and a fourth child would
           land the status bar in an implicit row it was never sized for. Everything that fills
@@ -1180,6 +1095,7 @@ export default function App() {
           onSessionSwitched={(info) => { onWorkspaceOpened(info); setSettingsOpen(false) }}
         />
       )}
+      <Toaster />
     </div>
   )
 }
