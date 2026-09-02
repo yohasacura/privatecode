@@ -3380,3 +3380,22 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   color: var(--red);
 }
 .erase-armed-row { display: flex; gap: 8px; }
+
+/* The bar under a running update: the download by bytes, the short phases full. Green like
+   the strip it sits in — progress on news, not on a fault. */
+.update-progress {
+  margin-top: 6px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-soft);
+  overflow: hidden;
+}
+.update-progress-bar {
+  height: 100%;
+  background: var(--green);
+  transition: width 120ms linear;
+}
+
+/* "Updated to 0.3.1 from 0.3.0" — the one thing an update says afterwards. Same green strip
+   as the offer; it is the offer's other end. */
+.updated-strip { border-color: var(--green); background: var(--green-soft); }

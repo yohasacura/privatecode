@@ -361,6 +361,7 @@ fn main() {
             restart_sidecar,
             update::check_for_update,
             update::apply_update,
+            update::update_startup_info,
             erase::scan_local_data,
             erase::erase_local_data
         ])

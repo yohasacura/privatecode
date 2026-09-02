@@ -21,7 +21,7 @@ export type PaletteAction =
   | { kind: 'session'; id: string; title: string; detail: string }
   | { kind: 'file'; path: string }
   | { kind: 'mode'; mode: AgentMode }
-  | { kind: 'command'; id: 'new-session' | 'settings' | 'copy-conversation'; label: string }
+  | { kind: 'command'; id: 'new-session' | 'settings' | 'copy-conversation' | 'check-updates'; label: string }
 
 interface Entry {
   action: PaletteAction
@@ -45,6 +45,12 @@ const COMMANDS: Entry[] = [
   {
     action: { kind: 'command', id: 'copy-conversation', label: 'Copy conversation as Markdown' },
     label: 'Copy conversation as Markdown', icon: Icon.files(), group: 'Do',
+  },
+  {
+    // The one place a check is asked for by name, and so the one place "could not check"
+    // and "this is the latest" are said out loud — the automatic check stays silent.
+    action: { kind: 'command', id: 'check-updates', label: 'Check for updates' },
+    label: 'Check for updates', icon: Icon.check(), group: 'Do',
   },
 ]
 

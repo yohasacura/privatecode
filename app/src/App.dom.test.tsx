@@ -63,6 +63,13 @@ function fakeResult(method: string): unknown {
 
 // Stubbed because the real one waits twenty seconds and then talks to GitHub. What is under
 // test here is WHERE the notice renders, not when it is found.
+/** The shell's progress events, as the test feeds them: whatever App subscribed with. */
+let progressCallback: ((p: import('./lib/update').UpdateProgress) => void) | null = null
+/** What the shell answers when asked whether the previous process updated into this one. */
+let updatedFromAnswer: { currentVersion: string; updatedFrom: string | null } | null = null
+/** How `applyUpdate` behaves: by default it never resolves, like a download in flight. */
+let applyBehaviour: () => Promise<string | null> = () => new Promise(() => {})
+
 vi.mock('./lib/update', async () => {
   const actual = await vi.importActual<typeof import('./lib/update')>('./lib/update')
   return {
@@ -71,6 +78,12 @@ vi.mock('./lib/update', async () => {
       if (updateToOffer !== null) onAvailable(updateToOffer)
       return () => {}
     },
+    onUpdateProgress: async (cb: (p: import('./lib/update').UpdateProgress) => void) => {
+      progressCallback = cb
+      return () => { progressCallback = null }
+    },
+    updatedFrom: async () => updatedFromAnswer,
+    applyUpdate: () => applyBehaviour(),
   }
 })
 
@@ -108,6 +121,9 @@ beforeEach(async () => {
   savedServerUrl = 'http://127.0.0.1:8080'
   savedRecents = ['D:\\proj']
   updateToOffer = null
+  progressCallback = null
+  updatedFromAnswer = null
+  applyBehaviour = () => new Promise(() => {})
   savedSessions = []
   initContextLength = 262144
   abortsSeen = 0
@@ -353,6 +369,75 @@ test('and it stays put once a workspace is open', async () => {
 
   expect(host.querySelector('.body')).not.toBeNull()
   expect(host.querySelector('.update-strip')).not.toBeNull()
+})
+
+test('a running update shows each phase as the shell reports it, with a bar for the download', async () => {
+  // What "jerky" was: the banner said "Downloading…" for the whole transfer and then the
+  // window vanished. The shell now reports every step, and the banner follows it.
+  render(null, host)
+  updateToOffer = {
+    currentVersion: '0.3.0',
+    newVersion: '0.3.1',
+    downloadBytes: 4_567_499,
+    notesUrl: 'https://example.invalid/releases/tag/v0.3.1',
+  }
+  render(<App />, host)
+  await settle()
+
+  const go = host.querySelector('.update-strip .icon-button') as HTMLButtonElement
+  expect(go.disabled).toBe(false)
+  go.click()
+  await settle()
+  expect(host.querySelector('.update-strip')?.textContent).toContain('starting')
+
+  progressCallback?.({ phase: 'downloading', part: 'PrivateCode-app-0.3.1.zip', received: 2_200_000, total: 4_567_499 })
+  await settle()
+  expect(host.querySelector('.update-strip')?.textContent).toContain('2.1 MB of 4.4 MB')
+  expect((host.querySelector('.update-progress-bar') as HTMLElement).style.width).toBe('48%')
+
+  progressCallback?.({ phase: 'restarting', part: null, received: 0, total: 0 })
+  await settle()
+  expect(host.querySelector('.update-strip')?.textContent).toContain('Restarting')
+  expect((host.querySelector('.update-progress-bar') as HTMLElement).style.width).toBe('100%')
+})
+
+test('a failed update says what failed and offers the button again', async () => {
+  render(null, host)
+  updateToOffer = {
+    currentVersion: '0.3.0',
+    newVersion: '0.3.1',
+    downloadBytes: 4_567_499,
+    notesUrl: 'https://example.invalid/releases/tag/v0.3.1',
+  }
+  applyBehaviour = async () => 'PrivateCode-app-0.3.1.zip: the download ended early — 1,000 of 4,567,499 bytes arrived'
+  render(<App />, host)
+  await settle()
+
+  ;(host.querySelector('.update-strip .icon-button') as HTMLElement).click()
+  await settle()
+  const strip = host.querySelector('.update-strip')!
+  expect(strip.textContent).toContain('Update failed')
+  expect(strip.textContent).toContain('ended early')
+  const again = strip.querySelector('.icon-button') as HTMLButtonElement
+  expect(again.title).toBe('Try again')
+  expect(again.disabled).toBe(false)
+})
+
+test('after an update, the new version says where it came from — before any folder is open', async () => {
+  // The relaunch may land on the welcome screen, where a chat row does not exist; the note
+  // is a strip for that reason, and it is said once.
+  render(null, host)
+  savedRecents = []
+  updatedFromAnswer = { currentVersion: '0.3.1', updatedFrom: '0.3.0' }
+  render(<App />, host)
+  await settle()
+
+  expect(host.querySelector('.welcome-card')).not.toBeNull()
+  const strip = host.querySelector('.updated-strip')
+  expect(strip?.textContent).toContain('Updated to PrivateCode 0.3.1 from 0.3.0')
+  ;(strip!.querySelector('.icon-button') as HTMLElement).click()
+  await settle()
+  expect(host.querySelector('.updated-strip')).toBeNull()
 })
 
 test('the delete control on a session row does not open that session', async () => {

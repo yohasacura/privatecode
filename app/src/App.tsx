@@ -6,7 +6,10 @@ import {
 } from './lib/client'
 import { useChatSession } from './lib/use-chat-session'
 import { notify } from './lib/notify'
-import { applyUpdate, formatBytes, scheduleUpdateCheck, type UpdateAvailable } from './lib/update'
+import {
+  applyUpdate, checkForUpdate, describeProgress, formatBytes, onUpdateProgress, scheduleUpdateCheck,
+  updatedFrom, type UpdateAvailable, type UpdateProgress,
+} from './lib/update'
 import { baseName } from './lib/format'
 import { conversationAsMarkdown } from './lib/export'
 import { MIN_CONTEXT, MIN_RAIL, fitColumns } from './lib/layout'
@@ -208,6 +211,35 @@ export default function App() {
   const [updating, setUpdating] = useState(false)
   const [updateError, setUpdateError] = useState<string | null>(null)
   useEffect(() => scheduleUpdateCheck(setUpdate), [])
+  /** Where a running update has got to — the shell's last word on it. Null until the button
+   * is pressed. The banner reads this instead of saying "Downloading…" for two minutes. */
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
+  useEffect(() => {
+    let gone = false
+    let unlisten: (() => void) | undefined
+    void onUpdateProgress(setUpdateProgress).then((u) => { if (gone) u(); else unlisten = u })
+    return () => { gone = true; unlisten?.() }
+  }, [])
+  /** "Updated to 0.3.0 from 0.2.0" — the one thing an update should say afterwards. The shell
+   * leaves itself a note before restarting and consumes it on the way back up, so the second
+   * launch says nothing. A strip rather than a chat row, because a chat row only exists once
+   * a workspace is open and the relaunch may well land on the welcome screen. */
+  const [updatedNote, setUpdatedNote] = useState<{ current: string; from: string } | null>(null)
+  useEffect(() => {
+    void updatedFrom().then((info) => {
+      if (info?.updatedFrom) setUpdatedNote({ current: info.currentVersion, from: info.updatedFrom })
+    })
+  }, [])
+  function startUpdate(): void {
+    setUpdateError(null)
+    setUpdateProgress(null)
+    setUpdating(true)
+    void applyUpdate().then((err) => {
+      // Only returns on failure -- success replaces the process.
+      setUpdateError(err)
+      setUpdating(false)
+    })
+  }
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [switchOpen, setSwitchOpen] = useState(false)
   /** What this workspace is called and how many folders it spans. Kept beside `phase`
@@ -644,6 +676,18 @@ export default function App() {
         return
       case 'command':
         if (action.id === 'settings') { setSettingsOpen(true); return }
+        if (action.id === 'check-updates') {
+          // Asked by name, so every outcome is said — the automatic check is the silent one.
+          void checkForUpdate().then((r) => {
+            switch (r.kind) {
+              case 'available': setUpdateError(null); setUpdate(r.update); return
+              case 'latest': dispatch({ type: 'error-note', tone: 'info', message: `PrivateCode ${r.currentVersion} is the latest version.` }); return
+              case 'failed': dispatch({ type: 'error-note', message: `Could not check for updates: ${r.reason}` }); return
+              case 'unavailable': dispatch({ type: 'error-note', tone: 'info', message: 'Updates are only available in the desktop app.' }); return
+            }
+          })
+          return
+        }
         if (action.id === 'copy-conversation') {
           // The conversation on SCREEN, which is the viewed session when one is open: what
           // you are reading is what "copy" means.
@@ -724,42 +768,74 @@ export default function App() {
           by running the real 0.1.0 → 0.1.1 update and looking for the banner that was not
           there. It also belongs on the `unreachable` screen, where a newer build may be the
           fix for whatever is broken. */}
-      {update !== null && (
-        <div class="problem-strip update-strip">
+      {updatedNote !== null && update === null && (
+        <div class="problem-strip update-strip updated-strip">
           <span class="problem-icon">{Icon.check()}</span>
           <div class="problem-list">
-            {updateError === null
-              ? <div>
-                  PrivateCode {update.newVersion} is available — {formatBytes(update.downloadBytes)} to download.{' '}
-                  {updating ? 'Downloading…' : 'The app restarts when it is done.'}
-                </div>
-              : <div>Update failed: {updateError}</div>}
+            <div>Updated to PrivateCode {updatedNote.current} from {updatedNote.from}.</div>
           </div>
-          {!updating && updateError === null && (
-            <button
-              class="icon-button"
-              onClick={() => {
-                setUpdating(true)
-                void applyUpdate().then((err) => {
-                  // Only returns on failure -- success replaces the process.
-                  setUpdateError(err)
-                  setUpdating(false)
-                })
-              }}
-              title={`Download ${formatBytes(update.downloadBytes)} and restart on ${update.newVersion}`}
-            >
-              {Icon.check()}
-            </button>
-          )}
-          <button
-            class="icon-button"
-            onClick={() => { setUpdate(null); setUpdateError(null) }}
-            title="Not now"
-          >
+          <button class="icon-button" onClick={() => setUpdatedNote(null)} title="Dismiss">
             {Icon.x()}
           </button>
         </div>
       )}
+      {update !== null && (() => {
+        // What the strip says, in the order a person meets it: the offer, then the running
+        // update phase by phase, then a failure with the button back so it can be tried again.
+        const progress = updating && updateProgress !== null ? describeProgress(updateProgress) : null
+        const busy = chatState.turnRunning
+        return (
+          <div class="problem-strip update-strip">
+            <span class="problem-icon">{Icon.check()}</span>
+            <div class="problem-list">
+              {updateError !== null
+                ? <div>Update failed: {updateError}</div>
+                : updating
+                  ? <div>
+                      <div>
+                        Updating to PrivateCode {update.newVersion} — {progress?.text ?? 'starting…'}
+                      </div>
+                      {progress?.fraction !== null && progress?.fraction !== undefined && (
+                        <div
+                          class="update-progress"
+                          role="progressbar"
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={Math.round(progress.fraction * 100)}
+                        >
+                          <div class="update-progress-bar" style={{ width: `${Math.round(progress.fraction * 100)}%` }} />
+                        </div>
+                      )}
+                    </div>
+                  : <div>
+                      PrivateCode {update.newVersion} is available — {formatBytes(update.downloadBytes)} to download.{' '}
+                      {busy ? 'It can restart once this turn is over.' : 'The app restarts when it is done.'}
+                    </div>}
+            </div>
+            {!updating && (
+              <button
+                class="icon-button"
+                disabled={busy}
+                onClick={startUpdate}
+                title={busy
+                  ? 'A turn is running — the update can start once it is over'
+                  : updateError !== null
+                    ? 'Try again'
+                    : `Download ${formatBytes(update.downloadBytes)} and restart on ${update.newVersion}`}
+              >
+                {Icon.check()}
+              </button>
+            )}
+            <button
+              class="icon-button"
+              onClick={() => { setUpdate(null); setUpdateError(null) }}
+              title="Not now"
+            >
+              {Icon.x()}
+            </button>
+          </div>
+        )
+      })()}
 
       {phase.kind === 'unreachable'
         ? <AgentDown phase={phase} isDevBridge={isDevBridge} />

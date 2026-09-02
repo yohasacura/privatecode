@@ -1,22 +1,30 @@
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 /**
  * "A new version is available."
  *
  * The whole feature is one question and one button, and the restraint is the design. This is
  * an offline tool: it works with no network at all, and a check nobody asked for must never be
- * able to make it look broken. So every failure here is silence — no banner, no error row, no
- * retry storm. If GitHub is unreachable, or the machine has no route out, or the manifest is
- * malformed, the app simply carries on being the app.
+ * able to make it look broken. So every failure of the AUTOMATIC check is silence — no banner,
+ * no error row, no retry storm. If GitHub is unreachable, or the machine has no route out, or
+ * the manifest is malformed, the app simply carries on being the app. A check the person asked
+ * for by name (the palette's "Check for updates") is the one place "could not check" is said.
  *
- * It runs ONCE, a little after startup rather than during it: launching is the moment a person
- * is waiting on, and nothing here is urgent. There is no polling loop — a person who leaves the
- * window open for a week does not need to be told about a release every hour.
+ * It runs a little after startup rather than during it: launching is the moment a person is
+ * waiting on, and nothing here is urgent. After that, once every twelve hours while the window
+ * stays open — a window left open for a week should hear about a release without a restart,
+ * and twice a day is nowhere near a nag.
  *
  * The number shown is what the update would actually DOWNLOAD, not the size of the release.
  * Those are very different here: the release is ~124 MB but a routine update is ~3 MB, because
  * the 368 MB of pinned binaries only move when a PROVENANCE file does. Showing the release size
  * would make every update look like a reason to say no.
+ *
+ * While an update runs, the shell reports every step as an `update-progress` event and the
+ * banner follows it — the download by bytes, the rest by name. Before that existed the banner
+ * said "Downloading…" for the whole of a 4–125 MB transfer and then the window vanished, which
+ * is what "it works but it is jerky" looked like from the chair.
  */
 
 export interface UpdateAvailable {
@@ -27,6 +35,16 @@ export interface UpdateAvailable {
   notesUrl: string
 }
 
+/** One step of a running update, as the shell reports it. */
+export interface UpdateProgress {
+  phase: 'manifest' | 'downloading' | 'verifying' | 'unpacking' | 'installing' | 'restarting'
+  /** The archive being handled, during `downloading`, `verifying` and `unpacking`. */
+  part: string | null
+  /** Bytes so far and in all, during `downloading`; zeros otherwise. */
+  received: number
+  total: number
+}
+
 /** Present only inside the Tauri shell; the dev bridge runs in a plain browser tab. */
 function inTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -34,6 +52,8 @@ function inTauri(): boolean {
 
 /** How long after startup to look. Long enough that launching is not competing with it. */
 const CHECK_DELAY_MS = 20_000
+/** And how often after that, while the window stays open. */
+const RECHECK_INTERVAL_MS = 12 * 60 * 60_000
 
 interface RawCheck {
   available: boolean
@@ -43,24 +63,33 @@ interface RawCheck {
   notes_url: string
 }
 
+/** What a check the person asked for comes back with — every outcome named, none silent. */
+export type ManualCheck =
+  | { kind: 'available'; update: UpdateAvailable }
+  | { kind: 'latest'; currentVersion: string }
+  | { kind: 'failed'; reason: string }
+  | { kind: 'unavailable' }
+
 /**
- * Asks once whether there is something newer. Resolves to null for "no" AND for every kind of
- * "could not find out" — the caller has nothing useful to do with the difference, and an
- * offline tool that complains about being offline is a bug.
+ * Asks once whether there is something newer, and says exactly what it found. The automatic
+ * path collapses everything but `available` into silence; the palette shows all four.
  */
-async function checkForUpdate(): Promise<UpdateAvailable | null> {
-  if (!inTauri()) return null
+export async function checkForUpdate(): Promise<ManualCheck> {
+  if (!inTauri()) return { kind: 'unavailable' }
   try {
     const raw = await invoke<RawCheck>('check_for_update')
-    if (!raw.available) return null
+    if (!raw.available) return { kind: 'latest', currentVersion: raw.current_version }
     return {
-      currentVersion: raw.current_version,
-      newVersion: raw.new_version,
-      downloadBytes: raw.download_bytes,
-      notesUrl: raw.notes_url,
+      kind: 'available',
+      update: {
+        currentVersion: raw.current_version,
+        newVersion: raw.new_version,
+        downloadBytes: raw.download_bytes,
+        notesUrl: raw.notes_url,
+      },
     }
-  } catch {
-    return null
+  } catch (e) {
+    return { kind: 'failed', reason: e instanceof Error ? e.message : String(e) }
   }
 }
 
@@ -82,6 +111,30 @@ export async function applyUpdate(): Promise<string | null> {
   }
 }
 
+/**
+ * Follow a running update. The unlisten is returned so a window that closes mid-update does
+ * not keep a dead callback subscribed; outside the shell there is nothing to follow.
+ */
+export async function onUpdateProgress(cb: (p: UpdateProgress) => void): Promise<UnlistenFn> {
+  if (!inTauri()) return () => {}
+  try {
+    return await listen<UpdateProgress>('update-progress', (event) => cb(event.payload))
+  } catch {
+    return () => {}
+  }
+}
+
+/** Did the previous process update into this one? Asked once, at startup. */
+export async function updatedFrom(): Promise<{ currentVersion: string; updatedFrom: string | null } | null> {
+  if (!inTauri()) return null
+  try {
+    const raw = await invoke<{ current_version: string; updated_from: string | null }>('update_startup_info')
+    return { currentVersion: raw.current_version, updatedFrom: raw.updated_from }
+  } catch {
+    return null
+  }
+}
+
 /** Bytes as a person reads them. */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -90,15 +143,45 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
- * Runs the one check, after a delay, and hands the answer back. Returns a cancel function so a
- * window that closes first does not fire it.
+ * The line under the bar, and how full the bar is — `null` for the phases that take under a
+ * second, where a bar would only flicker.
+ */
+export function describeProgress(p: UpdateProgress): { text: string; fraction: number | null } {
+  switch (p.phase) {
+    case 'manifest':
+      return { text: 'Checking the release…', fraction: null }
+    case 'downloading': {
+      const total = p.total > 0 ? p.total : null
+      const text = total === null
+        ? `Downloading ${p.part ?? ''}… ${formatBytes(p.received)}`
+        : `Downloading ${p.part ?? ''}… ${formatBytes(p.received)} of ${formatBytes(total)}`
+      return { text: text.replace(/\s{2,}/g, ' '), fraction: total === null ? null : Math.min(1, p.received / total) }
+    }
+    case 'verifying':
+      return { text: 'Verifying the download…', fraction: 1 }
+    case 'unpacking':
+      return { text: 'Unpacking…', fraction: 1 }
+    case 'installing':
+      return { text: 'Installing…', fraction: 1 }
+    case 'restarting':
+      return { text: 'Restarting…', fraction: 1 }
+  }
+}
+
+/**
+ * Runs the check after a delay, then every `intervalMs` while the window stays open, and
+ * hands the answer back whenever there is one. Returns a cancel function so a window that
+ * closes first does not fire it.
  */
 export function scheduleUpdateCheck(
   onAvailable: (u: UpdateAvailable) => void,
   delayMs: number = CHECK_DELAY_MS,
+  intervalMs: number = RECHECK_INTERVAL_MS,
 ): () => void {
-  const timer = setTimeout(() => {
-    void checkForUpdate().then((u) => { if (u !== null) onAvailable(u) })
-  }, delayMs)
-  return () => clearTimeout(timer)
+  const check = (): void => {
+    void checkForUpdate().then((r) => { if (r.kind === 'available') onAvailable(r.update) })
+  }
+  const timer = setTimeout(check, delayMs)
+  const interval = setInterval(check, intervalMs)
+  return () => { clearTimeout(timer); clearInterval(interval) }
 }
