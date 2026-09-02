@@ -242,6 +242,8 @@ export interface AgentOptions {
   /** The verify command the session runs after a writing step, for the prompt paragraph
    * that tells the model not to run it itself. See `PromptOptions.autoCheck`. */
   autoCheck?: string
+  /** The instant C# check exists but no command does. See `PromptOptions.compilerCheck`. */
+  compilerCheck?: boolean
   /** What earlier sessions learned; see `memory/project-notes.ts`. Frozen into message 0
    * like the rest — a note recorded mid-session lands in the NEXT one. */
   notes?: string
@@ -673,6 +675,7 @@ export class Agent {
           ...(opts.repoMap !== undefined ? { repoMap: opts.repoMap } : {}),
           ...(opts.databaseSchema !== undefined ? { databaseSchema: opts.databaseSchema } : {}),
           ...(opts.autoCheck !== undefined ? { autoCheck: opts.autoCheck } : {}),
+          ...(opts.compilerCheck === true ? { compilerCheck: true } : {}),
           ...(opts.context.workspace.multi
             ? {
               folders: opts.context.workspace.mounts.map((m) => ({ name: m.name, access: m.access })),

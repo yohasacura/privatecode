@@ -272,7 +272,7 @@ function compactArgs(args: unknown): string {
 }
 
 function table(results: TaskResult[]): string {
-  const head = '| task | result | steps | seconds | model s | gates s | reads | writes | stopped |\n|---|---|---:|---:|---:|---:|---:|---:|---|'
+  const head = '| task | result | steps | seconds | model s | gates s | reads | writes | builds | checks | stopped |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|'
   const body = results.map((r) => `| ${r.id} | ${r.pass ? 'PASS' : 'FAIL'} | ${r.steps} | ${r.totalSeconds} | ${r.modelSeconds} | ${r.gateSeconds} | ${r.readCalls} | ${r.writeCalls} | ${r.verifyRuns} | ${r.compilerChecks} | ${r.stoppedBecause}${r.timedOut ? ' (timeout)' : ''} |`)
   const passed = results.filter((r) => r.pass).length
   const total = results.reduce((n, r) => n + r.totalSeconds, 0)

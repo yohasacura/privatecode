@@ -25,7 +25,7 @@ import {
   MIDTURN_VERIFY_PREFIX, STILL_FAILING_SUFFIX, runVerify, verifyFailureMessage,
 } from '../verify/runner.js'
 import {
-  csharpCheck as defaultCsharpCheck, csharpRoot, isUnder, type CsharpDiagnostics,
+  csharpCheck as defaultCsharpCheck, csharpRoot, isUnder, navProcess, type CsharpDiagnostics,
 } from '../csharp/nav-process.js'
 import type { InteractionPort, TodoItem } from '../interaction.js'
 import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
@@ -1783,6 +1783,17 @@ export class Session {
    * The primary's command only: it is the one `verifyMidTurn` runs after most edits, and a
    * paragraph naming three commands would be a list, not a rule.
    */
+  /**
+   * Whether the compiler's line can arrive after a C# edit at all — the helper is in this
+   * build (or a check was injected) and the checks are not off. Only consulted when no
+   * verify command is configured; with one, its paragraph already names the compiler check.
+   */
+  private compilerCheckAvailable(): boolean {
+    if (this.gateMode === 'manual') return false
+    if (this.opts.csharpCheck === null) return false
+    return this.opts.csharpCheck !== undefined || navProcess() !== null
+  }
+
   private autoCheckCommand(): string | undefined {
     // With the checks off the paragraph would be a lie in message 0: nothing runs the
     // command by itself, so the model is left to run it — which is what "off" asks for. A
@@ -3762,6 +3773,7 @@ export class Session {
         ...(this.repoMapText !== undefined ? { repoMap: this.repoMapText } : {}),
         ...(this.schemaText !== undefined ? { databaseSchema: this.schemaText } : {}),
         ...(autoCheck !== undefined ? { autoCheck } : {}),
+        ...(autoCheck === undefined && this.compilerCheckAvailable() ? { compilerCheck: true } : {}),
         // The contract's promotion — the tail note that announced it is usually in the
         // summarised middle by now, and this is what makes losing it impossible. A
         // satisfied contract is history, not standing orders, and stays out.
@@ -4483,6 +4495,7 @@ export class Session {
     if (this.schemaText !== undefined) agentOpts.databaseSchema = this.schemaText
     const autoCheck = this.autoCheckCommand()
     if (autoCheck !== undefined) agentOpts.autoCheck = autoCheck
+    else if (this.compilerCheckAvailable()) agentOpts.compilerCheck = true
     if (this.opts.engine) {
       // mode intentionally omitted here -- see the constructor's invariant note. Agent
       // resolves opts.permissions.mode instead, which is always meta.mode by now.

@@ -101,3 +101,17 @@ test('names the automatic check and tells the model not to run it, only when one
   // Still small: the paragraph is six lines, not a manual.
   expect(p.length - without.length).toBeLessThan(650)
 })
+
+test('with no command but the compiler check, the compiler check alone is announced', () => {
+  // The line `[C# compiler check: ok, 0.3s]` arrives after every C# edit whether or not a
+  // verify command exists; a model that was not told so runs a build to learn what it has
+  // just been told.
+  const without = buildSystemPrompt({ workspaceRoot: '/w', mode: 'normal' })
+  const p = buildSystemPrompt({ workspaceRoot: '/w', mode: 'normal', compilerCheck: true })
+  expect(p).toContain('[C# compiler check: ok, 0.3s]')
+  expect(p).not.toMatch(/runs by itself:/)
+  expect(p.length - without.length).toBeLessThan(400)
+  // With a command, the command's paragraph carries it and nothing is said twice.
+  const both = buildSystemPrompt({ workspaceRoot: '/w', mode: 'normal', autoCheck: 'dotnet build', compilerCheck: true })
+  expect(both.split('[C# compiler check: ok, 0.3s]').length).toBe(2)
+})

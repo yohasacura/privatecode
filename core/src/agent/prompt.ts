@@ -101,6 +101,12 @@ export interface PromptOptions {
    */
   autoCheck?: string
   /**
+   * The instant C# check is available (`Session.compilerCheck`) although no verify command
+   * is — the only case where the compiler's line would otherwise arrive unannounced. With a
+   * command, `autoCheck`'s paragraph already says so.
+   */
+  compilerCheck?: boolean
+  /**
    * The rendered task contract (`contract.ts`'s `renderContract`), promoted here at every
    * compaction swap. The goal and its checkable criteria are the one thing a long task
    * cannot afford to lose to a swap, and message 0 is the one place a swap rebuilds anyway
@@ -194,7 +200,17 @@ export function buildSystemPrompt(opts: PromptOptions): string {
         'once when your turn ends.',
         '',
       ]
-      : []),
+      : opts.compilerCheck === true
+        ? [
+          // No command configured, but the helper is there: the compiler's line still
+          // arrives after every C# edit, and a model that was not told so runs a build
+          // to learn what it has just been told.
+          'After any step in which you edited C# files, an instant compiler check runs by',
+          'itself and reports as `[C# compiler check: ok, 0.3s]` or as a list of errors, before',
+          'your next step. Do not run a build just to learn that.',
+          '',
+        ]
+        : []),
     'Do not deliberate at length, and do not re-check a decision you have already made —',
     'if you notice yourself going over the same reasoning twice, stop and call the tool.',
     'Prefer the smallest change that satisfies the request.',
