@@ -46,14 +46,14 @@ test('a ** deny rule covers the root-level file as well as the nested one', () =
     layers: [{
       scope: 'project',
       path: join(root, '.privatecode', 'settings.json'),
-      permissions: { allow: [], ask: [], deny: ['write_file(**/secrets.json)'] },
+      permissions: { allow: [], ask: [], deny: ['Write(**/secrets.json)'] },
     }],
   })
   for (const path of ['secrets.json', 'conf/secrets.json', 'a/b/c/secrets.json']) {
-    expect(engine.decide({ tool: 'write_file', paths: [path] }).verdict, path).toBe('deny')
+    expect(engine.decide({ tool: 'Write', paths: [path] }).verdict, path).toBe('deny')
   }
   // And it has not become a rule that denies everything.
-  expect(engine.decide({ tool: 'write_file', paths: ['app.ts'] }).verdict).not.toBe('deny')
+  expect(engine.decide({ tool: 'Write', paths: ['app.ts'] }).verdict).not.toBe('deny')
   expect(engine.problems).toEqual([])
 })
 
@@ -65,14 +65,14 @@ test('the same rule widens ALLOW by the same rule, which is what its author mean
     layers: [{
       scope: 'project',
       path: join(root, '.privatecode', 'settings.json'),
-      permissions: { allow: ['edit_file(src/**/*.ts)'], ask: [], deny: [] },
+      permissions: { allow: ['Edit(src/**/*.ts)'], ask: [], deny: [] },
     }],
   })
-  expect(engine.decide({ tool: 'edit_file', paths: ['src/a.ts'] }).verdict).toBe('allow')
-  expect(engine.decide({ tool: 'edit_file', paths: ['src/deep/a.ts'] }).verdict).toBe('allow')
-  expect(engine.decide({ tool: 'edit_file', paths: ['other/a.ts'] }).verdict).not.toBe('allow')
+  expect(engine.decide({ tool: 'Edit', paths: ['src/a.ts'] }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'Edit', paths: ['src/deep/a.ts'] }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'Edit', paths: ['other/a.ts'] }).verdict).not.toBe('allow')
   // A sibling directory whose name merely STARTS with the spec's is not covered.
-  expect(engine.decide({ tool: 'edit_file', paths: ['srcx/a.ts'] }).verdict).not.toBe('allow')
+  expect(engine.decide({ tool: 'Edit', paths: ['srcx/a.ts'] }).verdict).not.toBe('allow')
 })
 
 test('the display form agrees with the matcher about zero segments', () => {
@@ -91,7 +91,7 @@ test('the display form agrees with the matcher about zero segments', () => {
  *
  * The engine denies it, on the path the model spelled. The JAIL is the chokepoint that has to
  * agree, because a directory answers to more than one name: on NTFS the 8.3 alias
- * `PRIVAT~1/settings.json` reached `write_file` as `allow (mode)` in auto-edit and replaced
+ * `PRIVAT~1/settings.json` reached `Write` as `allow (mode)` in auto-edit and replaced
  * the real settings file, whose planted `format` command then ran.
  */
 test('the write jail refuses .privatecode however the path is spelled', () => {
@@ -122,7 +122,7 @@ test('an ordinary file beside it is unaffected', () => {
  * Skipped elsewhere, and skipped on a volume with 8.3 generation turned off — the point is
  * the real filesystem, so a synthetic stand-in would prove nothing. Observed on this machine:
  * `dir /X` reports `PRIVAT~1  .privatecode`, the engine's lexical deny (correctly) does not
- * see it, and before the jail learned to look at the canonical name `write_file` returned
+ * see it, and before the jail learned to look at the canonical name `Write` returned
  * `Replaced PRIVAT~1/settings.json (29 bytes -> 118 bytes)` over the real settings file.
  */
 test.skipIf(process.platform !== 'win32')('the 8.3 alias for .privatecode is refused too', () => {

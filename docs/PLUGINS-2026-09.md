@@ -1,8 +1,28 @@
 # Plugins, marketplaces, skills, agents, hooks and MCP — the Claude Code contract in PrivateCode
 
-Status, 2026-09-03: phases A–E landed (commits d484c19, 269a329, 204b002, 454ba3a and the
-docs commit). The user-facing description is `docs/PLUGINS.md`; this file is the design and
-the contract it was built against. The live proof is `test/integration/plugins-live.test.ts`.
+Status, 2026-09-03: phases A–E landed (commits d484c19, 269a329, 204b002, 454ba3a, b0f8813).
+The user-facing description is `docs/PLUGINS.md`; this file is the design and the contract
+it was built against. The live proof is `test/integration/plugins-live.test.ts`.
+
+**Amended the same day, on the owner's review** — two decisions below are superseded:
+
+1. **No `.claude/` reading.** §0's "standalone conventions" and the `.claude/`, `~/.claude/`
+   and `.mcp.json` twins in §2 are gone. PrivateCode reads its own `.privatecode/` and
+   `%APPDATA%\PrivateCode\` folders and the plugins it installed, nothing else. The plugin
+   FORMAT (`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`) stays, because
+   that is what a plugin is.
+2. **No tool-name table.** The tools took Claude Code's names — `Read`, `Write`, `Edit`,
+   `Bash`, `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Agent`, `TodoWrite`,
+   `AskUserQuestion`, `Skill` — so §4's translation table and `plugins/tool-names.ts` no
+   longer exist: a hook matcher, an agent's `tools:` line and a permission rule name the
+   tool itself. The old names are still read from settings files written before the rename
+   (`permissions/rules.ts`, `LEGACY_TOOL_NAMES`) and from sessions recorded before it (the
+   window's `lib/tools.ts`). `Bash` runs Windows PowerShell 5.1, as `run_command` did; the
+   name is Claude Code's, the shell is this machine's.
+3. Four skills ship with the app (`core/skills/`, staged beside the sidecar): `skill-creator`,
+   `grill-me`, `mermaid` (the transcript renders ```mermaid blocks) and `pptx` (three
+   python-pptx scripts beside it). Lowest precedence; a user or project skill of the same
+   name replaces one.
 
 ## 0. The promise
 
@@ -92,12 +112,12 @@ install from — and a marketplace update that moves the pin is what "update" me
 
 | component | Claude Code | PrivateCode |
 |---|---|---|
-| skill | `skills/<n>/SKILL.md`, invoked as `/plugin:n`, listed to the model | same folder read, name `plugin:n` in the catalogue and in `use_skill`; frontmatter `name`, `description`, `when_to_use`, `disable-model-invocation`, `user-invocable`, `argument-hint`, `allowed-tools` (mapped tool names, session-allow for the turn), `$ARGUMENTS`/`$N` when invoked as a command |
+| skill | `skills/<n>/SKILL.md`, invoked as `/plugin:n`, listed to the model | same folder read, name `plugin:n` in the catalogue and in `Skill`; frontmatter `name`, `description`, `when_to_use`, `disable-model-invocation`, `user-invocable`, `argument-hint`, `allowed-tools` (mapped tool names, session-allow for the turn), `$ARGUMENTS`/`$N` when invoked as a command |
 | command | `commands/<n>.md` → `/plugin:n` | a custom command named `plugin:n`; frontmatter `description`/`argument-hint` read, `$ARGUMENTS`, `$1…` substituted; `@file` attaches; `` !`cmd` `` is NOT executed (a template is data — the line is left in place with a note) |
-| agent | `agents/<n>.md` frontmatter + body | a `delegate` role named `plugin:n`: `description` → purpose, body → brief, `tools`/`disallowedTools` → mapped tool set, `permissionMode` → mode (`plan`→plan, `acceptEdits`→auto-edit, `bypassPermissions`/`auto`→autopilot, else the caller's), `maxTurns` → maxSteps (default 12); `model`, `color`, `memory`, `hooks`, `skills` are read and reported as ignored |
+| agent | `agents/<n>.md` frontmatter + body | a `Agent` role named `plugin:n`: `description` → purpose, body → brief, `tools`/`disallowedTools` → mapped tool set, `permissionMode` → mode (`plan`→plan, `acceptEdits`→auto-edit, `bypassPermissions`/`auto`→autopilot, else the caller's), `maxTurns` → maxSteps (default 12); `model`, `color`, `memory`, `hooks`, `skills` are read and reported as ignored |
 | hooks | `hooks/hooks.json`, events, matchers, stdin JSON, exit codes, JSON output | the hook engine of §5 |
 | MCP | `.mcp.json` / inline `mcpServers`, `${CLAUDE_PLUGIN_ROOT}` | registered as `plugin:<plugin>:<server>`, tools named `mcp__plugin_<plugin>_<server>__<tool>`; stdio and http; env/`${VAR:-default}` expansion |
-| `bin/` | on PATH for Bash | prepended to PATH for `run_command` while enabled |
+| `bin/` | on PATH for Bash | prepended to PATH for `Bash` while enabled |
 | `settings.json` (`agent`) | main-thread agent | ignored, reported |
 | LSP, monitors, output styles, themes, workflows, channels, userConfig, dependencies | | ignored, reported (§7) |
 
@@ -105,17 +125,17 @@ Tool names, both directions (hook matchers, `allowed-tools`, agent `tools`, `per
 
 | Claude Code | PrivateCode |
 |---|---|
-| Bash | run_command (and background_task) |
-| Edit, MultiEdit | edit_file |
-| Write | write_file |
-| Read | read_file |
-| Glob | find_files |
-| Grep | search_code |
+| Bash | Bash (and background_task) |
+| Edit, MultiEdit | Edit |
+| Write | Write |
+| Read | Read |
+| Glob | Glob |
+| Grep | Grep |
 | WebFetch, WebSearch | web |
 | Task | delegate |
-| TodoWrite | todo_write |
-| AskUserQuestion | ask_user |
-| Skill | use_skill |
+| TodoWrite | TodoWrite |
+| AskUserQuestion | AskUserQuestion |
+| Skill | Skill |
 | NotebookEdit | (none) |
 | `mcp__*` | `mcp__*` |
 

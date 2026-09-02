@@ -20,7 +20,7 @@ export interface ToolContext {
   sessionId?: string
   signal?: AbortSignal
   /**
-   * Live output, for tools that produce it over time — run_command's stdout/stderr as it
+   * Live output, for tools that produce it over time — Bash's stdout/stderr as it
    * arrives. Display-only: the final ToolResult is still the complete, authoritative
    * record; these chunks exist so a two-minute build is a scrolling log instead of a
    * frozen spinner. Absent for hosts that render nothing (tests, one-shot CLI).
@@ -49,7 +49,7 @@ export interface ToolContext {
    * rather than as an after-tool hook. */
   format?: FormatRunner
   /**
-   * The skills this session was built with, for `use_skill` to resolve a name against.
+   * The skills this session was built with, for `Skill` to resolve a name against.
    *
    * Only the LOCATIONS travel here — bodies are read from disk at call time (see
    * `readSkillText`), so a skill edited while the app is open takes effect on the next call
@@ -72,12 +72,12 @@ export interface ToolContext {
    * session owns the machinery, which is also where the window size and the abort
    * signal already live.
    *
-   * Absent for hosts with no model to run one with, and `delegate` says so plainly
+   * Absent for hosts with no model to run one with, and `Agent` says so plainly
    * rather than failing: the caller can do the reading itself.
    */
   delegate?: (role: string, task: string, signal?: AbortSignal) => Promise<SubAgentOutcome>
   /**
-   * Folders prepended to PATH for `run_command`: the `bin/` of every enabled plugin, as
+   * Folders prepended to PATH for `Bash`: the `bin/` of every enabled plugin, as
    * Claude Code puts them on PATH for Bash. Absent means the process's own PATH.
    */
   extraPath?: readonly string[]

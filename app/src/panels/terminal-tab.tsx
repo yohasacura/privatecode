@@ -68,13 +68,13 @@ const TONE_TEXT: Record<Line['tone'], string> = {
  */
 const REFUSED = /^Not run: (?=.*(?:permission|denied|deny|refus|not allowed|blocked|rule))/i
 
-/** The agent's own `run_command` calls, in transcript order. Its `background_task`
+/** The agent's own `Bash` calls, in transcript order. Its `background_task`
  * processes arrive through the job registry instead, which knows whether they are still
  * alive; a transcript entry only knows what one poll returned. */
 export function agentCommands(items: ChatItem[]): Line[] {
   const lines: Line[] = []
   for (const item of items) {
-    if (item.kind !== 'tool' || item.name !== 'run_command') continue
+    if (item.kind !== 'tool' || item.name !== 'Bash') continue
     if (item.result?.content.startsWith('Not run:')) {
       if (!REFUSED.test(item.result.content)) continue
       const p = presentTool(item.name, item.args)

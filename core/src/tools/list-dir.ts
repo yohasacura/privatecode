@@ -12,7 +12,7 @@ import type { Tool } from './types.js'
  *
  * Denylisted names such as `.env` are deliberately NOT hidden here. The workspace denies
  * them because reading their *contents* is the damage; a listing exposes only the name,
- * and the agent needs to know the file exists - otherwise read_file's refusal looks like
+ * and the agent needs to know the file exists - otherwise Read's refusal looks like
  * a bug and the agent may try to create one over the top of it. Whatever is hidden is
  * named in the footer, so a filtered listing is never presented as a complete one.
  */

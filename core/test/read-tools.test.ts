@@ -76,14 +76,14 @@ afterAll(() => {
   rmSync(tempParent, { recursive: true, force: true })
 })
 
-test('read_file numbers lines', async () => {
+test('Read numbers lines', async () => {
   const r = await readFileTool.execute({ path: 'src/a.ts' }, ctx)
   expect(r.ok).toBe(true)
   expect(r.content).toContain('1\tone')
   expect(r.content).toContain('5\tfive')
 })
 
-test('read_file honours a line range', async () => {
+test('Read honours a line range', async () => {
   const r = await readFileTool.execute({ path: 'src/a.ts', start_line: 2, end_line: 3 }, ctx)
   expect(r.content).toContain('2\ttwo')
   expect(r.content).toContain('3\tthree')
@@ -91,7 +91,7 @@ test('read_file honours a line range', async () => {
   expect(r.content).not.toContain('4\tfour')
 })
 
-test('read_file reports a missing file as a tool failure, not an exception', async () => {
+test('Read reports a missing file as a tool failure, not an exception', async () => {
   const r = await readFileTool.execute({ path: 'src/nope.ts' }, ctx)
   expect(r.ok).toBe(false)
   // `/not found|ENOENT/i` was satisfied by the raw errno itself, so the OR always matched
@@ -101,13 +101,13 @@ test('read_file reports a missing file as a tool failure, not an exception', asy
   expect(r.content).not.toContain(tempRoot)
 })
 
-test('read_file refuses to leave the workspace', async () => {
+test('Read refuses to leave the workspace', async () => {
   const r = await readFileTool.execute({ path: '../escape.txt' }, ctx)
   expect(r.ok).toBe(false)
   expect(r.content).toMatch(/escapes the workspace/)
 })
 
-test('read_file rejects an empty path at validation time', () => {
+test('Read rejects an empty path at validation time', () => {
   const v = readFileTool.validate({ path: '  ' })
   expect(v.ok).toBe(false)
 })
@@ -124,7 +124,7 @@ test('list_dir lists entries and marks directories', async () => {
 // this and the two write tools' tests already assert `not.toContain(root)`; the read path
 // was held to no such bar and leaked the workspace's absolute path plus a raw errno.
 // Measured before the fix:
-//   read_file -> "File not found: nope.txt"
+//   Read -> "File not found: nope.txt"
 //   list_dir  -> "Could not list nope: ENOENT: no such file or directory, scandir 'C:\...'"
 
 test('list_dir reports a missing directory without leaking the absolute path', async () => {
@@ -155,7 +155,7 @@ test('list_dir reports an unreadable directory without leaking the absolute path
   }
 })
 
-test('read_file reports an unreadable file without leaking the absolute path', async () => {
+test('Read reports an unreadable file without leaking the absolute path', async () => {
   const locked = join(tempRoot, 'locked.txt')
   writeFileSync(locked, 'secret\n')
   const user = process.env.USERNAME ?? process.env.USER ?? ''
@@ -174,16 +174,16 @@ test('read_file reports an unreadable file without leaking the absolute path', a
   }
 })
 
-test('find_files matches a glob', async () => {
+test('Glob matches a glob', async () => {
   const r = await findFilesTool.execute({ glob: 'src/*.ts' }, ctx)
   expect(r.content).toContain('src/a.ts')
   expect(r.content).toContain('src/b.ts')
   expect(r.content).not.toContain('README.md')
 })
 
-// --- Critical 1: read_file has no byte budget, only a line count -------------------
+// --- Critical 1: Read has no byte budget, only a line count -------------------
 
-test('C1 read_file bounds a one-line minified bundle by characters', async () => {
+test('C1 Read bounds a one-line minified bundle by characters', async () => {
   const r = await readFileTool.execute({ path: 'big/one-line.js' }, ctx)
   expect(r.ok).toBe(true)
   // Pre-fix this returned all 3,000,026 characters with no notice. The bound is what this
@@ -206,7 +206,7 @@ test('C1 an explicit range is still honoured, and still capped', async () => {
   expect(r.content).toMatch(/cannot resume inside a line/)
 })
 
-test('C1 read_file refuses a file above the hard byte ceiling', async () => {
+test('C1 Read refuses a file above the hard byte ceiling', async () => {
   const r = await readFileTool.execute({ path: 'big/huge.bin' }, ctx)
   expect(r.ok).toBe(false)
   expect(r.content).toContain('big/huge.bin')
@@ -265,9 +265,9 @@ test('C4 an inverted range is rejected at validation time and at execution', asy
   expect(r.ok).toBe(false)
 })
 
-// --- Critical 5: find_files never jails the pattern --------------------------------
+// --- Critical 5: Glob never jails the pattern --------------------------------
 
-test('C5 find_files refuses a pattern with a .. segment', async () => {
+test('C5 Glob refuses a pattern with a .. segment', async () => {
   for (const pattern of ['../outside/*', '../**/*.txt']) {
     expect(findFilesTool.validate({ glob: pattern }).ok).toBe(false)
     const r = await findFilesTool.execute({ glob: pattern }, ctx)
@@ -276,7 +276,7 @@ test('C5 find_files refuses a pattern with a .. segment', async () => {
   }
 })
 
-test('C5 find_files refuses an absolute pattern', async () => {
+test('C5 Glob refuses an absolute pattern', async () => {
   const pattern = join(tempRoot, '..', 'outside', '*')
   expect(findFilesTool.validate({ glob: pattern }).ok).toBe(false)
   const r = await findFilesTool.execute({ glob: pattern }, ctx)
@@ -284,7 +284,7 @@ test('C5 find_files refuses an absolute pattern', async () => {
   expect(r.content).not.toContain('escape.txt')
 })
 
-test('C5 find_files applies the secrets denylist to enumeration', async () => {
+test('C5 Glob applies the secrets denylist to enumeration', async () => {
   const r = await findFilesTool.execute({ glob: '**/.env' }, ctx)
   expect(r.content.split('\n')).not.toContain('.env')
 })
@@ -325,11 +325,11 @@ test('I7 CRLF endings never reach the numbered output', async () => {
 //
 // `buffer.toString('utf8')` keeps U+FEFF, so line 1 arrived at the model with an
 // invisible character glued to its front. Two bugs were cancelling: the model copies that
-// line back as an anchor, edit_file holds the file's own BOM aside so the anchor cannot
+// line back as an anchor, Edit holds the file's own BOM aside so the anchor cannot
 // match exactly, and the whitespace-tolerant fallback then matches it anyway — reporting
 // "the anchor matched only after ignoring whitespace" for an anchor that was verbatim.
 
-test('read_file does not put the BOM in front of line 1', async () => {
+test('Read does not put the BOM in front of line 1', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pc-bom-'))
   try {
     const c = { workspace: new Workspace(dir) }
@@ -345,7 +345,7 @@ test('read_file does not put the BOM in front of line 1', async () => {
   }
 })
 
-test('an anchor copied from read_file line 1 of a BOM file matches exactly', async () => {
+test('an anchor copied from Read line 1 of a BOM file matches exactly', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pc-bom-'))
   try {
     const c = { workspace: new Workspace(dir) }
@@ -385,14 +385,14 @@ test('I8 list_dir says so when it filtered entries out', async () => {
   expect(r.content).toMatch(/hidden: \.git\/, node_modules\//)
 })
 
-// --- Important 9: find_files filters inconsistently and returns directories --------
+// --- Important 9: Glob filters inconsistently and returns directories --------
 
-test('I9 find_files does not enumerate the git object store', async () => {
+test('I9 Glob does not enumerate the git object store', async () => {
   const r = await findFilesTool.execute({ glob: '.git/**' }, ctx)
   expect(r.content).toMatch(/^No files match/)
 })
 
-test('I9 find_files returns files only, never directories', async () => {
+test('I9 Glob returns files only, never directories', async () => {
   const r = await findFilesTool.execute({ glob: '*' }, ctx)
   const entries = r.content.split('\n')
   expect(entries).toContain('README.md')
@@ -435,7 +435,7 @@ test('an unparseable glob is a failure naming the pattern, not an empty result',
 
 // --- Finding 1: case-insensitive hidden-segment filter --------------------------
 
-test('F1 find_files filters .git even with alternate casing', async () => {
+test('F1 Glob filters .git even with alternate casing', async () => {
   // This is a regression test: on Windows, glob returns the *pattern's* casing for
   // literal segments, so ".GIT/**" yields ".GIT/objects/ab/cdef". The filter must
   // compare case-insensitively to catch this bypass.
@@ -444,13 +444,13 @@ test('F1 find_files filters .git even with alternate casing', async () => {
   expect(r.content).not.toContain('objects/ab/cdef')
 })
 
-test('F1 find_files filters node_modules even with alternate casing', async () => {
+test('F1 Glob filters node_modules even with alternate casing', async () => {
   const r = await findFilesTool.execute({ glob: 'NODE_MODULES/**/*.js' }, ctx)
   expect(r.content).toMatch(/^No files match/)
   expect(r.content).not.toContain('index.js')
 })
 
-test('F1 find_files filters mixed-case paths to hidden directories', async () => {
+test('F1 Glob filters mixed-case paths to hidden directories', async () => {
   // .Git/objects/ab/cdef should also be filtered
   const r = await findFilesTool.execute({ glob: '.Git/objects/ab/*' }, ctx)
   expect(r.content).toMatch(/^No files match/)
@@ -494,7 +494,7 @@ test('F1 list_dir still filters the ordinary lowercase entries', async () => {
 // without the option, so both passed identically before and after the option existed
 // and demonstrated nothing about it. They are rewritten as honest characterisation
 // tests of the actual, measured limitation, pinned so a future Node runtime change
-// that adds real dot-matching is caught here instead of silently changing find_files.
+// that adds real dot-matching is caught here instead of silently changing Glob.
 
 test('F2 a non-dotted pattern does not reach a path under a dotted directory', async () => {
   const r = await findFilesTool.execute({ glob: '**/*.yml' }, ctx)
@@ -511,7 +511,7 @@ test('F2 a non-dotted pattern does not reach a top-level dotfile', async () => {
   expect(r.content).not.toContain('.env')
 })
 
-test('F2 find_files still filters .git and node_modules for an explicitly dotted pattern', async () => {
+test('F2 Glob still filters .git and node_modules for an explicitly dotted pattern', async () => {
   // .git/** is itself explicitly dotted, so glob does yield matches under it; the hidden
   // segment filter is what must remove them - this is independent of the dot:true finding.
   const r = await findFilesTool.execute({ glob: '.git/**' }, ctx)
@@ -519,7 +519,7 @@ test('F2 find_files still filters .git and node_modules for an explicitly dotted
   expect(r.content).not.toContain('objects/ab/cdef')
 })
 
-test('F2 find_files applies the secrets denylist to an explicitly dotted pattern', async () => {
+test('F2 Glob applies the secrets denylist to an explicitly dotted pattern', async () => {
   // A non-dotted pattern like "**/*" never reaches .env at all (see the limitation above),
   // so it would prove nothing about the resolve() denylist. ".env" is explicitly dotted,
   // so glob genuinely yields it; the assertion is that ctx.workspace.resolve()'s secrets
@@ -551,7 +551,7 @@ test('a big source file read whole comes back as declarations, not text', async 
   expect(r.content.length).toBeLessThan(body.length / 2)
   // It names the ways forward rather than leaving a dead end.
   expect(r.content).toContain('start_line')
-  expect(r.content).toContain('search_code')
+  expect(r.content).toContain('Grep')
 })
 
 test('a small file is untouched by any of this', async () => {

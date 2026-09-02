@@ -31,7 +31,7 @@ describe('the external family is gated, not auto-allowed', () => {
 
   test('auto-edit auto-approves edits, not reaching outside the machine', () => {
     const engine = engineIn('auto-edit')
-    expect(engine.decide({ tool: 'edit_file', paths: ['a.ts'] }).verdict).toBe('allow')
+    expect(engine.decide({ tool: 'Edit', paths: ['a.ts'] }).verdict).toBe('allow')
     expect(engine.decide(BROWSER).verdict).toBe('ask')
     expect(engine.decide(MCP).verdict).toBe('ask')
   })
@@ -54,8 +54,8 @@ describe('the external family is gated, not auto-allowed', () => {
   test('the predicate covers the browser and the mcp namespace, and nothing else', () => {
     expect(isExternalTool('browser')).toBe(true)
     expect(isExternalTool('mcp__github__create_issue')).toBe(true)
-    expect(isExternalTool('read_file')).toBe(false)
-    expect(isExternalTool('run_command')).toBe(false)
+    expect(isExternalTool('Read')).toBe(false)
+    expect(isExternalTool('Bash')).toBe(false)
     // Near-misses: a built-in whose name merely starts the same way is not external.
     expect(isExternalTool('browser_history_reader')).toBe(false)
     expect(isExternalTool('mcp_thing')).toBe(false)
@@ -132,13 +132,13 @@ describe('rules for the external family', () => {
 
   test('prefix semantics belong to the mcp namespace alone', () => {
     // No built-in tool name may acquire them by accident.
-    expect(matches('edit', { tool: 'edit_file', paths: ['a.ts'] })).toBe(false)
+    expect(matches('edit', { tool: 'Edit', paths: ['a.ts'] })).toBe(false)
     expect(matches('browser', { tool: 'browser_thing' })).toBe(false)
   })
 
   test('a target key is never satisfied by a path-shaped rule and vice versa', () => {
     expect(matches('browser(src/**)', BROWSER)).toBe(false)
-    expect(matches('edit_file(https://x:*)', { tool: 'edit_file', paths: ['a.ts'] })).toBe(false)
+    expect(matches('Edit(https://x:*)', { tool: 'Edit', paths: ['a.ts'] })).toBe(false)
   })
 })
 
@@ -175,7 +175,7 @@ describe('rules the engine must stop calling broken', () => {
   test('a URL spec on the browser is legitimate, not a settings problem', () => {
     // Every URL contains `//`, which `specHasNonCanonicalSyntax` flags for path rules. The
     // browser is target-keyed, so that check does not apply to it — exactly as it already
-    // does not apply to `run_command(git clone https://...)`.
+    // does not apply to `Bash(git clone https://...)`.
     expect(problemsFor('browser(http://localhost:5173:*)')).toEqual([])
     expect(problemsFor('browser(https://example.dev/app)')).toEqual([])
   })
@@ -189,8 +189,8 @@ describe('rules the engine must stop calling broken', () => {
   })
 
   test('the old reports for path rules are unchanged', () => {
-    expect(problemsFor('read_file(docs/**)')[0]).toContain('can never fire')
-    expect(problemsFor('edit_file(./src/**)')[0]).toContain('non-canonical syntax')
+    expect(problemsFor('Read(docs/**)')[0]).toContain('can never fire')
+    expect(problemsFor('Edit(./src/**)')[0]).toContain('non-canonical syntax')
   })
 })
 

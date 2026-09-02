@@ -38,7 +38,7 @@ import type { ToolContext } from '../tools/types.js'
  */
 
 /** What a worker is allowed to touch. Read-only sets only, for now — see `ROLES`. */
-const READ_TOOLS = ['read_file', 'search_code', 'list_dir', 'find_files', 'symbol_outline'] as const
+const READ_TOOLS = ['Read', 'Grep', 'list_dir', 'Glob', 'symbol_outline'] as const
 
 export interface SubAgentRole {
   /** What the caller names. */
@@ -147,7 +147,7 @@ export interface SubAgentDeps {
    * The caller's own tool context, whole.
    *
    * A worker with the caller's tools and half its context is worse than one with neither:
-   * the reviewer was once offered `database` and `use_skill` without the context they read
+   * the reviewer was once offered `database` and `Skill` without the context they read
    * from, and answered with a confident false statement about the workspace ("no database is
    * configured") that it then reasoned from. Two things are replaced on the way in — see
    * `runSubAgent`.

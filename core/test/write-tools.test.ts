@@ -42,7 +42,7 @@ function diffBody(content: string): string[] {
   return at === -1 ? [] : lines.slice(at + 1)
 }
 
-test('edit_file applies a unique anchor and reports a diff', async () => {
+test('Edit applies a unique anchor and reports a diff', async () => {
   const r = await editFileTool.execute(
     { path: 'a.ts', search_text: 'const y = 2', replace_text: 'const y = 3' }, ctx)
   expect(r.ok).toBe(true)
@@ -51,7 +51,7 @@ test('edit_file applies a unique anchor and reports a diff', async () => {
   expect(r.content).toContain('+const y = 3')
 })
 
-test('edit_file returns an actionable message when the anchor is missing', async () => {
+test('Edit returns an actionable message when the anchor is missing', async () => {
   const r = await editFileTool.execute(
     { path: 'a.ts', search_text: 'const z = 9', replace_text: 'x' }, ctx)
   expect(r.ok).toBe(false)
@@ -60,26 +60,26 @@ test('edit_file returns an actionable message when the anchor is missing', async
   expect(readFileSync(join(root, 'a.ts'), 'utf8')).toBe('const x = 1\nconst y = 2\n')
 })
 
-test('edit_file rejects an empty search_text before touching the disk', () => {
+test('Edit rejects an empty search_text before touching the disk', () => {
   const v = editFileTool.validate({ path: 'a.ts', search_text: '', replace_text: 'x' })
   expect(v.ok).toBe(false)
   if (v.ok) return
   expect(v.error).toMatch(/search_text/)
 })
 
-test('edit_file rejects a no-op edit', () => {
+test('Edit rejects a no-op edit', () => {
   const v = editFileTool.validate({ path: 'a.ts', search_text: 'same', replace_text: 'same' })
   expect(v.ok).toBe(false)
 })
 
-test('write_file creates a new file and reports the byte count', async () => {
+test('Write creates a new file and reports the byte count', async () => {
   const r = await writeFileTool.execute({ path: 'sub/new.ts', content: 'export const n = 1\n' }, ctx)
   expect(r.ok).toBe(true)
   expect(readFileSync(join(root, 'sub', 'new.ts'), 'utf8')).toBe('export const n = 1\n')
   expect(r.content).toMatch(/19 bytes/)
 })
 
-test('write_file refuses to leave the workspace', async () => {
+test('Write refuses to leave the workspace', async () => {
   const r = await writeFileTool.execute({ path: '../evil.ts', content: 'x' }, ctx)
   expect(r.ok).toBe(false)
   expect(r.content).toMatch(/escapes the workspace/)
@@ -87,7 +87,7 @@ test('write_file refuses to leave the workspace', async () => {
 
 // --- Line endings -----------------------------------------------------------------
 //
-// read_file splits on /\r?\n/, so an anchor the model copies out of a CRLF file always
+// Read splits on /\r?\n/, so an anchor the model copies out of a CRLF file always
 // comes back LF-joined. These fixtures are CRLF because the target platform is Windows
 // and the user's projects are C# and TypeScript: CRLF is the normal case, not the exotic
 // one, and an LF-only fixture cannot see any of this.
@@ -97,9 +97,9 @@ const CRLF = 'const x = 1\r\nconst y = 2\r\nconst z = 3\r\n'
 /** U+FEFF. Built from its code point because the character itself is invisible. */
 const BOM = String.fromCharCode(0xfeff)
 
-test('edit_file matches a multi-line anchor against a CRLF file', async () => {
+test('Edit matches a multi-line anchor against a CRLF file', async () => {
   writeFileSync(join(root, 'crlf.ts'), CRLF)
-  // Exactly what read_file would have shown the model, joined with LF.
+  // Exactly what Read would have shown the model, joined with LF.
   const r = await editFileTool.execute(
     { path: 'crlf.ts', search_text: 'const x = 1\nconst y = 2', replace_text: 'const x = 9' },
     ctx,
@@ -108,7 +108,7 @@ test('edit_file matches a multi-line anchor against a CRLF file', async () => {
   expect(readFileSync(join(root, 'crlf.ts'), 'utf8')).toBe('const x = 9\r\nconst z = 3\r\n')
 })
 
-test('edit_file leaves a CRLF file entirely CRLF after an exact single-line edit', async () => {
+test('Edit leaves a CRLF file entirely CRLF after an exact single-line edit', async () => {
   writeFileSync(join(root, 'crlf.ts'), CRLF)
   const r = await editFileTool.execute(
     { path: 'crlf.ts', search_text: 'const y = 2', replace_text: 'const y = 3' }, ctx)
@@ -119,7 +119,7 @@ test('edit_file leaves a CRLF file entirely CRLF after an exact single-line edit
   expect(after.replace(/\r\n/g, '')).not.toContain('\n')
 })
 
-test('edit_file keeps CRLF when the anchor only matches after ignoring whitespace', async () => {
+test('Edit keeps CRLF when the anchor only matches after ignoring whitespace', async () => {
   // Double spaces defeat the exact path (the anchor is not a substring), so this is the
   // only test that actually reaches the whitespace-tolerant fallback in applySearchReplace
   // — the branch that rebuilds the file with join('\n').
@@ -137,7 +137,7 @@ test('edit_file keeps CRLF when the anchor only matches after ignoring whitespac
   expect(after.replace(/\r\n/g, '')).not.toContain('\n')
 })
 
-test('edit_file normalises a mixed-ending file to the dominant ending and says so', async () => {
+test('Edit normalises a mixed-ending file to the dominant ending and says so', async () => {
   writeFileSync(join(root, 'mixed.ts'), 'a\r\nb\nc\r\nd\r\n')
   const r = await editFileTool.execute(
     { path: 'mixed.ts', search_text: 'b', replace_text: 'B' }, ctx)
@@ -147,7 +147,7 @@ test('edit_file normalises a mixed-ending file to the dominant ending and says s
   expect(readFileSync(join(root, 'mixed.ts'), 'utf8')).toBe('a\r\nB\r\nc\r\nd\r\n')
 })
 
-test('edit_file leaves an LF file LF', async () => {
+test('Edit leaves an LF file LF', async () => {
   const r = await editFileTool.execute(
     { path: 'a.ts', search_text: 'const y = 2', replace_text: 'const y = 3' }, ctx)
   expect(r.ok).toBe(true)
@@ -155,7 +155,7 @@ test('edit_file leaves an LF file LF', async () => {
   expect(r.content).not.toMatch(/mixed/i)
 })
 
-test('edit_file preserves a UTF-8 BOM through the whitespace fallback', async () => {
+test('Edit preserves a UTF-8 BOM through the whitespace fallback', async () => {
   // normalise().trim() treats U+FEFF as whitespace, so a line-1 anchor matches and the
   // rebuilt line used to be written back without the BOM. MSBuild cares about the BOM.
   writeFileSync(join(root, 'bom.cs'), `${BOM}int  y  =  2;\n`)
@@ -169,7 +169,7 @@ test('edit_file preserves a UTF-8 BOM through the whitespace fallback', async ()
 
 // --- Encoding ---------------------------------------------------------------------
 
-test('edit_file refuses a binary file instead of rewriting it as U+FFFD', async () => {
+test('Edit refuses a binary file instead of rewriting it as U+FFFD', async () => {
   const png = Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]),
     Buffer.from('IHDR'),
@@ -180,11 +180,11 @@ test('edit_file refuses a binary file instead of rewriting it as U+FFFD', async 
     { path: 'logo.png', search_text: 'IHDR', replace_text: 'IHDRXX' }, ctx)
   expect(r.ok).toBe(false)
   expect(r.content).toMatch(/binary|NUL/i)
-  // Byte-for-byte untouched — read_file refuses this file, edit_file must not destroy it.
+  // Byte-for-byte untouched — Read refuses this file, Edit must not destroy it.
   expect(readFileSync(join(root, 'logo.png')).equals(png)).toBe(true)
 })
 
-test('edit_file refuses a file that is not valid UTF-8', async () => {
+test('Edit refuses a file that is not valid UTF-8', async () => {
   // Latin-1 e-acute: no NUL and no BOM, so the binary sniff alone does not catch it.
   // Decoding maps it to U+FFFD and writing back would replace one byte with three.
   const latin1 = Buffer.concat([
@@ -200,7 +200,7 @@ test('edit_file refuses a file that is not valid UTF-8', async () => {
 
 // --- Bounds -----------------------------------------------------------------------
 
-test('edit_file refuses a file larger than the read_file ceiling', async () => {
+test('Edit refuses a file larger than the Read ceiling', async () => {
   writeFileSync(join(root, 'huge.log'), Buffer.alloc(10 * 1024 * 1024 + 1, 0x61))
   const r = await editFileTool.execute(
     { path: 'huge.log', search_text: 'aaaa', replace_text: 'bbbb' }, ctx)
@@ -209,7 +209,7 @@ test('edit_file refuses a file larger than the read_file ceiling', async () => {
   expect(r.content).toMatch(/10\.0 MB/)
 })
 
-test('edit_file bounds the diff it returns', async () => {
+test('Edit bounds the diff it returns', async () => {
   // One minified line: the old renderDiff echoed it twice, so an 11-character edit cost
   // 1.6 million characters of permanent transcript.
   writeFileSync(join(root, 'min.js'), `const a="${'x'.repeat(300_000)}";const b = 1;`)
@@ -222,7 +222,7 @@ test('edit_file bounds the diff it returns', async () => {
   expect(readFileSync(join(root, 'min.js'), 'utf8')).toContain('const b = 2')
 })
 
-test('edit_file bounds a diff made of many lines', async () => {
+test('Edit bounds a diff made of many lines', async () => {
   const body = Array.from({ length: 800 }, (_, i) => `line ${i}`).join('\n')
   writeFileSync(join(root, 'many.txt'), `head\n${body}\ntail\n`)
   const r = await editFileTool.execute(
@@ -234,7 +234,7 @@ test('edit_file bounds a diff made of many lines', async () => {
 
 // --- renderDiff -------------------------------------------------------------------
 
-test('edit_file renders a pure deletion without phantom rows', async () => {
+test('Edit renders a pure deletion without phantom rows', async () => {
   writeFileSync(join(root, 'd.ts'), 'const x = 1\nconst y = 2\nconst z = 3\n')
   const r = await editFileTool.execute(
     { path: 'd.ts', search_text: 'const z = 3\n', replace_text: '' }, ctx)
@@ -243,7 +243,7 @@ test('edit_file renders a pure deletion without phantom rows', async () => {
   expect(diffBody(r.content)).toEqual(['-const z = 3'])
 })
 
-test('edit_file renders a middle deletion as a single removed row', async () => {
+test('Edit renders a middle deletion as a single removed row', async () => {
   writeFileSync(join(root, 'd.ts'), 'const x = 1\nconst y = 2\nconst z = 3\n')
   const r = await editFileTool.execute(
     { path: 'd.ts', search_text: 'const y = 2\n', replace_text: '' }, ctx)
@@ -251,7 +251,7 @@ test('edit_file renders a middle deletion as a single removed row', async () => 
   expect(diffBody(r.content)).toEqual(['-const y = 2'])
 })
 
-test('edit_file renders an insertion as a single added row', async () => {
+test('Edit renders an insertion as a single added row', async () => {
   const r = await editFileTool.execute(
     { path: 'a.ts', search_text: 'const y = 2\n', replace_text: 'const y = 2\nconst z = 3\n' },
     ctx,
@@ -260,7 +260,7 @@ test('edit_file renders an insertion as a single added row', async () => {
   expect(diffBody(r.content)).toEqual(['+const z = 3'])
 })
 
-test('edit_file names a change to the final newline rather than showing a bare row', async () => {
+test('Edit names a change to the final newline rather than showing a bare row', async () => {
   // The terminal empty element a final newline produces is not a line. Diffed as one it
   // renders as a bare `-` that corresponds to nothing the model can point at in the file.
   writeFileSync(join(root, 'nl.ts'), 'const x = 1\nconst y = 2\n')
@@ -272,7 +272,7 @@ test('edit_file names a change to the final newline rather than showing a bare r
   expect(diffBody(r.content)).toEqual([])
 })
 
-test('edit_file says so when the edit produced no change at all', async () => {
+test('Edit says so when the edit produced no change at all', async () => {
   // Reaches the fallback, which rebuilds the line to exactly what it already was.
   writeFileSync(join(root, 'n.ts'), 'foo(  a,  b )\n')
   const before = statSync(join(root, 'n.ts'))
@@ -287,18 +287,18 @@ test('edit_file says so when the edit produced no change at all', async () => {
   expect(statSync(join(root, 'n.ts')).ino).toBe(before.ino)
 })
 
-// --- write_file preserves the shape of the file it replaces ------------------------
+// --- Write preserves the shape of the file it replaces ------------------------
 //
-// read_file shows the model an LF-only view of every file and strips the BOM, so the
-// model cannot supply either even in principle — the same reason edit_file restores them
-// rather than trusting its input. write_file rewrites every line of the file, so getting
+// Read shows the model an LF-only view of every file and strips the BOM, so the
+// model cannot supply either even in principle — the same reason Edit restores them
+// rather than trusting its input. Write rewrites every line of the file, so getting
 // this wrong turns each agent change into a whole-file diff and disables the user's git,
 // which the design names as the only safety net. The user's stack is C#/TS on Windows and
 // MSBuild treats the BOM as meaningful.
 
 const CS_CRLF_BOM = `${BOM}using System;\r\nnamespace A\r\n{\r\n    class B { }\r\n}\r\n`
 
-test('write_file preserves an existing file\'s CRLF endings and its BOM', async () => {
+test('Write preserves an existing file\'s CRLF endings and its BOM', async () => {
   writeFileSync(join(root, 'A.cs'), CS_CRLF_BOM)
   const r = await writeFileTool.execute(
     { path: 'A.cs', content: 'using System;\nnamespace A\n{\n    class C { }\n}\n' }, ctx)
@@ -311,7 +311,7 @@ test('write_file preserves an existing file\'s CRLF endings and its BOM', async 
   expect(bytes.toString('utf8').replace(/\r\n/g, '')).not.toContain('\n')
 })
 
-test('write_file says in the result when it matched the existing file\'s endings', async () => {
+test('Write says in the result when it matched the existing file\'s endings', async () => {
   writeFileSync(join(root, 'A.cs'), CS_CRLF_BOM)
   const r = await writeFileTool.execute(
     { path: 'A.cs', content: 'using System;\nnamespace A\n{\n}\n' }, ctx)
@@ -323,7 +323,7 @@ test('write_file says in the result when it matched the existing file\'s endings
   expect(statSync(join(root, 'A.cs')).size).toBe(37)
 })
 
-test('write_file leaves an LF file LF and says nothing about endings', async () => {
+test('Write leaves an LF file LF and says nothing about endings', async () => {
   writeFileSync(join(root, 'lf.ts'), 'const x = 1\nconst y = 2\n')
   const r = await writeFileTool.execute({ path: 'lf.ts', content: 'const x = 9\n' }, ctx)
   expect(r.ok).toBe(true)
@@ -331,7 +331,7 @@ test('write_file leaves an LF file LF and says nothing about endings', async () 
   expect(r.content).not.toMatch(/CRLF|byte-order mark/i)
 })
 
-test('write_file converts CRLF content to LF when the existing file is LF', async () => {
+test('Write converts CRLF content to LF when the existing file is LF', async () => {
   writeFileSync(join(root, 'lf.ts'), 'const x = 1\nconst y = 2\n')
   const r = await writeFileTool.execute({ path: 'lf.ts', content: 'const x = 9\r\n' }, ctx)
   expect(r.ok).toBe(true)
@@ -339,7 +339,7 @@ test('write_file converts CRLF content to LF when the existing file is LF', asyn
   expect(r.content).toMatch(/LF/)
 })
 
-test('write_file writes a genuinely new file exactly as given', async () => {
+test('Write writes a genuinely new file exactly as given', async () => {
   // Nothing to preserve: a new file's endings are the model's to choose, and silently
   // rewriting them would be inventing a shape the workspace never asked for.
   const r = await writeFileTool.execute(
@@ -349,14 +349,14 @@ test('write_file writes a genuinely new file exactly as given', async () => {
   expect(r.content).not.toMatch(/CRLF|byte-order mark/i)
 })
 
-test('write_file preserves the dominant ending of a mixed-ending file', async () => {
+test('Write preserves the dominant ending of a mixed-ending file', async () => {
   writeFileSync(join(root, 'mixed.ts'), 'a\r\nb\nc\r\nd\r\n')
   const r = await writeFileTool.execute({ path: 'mixed.ts', content: 'x\ny\n' }, ctx)
   expect(r.ok).toBe(true)
   expect(readFileSync(join(root, 'mixed.ts'), 'utf8')).toBe('x\r\ny\r\n')
 })
 
-test('write_file does not invent endings for a file that has none', async () => {
+test('Write does not invent endings for a file that has none', async () => {
   writeFileSync(join(root, 'oneline.txt'), 'no newline here')
   const r = await writeFileTool.execute(
     { path: 'oneline.txt', content: 'first\r\nsecond\r\n' }, ctx)
@@ -364,7 +364,7 @@ test('write_file does not invent endings for a file that has none', async () => 
   expect(readFileSync(join(root, 'oneline.txt'), 'utf8')).toBe('first\r\nsecond\r\n')
 })
 
-test('write_file does not read line endings out of a binary file it replaces', async () => {
+test('Write does not read line endings out of a binary file it replaces', async () => {
   // A file with NUL bytes has no line structure to preserve; guessing at one would be
   // inventing it. The replacement is text and is written exactly as given.
   writeFileSync(join(root, 'blob.bin'), Buffer.from([0x00, 0x0d, 0x0a, 0x00, 0x0d, 0x0a]))
@@ -373,9 +373,9 @@ test('write_file does not read line endings out of a binary file it replaces', a
   expect(readFileSync(join(root, 'blob.bin'), 'utf8')).toBe('a\nb\n')
 })
 
-// --- write_file overwrite reporting -----------------------------------------------
+// --- Write overwrite reporting -----------------------------------------------
 
-test('write_file reports that it replaced an existing file, with both sizes in order', async () => {
+test('Write reports that it replaced an existing file, with both sizes in order', async () => {
   writeFileSync(join(root, 'important.ts'), 'x'.repeat(48_890))
   const r = await writeFileTool.execute({ path: 'important.ts', content: 'oops\n' }, ctx)
   expect(r.ok).toBe(true)
@@ -385,14 +385,14 @@ test('write_file reports that it replaced an existing file, with both sizes in o
   expect(r.content).toBe('Replaced important.ts (48890 bytes -> 5 bytes).')
 })
 
-test('write_file still reports a plain create for a new file', async () => {
+test('Write still reports a plain create for a new file', async () => {
   const r = await writeFileTool.execute({ path: 'brand-new.ts', content: 'const n = 1\n' }, ctx)
   expect(r.ok).toBe(true)
   expect(r.content).toMatch(/^Wrote /)
   expect(r.content).not.toMatch(/Replaced/)
 })
 
-test('write_file refuses a path that is an existing directory', async () => {
+test('Write refuses a path that is an existing directory', async () => {
   const r = await writeFileTool.execute({ path: 'sub/new.ts', content: 'a' }, ctx)
   expect(r.ok).toBe(true)
   const r2 = await writeFileTool.execute({ path: 'sub', content: 'a' }, ctx)
@@ -402,7 +402,7 @@ test('write_file refuses a path that is an existing directory', async () => {
 
 // --- Atomicity and error framing --------------------------------------------------
 
-test('write_file replaces the directory entry instead of truncating in place', async () => {
+test('Write replaces the directory entry instead of truncating in place', async () => {
   // The distinguishing observable: fs.writeFile opens the existing file and truncates it,
   // so the file index survives; a temp-file-plus-rename installs a different file under
   // the same name. Between the truncating open and the last byte the target is neither the
@@ -415,7 +415,7 @@ test('write_file replaces the directory entry instead of truncating in place', a
   expect(readFileSync(join(root, 'k.ts'), 'utf8')).toBe('const k = 2\n')
 })
 
-test('edit_file replaces the directory entry instead of truncating in place', async () => {
+test('Edit replaces the directory entry instead of truncating in place', async () => {
   const before = statSync(join(root, 'a.ts'))
   const r = await editFileTool.execute(
     { path: 'a.ts', search_text: 'const y = 2', replace_text: 'const y = 3' }, ctx)
@@ -423,14 +423,14 @@ test('edit_file replaces the directory entry instead of truncating in place', as
   expect(statSync(join(root, 'a.ts')).ino).not.toBe(before.ino)
 })
 
-test('write_file leaves no temporary files behind', async () => {
+test('Write leaves no temporary files behind', async () => {
   await writeFileTool.execute({ path: 'a.ts', content: 'const x = 2\n' }, ctx)
   await editFileTool.execute(
     { path: 'a.ts', search_text: 'const x = 2', replace_text: 'const x = 3' }, ctx)
   expect(readdirSync(root)).toEqual(['a.ts'])
 })
 
-test('write_file surfaces a genuine flush error instead of swallowing it', async () => {
+test('Write surfaces a genuine flush error instead of swallowing it', async () => {
   // `handle.sync().catch(() => {})` used to discard every error, not only the EINVAL its
   // comment named, so a real EIO at flush was silently ignored and the rename went ahead
   // anyway — committing a file that was never actually flushed. Patching
@@ -459,7 +459,7 @@ test('write_file surfaces a genuine flush error instead of swallowing it', async
   expect(readdirSync(root)).toEqual(['a.ts'])
 })
 
-test('write_file survives two concurrent writes to the same path', async () => {
+test('Write survives two concurrent writes to the same path', async () => {
   // Pins that the temp file's name is unique per call. A name derived from the target
   // alone collides, and the loser of the race fails a write it should have completed.
   const [r1, r2] = await Promise.all([
@@ -472,7 +472,7 @@ test('write_file survives two concurrent writes to the same path', async () => {
   expect(readdirSync(root)).toEqual(['a.ts', 'c.ts'])
 })
 
-test('edit_file reports a read-only target without leaking an absolute path', async () => {
+test('Edit reports a read-only target without leaking an absolute path', async () => {
   const target = join(root, 'ro.ts')
   writeFileSync(target, 'const x = 1\nconst y = 2\n')
   chmodSync(target, 0o444)
@@ -487,7 +487,7 @@ test('edit_file reports a read-only target without leaking an absolute path', as
   expect(readdirSync(root)).toEqual(['a.ts', 'ro.ts'])
 })
 
-test('write_file reports a read-only target without leaking an absolute path', async () => {
+test('Write reports a read-only target without leaking an absolute path', async () => {
   const target = join(root, 'ro.ts')
   writeFileSync(target, 'original\n')
   chmodSync(target, 0o444)
@@ -510,7 +510,7 @@ test('write_file reports a read-only target without leaking an absolute path', a
 // and turning it into a plain file. `holder` is a second, disposable directory one level
 // above the workspace root, so any write outside the workspace is directly observable.
 
-test('write_file refuses to touch the workspace root when it does not exist yet', async () => {
+test('Write refuses to touch the workspace root when it does not exist yet', async () => {
   const holder = mkdtempSync(join(tmpdir(), 'pc-root-'))
   try {
     const missingRoot = join(holder, 'not-created-yet')
@@ -526,7 +526,7 @@ test('write_file refuses to touch the workspace root when it does not exist yet'
   }
 })
 
-test('edit_file refuses to touch the workspace root when it does not exist yet', async () => {
+test('Edit refuses to touch the workspace root when it does not exist yet', async () => {
   const holder = mkdtempSync(join(tmpdir(), 'pc-root-'))
   try {
     const missingRoot = join(holder, 'not-created-yet')
@@ -542,7 +542,7 @@ test('edit_file refuses to touch the workspace root when it does not exist yet',
   }
 })
 
-test('write_file refuses to touch the workspace root when it already exists', async () => {
+test('Write refuses to touch the workspace root when it already exists', async () => {
   // With the root already a real directory, the old code path happened to catch this via
   // its isDirectory() check and report "is an existing directory" — safe by accident, not
   // by containment. This pins the same explicit, principled refusal in both cases.
@@ -551,7 +551,7 @@ test('write_file refuses to touch the workspace root when it already exists', as
   expect(r.content).toMatch(/workspace root/i)
 })
 
-test('edit_file refuses to touch the workspace root when it already exists', async () => {
+test('Edit refuses to touch the workspace root when it already exists', async () => {
   const r = await editFileTool.execute(
     { path: '.', search_text: 'a', replace_text: 'b' }, ctx)
   expect(r.ok).toBe(false)
@@ -564,7 +564,7 @@ test('edit_file refuses to touch the workspace root when it already exists', asy
 // resolved to a string that is not the root, passed the guard, and created a root-level
 // entry literally named `. ` — measured, both tools.
 for (const path of ['. ', '.  ', '..', '. .']) {
-  test(`write_file refuses "${path}", which Windows opens as the workspace root`, async () => {
+  test(`Write refuses "${path}", which Windows opens as the workspace root`, async () => {
     const r = await writeFileTool.execute({ path, content: 'PWNED\n' }, ctx)
     expect(r.ok).toBe(false)
     expect(r.content).toMatch(/workspace root|escapes the workspace/i)
@@ -572,7 +572,7 @@ for (const path of ['. ', '.  ', '..', '. .']) {
   })
 }
 
-test('edit_file refuses ". ", which Windows opens as the workspace root', async () => {
+test('Edit refuses ". ", which Windows opens as the workspace root', async () => {
   const r = await editFileTool.execute(
     { path: '. ', search_text: 'a', replace_text: 'b' }, ctx)
   expect(r.ok).toBe(false)
@@ -641,7 +641,7 @@ test('writeFileAtomic enforces the secrets denylist on the target, not only on i
   expect(readdirSync(root)).toEqual(['a.ts'])
 })
 
-test('write_file succeeds against a target literally named env', async () => {
+test('Write succeeds against a target literally named env', async () => {
   // End-to-end version of the same scenario: a real write to a file named `env` must not
   // be able to synthesise a temp path the workspace itself would refuse to ever see again.
   const r = await writeFileTool.execute({ path: 'env', content: 'not a secret\n' }, ctx)
@@ -651,9 +651,9 @@ test('write_file succeeds against a target literally named env', async () => {
   expect(readdirSync(root).sort()).toEqual(['a.ts', 'env'])
 })
 
-// --- write_file size ceiling -------------------------------------------------------
+// --- Write size ceiling -------------------------------------------------------
 
-test('write_file refuses to create a file larger than the read_file/edit_file ceiling', async () => {
+test('Write refuses to create a file larger than the Read/Edit ceiling', async () => {
   const giant = 'a'.repeat(10 * 1024 * 1024 + 1)
   const r = await writeFileTool.execute({ path: 'giant.txt', content: giant }, ctx)
   expect(r.ok).toBe(false)

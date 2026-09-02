@@ -81,7 +81,7 @@ test('the whole prompt still fits its budget with both surfaces on', () => {
 
 // --- the project's own check ------------------------------------------------------------
 //
-// 137 of the 766 tool calls in the recorded sessions were `run_command`, most of them the
+// 137 of the 766 tool calls in the recorded sessions were `Bash`, most of them the
 // model running `dotnet build` on its own work the step after every edit — in sessions
 // where the harness was about to run the same command for free. The result line now lands
 // right after the edit (session.ts, `verifyMidTurn`); this paragraph says whose job it is.

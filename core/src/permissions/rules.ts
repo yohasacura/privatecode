@@ -14,6 +14,26 @@ export interface ParsedRule {
 const TOOL_NAME_RE = /^[a-z_][a-z0-9_]*$/i
 
 /**
+ * The tools' names before 2026-09-03, when they took Claude Code's. A rule written into a
+ * settings file before then keeps working: the name is read as the tool it now is, and the
+ * rule's `raw` text stays what the person wrote. `web` split in two — its bare form and
+ * its origin rules are `WebFetch`, `web(search)` is `WebSearch` (see `parseRule`).
+ */
+export const LEGACY_TOOL_NAMES: Readonly<Record<string, string>> = {
+  read_file: 'Read',
+  write_file: 'Write',
+  edit_file: 'Edit',
+  run_command: 'Bash',
+  find_files: 'Glob',
+  search_code: 'Grep',
+  todo_write: 'TodoWrite',
+  ask_user: 'AskUserQuestion',
+  use_skill: 'Skill',
+  delegate: 'Agent',
+  web: 'WebFetch',
+}
+
+/**
  * The namespace every MCP-contributed tool is registered under: `mcp__<server>__<tool>`.
  * Declared here rather than in `engine.ts` because `toolNameMatches` below needs it and
  * the dependency only runs one way (engine.ts imports rules.ts, never the reverse);
@@ -76,7 +96,7 @@ const SPEC_DRIVE_PREFIX_RE = /^[a-z]:/i
 // one like `..foo` is an ordinary segment and is left alone.
 //
 // NOT called from `parseRule`: a rule spec is shared syntax between command rules and
-// path rules, and a command spec legitimately contains `//` -- `run_command(git clone
+// path rules, and a command spec legitimately contains `//` -- `Bash(git clone
 // https://github.com/x/y:*)` has an empty segment between the two `/` of `https://`,
 // which this check would flag even though it's an ordinary, matchable command rule.
 // Applying a check that's only meaningful for one of the two shared kinds uniformly at
@@ -126,11 +146,17 @@ export function parseRule(raw: string): ParsedRule | null {
   const firstParen = trimmed.indexOf('(')
   if (firstParen === -1) {
     if (!TOOL_NAME_RE.test(trimmed)) return null
-    return { tool: trimmed, raw }
+    return { tool: LEGACY_TOOL_NAMES[trimmed] ?? trimmed, raw }
   }
 
-  const name = trimmed.slice(0, firstParen)
-  if (!TOOL_NAME_RE.test(name)) return null
+  const written = trimmed.slice(0, firstParen)
+  if (!TOOL_NAME_RE.test(written)) return null
+  // `web(search)` was the one spec that named an action rather than a target: it is the
+  // search tool now, with nothing to match on.
+  if (written === 'web' && trimmed.slice(firstParen + 1, -1).trim() === 'search' && trimmed.endsWith(')')) {
+    return { tool: 'WebSearch', raw }
+  }
+  const name = LEGACY_TOOL_NAMES[written] ?? written
 
   const lastParen = trimmed.lastIndexOf(')')
   // The closing paren must exist, come after the opening one, and be the final
@@ -161,7 +187,7 @@ function normalizeCommand(command: string): string {
 function commandMatches(spec: string, command: string): boolean {
   const normCmd = normalizeCommand(command)
   // Trim the spec (not just normalize the command) before the `:*` test, so a stray
-  // trailing space inside the rule's parens -- `run_command(git status:* )` -- still
+  // trailing space inside the rule's parens -- `Bash(git status:* )` -- still
   // reads as the prefix rule it obviously means to be, instead of falling through to an
   // exact-match comparison that can never succeed.
   const trimmedSpec = spec.trim()
@@ -389,13 +415,13 @@ function normalizePath(path: string): string {
  * (leading `/`, or a `C:`-style drive prefix) or a path whose collapsed form still
  * starts with `..` (net traversal above the workspace root). This is a fail-closed
  * check: a path that can't be resolved to a clean relative form is refused rather than
- * guessed at, so `edit_file(src/**)` can't be fooled by `src/../.env`, and
- * `edit_file(**)` can't be fooled by `/etc/shadow` or `C:/x`.
+ * guessed at, so `Edit(src/**)` can't be fooled by `src/../.env`, and
+ * `Edit(**)` can't be fooled by `/etc/shadow` or `C:/x`.
  *
  * Also mirrors two more Win32-open-time aliasing tricks -- the same class of bug as
  * `TRAILING_DOTS_AND_SPACES` in workspace.ts, applied here so a PATH-keyed deny rule
  * spec'd against the canonical spelling can't be bypassed by a spelling Windows treats
- * as identical. Measured: deny `edit_file(src/generated/**)` plus a call spelled
+ * as identical. Measured: deny `Edit(src/generated/**)` plus a call spelled
  * `src/generated./x.ts` (trailing dot) reached `allow`, even though Windows opens that
  * path as `src/generated/x.ts`.
  * - Each ordinary (non `.`/`..`) segment has trailing dots and spaces stripped, same
@@ -509,7 +535,7 @@ export function ruleMatches(rule: ParsedRule, key: PermissionKey): boolean {
 /**
  * Command rules, and the one place "most specific first" is the wrong default.
  *
- * It is right for paths: `edit_file(src/app.ts)` is a decision a person can hold in their
+ * It is right for paths: `Edit(src/app.ts)` is a decision a person can hold in their
  * head, and the next edit to that file is genuinely the same decision. A command is not
  * like that, because the model rewrites the tail of it constantly. Measured in a real
  * session, three consecutive approvals for what a person would call one command:

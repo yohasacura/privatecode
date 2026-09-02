@@ -18,11 +18,11 @@ import type { Workspace } from '../workspace.js'
  * Configured in the same settings files as permissions and formatting:
  *
  * ```json
- * { "hooks": [ { "after": "edit_file(src/**)", "command": "npm run lint" } ] }
+ * { "hooks": [ { "after": "Edit(src/**)", "command": "npm run lint" } ] }
  * ```
  *
  * `after` is parsed by `permissions/rules.ts`'s own `parseRule`, so hooks introduce ZERO
- * new syntax: `edit_file(src/**)` and `run_command(npm test:*)` mean here exactly what
+ * new syntax: `Edit(src/**)` and `Bash(npm test:*)` mean here exactly what
  * they already mean in an allow/deny rule.
  *
  * A hook OBSERVES; it cannot block. The tool has already run by the time one fires, and a

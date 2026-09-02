@@ -200,7 +200,7 @@ test('init -> send happy path: event order step.start -> deltas -> tool.call -> 
   const fake = await makeServer(() => {
     call++
     return call === 1
-      ? toolCallSSE('write_file', JSON.stringify({ path: 'note.txt', content: 'hello' }))
+      ? toolCallSSE('Write', JSON.stringify({ path: 'note.txt', content: 'hello' }))
       : textSSE('all done')
   })
   stop = fake.close
@@ -257,7 +257,7 @@ test('a reply naming an unknown requestId errors and authorizes nothing; a doubl
   const fake = await makeServer(() => {
     call++
     return call === 1
-      ? toolCallSSE('write_file', JSON.stringify({ path: 'note.txt', content: 'hello' }))
+      ? toolCallSSE('Write', JSON.stringify({ path: 'note.txt', content: 'hello' }))
       : textSSE('all done')
   })
   stop = fake.close
@@ -433,7 +433,7 @@ test('abort during contract distillation rolls the whole message back: delivered
 
 test('abort mid-approval denies the pending approval and ends the turn aborted; the tool never runs', async () => {
   const fake = await makeServer(() =>
-    toolCallSSE('write_file', JSON.stringify({ path: 'note.txt', content: 'hello' })))
+    toolCallSSE('Write', JSON.stringify({ path: 'note.txt', content: 'hello' })))
   stop = fake.close
   const root = newWorkspace()
   const { host, transport } = await initHost(fake.url, root)
@@ -677,7 +677,7 @@ test('verify runs after a turn that wrote, and not after one that only read', as
   let call = 0
   const fake = await makeServer((_body, _streaming) => {
     call++
-    if (call === 1) return toolCallSSE('write_file', JSON.stringify({ path: 'a.txt', content: 'x' }))
+    if (call === 1) return toolCallSSE('Write', JSON.stringify({ path: 'a.txt', content: 'x' }))
     return textSSE('done')
   })
   stop = fake.close
@@ -689,7 +689,7 @@ test('verify runs after a turn that wrote, and not after one that only read', as
     join(root, '.privatecode', 'settings.json'),
     JSON.stringify({
       verify: 'Write-Output ran >> verified.log',
-      permissions: { allow: ['write_file(**)'] },
+      permissions: { allow: ['Write(**)'] },
     }),
     'utf8',
   )
@@ -721,7 +721,7 @@ test('verify runs only in the folder that was written', async () => {
   let call = 0
   const fake = await makeServer((_body, _streaming) => {
     call++
-    if (call === 1) return toolCallSSE('write_file', JSON.stringify({ path: 'engine/x.txt', content: 'x' }))
+    if (call === 1) return toolCallSSE('Write', JSON.stringify({ path: 'engine/x.txt', content: 'x' }))
     return textSSE('done')
   })
   stop = fake.close
@@ -732,7 +732,7 @@ test('verify runs only in the folder that was written', async () => {
   mkdirSync(join(root, '.privatecode'), { recursive: true })
   writeFileSync(
     join(root, '.privatecode', 'settings.json'),
-    JSON.stringify({ permissions: { allow: ['write_file(**)'] } }),
+    JSON.stringify({ permissions: { allow: ['Write(**)'] } }),
     'utf8',
   )
   // Both commands are observable by what they leave behind, in their own folder.
@@ -849,7 +849,7 @@ test('the arguments of a tool call are streamed as they are generated', async ()
     // Deliberately in pieces, the way a real generation arrives: the id and name once, then
     // the argument a fragment at a time.
     const body =
-      sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name: 'read_file', arguments: '' } }] } }] }) +
+      sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name: 'Read', arguments: '' } }] } }] }) +
       sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"path":' } }] } }] }) +
       sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"note' } }] } }] }) +
       sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '.txt"}' } }] } }] }) +
@@ -869,14 +869,14 @@ test('the arguments of a tool call are streamed as they are generated', async ()
 
   // The name comes first and alone -- that is what lets the window open a row before any of
   // the argument exists.
-  expect(deltas[0]).toEqual({ index: 0, name: 'read_file' })
+  expect(deltas[0]).toEqual({ index: 0, name: 'Read' })
   // Every fragment, in order, and together they are the call.
   expect(deltas.slice(1).map((d) => d.args).join('')).toBe('{"path":"note.txt"}')
   expect(deltas.slice(1).every((d) => d.name === undefined)).toBe(true)
 
   // And the finished call still arrives, carrying the assembled document the tool ran on.
   const calls = eventsNamed(transport, 'tool.call').map((e) => e.data as { name: string; args: string })
-  expect(calls).toEqual([{ name: 'read_file', args: '{"path":"note.txt"}' }])
+  expect(calls).toEqual([{ name: 'Read', args: '{"path":"note.txt"}' }])
 })
 
 // ---------------------------------------------------------------------------------------
@@ -1007,7 +1007,7 @@ test('a stretch of writes with the plan untouched earns one upkeep order', async
     streamedCalls++
     // Four writes back to back, the plan never touched, then a non-final close.
     if (streamedCalls <= 4) {
-      return toolCallSSE('write_file', JSON.stringify({
+      return toolCallSSE('Write', JSON.stringify({
         path: `file-${streamedCalls}.txt`, content: 'x',
       }))
     }
@@ -1179,7 +1179,7 @@ test('an audit gap leaves its plan item open while the affirmed one is ticked', 
       return textSSE('I cannot close that gap here.')
     }
     const wroteAlready = (body.messages as { role: string }[]).some((m) => m.role === 'tool')
-    if (!wroteAlready) return toolCallSSE('write_file', JSON.stringify({ path: 'parse.js', content: 'x' }))
+    if (!wroteAlready) return toolCallSSE('Write', JSON.stringify({ path: 'parse.js', content: 'x' }))
     return textSSE('All done, everything works.')
   })
   stop = fake.close

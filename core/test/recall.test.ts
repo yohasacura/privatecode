@@ -14,7 +14,7 @@ import type { ToolContext } from '../src/tools/types.js'
  * The behaviour that matters is the refusal, not the retrieval: the notes FILE holds every
  * note ever written, and the loader is what drops the ones whose evidence has changed.
  * Asked how to read its notes and having no tool for it, the model found the file and told
- * the user to `read_file('.privatecode/project-notes.md')` — which returns exactly the
+ * the user to `Read('.privatecode/project-notes.md')` — which returns exactly the
  * stale, confident sentences about moved-on code that the whole design exists to prevent.
  * These tests pin that this tool cannot become that workaround.
  */
@@ -99,12 +99,12 @@ test('it is read-only, so plan mode can use it', () => {
  * The workaround, made inexpressible.
  *
  * Discouraging it did not work. Asked how to read its notes, the model found the file and
- * told the user `read_file('.privatecode/project-notes.md')` — and said it again in a later
+ * told the user `Read('.privatecode/project-notes.md')` — and said it again in a later
  * conversation, after `recall` existed and it had used it. The file holds every note ever
  * written; the loader is what drops the ones whose evidence has changed. So the direct read
  * returns exactly what the design exists to keep out of the context.
  */
-test('read_file refuses the notes store and names the tool that does it properly', async () => {
+test('Read refuses the notes store and names the tool that does it properly', async () => {
   await remember('a fact', ['src/a.ts'])
 
   const r = await readFileTool.execute({ path: '.privatecode/project-notes.md' }, ctx)

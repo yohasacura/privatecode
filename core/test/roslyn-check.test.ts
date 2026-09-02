@@ -43,7 +43,7 @@ const write = (n: number, path: string) => ({
       role: 'assistant',
       tool_calls: [{
         id: `c${n}`, type: 'function',
-        function: { name: 'write_file', arguments: JSON.stringify({ path, content: `// ${n}\n` }) },
+        function: { name: 'Write', arguments: JSON.stringify({ path, content: `// ${n}\n` }) },
       }],
     },
     finish_reason: 'tool_calls',

@@ -55,7 +55,7 @@ beforeAll(() => {
   writeFileSync(join(root, 'src', 'auth.ts'), 'export function validateToken(t: string) {\n  return t.length > 0\n}\n')
   writeFileSync(join(root, 'src', 'ui.tsx'), 'export const Button = () => null\n')
 
-  // Critical 2 fixtures: files `read_file` and `Workspace.resolve()` already refuse.
+  // Critical 2 fixtures: files `Read` and `Workspace.resolve()` already refuse.
   // Planted with a distinctive secret so a leak is unambiguous rather than a coincidental
   // substring match.
   writeFileSync(join(root, '.env'), `SECRET_KEY=${SECRET}\n`)

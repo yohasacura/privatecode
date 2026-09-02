@@ -73,7 +73,7 @@ describe('encodeLine / LineDecoder round-trip', () => {
   })
 
   test('HostEvent', () => {
-    const event: HostEvent = { event: 'approval.request', data: { requestId: 'r1', tool: 'edit_file', summary: 's', detail: 'd', suggestedRules: ['edit_file'] } }
+    const event: HostEvent = { event: 'approval.request', data: { requestId: 'r1', tool: 'Edit', summary: 's', detail: 'd', suggestedRules: ['Edit'] } }
     expect(new LineDecoder().push(encodeLine(event))).toEqual([event])
   })
 

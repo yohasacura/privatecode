@@ -64,14 +64,14 @@ async function readExistingShape(abs: string): Promise<ExistingShape | null> {
 }
 
 /**
- * The same ceiling read_file and edit_file apply, for the same reason: the content is
+ * The same ceiling Read and Edit apply, for the same reason: the content is
  * about to be held in memory and then written whole. Duplicated rather than shared — see
  * edit-file.ts's identical constant — so the three tools' ceilings cannot silently drift
  * apart from one shared import changing underneath them.
  */
 const MAX_FILE_BYTES = 10 * 1024 * 1024
 
-/** Mirrors read_file's and edit_file's size wording so all three describe sizes alike. */
+/** Mirrors Read's and Edit's size wording so all three describe sizes alike. */
 function describeBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} bytes`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -79,10 +79,10 @@ function describeBytes(bytes: number): string {
 }
 
 export const writeFileTool: Tool<WriteFileArgs> = {
-  name: 'write_file',
+  name: 'Write',
   readOnly: false,
   description:
-    'Create a new file, or overwrite one completely. Use edit_file for changes to an ' +
+    'Create a new file, or overwrite one completely. Use Edit for changes to an ' +
     'existing file — rewriting a whole file costs many times more output tokens.',
   parameters: {
     type: 'object',
@@ -103,7 +103,7 @@ export const writeFileTool: Tool<WriteFileArgs> = {
     return { ok: true, args: { path: r.path, content: r.content } }
   },
   permissionKey(args): PermissionKey {
-    return { tool: 'write_file', paths: [args.path] }
+    return { tool: 'Write', paths: [args.path] }
   },
   approvalPreview(args): ApprovalPreview {
     const bytes = Buffer.byteLength(args.content, 'utf8')
@@ -112,7 +112,7 @@ export const writeFileTool: Tool<WriteFileArgs> = {
       : args.content
     return {
       summary: `write ${args.path}`,
-      detail: `write_file ${args.path} (${bytes} bytes)\n${clipped}`,
+      detail: `Write ${args.path} (${bytes} bytes)\n${clipped}`,
     }
   },
   async execute(args, ctx) {
@@ -135,15 +135,15 @@ export const writeFileTool: Tool<WriteFileArgs> = {
       return {
         ok: false,
         content:
-          `${args.path} would be ${describeBytes(bytes)}; write_file refuses to create or ` +
+          `${args.path} would be ${describeBytes(bytes)}; Write refuses to create or ` +
           `replace a file larger than ${describeBytes(MAX_FILE_BYTES)}, the ceiling ` +
-          'read_file and edit_file both apply.',
+          'Read and Edit both apply.',
       }
     }
 
     // Whether the target already exists, and how big it was. Several paths lead a model to
-    // overwrite a file it did not mean to: edit_file's not-found hint points here by name,
-    // and read_file caps at 2000 lines, so a model that saw only the head of a long file
+    // overwrite a file it did not mean to: Edit's not-found hint points here by name,
+    // and Read caps at 2000 lines, so a model that saw only the head of a long file
     // and then "rewrites" it silently truncates the rest. There is no undo and no
     // checkpoint, so the size it replaced is the only surviving record that it happened —
     // and it has to be in the result, because the result is what stays in the transcript.
@@ -169,8 +169,8 @@ export const writeFileTool: Tool<WriteFileArgs> = {
     // whole-file diff — and the design names the user's own git as the only safety net,
     // which a whole-file diff switches off. The BOM is not cosmetic either: MSBuild treats
     // it as meaningful and this workspace is C#/TS on Windows. The model cannot supply
-    // either one, because read_file shows it an LF-only, BOM-less view of every file — the
-    // same reason edit_file restores them rather than trusting its input, and the same
+    // either one, because Read shows it an LF-only, BOM-less view of every file — the
+    // same reason Edit restores them rather than trusting its input, and the same
     // logic, imported rather than copied.
     //
     // A genuinely new file is left exactly as given: there is no existing shape to match,

@@ -117,7 +117,7 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 | **modes** | normal (ask by rules) · plan (no write tools in grammar) · auto-edit · autopilot (explicit, red banner) | |
 | **hard denies** | `rm -rf`, `git push`, `git reset --hard`, reading `.env`/`*.pem`/`id_rsa`, any path outside the workspace root | **Known limitation:** the deny list matches file *names*. A hardlink (`mklink /H`, no admin needed) gives a denied file's bytes a second, undenied name, and this is not detected — accepted deliberately, since an `nlink`-based backstop would also break pnpm's hardlinked `node_modules` layout, and the vector needs a link-creation capability nothing in this tool set grants. The same mechanism defeats containment, not just the name denylist: `mklink /H <root>\innocent.txt <a file outside the root>` produces a path `resolve()` accepts as inside the workspace whose bytes come from outside it. Bounded to files on the same volume; directories cannot be hardlinked. |
 | **network** | denied to PrivateCode itself, allowed to child processes (`dotnet restore`, `npm install`) | user's call |
-| **long-running commands** | `run_command` and `background_task` treat a process exit as *evidence*, not as completion: anything long-running carries a readiness condition (a file appears, a port answers, a marker is logged) and is polled against it | learned the hard way while installing the toolchain — the VS Build Tools installer returned exit code 0 and printed "Successfully installed" within seconds while the real 3.3 GB install ran on asynchronously for three more minutes. An agent that trusts exit codes will confidently report success on a job that has not started |
+| **long-running commands** | `Bash` and `background_task` treat a process exit as *evidence*, not as completion: anything long-running carries a readiness condition (a file appears, a port answers, a marker is logged) and is polled against it | learned the hard way while installing the toolchain — the VS Build Tools installer returned exit code 0 and printed "Successfully installed" within seconds while the real 3.3 GB install ran on asynchronously for three more minutes. An agent that trusts exit codes will confidently report success on a job that has not started |
 | **checkpoints** | none — the user's own git is the safety net | user's call. Mitigation: before autopilot starts, check `git status` and offer a WIP commit or stash if the tree is dirty |
 | **sub-agents** | **not in v1** | with `-np 1` a sub-agent evicts the main KV cache: up to 2 minutes of silence on return. `-np 2` avoids that but halves per-session context to 65K and costs MTP. Law 3 means the usual payoff isn't there anyway |
 | **sessions** | one active conversation; others persisted and resumable, **and a resumed one shows the conversation it had** | matches the single server slot. Resume answered with a title and nothing else until 2026-08-04: the transcript was always on disk (it is what the model gets sent) and there was simply no protocol to ask for it. `TranscriptEntry` mirrors the live events, so the window folds history through the same reducer as the present |
@@ -135,20 +135,20 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 
 | group | tool | notes |
 |---|---|---|
-| read | `read_file` | line-numbered, range-capable |
+| read | `Read` | line-numbered, range-capable |
 | | `list_dir` | |
-| | `find_files` | glob |
-| | `search_code` | ripgrep |
+| | `Glob` | glob |
+| | `Grep` | ripgrep |
 | | `symbol_outline` | tree-sitter: file structure, symbol definitions |
 | | `git_status` | status / diff / log / blame — read-only |
-| write | `edit_file` | SEARCH/REPLACE, payload **inside** the normal JSON arguments — see §3 and §7; the spike measured zero escaping failures, so the non-standard channel bought nothing |
-| | `write_file` | new files and full rewrites |
+| write | `Edit` | SEARCH/REPLACE, payload **inside** the normal JSON arguments — see §3 and §7; the spike measured zero escaping failures, so the non-standard channel bought nothing |
+| | `Write` | new files and full rewrites |
 | | `move_file`, `delete_file` | separate from bash so permission rules can see them |
-| run | `run_command` | PowerShell, with timeout |
+| run | `Bash` | PowerShell, with timeout |
 | | `background_task` | start / poll / stop long-running processes |
 | web | `browser` | one tool, eleven actions, over CDP against the installed Edge/Chrome. Text-first (`read` returns the page with `[ref_N]` markers) because there is no vision tower; a screenshot is for the person watching |
-| meta | `todo_write` | visible plan |
-| | `ask_user` | question with options, instead of guessing |
+| meta | `TodoWrite` | visible plan |
+| | `AskUserQuestion` | question with options, instead of guessing |
 
 MCP-contributed tools carry the server's own schema, are always gated (§6), and are capped
 at 32 across all servers — every schema rides every request and becomes part of the
@@ -170,7 +170,7 @@ original list was wrong about both:
 
 - **The auto-formatter is NOT a second mechanism beside hooks.** It lives INSIDE the write
   tools, and that is the whole reason it exists separately: the model anchors its next
-  SEARCH block on the diff `edit_file` just returned, so formatting has to happen before
+  SEARCH block on the diff `Edit` just returned, so formatting has to happen before
   that diff is rendered or the anchor describes bytes no longer on disk. An after-tool hook
   fires too late to buy that.
 - **Project memory is `AGENTS.md`, not `PROJECT.md`** — the cross-tool convention, so one
@@ -199,7 +199,7 @@ still stands is why the built-in toolset did not change.
    and no file content is sent to a server the user did not configure, and every call is
    gated. A remote MCP server is now the user's decision, in the user's settings file, with
    a token that lives in the environment (`${VAR}` expansion) rather than in the file.
-3. **"Local servers duplicate `read_file` / `search_code` / `git_status` in already-jailed,
+3. **"Local servers duplicate `Read` / `Grep` / `git_status` in already-jailed,
    permission-keyed form."** Still true, and it is why **none of the built-in tools were
    removed or replaced**. MCP is an addition at the edges, not a new way to do what the
    jailed tools already do.
@@ -359,11 +359,11 @@ list of names — a write that silently landed in the wrong repository is the fa
 out, and being strict costs one wasted step. A single-folder workspace behaves exactly as it
 always did, prefix and all state included. The absolute path of a folder never enters the
 prompt: the model sees names, which is shorter, keeps a disk layout out of the transcript, and
-gives permission rules a scope for free (`edit_file(api/**)` now means what it says).
+gives permission rules a scope for free (`Edit(api/**)` now means what it says).
 
 **Access.** A folder is attached `write` or `read`. A read folder is refused by the JAIL, above
 the permission engine, so no rule can open it — a reference folder a rule could open is not a
-reference folder. This binds the file tools; `run_command` was never contained by the jail and
+reference folder. This binds the file tools; `Bash` was never contained by the jail and
 still is not.
 
 **Only the primary folder configures anything.** Settings, hooks, the formatter and the verify
@@ -405,7 +405,7 @@ Measured and rebuilt in `docs/SPEED-2026-09-02.md`. The decisions it records:
 - **The prefix is prewarmed at workspace open** (`Session.warmPrefix`): first step 2.3 s
   instead of 7–20.
 - **The project's check runs right after the step that wrote**, and the prompt names it as
-  the harness's job. The model's own `dotnet build` after every edit — 137 `run_command`
+  the harness's job. The model's own `dotnet build` after every edit — 137 `Bash`
   calls in the recorded sessions — went to zero in both probes.
 - **`&&` inside one command entry is split**, not refused.
 - **An enum of workspace paths in a grammar is dead**: 8.5 tok/s at 2000 alternatives and the
@@ -418,7 +418,7 @@ Measured and rebuilt in `docs/SPEED-2026-09-02.md`. The decisions it records:
   agent copies NUMBERED lines out and writes them back without numbers, so the n-grams are
   never in the context verbatim. MTP alone stays.
 - **The gates, working, cost about a minute per task-shaped turn** (contract 10–14 s,
-  premises 12–13 s, lenses 15–17 s, audit 24–25 s, plus the `todo_write` steps the plan
+  premises 12–13 s, lenses 15–17 s, audit 24–25 s, plus the `TodoWrite` steps the plan
   nudges provoke). Two bounds now live in the grammar — six criteria at most, evidence a
   line — and `"gates": "thorough" | "fast" | "off"` in settings.json chooses how much of the
   harness a person's time buys (`GateProfile` in session.ts). `thorough` ships as default.

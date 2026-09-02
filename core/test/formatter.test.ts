@@ -9,7 +9,7 @@ import { Workspace } from '../src/workspace.js'
 
 /**
  * The auto-formatter. The one property worth the most tests is the reason it lives inside
- * the write tool at all: the diff `edit_file` returns must describe the file AFTER
+ * the write tool at all: the diff `Edit` returns must describe the file AFTER
  * formatting, because the model anchors its next SEARCH block on exactly that text.
  */
 
@@ -54,7 +54,7 @@ test('the last matching rule wins, so local overrides project', () => {
   expect(ruleFor(rules, 'readme.md')).toBeNull()
 })
 
-test('edit_file renders its diff against the POST-format file', async () => {
+test('Edit renders its diff against the POST-format file', async () => {
   // This is the whole reason formatting is inside the tool. The formatter here uppercases
   // the file; if the diff were rendered before it ran, the model would be shown lowercase
   // text that is no longer on disk, and its next SEARCH anchor would miss.
@@ -111,7 +111,7 @@ test('a formatter that fails names the failure instead of swallowing it', async 
   expect(result.content).toContain('formatter')
 })
 
-test('with no formatter configured, edit_file behaves exactly as before', async () => {
+test('with no formatter configured, Edit behaves exactly as before', async () => {
   writeFileSync(join(root, 'c.txt'), 'alpha\nbeta\n')
   const workspace = new Workspace(root)
   const result = await editFileTool.execute(
@@ -126,7 +126,7 @@ test('with no formatter configured, edit_file behaves exactly as before', async 
 test('a filename is an argument, never syntax: a `;` in it cannot run a second command', async () => {
   // The command comes from a settings file the model cannot write. The PATH substituted
   // into it is the model's own `args.path`, and `;` separates statements in PowerShell --
-  // so text substitution made `write_file` a way to run anything, ungated, because the
+  // so text substitution made `Write` a way to run anything, ungated, because the
   // formatter runs inside the write tool after the permission gate has already decided.
   const name = 'a;New-Item -ItemType File -Name pwned.txt;b.txt'
   writeFileSync(join(root, name), 'before', 'utf8')
@@ -236,7 +236,7 @@ test('${FILE} is accepted, since PowerShell expands it unambiguously', () => {
 
 test('a formatter that rewrites the file AND exits non-zero still yields the post-format diff', async () => {
   // A fixer-linter with one finding it cannot fix does exactly this. The failure path used
-  // to return `text: null, changed: false`, so edit_file kept its pre-format bytes and
+  // to return `text: null, changed: false`, so Edit kept its pre-format bytes and
   // rendered a diff of text no longer on disk — breaking the anchoring property that is the
   // entire reason formatting lives inside the write tool.
   writeFileSync(join(root, 'f.txt'), 'hello\nworld\n', 'utf8')

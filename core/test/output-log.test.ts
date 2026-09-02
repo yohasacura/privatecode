@@ -11,7 +11,7 @@ import { Workspace } from '../src/workspace.js'
  *
  * Two properties matter more than anything else here, because the notice handed to the
  * model says "Do NOT re-run the command to see what was cut": the file has to be WRITTEN,
- * and the path advertised for it has to be one the model's own read_file can open.
+ * and the path advertised for it has to be one the model's own Read can open.
  */
 
 let base: string
@@ -43,7 +43,7 @@ describe('spillToLog', () => {
     expect(existsSync(ws.resolve(log!.path))).toBe(true)
   })
 
-  test('works in a multi-folder workspace, and names the folder so read_file can open it', async () => {
+  test('works in a multi-folder workspace, and names the folder so Read can open it', async () => {
     const app = dir('app')
     const engine = dir('engine')
     const mounts: Mount[] = [
@@ -104,7 +104,7 @@ describe('pruneLogs', () => {
 })
 
 describe('the notice', () => {
-  test('counts lines the way read_file does and names both ways to page', () => {
+  test('counts lines the way Read does and names both ways to page', () => {
     expect(countLines('')).toBe(0)
     expect(countLines('a\nb\n')).toBe(2)
     expect(countLines('a\r\nb')).toBe(2)
@@ -112,7 +112,7 @@ describe('the notice', () => {
     const notice = overflowNotice({ path: 'app/.privatecode/state/logs/run-1.log', lines: 900 }, 60)
     expect(notice).toContain('840 more lines')
     expect(notice).toContain('app/.privatecode/state/logs/run-1.log')
-    expect(notice).toMatch(/read_file\(/)
-    expect(notice).toMatch(/search_code\(/)
+    expect(notice).toMatch(/Read\(/)
+    expect(notice).toMatch(/Grep\(/)
   })
 })

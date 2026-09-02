@@ -30,7 +30,7 @@ const SNIPPET_CONTEXT = 60
  *
  * Substring scanning cannot run away, but a model-written REGULAR EXPRESSION can:
  * JavaScript's engine backtracks, and `(a+)+b` over a few megabytes of transcript does not
- * finish this year. `search_code` has no such problem because ripgrep's engine has no
+ * finish this year. `Grep` has no such problem because ripgrep's engine has no
  * backtracking; this one does, so the guard is a clock rather than a promise. Partial
  * results are returned and SAID to be partial — a search that quietly stopped early is the
  * one failure worse than a slow one.

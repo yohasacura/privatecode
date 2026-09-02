@@ -44,7 +44,7 @@ const NOTE = 'px-3 pb-2 pl-[38px] text-[12px] text-faint'
 const ACTIONS = 'flex flex-wrap items-center gap-2 px-3 py-2.5'
 
 /**
- * `edit_file`'s approval detail is a SEARCH/REPLACE block (see its `approvalPreview`).
+ * `Edit`'s approval detail is a SEARCH/REPLACE block (see its `approvalPreview`).
  * Shown verbatim it is a wall of markers; the two halves are exactly a before and an after,
  * so they turn into a real coloured diff with no information invented. Returns `null` for
  * any detail that is not that shape, and the caller falls back to plain text.
@@ -277,7 +277,7 @@ const TODO_TONE: Record<TodoItem['status'], string> = {
 
 /**
  * The current task list, pinned above the transcript. Renders nothing at all when the model
- * never called `todo_write`, so a one-shot question costs no layout.
+ * never called `TodoWrite`, so a one-shot question costs no layout.
  */
 export function TodosCard(
   { todos, onClear, onOpenFile }: {

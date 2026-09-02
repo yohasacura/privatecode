@@ -1,19 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import { localSettingsPath, projectSettingsPath, settingsText, userSettingsPath } from '../permissions/settings.js'
 import { isRecord } from './manifest.js'
 import type { MarketplaceSource, PluginScope } from './store.js'
 
 /**
  * The two settings keys of Claude Code's plugin system, `enabledPlugins` and
- * `extraKnownMarketplaces`, read from every settings file that may carry them and written
- * to PrivateCode's own (docs/PLUGINS-2026-09.md §2).
- *
- * Read from six files, in precedence order: PrivateCode's user, project and local files, and
- * their Claude Code twins (`~/.claude/settings.json`, `.claude/settings.json`,
- * `.claude/settings.local.json`) — so a README that says "add this to `.claude/settings.json`"
- * works. Written only to PrivateCode's three: this tool does not edit another tool's files.
+ * `extraKnownMarketplaces`, read from and written to PrivateCode's own settings files
+ * (docs/PLUGINS-2026-09.md §2): the user file in `%APPDATA%\PrivateCode\`, and the
+ * project's `.privatecode/settings.json` and `.privatecode/settings.local.json`. The keys
+ * and their shapes are Claude Code's, so a README that shows them applies as written; the
+ * files are PrivateCode's — nothing is read from another tool's `.claude/` folder.
  *
  * Other keys in a file are preserved byte-for-byte in meaning (the file is re-serialised,
  * pretty-printed, with the same top-level keys) — the permissions lists, hooks and MCP servers
@@ -22,29 +19,15 @@ import type { MarketplaceSource, PluginScope } from './store.js'
 
 export interface PluginSettingsLayer {
   scope: PluginScope
-  /** `privatecode` for our own files, `claude` for Claude Code's. */
-  owner: 'privatecode' | 'claude'
   path: string
   enabledPlugins: Record<string, boolean>
   extraKnownMarketplaces: Record<string, { source: MarketplaceSource; autoUpdate?: boolean }>
-}
-
-/** `~/.claude` (or `CLAUDE_CONFIG_DIR`), where Claude Code keeps its user files. */
-export function claudeConfigDir(): string {
-  return process.env['CLAUDE_CONFIG_DIR'] ?? join(process.env['USERPROFILE'] ?? homedir(), '.claude')
 }
 
 export function settingsFileFor(scope: PluginScope, workspaceRoot: string | undefined, userPath = userSettingsPath()): string {
   if (scope === 'user') return userPath
   if (workspaceRoot === undefined) throw new Error(`the ${scope} scope needs an open workspace`)
   return scope === 'project' ? projectSettingsPath(workspaceRoot) : localSettingsPath(workspaceRoot)
-}
-
-/** The Claude Code file that mirrors ours for a scope. */
-export function claudeSettingsFileFor(scope: PluginScope, workspaceRoot: string | undefined): string | null {
-  if (scope === 'user') return join(claudeConfigDir(), 'settings.json')
-  if (workspaceRoot === undefined) return null
-  return join(workspaceRoot, '.claude', scope === 'project' ? 'settings.json' : 'settings.local.json')
 }
 
 function readObject(path: string, problems: string[]): Record<string, unknown> | null {
@@ -73,8 +56,8 @@ export function readMarketplaceSource(raw: unknown): MarketplaceSource | null {
   return null
 }
 
-function readLayer(scope: PluginScope, owner: PluginSettingsLayer['owner'], path: string, problems: string[]): PluginSettingsLayer {
-  const layer: PluginSettingsLayer = { scope, owner, path, enabledPlugins: {}, extraKnownMarketplaces: {} }
+function readLayer(scope: PluginScope, path: string, problems: string[]): PluginSettingsLayer {
+  const layer: PluginSettingsLayer = { scope, path, enabledPlugins: {}, extraKnownMarketplaces: {} }
   const obj = readObject(path, problems)
   if (obj === null) return layer
   const enabled = obj['enabledPlugins']
@@ -112,22 +95,14 @@ export interface PluginSettings {
   extraKnownMarketplaces: Record<string, { source: MarketplaceSource; autoUpdate?: boolean; from: string }>
 }
 
-/**
- * Every layer, lowest precedence first: user, then project, then local; within a scope
- * Claude Code's file first, then ours, so ours wins when both name the same plugin.
- */
+/** Every layer, lowest precedence first: user, then project, then local. */
 export function loadPluginSettings(workspaceRoot: string | undefined, userPath = userSettingsPath()): PluginSettings {
   const problems: string[] = []
-  const layers: PluginSettingsLayer[] = []
-  const push = (scope: PluginScope): void => {
-    const claude = claudeSettingsFileFor(scope, workspaceRoot)
-    if (claude !== null) layers.push(readLayer(scope, 'claude', claude, problems))
-    try {
-      layers.push(readLayer(scope, 'privatecode', settingsFileFor(scope, workspaceRoot, userPath), problems))
-    } catch { /* no workspace: no project or local layer */ }
+  const layers: PluginSettingsLayer[] = [readLayer('user', userPath, problems)]
+  if (workspaceRoot !== undefined) {
+    layers.push(readLayer('project', projectSettingsPath(workspaceRoot), problems))
+    layers.push(readLayer('local', localSettingsPath(workspaceRoot), problems))
   }
-  push('user')
-  if (workspaceRoot !== undefined) { push('project'); push('local') }
   const enabledPlugins: Record<string, boolean> = {}
   const extraKnownMarketplaces: PluginSettings['extraKnownMarketplaces'] = {}
   for (const layer of layers) {
@@ -137,7 +112,7 @@ export function loadPluginSettings(workspaceRoot: string | undefined, userPath =
   return { layers, problems, enabledPlugins, extraKnownMarketplaces }
 }
 
-/** Rewrites one of OUR settings files with `mutate` applied to its parsed object. */
+/** Rewrites one settings file with `mutate` applied to its parsed object. */
 function patchSettings(path: string, mutate: (obj: Record<string, unknown>) => void): void {
   const problems: string[] = []
   const obj = readObject(path, problems) ?? {}

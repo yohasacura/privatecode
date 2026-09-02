@@ -25,7 +25,7 @@ export const symbolOutlineTool: Tool<SymbolOutlineArgs> = {
   description:
     'Extract a structural outline (classes, methods, functions, interfaces, enums, ...) ' +
     `from a source file, with nesting shown by indentation. Supports ${SUPPORTED_LIST} ` +
-    'files. Faster and shorter than read_file for orienting in an unfamiliar file.',
+    'files. Faster and shorter than Read for orienting in an unfamiliar file.',
   parameters: {
     type: 'object',
     properties: {
@@ -73,8 +73,8 @@ export const symbolOutlineTool: Tool<SymbolOutlineArgs> = {
         ok: false,
         content:
           `${args.path} is ${describeBytes(size)}; symbol_outline refuses files larger ` +
-          `than ${describeBytes(MAX_FILE_BYTES)}. Use read_file with a line range, or ` +
-          'search_code, instead.',
+          `than ${describeBytes(MAX_FILE_BYTES)}. Use Read with a line range, or ` +
+          'Grep, instead.',
       }
     }
 
@@ -108,7 +108,7 @@ export const symbolOutlineTool: Tool<SymbolOutlineArgs> = {
       return {
         ok: false,
         content:
-          `symbol_outline supports ${SUPPORTED_LIST} files; use read_file or search_code ` +
+          `symbol_outline supports ${SUPPORTED_LIST} files; use Read or Grep ` +
           `for ${result.unsupported}`,
       }
     }

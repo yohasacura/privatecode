@@ -74,8 +74,11 @@ export function Skills({ client }: { client: ProtocolClient }): VNode {
         This is what is on disk now. The running session uses the catalogue it started with,
         so a NEW skill — or a changed description — reaches the model on New session. A
         change to a skill's steps applies immediately, because the body is read each time
-        it is used. Both folders are local to this machine — <code>.privatecode</code> is
+        it is used. The user and project folders are local to this machine — <code>.privatecode</code> is
         git-ignored in full — so a skill you want on another machine has to be copied there.
+        The bundled folder ships with the app (skill-creator, grill-me, mermaid, pptx); a
+        skill of the same name in your own folder replaces it. Every skill is also a slash
+        command: <code>/skill-creator</code>, <code>/grill-me</code>, <code>/mermaid</code>, <code>/pptx</code>.
       </SettingHint>
     </div>
   )

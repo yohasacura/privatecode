@@ -2,7 +2,7 @@
 
 PrivateCode runs Claude Code's plugin system. A plugin written for Claude Code installs here
 with the instructions its author wrote for Claude Code — the same `/plugin …` commands, the
-same files, the same settings keys. If a README says
+same files, the same settings keys, the same tool names. If a README says
 
 ```
 /plugin marketplace add owner/repo
@@ -55,11 +55,10 @@ from the next session (New session) — the same rule `AGENTS.md` follows.
 | `project` | `.privatecode/settings.json` | this workspace |
 | `local` | `.privatecode/settings.local.json` | this workspace, this machine |
 
-The key is Claude Code's: `"enabledPlugins": { "name@marketplace": true }`. PrivateCode also
-**reads** it from `.claude/settings.json`, `.claude/settings.local.json` and
-`~/.claude/settings.json`, so a team's `.claude/settings.json` that enables a plugin is
-honoured — a plugin enabled there but not installed is listed with the command that installs
-it. `extraKnownMarketplaces` in any of those files registers the marketplace.
+The keys are Claude Code's: `"enabledPlugins": { "name@marketplace": true }` and
+`"extraKnownMarketplaces": { "name": { "source": { … } } }`. The files are PrivateCode's:
+nothing is read from another tool's `.claude/` folder. A plugin enabled in a settings file
+but not installed is listed with the command that installs it.
 
 ## Marketplaces on first run
 
@@ -78,37 +77,64 @@ Offered with one click in the Marketplaces view, never registered unasked:
 The names Claude Code reserves for Anthropic's catalogs cannot be taken by a third-party
 marketplace; a name that merely resembles one is accepted and noted.
 
+## The tools have Claude Code's names
+
+`Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Agent`,
+`TodoWrite`, `AskUserQuestion`, `Skill`, plus PrivateCode's own (`list_dir`, `move_file`,
+`delete_file`, `background_task`, `git_status`, `symbol_outline`, `browser`, `database`,
+`csharp_nav`, `sql_deploy`, `remember`, `recall`, `sessions`) and MCP tools as
+`mcp__<server>__<tool>`. A hook matcher, an agent's `tools:` line and a permission rule
+name the tool itself. The three names Claude Code retired — `Task` (now `Agent`),
+`MultiEdit` (now `Edit`), `LS` (`list_dir`) — are read as what they became.
+
+`Bash` runs Windows PowerShell 5.1 on this machine; the name is Claude Code's, the shell is
+the machine's, and the tool says so to the model.
+
+Settings files written before 2026-09-03 keep working: `edit_file(src/**)` is read as
+`Edit(src/**)`, `run_command(npm test:*)` as `Bash(npm test:*)`, and so on. A session
+recorded before then is shown with the tools' current names.
+
 ## What a plugin contributes
 
 | in the plugin | in PrivateCode |
 |---|---|
 | `skills/<name>/SKILL.md` | a skill `plugin:name`, listed to the model and callable as `/plugin:name` |
 | `commands/<name>.md` (`sub/name.md` → `sub:name`) | `/plugin:name`; `$ARGUMENTS`, `$1`…`$9`, frontmatter `description` and `argument-hint` |
-| `agents/<name>.md` | a `delegate` role `plugin:name`; `tools`, `permissionMode`, `maxTurns` honoured |
+| `agents/<name>.md` | an `Agent` role `plugin:name`; `tools`, `disallowedTools`, `permissionMode`, `maxTurns` honoured |
 | `hooks/hooks.json` | Claude Code's hook contract, run by PrivateCode (below) |
 | `.mcp.json` / `mcpServers` | servers `plugin:<plugin>:<server>`, tools `mcp__plugin_<plugin>_<server>__<tool>` |
-| `bin/` | on PATH for `run_command` |
+| `bin/` | on PATH for `Bash` |
 
 `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and `${CLAUDE_PROJECT_DIR}` are substituted
 and exported. `${VAR:-default}` works in `.mcp.json`.
 
-The standalone conventions work too: `.claude/skills`, `.claude/commands`, `.claude/agents`,
-`.mcp.json` at the project root, `mcpServers` and `hooks` in `.claude/settings*.json`, and
-their `~/.claude/` twins. PrivateCode's own `.privatecode/` and `%APPDATA%\PrivateCode\`
-folders are read after them and win a name clash.
+## Skills that ship with the app
+
+Four skills are bundled (Settings → Skills lists them under "bundled"), each also a slash
+command:
+
+| skill | what it is for |
+|---|---|
+| `/skill-creator` | writing a new skill: where it lives, the frontmatter, a description that fires, what to bundle |
+| `/grill-me` | interrogating a plan one question at a time, each with a recommended answer, reading the code first |
+| `/mermaid` | diagrams as Mermaid; a ```mermaid block in the reply is rendered in the transcript |
+| `/pptx` | PowerPoint decks with the three python-pptx scripts beside it: outline, build from Markdown, replace text |
+
+A skill of the same name in `.privatecode/skills/` or `%APPDATA%\PrivateCode\skills\`
+replaces the bundled one.
 
 ## Hooks
 
 Events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
 `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `SessionEnd`. Matchers are Claude Code's
-(`*`, `Edit|Write`, a regex) and match either the Claude Code tool name (`Edit`) or
-PrivateCode's (`edit_file`).
+(`*`, `Edit|Write`, a regex) against the tool's name.
 
 A hook reads JSON on stdin (`session_id`, `cwd`, `hook_event_name`, `tool_name`,
-`tool_input`, `tool_response`, `prompt`, …). `tool_input` carries PrivateCode's arguments and
-the Claude Code aliases (`file_path`, `old_string`, `new_string`, `command`), so a script
-that reads `.tool_input.file_path` works. Exit 0 continues (a JSON object on stdout is read
-for `permissionDecision`, `updatedInput`, `additionalContext`, `decision: "block"`,
+`tool_input`, `tool_response`, `prompt`, …). `tool_input` carries the tool's arguments as
+PrivateCode names them, and beside them the field names Claude Code's tools use
+(`file_path`, `old_string`, `new_string`, `command`), so a script that reads
+`.tool_input.file_path` works. Exit 0 continues (a JSON object on stdout is read for
+`permissionDecision`, `updatedInput`, `additionalContext`, `decision: "block"`,
 `continue`, `systemMessage`); exit 2 blocks, with stderr as the reason; anything else is a
 non-blocking error, and three in a row switch the hook off for the session.
 
@@ -118,25 +144,8 @@ rule. Hooks run under Git Bash when it is installed (Claude Code's own choice on
 PowerShell otherwise. Only `type: "command"` hooks run; `prompt`, `agent` and `http` hooks
 are reported as unsupported.
 
-PrivateCode's own `"hooks": [{ "after": "edit_file(src/**)", "command": "…" }]` list keeps
+PrivateCode's own `"hooks": [{ "after": "Edit(src/**)", "command": "…" }]` list keeps
 working exactly as before.
-
-## Tool names
-
-| Claude Code | PrivateCode |
-|---|---|
-| Bash | run_command, background_task |
-| Edit, MultiEdit | edit_file |
-| Write | write_file |
-| Read | read_file |
-| Glob | find_files |
-| Grep | search_code |
-| WebFetch, WebSearch | web |
-| Task | delegate |
-| TodoWrite | todo_write |
-| AskUserQuestion | ask_user |
-| Skill | use_skill |
-| `mcp__*` | `mcp__*` |
 
 ## Safety
 

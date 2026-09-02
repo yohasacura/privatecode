@@ -201,7 +201,7 @@ export interface AgentEvents {
    * minutes of a perfectly healthy prefill. Optional argument, so a listener that ignores it
    * behaves exactly as before. */
   onStepRetry?(firstTokenTimeoutMs: number): void
-  /** A running tool's live output (run_command's stdout/stderr as it arrives). Chunks,
+  /** A running tool's live output (Bash's stdout/stderr as it arrives). Chunks,
    * not lines; display-only — the tool result stays the authoritative record. */
   onToolOutput?(name: string, text: string): void
   /**
@@ -410,7 +410,7 @@ export interface AgentOptions {
   /**
    * `tool_choice` for the first call of each step. Defaults to `'auto'`.
    *
-   * **This build does not enforce it.** Measured live, 3/3: `tools=[read_file]`,
+   * **This build does not enforce it.** Measured live, 3/3: `tools=[Read]`,
    * `tool_choice:'required'`, "Say hello in one word. Do not use any tool." returned prose
    * from the first token with no `tool_calls`. No grammar is applied, so the field is a
    * request the server is free to ignore — and it does. The earlier DESIGN.md §7 numbers
@@ -590,9 +590,9 @@ const UNKNOWN_RECHECK_MS = 5_000
  * What a per-turn decline is counted against — the tool plus the thing it wanted to act on.
  *
  * `PermissionKey` carries that thing in a different field per tool family: `target` for
- * browser/web/database/use_skill, `command` for run_command/background_task, `paths` for the
- * file tools. Counting on `target` alone therefore collapsed to `run_command:` or
- * `edit_file:` for exactly the tools that produce most approvals, and declining
+ * browser/web/database/Skill, `command` for Bash/background_task, `paths` for the
+ * file tools. Counting on `target` alone therefore collapsed to `Bash:` or
+ * `Edit:` for exactly the tools that produce most approvals, and declining
  * `npm install -g x` and then, ten steps later, an unrelated `git clean -fdx` reached two
  * "for the same target" — handing the model the escalation that tells it to abandon the
  * work, derived from two decisions about entirely different commands.
@@ -683,11 +683,11 @@ export class Agent {
           // describe the tools that exist, and the registry is the only thing that knows.
           external: describeExternalTools(opts.registry, this.opts.allowedTools),
           // From the RESOLVED tool list, after plan mode has narrowed it: the paragraph must
-          // describe a call the model can actually make, and in plan mode `delegate` (not
+          // describe a call the model can actually make, and in plan mode `Agent` (not
           // read-only) has already been filtered out by the constructor above. A worker's own
-          // context strips `delegate` too, so a worker never reads an offer to spawn workers.
+          // context strips `Agent` too, so a worker never reads an offer to spawn workers.
           delegation: (this.opts.allowedTools ?? opts.registry.schemas().map((s) => s.function.name))
-            .includes('delegate') && opts.context.delegate !== undefined,
+            .includes('Agent') && opts.context.delegate !== undefined,
           // Conditional spread, not `memory: opts.memory`: tsconfig sets
           // exactOptionalPropertyTypes, so an explicit undefined is not the same as absent.
           ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
@@ -866,7 +866,7 @@ export class Agent {
           // IT EXECUTED — the same prefix a permission denial, a deferral and a loop-detector
           // refusal use. It said `Not executed:` once, and the difference was not cosmetic:
           // `commandsFrom` decides whether a command ran by testing exactly `/^Not run[:.]/`,
-          // so a skipped `run_command` was written into the work log under "**Ran:** `npm
+          // so a skipped `Bash` was written into the work log under "**Ran:** `npm
           // test` → failed". Someone reading the night's log would conclude the suite was run
           // and is broken, when it never executed.
           const content = `Not run: ${halted}, so the calls after it were left alone. ` +
@@ -875,7 +875,7 @@ export class Agent {
           // resumed session shows it — `replayEntries` reads the `Not run:` prefix as a
           // failure — but nothing told a WATCHING window, and once arguments streamed there
           // was a card open for it. Every unanswered call left a row pulsing forever: seen in
-          // a live run as `-> find_files -> find_files -> find_files` against one `(ok)`.
+          // a live run as `-> Glob -> Glob -> Glob` against one `(ok)`.
           this.announceCall(call)
           this.answer(call, { ok: false, content })
           continue
@@ -1019,7 +1019,7 @@ export class Agent {
       this.report(again.result.message)
       if (again.result.finishReason === 'length') return { kind: 'truncated' }
       // `tool_choice: 'required'` is accepted and IGNORED by this build. Measured live, 3/3:
-      // `tools=[read_file]`, `tool_choice:'required'`, "Say hello in one word. Do not use any
+      // `tools=[Read]`, `tool_choice:'required'`, "Say hello in one word. Do not use any
       // tool." came back as prose from the first token with no `tool_calls` — no grammar was
       // applied. So the premise this continuation rests on (that the model cannot merely
       // talk here) does not hold, and a continuation that talked was returned as an ordinary
@@ -1188,7 +1188,7 @@ export class Agent {
    */
   private firstTokenBudget(floorMs: number): number {
     // `transcriptChars`, not a local reduce. The local one summed `content` and
-    // `reasoning_content` only, so a step whose whole output was a `write_file` argument
+    // `reasoning_content` only, so a step whose whole output was a `Write` argument
     // (content: null) measured as zero fresh characters and got the flat floor. Measured on
     // a real transcript: a 69,774-char write moved the budget by 12 ms, where the same
     // payload as a READ moved it by 34.9 s. Those bytes are prefilled either way.
@@ -1590,9 +1590,9 @@ export class Agent {
    * The context tools are run with, carrying the turn's cancellation.
    *
    * `this.opts.context` used to be passed through untouched, so `ctx.signal` was undefined
-   * for every tool call there has ever been. `search_code` already wires
+   * for every tool call there has ever been. `Grep` already wires
    * `cancelSignal: ctx.signal`, so that branch was dead code: a 30 s ripgrep and an
-   * unbounded `find_files` walk both ignored the user's cancel, and interrupt is a stated
+   * unbounded `Glob` walk both ignored the user's cancel, and interrupt is a stated
    * requirement.
    *
    * The step deadline is deliberately *not* included — it covers the model calls, and

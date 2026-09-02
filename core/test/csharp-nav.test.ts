@@ -110,7 +110,7 @@ describe('paths coming back from the helper', () => {
   test('become workspace-relative with forward slashes', () => {
     // Not cosmetic. The helper reports the absolute path it was handed, and joins a
     // forward-slashed root to Windows-relative parts, so its output is mixed-separator and
-    // absolute — a path the model cannot hand back to read_file.
+    // absolute — a path the model cannot hand back to Read.
     const ws = 'D:/proj/src'
     const mixed = 'D:/proj/src\\App\\Accounting\\ActService.cs'
     expect(toWorkspacePath(mixed, ws)).toBe('App/Accounting/ActService.cs')

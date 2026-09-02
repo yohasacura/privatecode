@@ -39,7 +39,7 @@ function writeStep(path: string, content: string): unknown {
         tool_calls: [{
           id: `c-${path}`,
           type: 'function',
-          function: { name: 'write_file', arguments: JSON.stringify({ path, content }) },
+          function: { name: 'Write', arguments: JSON.stringify({ path, content }) },
         }],
       },
       finish_reason: 'tool_calls',

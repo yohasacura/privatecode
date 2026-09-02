@@ -1309,7 +1309,7 @@ export function Composer({
   // The call actually EXECUTING, which is the oldest one still unanswered — not the last
   // item. A step runs its calls in order, so while call 1 runs, calls 2 and 3 already have
   // cards; the last of them is the one the model wrote most recently, not the one running.
-  // `npm test` executing for three minutes under the label `running write_file` is the
+  // `npm test` executing for three minutes under the label `running Write` is the
   // shape of it. `pendingTool` is the same rule the reducer uses to route a result.
   const runningTool = pendingTool(state.items)?.name ?? null
   /** The gate running right now. Outranks every other reading in `statusLine`. */
@@ -1330,7 +1330,7 @@ export function Composer({
   /**
    * The model is writing a TOOL CALL, and nothing shows it.
    *
-   * The arguments of `edit_file` are generated exactly like reasoning is — token by token,
+   * The arguments of `Edit` are generated exactly like reasoning is — token by token,
    * for as long as the change is big — but the window only learns of a call once it has
    * arrived whole. So the chat went silent for the entire time the edit was being composed,
    * which is the longest silence in a normal turn and the one that reads as a freeze.
@@ -1359,7 +1359,7 @@ export function Composer({
     // than inside it. Two reasons, and the second was found by running the built app: a gate
     // is the truest thing on screen during a turn — the premise and understanding gates run
     // from `onBeforeTool`, AFTER the agent has announced the write, so `runningTool` says
-    // "running edit_file" for a write that has not started and may be vetoed outright — and
+    // "running Edit" for a write that has not started and may be vetoed outright — and
     // a gate asked for by hand (`/check`, `/review`) runs with NO turn at all, so nested
     // under `turnRunning` the status line stayed empty for the whole of it. Watched live:
     // six seconds of a build running and nothing on screen saying so.
@@ -1390,7 +1390,7 @@ export function Composer({
           step {step.step} · {formatDuration(now - step.startedAtMs)}
           {/* The gap that reads as a freeze. llama.cpp matches its cache by longest common
               prefix, so the tokens a step APPENDS -- a file the last tool returned -- have to
-              be processed before the first new one comes out. A `read_file` may return 60,000
+              be processed before the first new one comes out. A `Read` may return 60,000
               characters (~15k tokens), and at the ~393 tok/s measured on this machine that is
               close to forty seconds of silence, after which generation runs at its usual
               speed. Saying so turns "it hung" into "it is reading". */}

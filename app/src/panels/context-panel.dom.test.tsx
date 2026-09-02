@@ -29,7 +29,7 @@ function stubClient(): ProtocolClient {
 }
 
 const change: ChangeEntry = {
-  id: 7, tool: 'edit_file', path: 'src/a.ts', ok: true, content: '--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\n',
+  id: 7, tool: 'Edit', path: 'src/a.ts', ok: true, content: '--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\n',
   revisions: 1, openPath: 'src/a.ts', restorePaths: ['src/a.ts'],
 }
 

@@ -206,7 +206,7 @@ export function Permissions({ client, liveMode }: {
         </Select>
         <Input
           class="min-w-[200px] flex-1 font-mono text-[12px]"
-          placeholder="run_command(npm publish:*) · edit_file(src/**)"
+          placeholder="Bash(npm publish:*) · Edit(src/**)"
           aria-label="The rule"
           value={newRule}
           onInput={(e) => setNewRule(e.currentTarget.value)}
@@ -229,7 +229,7 @@ export function Permissions({ client, liveMode }: {
       </div>
       <SettingHint>
         A rule is a tool name with an optional pattern: commands match by prefix
-        (<code>run_command(git push:*)</code>), paths by glob (<code>edit_file(src/**)</code>).
+        (<code>Bash(git push:*)</code>), paths by glob (<code>Edit(src/**)</code>).
         It applies immediately, this session included.
       </SettingHint>
     </div>

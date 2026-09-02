@@ -200,8 +200,8 @@ test('answering a parked decision remembers the rule and clears it exactly once'
     const queue = session.decisionQueue()
     queue.add({
       kind: 'approval', id: 'd1', at: new Date().toISOString(), sessionId: 's',
-      tool: 'run_command', summary: 'npx tsc --noEmit', detail: 'detail',
-      suggestedRules: ['run_command(npx tsc:*)'],
+      tool: 'Bash', summary: 'npx tsc --noEmit', detail: 'detail',
+      suggestedRules: ['Bash(npx tsc:*)'],
     })
 
     await host.handle({ id: 2, method: 'decisions.list', params: {} })
@@ -210,7 +210,7 @@ test('answering a parked decision remembers the rule and clears it exactly once'
     await host.handle({
       id: 3,
       method: 'decisions.resolve',
-      params: { id: 'd1', verdict: 'allow', rule: { rule: 'run_command(npx tsc:*)', layer: 'session' } },
+      params: { id: 'd1', verdict: 'allow', rule: { rule: 'Bash(npx tsc:*)', layer: 'session' } },
     })
     await host.handle({ id: 4, method: 'decisions.list', params: {} })
     expect(replyOf(transport, 4).decisions).toEqual([])
@@ -218,7 +218,7 @@ test('answering a parked decision remembers the rule and clears it exactly once'
     // The rule is live in the engine, which is the entire value of the queue: a night's
     // questions become permission rules rather than one-off yesses.
     const engine = (host as unknown as { engine: { decide(k: unknown): { verdict: string } } }).engine
-    expect(engine.decide({ tool: 'run_command', command: 'npx tsc --noEmit' }).verdict).toBe('allow')
+    expect(engine.decide({ tool: 'Bash', command: 'npx tsc --noEmit' }).verdict).toBe('allow')
     expect(eventsNamed(transport, 'decisions.changed').length).toBeGreaterThanOrEqual(1)
   } finally {
     await host.shutdown()

@@ -50,19 +50,19 @@ describe('the browser tool', () => {
 })
 
 describe('the search family', () => {
-  it('shows the glob a find_files call searched for', () => {
-    // `glob` is find_files' only argument; the presenter used to look for pattern/query/path
+  it('shows the glob a Glob call searched for', () => {
+    // `glob` is Glob' only argument; the presenter used to look for pattern/query/path
     // and find none of them, so every Find row was a bare verb with nothing after it.
-    const p = presentTool('find_files', '{"glob":"src/**/*.ts"}')
+    const p = presentTool('Glob', '{"glob":"src/**/*.ts"}')
     expect(p).toMatchObject({ verb: 'Find', target: 'src/**/*.ts', path: null })
   })
 
   it('shows the regex a scoped search ran, and where it ran', () => {
-    const p = presentTool('search_code', '{"pattern":"presentTool","path":"app/src/panels"}')
+    const p = presentTool('Grep', '{"pattern":"presentTool","path":"app/src/panels"}')
     // The pattern first: the scope alone (what `path ?? pattern` produced) never said what
     // was being looked for.
     expect(p.target).toBe('presentTool in app/src/panels')
-    expect(presentTool('search_code', '{"pattern":"presentTool"}').target).toBe('presentTool')
+    expect(presentTool('Grep', '{"pattern":"presentTool"}').target).toBe('presentTool')
   })
 
   it('offers no file to open for the tools whose path is a directory', () => {
@@ -71,15 +71,15 @@ describe('the search family', () => {
     // is that error.
     expect(presentTool('list_dir', '{"path":"app/src/panels"}'))
       .toMatchObject({ verb: 'List', target: 'app/src/panels', path: null })
-    expect(presentTool('search_code', '{"pattern":"x","path":"app/src"}').path).toBeNull()
+    expect(presentTool('Grep', '{"pattern":"x","path":"app/src"}').path).toBeNull()
     // A file the model asked to READ is still openable — that is the button's real case.
-    expect(presentTool('read_file', '{"path":"app/src/lib/tools.ts"}').path)
+    expect(presentTool('Read', '{"path":"app/src/lib/tools.ts"}').path)
       .toBe('app/src/lib/tools.ts')
   })
 
   it('names the row even when the arguments never finished streaming', () => {
     // A card opens on the tool NAME, mid-generation, with args that are not yet valid JSON.
-    expect(presentTool('find_files', '{"glob":"src/**').target).toBe('')
+    expect(presentTool('Glob', '{"glob":"src/**').target).toBe('')
     expect(presentTool('list_dir', '{"pa').verb).toBe('List')
   })
 })
@@ -98,23 +98,23 @@ describe('screenshotPathOf', () => {
   })
 
   it('is scoped to the browser tool and to that directory', () => {
-    expect(screenshotPathOf('read_file', '.privatecode/state/browser/shot-001.png')).toBeNull()
+    expect(screenshotPathOf('Read', '.privatecode/state/browser/shot-001.png')).toBeNull()
     expect(screenshotPathOf('browser', 'assets/logo.png')).toBeNull()
     expect(screenshotPathOf('browser', '.privatecode/state/logs/run.log')).toBeNull()
     expect(screenshotPathOf('browser', undefined)).toBeNull()
   })
 })
 
-it('labels a run_command card from a LIST of commands, and still from a string', () => {
+it('labels a Bash card from a LIST of commands, and still from a string', () => {
   // The tool takes a list now — that shape is what stops the model writing `&&` for a shell
   // that has none — and a card built from `args.command` alone went blank. The string form
   // stays because every session recorded before the change replays through this same
   // function.
-  const fromList = presentTool('run_command', JSON.stringify({
+  const fromList = presentTool('Bash', JSON.stringify({
     commands: ['npm install', 'npm test'],
   }))
   expect(fromList.target).toBe('npm install; npm test')
 
-  const fromString = presentTool('run_command', JSON.stringify({ command: 'git status' }))
+  const fromString = presentTool('Bash', JSON.stringify({ command: 'git status' }))
   expect(fromString.target).toBe('git status')
 })

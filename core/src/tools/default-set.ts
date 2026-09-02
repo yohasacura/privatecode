@@ -15,7 +15,7 @@ import { gitStatusTool } from './git-tool.js'
 import { TodoStore } from '../interaction.js'
 import { todoWriteTool } from './todo-write.js'
 import { askUserTool } from './ask-user.js'
-import { webTool } from './web.js'
+import { webSearchTool, webFetchTool } from './web.js'
 import { symbolOutlineTool } from './symbol-outline.js'
 import { browserTool } from './browser.js'
 import { useSkillTool } from './use-skill.js'
@@ -69,11 +69,11 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
     userDataDir: `${profileDir()}-headless`,
   })
   // Registration order is the order the schemas reach the model, and `csharp_nav` sat 17th
-  // of 18 -- past every file tool, next to the browser. Moved beside `search_code`, which is
+  // of 18 -- past every file tool, next to the browser. Moved beside `Grep`, which is
   // what it competes with: both answer "where is this used", one by text and one by meaning.
   // Free, and unmeasured: no claim is made here that position is what routes the choice.
   // `web` sits beside the search family for the same unmeasured reason: it answers "find
-  // out", and the model reaching for information should meet it before run_command.
+  // out", and the model reaching for information should meet it before Bash.
   // `delegateTool` earns its ~1,020 prompt tokens now, and it did not always: the model
   // never picks it by judgement (0 delegate calls across 72 tool calls in two real
   // turns, spike/delegate-inturn-probe.mts), so for a while it was built but not
@@ -83,7 +83,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   // judgement, role and cost framings all went 0/6. The paragraph ships in
   // `buildSystemPrompt` under `delegation:`, which is computed from THIS registration —
   // remove the tool and the paragraph goes with it.
-  for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webTool, csharpNavTool, databaseTool,
+  for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webSearchTool, webFetchTool, csharpNavTool, databaseTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, runCommandTool, sqlDeployTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
                    symbolOutlineTool, browserTool, useSkillTool, rememberTool, recallTool, sessionsTool,

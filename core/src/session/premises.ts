@@ -94,7 +94,7 @@ const MAX_QUOTE_CHARS = 600
 /** Past this the model is touring the codebase rather than naming what it depends on. */
 const MAX_PREMISES = 5
 
-/** Matched to `read_file`'s own ceiling on purpose: below it, the model can open the file and
+/** Matched to `Read`'s own ceiling on purpose: below it, the model can open the file and
  * quote from it, so anything this check refuses to read is a file it would then wrongly
  * report as an unreadable PATH — sending the model to fix a name that was right. */
 const MAX_FILE_BYTES = 10 * 1024 * 1024

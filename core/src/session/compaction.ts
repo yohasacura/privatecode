@@ -92,7 +92,7 @@ Write every word of the briefing IN ENGLISH, whatever language the conversation 
  * Drops the BODIES of reads that later tail messages supersede — the safe subset of the
  * collapse-swap idea, running only where the cache is being rebuilt anyway.
  *
- * A `read_file` result whose path is read AGAIN later in the tail, or edited later in the
+ * A `Read` result whose path is read AGAIN later in the tail, or edited later in the
  * tail, is dead weight: the model's current belief about that file comes from the later
  * message, and the earlier bytes only pad the window. Measured motivation: superseded
  * reads were ~30% of peak prompt on long recorded sessions. This runs at a compaction
@@ -121,7 +121,7 @@ export function collapseSupersededReads(tail: ChatMessage[]): ChatMessage[] {
   tail.forEach((m, i) => {
     if (m.role === 'tool' && m.tool_call_id !== undefined) {
       const call = calls.get(m.tool_call_id)
-      if (call?.name === 'read_file' && call.path !== null) lastReadAt.set(call.path, i)
+      if (call?.name === 'Read' && call.path !== null) lastReadAt.set(call.path, i)
     }
     for (const c of m.tool_calls ?? []) {
       const call = calls.get(c.id)
@@ -134,7 +134,7 @@ export function collapseSupersededReads(tail: ChatMessage[]): ChatMessage[] {
     if (m.role !== 'tool' || m.tool_call_id === undefined || typeof m.content !== 'string') return m
     if (m.content.length < COLLAPSE_MIN_CHARS) return m
     const call = calls.get(m.tool_call_id)
-    if (call?.name !== 'read_file' || call.path === null) return m
+    if (call?.name !== 'Read' || call.path === null) return m
     const rereadLater = (lastReadAt.get(call.path) ?? i) > i
     const editedLater = (writtenAfter.get(call.path) ?? -1) > i
     if (!rereadLater && !editedLater) return m
@@ -142,14 +142,14 @@ export function collapseSupersededReads(tail: ChatMessage[]): ChatMessage[] {
       ...m,
       content: `[superseded read of ${call.path}: the file was ${editedLater ? 'edited' : 're-read'} ` +
         'later in this conversation — the current content is in the later message, or one ' +
-        'read_file away. The original bytes were dropped at compaction.]',
+        'Read away. The original bytes were dropped at compaction.]',
     }
   })
 }
 
 /** The write family, matched by call NAME because this module must not import the
  * session's own registry. Kept in sync with `session.ts`'s WRITE_TOOLS by the test. */
-const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['edit_file', 'write_file', 'move_file', 'delete_file'])
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['Edit', 'Write', 'move_file', 'delete_file'])
 
 /** A read smaller than this is cheaper to keep than to explain away. */
 const COLLAPSE_MIN_CHARS = 600
@@ -455,7 +455,7 @@ function clipToBudget(message: ChatMessage, maxTailTokens: number): ChatMessage 
     content:
       `${content.slice(0, limit)}\n\n[...this message was ${content.length} characters and ` +
       'was clipped here so the conversation fits in the context window. Read the file again ' +
-      'with read_file if you need the rest.]',
+      'with Read if you need the rest.]',
   }
 }
 
@@ -465,9 +465,9 @@ const CHARS_PER_TOKEN = 4
 // --- The continuation inventory --------------------------------------------------------
 
 /** Tools whose successful call means "the model has looked at this path". */
-const SEEN_TOOLS = new Set(['read_file', 'symbol_outline'])
+const SEEN_TOOLS = new Set(['Read', 'symbol_outline'])
 /** Tools whose successful call means "the model changed this path". */
-const CHANGED_TOOLS = new Set(['edit_file', 'write_file', 'move_file', 'delete_file'])
+const CHANGED_TOOLS = new Set(['Edit', 'Write', 'move_file', 'delete_file'])
 /** Permanent context, so bounded. Past this the list stops being an aid and becomes noise. */
 const MAX_INVENTORY_PATHS = 40
 
@@ -501,7 +501,7 @@ function listOf(paths: readonly string[]): string {
  * CONTENTS are genuinely gone from the context, so re-reading is often the correct move, and
  * an instruction not to would have the model working from knowledge it no longer has. It was
  * already measured once being efficient on its own — answering a counting task with
- * `search_code` instead of re-reading twenty files. What it lacks is not discipline, it is
+ * `Grep` instead of re-reading twenty files. What it lacks is not discipline, it is
  * the list: which paths it has already been through, so it can re-acquire the one it needs
  * narrowly instead of walking the tree again.
  */
@@ -575,12 +575,12 @@ function readBodies(
       const hunks = diffsByPath?.get(rel)
       block = hunks !== undefined
         ? `--- ${rel} [${text.length} chars on disk — too big to carry whole. ` +
-          'The regions this session edited (oldest first); read_file for anything outside them:]\n' +
+          'The regions this session edited (oldest first); Read for anything outside them:]\n' +
           (hunks.length > MAX_CARRIED_FILE
             ? `[... earlier edits omitted]\n${hunks.slice(hunks.length - MAX_CARRIED_FILE)}`
             : hunks)
         : `--- ${rel} [${text.length} chars on disk — too big to carry whole. ` +
-          `Its first ${MAX_CARRIED_FILE} chars; read_file for the rest:]\n${text.slice(0, MAX_CARRIED_FILE)}`
+          `Its first ${MAX_CARRIED_FILE} chars; Read for the rest:]\n${text.slice(0, MAX_CARRIED_FILE)}`
     }
     if (spent + block.length > budget) break
     blocks.push(block)
@@ -639,7 +639,7 @@ export function continuationInventory(
   if (seenOnly.length > 0) {
     parts.push(
       'Files you have already opened in this session. Their contents are NOT in context any ' +
-      'more — if you need one again, prefer search_code or a line range over reading the ' +
+      'more — if you need one again, prefer Grep or a line range over reading the ' +
       'whole file:',
       listOf(seenOnly),
     )

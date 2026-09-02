@@ -18,7 +18,7 @@ import { createToolset } from '../../src/tools/default-set.js'
  * through the context).
  *
  * The task is deliberately read-only plus ONE write. If the task also edited every file, a
- * post-swap re-read would be CORRECT behaviour — edit_file needs the current text to build
+ * post-swap re-read would be CORRECT behaviour — Edit needs the current text to build
  * its search block — and the measurement would count necessary work as waste. Read-only, any
  * re-read of an already-read path is pure re-acquisition.
  */
@@ -90,10 +90,10 @@ const session = new Session({
       // total and the "re-read" figure (a refused call re-issued next step looked like a
       // re-read of a file that was never read).
       console.log(`${at()}  [${step}] ${name} ${target}`)
-      if (name === 'read_file') pendingRead = target
+      if (name === 'Read') pendingRead = target
     },
     onToolResult: (name, result) => {
-      if (name !== 'read_file' || pendingRead === '') return
+      if (name !== 'Read' || pendingRead === '') return
       if (!result.content.startsWith('Not run:')) {
         reads.push({ step, path: pendingRead, afterSwap: swaps })
       }
@@ -130,9 +130,9 @@ for (let sw = 1; sw <= swaps; sw++) {
 const uniquePaths = new Set(reads.map((r) => r.path)).size
 console.log(`total: ${reads.length} reads over ${uniquePaths} unique files, ${FILES} files exist`)
 // The ARTIFACT, checked before the workspace is deleted. The first two runs of this probe
-// measured read_file counts as a proxy for task completion and threw the inventory away
+// measured Read counts as a proxy for task completion and threw the inventory away
 // unread — which produced a wrong conclusion in the ledger: 'the model shrank the task'.
-// It had not. It counted exports with search_code instead of reading 60 KB files, and the
+// It had not. It counted exports with Grep instead of reading 60 KB files, and the
 // proxy could not see that. The artifact is the only honest completion measure.
 if (existsSync(join(root, 'INVENTORY.md'))) {
   const inv = readFileSync(join(root, 'INVENTORY.md'), 'utf8')

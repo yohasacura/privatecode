@@ -96,7 +96,7 @@ function lastIdOfKind(items: readonly ChatItem[], kind: ChatItem['kind']): numbe
  * 2. **Nothing animates that isn't happening.** Every live affordance is driven by
  *    `item.done` / `item.result === undefined`, both of which the reducer now closes on
  *    every path a step can end. There is no "animate until something else replaces me".
- * 3. **A change shows as a change.** `edit_file`/`write_file` render an inline coloured
+ * 3. **A change shows as a change.** `Edit`/`Write` render an inline coloured
  *    diff at the point in the conversation where the model made it — not as a summary line
  *    pointing at a panel somewhere else.
  *

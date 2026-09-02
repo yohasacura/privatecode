@@ -7,7 +7,7 @@ export interface AskUserArgs {
 }
 
 export const askUserTool: Tool<AskUserArgs> = {
-  name: 'ask_user',
+  name: 'AskUserQuestion',
   readOnly: true,
   description:
     'Ask the user a question with suggested options. The host always accepts free text in addition ' +
@@ -76,7 +76,7 @@ export const askUserTool: Tool<AskUserArgs> = {
     if (!ctx.interaction) {
       return {
         ok: false,
-        content: 'ask_user is not available in this session (no interactive host); decide yourself and state the assumption.',
+        content: 'AskUserQuestion is not available in this session (no interactive host); decide yourself and state the assumption.',
       }
     }
 

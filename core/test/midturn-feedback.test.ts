@@ -38,7 +38,7 @@ const write = (n: number) => ({
       role: 'assistant',
       tool_calls: [{
         id: `c${n}`, type: 'function',
-        function: { name: 'write_file', arguments: JSON.stringify({ path: `f${n}.txt`, content: `${n}` }) },
+        function: { name: 'Write', arguments: JSON.stringify({ path: `f${n}.txt`, content: `${n}` }) },
       }],
     },
     finish_reason: 'tool_calls',
@@ -135,7 +135,7 @@ test('the model is told when its context is filling, once per threshold', async 
   const distinct = new Set(notices.map((m) => m.content))
   expect(distinct.size).toBeGreaterThan(0)
   expect([...distinct].join(' ')).toMatch(/remember/)
-  expect([...distinct].join(' ')).toMatch(/todo_write/)
+  expect([...distinct].join(' ')).toMatch(/TodoWrite/)
   // Never the same threshold twice.
   expect(distinct.size).toBeLessThanOrEqual(3)
 })
@@ -205,7 +205,7 @@ test('the check runs right after the step that wrote, and a repeat failure costs
 
   const messages = session.messages()
   const lastWrite = messages.map((m, i) => ({ m, i }))
-    .filter(({ m }) => (m.tool_calls ?? []).some((c) => c.function.name === 'write_file'))
+    .filter(({ m }) => (m.tool_calls ?? []).some((c) => c.function.name === 'Write'))
     .map(({ i }) => i)
     .pop()
   expect(lastWrite).toBeDefined()

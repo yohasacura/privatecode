@@ -1,6 +1,6 @@
 import { Lexer, type Token, type Tokens } from 'marked'
 import type { ComponentChildren, VNode } from 'preact'
-import { useMemo, useState } from 'preact/hooks'
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { memo } from 'preact/compat'
 import { highlight } from './highlight'
 
@@ -85,6 +85,7 @@ function renderBlock(t: Token, key: string): ComponentChildren {
     }
     case 'code': {
       const c = t as Tokens.Code
+      if ((c.lang ?? '').trim().toLowerCase() === 'mermaid') return <MermaidBlock key={key} code={c.text} />
       return <CodeBlock key={key} code={c.text} lang={c.lang ?? ''} />
     }
     case 'blockquote':
@@ -150,6 +151,54 @@ function renderBlock(t: Token, key: string): ComponentChildren {
  * exists because the single most common thing anyone does with a code block a model wrote
  * is take it — and hand-selecting text inside a scrolling transcript is miserable.
  */
+/**
+ * A ```mermaid block, rendered as a diagram (the `mermaid` skill writes them).
+ *
+ * The one place model-authored text reaches an HTML sink, and it is bounded on both
+ * sides: mermaid runs with `securityLevel: 'strict'` (labels are escaped, no HTML labels,
+ * no click handlers), the SVG it returns is what goes in, and a source that does not parse
+ * shows as the code block it was, with the parser's message under it. The library is
+ * loaded on first use only — it is large, and most transcripts never contain a diagram.
+ * Rendering waits for the text to stop changing so a diagram still streaming in does not
+ * flash a parse error per token.
+ */
+function MermaidBlock({ code }: { code: string }): VNode {
+  const host = useRef<HTMLDivElement>(null)
+  const [error, setError] = useState<string | null>(null)
+  const seq = useRef(0)
+  useEffect(() => {
+    const mine = ++seq.current
+    setError(null)
+    const timer = setTimeout(() => {
+      void import('mermaid').then(async ({ default: mermaid }) => {
+        const dark = document.documentElement.dataset['theme'] === 'dark' ||
+          (document.documentElement.dataset['theme'] === undefined && window.matchMedia?.('(prefers-color-scheme: dark)').matches)
+        mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'neutral', htmlLabels: false, flowchart: { htmlLabels: false } })
+        const { svg } = await mermaid.render(`pc-mermaid-${mine}-${Date.now()}`, code)
+        if (mine !== seq.current || host.current === null) return
+        host.current.innerHTML = svg
+      }).catch((e: unknown) => {
+        if (mine !== seq.current) return
+        setError(e instanceof Error ? e.message.split('\n')[0] ?? 'could not render' : String(e))
+      })
+    }, 300)
+    return () => { clearTimeout(timer) }
+  }, [code])
+  return (
+    <div class="md-code" data-mermaid="">
+      <div class="md-code-bar"><span class="md-lang">mermaid</span></div>
+      {error === null
+        ? <div ref={host} class="overflow-x-auto p-3" />
+        : (
+          <>
+            <pre><code>{code}</code></pre>
+            <div class="px-3 pb-2 text-[11.5px] text-red" data-mermaid-error="">{error}</div>
+          </>
+        )}
+    </div>
+  )
+}
+
 function CodeBlock({ code, lang }: { code: string; lang: string }): VNode {
   const [copied, setCopied] = useState(false)
   // Re-tokenising a finished block on every render of an unrelated streaming message was

@@ -47,7 +47,7 @@ const ACTIONS_NEEDING_PAGE: ReadonlySet<BrowserAction> =
  *
  * `javascript:` is the one that matters: it is not a navigation at all, it runs script in
  * whatever page is currently open, while an approval dialog would show it in the "opening a
- * URL" shape. `file:` is refused because reading local files is what `read_file` is for, and
+ * URL" shape. `file:` is refused because reading local files is what `Read` is for, and
  * it is jailed to the workspace while a browser is not.
  */
 const ALLOWED_SCHEMES = ['http:', 'https:', 'about:']
@@ -145,7 +145,7 @@ export const browserTool: Tool<BrowserArgs> = {
           ok: false,
           error: `${parsed.protocol} URLs are not allowed here (only ${ALLOWED_SCHEMES.join(', ')}). ` +
             (parsed.protocol === 'file:'
-              ? 'Use read_file for local files.'
+              ? 'Use Read for local files.'
               : 'A javascript: URL runs script in whatever page is open rather than navigating; ' +
                 'use the eval action, which says what it is.'),
         }
@@ -349,7 +349,7 @@ async function run(args: BrowserArgs, page: Page, ctx: ToolContext): Promise<Too
       return {
         ok: true,
         // Stated flatly, because the alternative is the model spending a step trying to
-        // read_file a PNG: this build has no vision tower (docs/DESIGN.md §6).
+        // Read a PNG: this build has no vision tower (docs/DESIGN.md §6).
         content: `Screenshot saved to ${relative} for the user to look at. ` +
           'You cannot read images — use action="read" to see what is on the page.',
         display: relative,

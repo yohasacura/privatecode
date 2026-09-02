@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   }
 
   // PRIVATECODE_RG / PRIVATECODE_TS_WASM_DIR (the vendored ripgrep binary and tree-sitter
-  // wasm grammars -- see search_code and symbol_outline) are read by the tools themselves
+  // wasm grammars -- see Grep and symbol_outline) are read by the tools themselves
   // wherever they already look for them. This entry point does not set, override, or guess
   // at either one: locating the vendored assets is the launching shell's job (T4), not the
   // sidecar's -- a sidecar that tried to guess a path would be exactly the kind of silent

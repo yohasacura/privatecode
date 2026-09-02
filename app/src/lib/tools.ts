@@ -36,43 +36,76 @@ export interface ToolPresentation {
   fromPath?: string
 }
 
+/**
+ * The tools' names before 2026-09-03, when they took Claude Code's. A session recorded
+ * before then replays through this file, so an old name is presented as the tool it was.
+ * Display only: the core's `permissions/rules.ts` reads the same names in settings files.
+ */
+const LEGACY_TOOL_NAMES: Record<string, string> = {
+  read_file: 'Read',
+  write_file: 'Write',
+  edit_file: 'Edit',
+  run_command: 'Bash',
+  find_files: 'Glob',
+  search_code: 'Grep',
+  todo_write: 'TodoWrite',
+  ask_user: 'AskUserQuestion',
+  use_skill: 'Skill',
+  delegate: 'Agent',
+  web: 'WebFetch',
+}
+
+/** The tool's current name, whatever a stored transcript called it. */
+export function toolName(name: string): string {
+  return LEGACY_TOOL_NAMES[name] ?? name
+}
+
 /** The write family, as the permission engine and the Changes tab both understand it. */
 export const WRITE_TOOLS: ReadonlySet<string> = new Set([
-  'edit_file', 'write_file', 'move_file', 'delete_file',
+  'Edit', 'Write', 'move_file', 'delete_file',
+  // Recorded sessions from before the rename.
+  'edit_file', 'write_file',
 ])
 
 const VERBS: Record<string, string> = {
-  read_file: 'Read',
+  Read: 'Read',
   list_dir: 'List',
-  find_files: 'Find',
-  search_code: 'Search',
+  Glob: 'Find',
+  Grep: 'Search',
   symbol_outline: 'Outline',
-  edit_file: 'Edit',
-  write_file: 'Write',
+  Edit: 'Edit',
+  Write: 'Write',
   move_file: 'Move',
   delete_file: 'Delete',
-  run_command: 'Run',
+  Bash: 'Run',
   background_task: 'Background',
   git_status: 'Git',
-  todo_write: 'Plan',
-  ask_user: 'Ask',
+  TodoWrite: 'Plan',
+  AskUserQuestion: 'Ask',
+  Skill: 'Skill',
+  Agent: 'Agent',
+  WebSearch: 'Search the web',
+  WebFetch: 'Fetch',
 }
 
 const KINDS: Record<string, ToolKind> = {
-  read_file: 'read',
+  Read: 'read',
   list_dir: 'read',
-  find_files: 'read',
-  search_code: 'read',
+  Glob: 'read',
+  Grep: 'read',
   symbol_outline: 'read',
   git_status: 'read',
-  edit_file: 'diff',
-  write_file: 'diff',
+  Skill: 'read',
+  WebSearch: 'read',
+  WebFetch: 'read',
+  Edit: 'diff',
+  Write: 'diff',
   move_file: 'fileop',
   delete_file: 'fileop',
-  run_command: 'command',
+  Bash: 'command',
   background_task: 'command',
-  todo_write: 'meta',
-  ask_user: 'meta',
+  TodoWrite: 'meta',
+  AskUserQuestion: 'meta',
 }
 
 function parseArgs(argsJson: string): Record<string, unknown> {
@@ -94,7 +127,7 @@ function str(o: Record<string, unknown>, key: string): string | null {
 /**
  * What a command card is labelled with.
  *
- * `run_command` takes a LIST now — the shape is what stops the model writing `&&` for a shell
+ * `Bash` takes a LIST now — the shape is what stops the model writing `&&` for a shell
  * that has none — so a card built from `args.command` alone went blank. Both are read, and
  * the string form stays because stored sessions are full of it: a transcript recorded before
  * the change is replayed through exactly this function.
@@ -139,7 +172,8 @@ function presentMcp(name: string, args: Record<string, unknown>): ToolPresentati
   }
 }
 
-export function presentTool(name: string, argsJson: string): ToolPresentation {
+export function presentTool(recorded: string, argsJson: string): ToolPresentation {
+  const name = toolName(recorded)
   const args = parseArgs(argsJson)
   const kind = KINDS[name] ?? 'other'
   const verb = VERBS[name] ?? name
@@ -173,10 +207,10 @@ export function presentTool(name: string, argsJson: string): ToolPresentation {
   if (name === 'git_status') {
     return { kind, verb, target: str(args, 'base') ?? 'status', path: null }
   }
-  if (name === 'todo_write') {
+  if (name === 'TodoWrite') {
     return { kind, verb, target: 'updated the task list', path: null }
   }
-  if (name === 'find_files') {
+  if (name === 'Glob') {
     // `glob` is the tool's only argument and a required one (find-files.ts), so nothing in
     // the generic chain at the bottom of this function ever matched it: every Find row in the
     // transcript rendered as a bare verb with nothing after it — no glob in the header, none
@@ -185,7 +219,7 @@ export function presentTool(name: string, argsJson: string): ToolPresentation {
     return { kind, verb, target: str(args, 'glob') ?? '', path: null }
   }
   // The two tools whose `path` names a DIRECTORY — always for `list_dir`, and for
-  // `search_code` whichever of the two the model chose (its schema documents the argument as
+  // `Grep` whichever of the two the model chose (its schema documents the argument as
   // "file or directory"). Returning it as `path` made the transcript render its "Open file"
   // button, which calls `fs.read`, which answers `… is a directory; use fs.tree`: a permanent
   // tab in the strip whose only content is that error. Neither offers a path rather than
@@ -193,7 +227,7 @@ export function presentTool(name: string, argsJson: string): ToolPresentation {
   if (name === 'list_dir') {
     return { kind, verb, target: str(args, 'path') ?? '', path: null }
   }
-  if (name === 'search_code') {
+  if (name === 'Grep') {
     // The regex is what the row is about; `path` only scopes the search, and the generic
     // `path ?? pattern` below showed the scope INSTEAD — a search narrowed to a subtree
     // displayed the subtree and never said what was looked for. Both, in that order.
@@ -202,6 +236,10 @@ export function presentTool(name: string, argsJson: string): ToolPresentation {
     const parts = [pattern, scope === null ? null : `in ${scope}`].filter((p) => p !== null)
     return { kind, verb, target: parts.join(' '), path: null }
   }
+
+  if (name === 'WebFetch') return { kind, verb, target: str(args, 'url') ?? '', path: null }
+  if (name === 'Skill') return { kind, verb, target: str(args, 'name') ?? '', path: null }
+  if (name === 'Agent') return { kind, verb, target: str(args, 'role') ?? '', path: null }
 
   const command = commandLabel(args)
   if (command !== null) return { kind, verb, target: command, path: null }

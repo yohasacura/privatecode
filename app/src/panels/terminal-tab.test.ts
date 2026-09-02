@@ -12,7 +12,7 @@ import { agentCommands, commandsKey } from './terminal-tab'
 
 function command(id: number, cmd: string, ok: boolean, content: string): ChatItem {
   return {
-    kind: 'tool', id, name: 'run_command', startedAtMs: id,
+    kind: 'tool', id, name: 'Bash', startedAtMs: id,
     args: JSON.stringify({ command: cmd }),
     result: { ok, preview: 'p', content, display: content },
   }
@@ -20,12 +20,12 @@ function command(id: number, cmd: string, ok: boolean, content: string): ChatIte
 
 describe('a command the step never executed', () => {
   it('is left out of the console entirely', () => {
-    // The batch `[edit_file x, run_command "npm test"]` where the edit fails: the command is
+    // The batch `[Edit x, Bash "npm test"]` where the edit fails: the command is
     // answered with the `Not run:` contract and never runs. Shown, it read as a row saying
     // `npm test` FAILED, with the refusal sentence as its output.
     const skipped = command(
       1, 'npm test', false,
-      'Not run: edit_file failed earlier in this step, so the calls after it were left alone.',
+      'Not run: Edit failed earlier in this step, so the calls after it were left alone.',
     )
     expect(agentCommands([skipped])).toEqual([])
   })
@@ -50,7 +50,7 @@ describe('a command the step never executed', () => {
 
   it('still shows one that is running, which has no result yet', () => {
     const running: ChatItem = {
-      kind: 'tool', id: 3, name: 'run_command', startedAtMs: 3,
+      kind: 'tool', id: 3, name: 'Bash', startedAtMs: 3,
       args: JSON.stringify({ command: 'npm run build' }),
     }
     expect(agentCommands([running]).map((l) => l.state)).toEqual(['running'])
@@ -76,7 +76,7 @@ describe('commandsKey', () => {
 
   it('moves when a command finishes, which changes no count but the resolved one', () => {
     const running: ChatItem = {
-      kind: 'tool', id: 2, name: 'run_command', startedAtMs: 2,
+      kind: 'tool', id: 2, name: 'Bash', startedAtMs: 2,
       args: JSON.stringify({ command: 'npm test' }),
     }
     const done = command(2, 'npm test', true, '$ npm test\nall good')

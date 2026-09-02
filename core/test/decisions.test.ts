@@ -18,10 +18,10 @@ beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'pc-decisions-')) })
 afterEach(() => { rmSync(root, { recursive: true, force: true }) })
 
 const request: ApprovalRequest = {
-  tool: 'run_command',
+  tool: 'Bash',
   summary: 'rm -rf build',
   detail: 'Run in PowerShell:\nrm -rf build',
-  suggestedRules: ['run_command(rm -rf build)', 'run_command(rm:*)'],
+  suggestedRules: ['Bash(rm -rf build)', 'Bash(rm:*)'],
 }
 
 describe('the queue file', () => {
@@ -29,11 +29,11 @@ describe('the queue file', () => {
     const q = new DecisionQueue(root)
     q.add({
       kind: 'approval', id: 'd1', at: '2026-08-04T02:00:00Z', sessionId: 's1',
-      tool: 'run_command', summary: 'npm test', detail: 'detail', suggestedRules: ['run_command'],
+      tool: 'Bash', summary: 'npm test', detail: 'detail', suggestedRules: ['Bash'],
     })
     const pending = q.pending()
     expect(pending).toHaveLength(1)
-    expect(pending[0]).toMatchObject({ kind: 'approval', tool: 'run_command', summary: 'npm test' })
+    expect(pending[0]).toMatchObject({ kind: 'approval', tool: 'Bash', summary: 'npm test' })
   })
 
   test('a resolved entry leaves the pending list but stays in the record', () => {
@@ -112,7 +112,7 @@ describe('the queueing port', () => {
   })
 
   test('an unanswered question tells the model to state its assumption, not to guess quietly', async () => {
-    // ask_user exists so the model does not guess. Being told to guess is a real trade, and
+    // AskUserQuestion exists so the model does not guess. Being told to guess is a real trade, and
     // it is stated as one: the assumption has to be visible in the reply.
     const queue = new DecisionQueue(root)
     const port = queueingPort(neverAnswers, { queue, sessionId: 's1', approvalTimeoutMs: 30 })
@@ -171,7 +171,7 @@ describe('the same question asked twice', () => {
     const queue = new DecisionQueue(root)
     const entry = {
       kind: 'approval' as const, id: 'a', at: 'now', sessionId: 's1',
-      tool: 'run_command', summary: 'npm test', detail: 'd', suggestedRules: [],
+      tool: 'Bash', summary: 'npm test', detail: 'd', suggestedRules: [],
     }
     queue.add(entry)
     queue.resolve({ id: 'a', verdict: 'deny' })
@@ -201,7 +201,7 @@ describe('the change signal', () => {
     const queue = new DecisionQueue(root)
     const entry = {
       kind: 'approval' as const, id: 'a', at: 'now', sessionId: 's1',
-      tool: 'run_command', summary: 'npm test', detail: 'd', suggestedRules: [],
+      tool: 'Bash', summary: 'npm test', detail: 'd', suggestedRules: [],
     }
     queue.add(entry)
     const counts: number[] = []

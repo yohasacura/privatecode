@@ -3,7 +3,7 @@
  * back, and that nothing in the model's view of the file can tell it about: the file's
  * line endings and its UTF-8 byte-order mark.
  *
- * `read_file` splits on /\r?\n/ and (now) drops the BOM, so what the model sees is always
+ * `Read` splits on /\r?\n/ and (now) drops the BOM, so what the model sees is always
  * LF-joined and always BOM-less. A model therefore cannot supply CRLF or a BOM even in
  * principle, which is why restoring them belongs here, on the write path, and not in a
  * prompt. Getting it wrong is not cosmetic: rewriting every line ending turns a one-line
@@ -11,7 +11,7 @@
  * safety net, so a whole-file diff is that net switched off. MSBuild reads the BOM as
  * meaningful, and this user's stack is C# and TypeScript on Windows.
  *
- * Shared by `edit_file` and `write_file`. Deliberately shared rather than duplicated: the
+ * Shared by `Edit` and `Write`. Deliberately shared rather than duplicated: the
  * two tools must agree byte-for-byte about what "the file's own shape" means, or the same
  * file changed by the two paths ends up with two different shapes.
  */
@@ -39,12 +39,12 @@ function countOf(haystack: string, needle: string): number {
 /**
  * The text's line endings, by count.
  *
- * A text with no newline at all reports LF with both counts zero. For `edit_file` that
+ * A text with no newline at all reports LF with both counts zero. For `Edit` that
  * costs nothing — there is no ending to preserve, and any ending the replacement
- * introduces has no precedent in the file to contradict — and `write_file` checks the
+ * introduces has no precedent in the file to contradict — and `Write` checks the
  * counts rather than the `eol` field precisely so it does not impose LF on a file that
  * never expressed a preference. Lone carriage returns are not counted as endings —
- * `read_file` does not treat them as line breaks either — and survive the round trip
+ * `Read` does not treat them as line breaks either — and survive the round trip
  * untouched.
  */
 export function detectEndings(text: string): Endings {

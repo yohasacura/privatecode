@@ -84,7 +84,7 @@ test('the catalogue carries descriptions and NOT bodies — the whole economics 
   expect(loaded.catalogue).not.toContain('SECRET')
   // And the frame has to tell the model to open it, or a one-line label becomes the whole
   // procedure the model acts on.
-  expect(loaded.catalogue).toContain('use_skill')
+  expect(loaded.catalogue).toContain('Skill')
 })
 
 test("folded frontmatter parses — it is how real skills in the wild write a two-sentence description", () => {
@@ -134,7 +134,7 @@ test('the frontmatter name is reported when it disagrees with the folder, and th
   expect(loaded.problems.some((p) => p.includes('copied-from-elsewhere'))).toBe(true)
 })
 
-test('use_skill returns the body without repeating the frontmatter the model already saw', async () => {
+test('Skill returns the body without repeating the frontmatter the model already saw', async () => {
   writeSkill(projectSkillsDir(root), 'review', [
     '---', 'description: Review a diff.', '---', '# Review', 'Read the diff twice.',
   ].join('\n'))
@@ -197,7 +197,7 @@ test('a session with no skills says so rather than pretending the name was wrong
   expect(r.content).toContain('no skills loaded')
 })
 
-test('a real turn: the catalogue reaches message 0 and use_skill returns the body', async () => {
+test('a real turn: the catalogue reaches message 0 and Skill returns the body', async () => {
   // The unit tests above prove the loader and the tool. This one exists for the seam
   // between them — Session freezing the catalogue into the system message, and Session
   // putting the skill LIST into the tool context — which is three files of wiring that no
@@ -223,7 +223,7 @@ test('a real turn: the catalogue reaches message 0 and use_skill returns the bod
             role: 'assistant',
             tool_calls: [{
               id: 'c1', type: 'function',
-              function: { name: 'use_skill', arguments: JSON.stringify({ name: 'cut-release' }) },
+              function: { name: 'Skill', arguments: JSON.stringify({ name: 'cut-release' }) },
             }],
           },
           finish_reason: 'tool_calls',

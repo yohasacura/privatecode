@@ -37,7 +37,7 @@ export interface CommandRecord {
    * Whether the command actually executed.
    *
    * The rehearsal caught this being missing, and it was the worst kind of missing: a
-   * `run_command` that the permission gate DEFERRED was written into the log under
+   * `Bash` that the permission gate DEFERRED was written into the log under
    * "**Ran:** … → failed", so a person reading in the morning would have concluded the
    * typecheck was run and broken. A blocked call is worth reporting — it is often the most
    * interesting thing that happened — but never under the same heading as one that ran.
@@ -215,7 +215,7 @@ export class WorkLog {
 /**
  * Pulls the command records out of a turn's tool calls.
  *
- * Reads the exit code out of `run_command`'s first result line rather than re-running
+ * Reads the exit code out of `Bash`'s first result line rather than re-running
  * anything: that line is `exit 0 in 1.2 s` by construction (see `tools/run-command.ts`), and
  * the alternative — trusting the model's prose about whether the tests passed — is exactly
  * what this file exists not to do.
@@ -242,7 +242,7 @@ export function commandsFrom(
 ): CommandRecord[] {
   const records: CommandRecord[] = []
   for (const call of calls) {
-    if (call.name !== 'run_command' && call.name !== 'background_task') continue
+    if (call.name !== 'Bash' && call.name !== 'background_task') continue
     let command = ''
     try {
       const parsed = JSON.parse(call.args) as { command?: unknown }

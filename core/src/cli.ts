@@ -402,7 +402,7 @@ async function main() {
 // (surfacing as exit code 127) even though the turn itself had already finished cleanly.
 //
 // What is and is not established: both crashing runs involved a step that used
-// search_code, i.e. had spawned an execa child process; a read_file-only plan run, with
+// Grep, i.e. had spawned an execa child process; a Read-only plan run, with
 // the same 90 s step AbortSignal.timeout() armed and ~88 s of it still unexpired, exited
 // 0 cleanly three times out of three. Minimal repros of "an armed AbortSignal.timeout()
 // plus a pending fetch, then process.exit()" were clean, and so were the same plus a

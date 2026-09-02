@@ -4,7 +4,7 @@
  * MCP is JSON-RPC 2.0 with a handshake and a small set of methods. Only the tool-facing
  * ones are here: `initialize`, `notifications/initialized`, `tools/list` and `tools/call`.
  * Prompts, resources, sampling and roots are deliberately absent — this project has its own
- * answer for each (slash commands, `read_file`, one local model, the workspace jail), and a
+ * answer for each (slash commands, `Read`, one local model, the workspace jail), and a
  * half-implemented capability is worse than an absent one because a server will believe it.
  */
 

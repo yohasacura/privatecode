@@ -22,7 +22,7 @@ const ACTIONS: readonly DatabaseArgs['action'][] = ['schema', 'describe', 'query
  * `readOnly`, and meant literally: the helper behind it has no operation that changes
  * anything, `query` refuses a statement carrying a writing keyword, and whatever survives
  * that runs inside a transaction that is always rolled back. Available in plan mode for the
- * same reason `use_skill` is — understanding is most of what planning is.
+ * same reason `Skill` is — understanding is most of what planning is.
  *
  * A workspace with no database configured is the ordinary case and says so plainly, naming
  * the file to write, rather than failing.

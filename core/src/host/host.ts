@@ -21,7 +21,7 @@ import { createHookEngine, type HookEngine } from '../hooks/engine.js'
 import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory } from '../memory/project-memory.js'
 import { loadProjectNotes } from '../memory/project-notes.js'
-import { loadSkills, projectSkillsDir, userSkillsDir, type SkillSource } from '../skills/skills.js'
+import { bundledSkillSources, loadSkills, projectSkillsDir, userSkillsDir, type SkillSource } from '../skills/skills.js'
 import { stopNavProcess } from '../csharp/nav-process.js'
 import { stopSqlProcess } from '../sql/sql-process.js'
 import { expandCommand, listCommands, type CommandSource } from '../commands/custom.js'
@@ -30,8 +30,8 @@ import { createDelegateTool } from '../tools/delegate.js'
 import {
   PluginStore, SUGGESTED_MARKETPLACES, adoptDeclaredMarketplaces, describeMarketplaceSource, describeSource,
   effectivePlugins, ensureDefaultMarketplaces, ensureFetched, loadPluginComponents, loadPluginSettings, mergeServers,
-  parsePluginCommand, readCatalog, runPluginCommand, standaloneComponents, updateMarketplace,
-  type PluginComponents, type StandaloneComponents,
+  parsePluginCommand, readCatalog, runPluginCommand, updateMarketplace,
+  type PluginComponents,
 } from '../plugins/index.js'
 import {
   DEFAULT_TRIGGER_TOKENS, Session, type GateProfile, type SessionOptions,
@@ -241,7 +241,7 @@ function modelNameFrom(modelPath: string | undefined): string | null {
 /** Mirrors `tools/read-file.ts`'s `MAX_LINES`/`MAX_CHARS` (2000 lines / 60,000 chars) --
  * RESTATED here, not imported: those constants are not exported from read-file.ts, and this
  * task's file list does not include changing that module. `fs.read` is intentionally a much
- * thinner cousin of `read_file` (no start_line/end_line, no binary sniff, no BOM handling --
+ * thinner cousin of `Read` (no start_line/end_line, no binary sniff, no BOM handling --
  * see `fsRead`'s own doc comment for why), but the two caps that bound how much of a file one
  * call can hand back are worth keeping numerically identical so a host and the model never
  * disagree about "how much of this file is a lot". */
@@ -376,13 +376,11 @@ export class SessionHost {
   private mcp: McpManager | undefined
 
   /**
-   * The plugin store, what the enabled plugins contribute to this workspace, and what Claude
-   * Code's own folders (`.claude/skills` and the rest) contribute — loaded in `init` and
-   * again by `reloadPlugins`. See docs/PLUGINS-2026-09.md §4.
+   * The plugin store and what the enabled plugins contribute to this workspace — loaded in
+   * `init` and again by `reloadPlugins`. See docs/PLUGINS-2026-09.md §4.
    */
   private pluginStore: PluginStore | undefined
   private plugins: PluginComponents | undefined
-  private standalone: StandaloneComponents | undefined
   /** Problems from the last plugin load, reported beside `externalProblems`. */
   private pluginProblems: string[] = []
   /** The hook engine of the CURRENT session, kept so SessionEnd can be told. */
@@ -633,8 +631,8 @@ export class SessionHost {
     this.client = new LlamaClient({ baseUrl: params.serverUrl, model: this.model })
     const browserSettings = loadBrowserSettings(params.workspaceRoot)
     this.toolset = createToolset({ browser: browserSettings.options, workspaceRoot: params.workspaceRoot })
-    // The plugins enabled for this workspace, and Claude Code's own folders: their skills,
-    // commands, agents, servers and hooks arrive through the loaders that already exist.
+    // The plugins enabled for this workspace: their skills, commands, agents, servers and
+    // hooks arrive through the loaders that already exist.
     this.pluginProblems = this.loadPlugins(params.workspaceRoot)
     this.store = new SessionStore(params.workspaceRoot)
     this.serverUrl = params.serverUrl
@@ -726,9 +724,9 @@ export class SessionHost {
   }
 
   /**
-   * Reads the plugin store and what the enabled plugins contribute to this workspace, and
-   * Claude Code's standalone folders. The `delegate` tool is rebuilt with the agents found,
-   * so the model can name them. Returns the problems; never throws.
+   * Reads the plugin store and what the enabled plugins contribute to this workspace. The
+   * `Agent` tool is rebuilt with the agents found, so the model can name them. Returns the
+   * problems; never throws.
    */
   private loadPlugins(workspaceRoot: string): string[] {
     const store = this.pluginStore ?? new PluginStore()
@@ -741,19 +739,17 @@ export class SessionHost {
       problems.push(`plugins: the store at ${store.root} could not be prepared: ${describeFailure(e)}`)
     }
     const plugins = loadPluginComponents(store, workspaceRoot)
-    const standalone = standaloneComponents(workspaceRoot)
     this.plugins = plugins
-    this.standalone = standalone
-    problems.push(...plugins.problems, ...plugins.ignored, ...standalone.problems)
+    problems.push(...plugins.problems, ...plugins.ignored)
     this.registerDelegate()
     return problems
   }
 
-  /** The `delegate` tool with every role this workspace has: built-in, `.claude/agents/`, the plugins'. */
+  /** The `Agent` tool with every role this workspace has: the built-in ones and the plugins'. */
   private registerDelegate(): void {
     if (this.toolset === undefined) return
     const { registry } = this.toolset
-    registry.unregister('delegate')
+    registry.unregister('Agent')
     registry.register(createDelegateTool([...ROLES, ...this.roles()]))
   }
 
@@ -761,7 +757,7 @@ export class SessionHost {
   private roles(): SubAgentRole[] {
     const seen = new Set(ROLES.map((r) => r.name))
     const out: SubAgentRole[] = []
-    for (const role of [...(this.standalone?.agents ?? []), ...(this.plugins?.agents ?? [])]) {
+    for (const role of this.plugins?.agents ?? []) {
       if (seen.has(role.name)) continue
       seen.add(role.name)
       out.push(role)
@@ -769,19 +765,20 @@ export class SessionHost {
     return out
   }
 
+  /** The bundled skills first (lowest precedence), then the plugins'. */
   private skillSources(): SkillSource[] {
-    return [...(this.standalone?.skillSources ?? []), ...(this.plugins?.skillSources ?? [])]
+    return [...bundledSkillSources(), ...(this.plugins?.skillSources ?? [])]
   }
 
   /**
-   * Where `/name` may come from besides `.privatecode/commands/`: Claude Code's folders, the
+   * Where `/name` may come from besides `.privatecode/commands/`: the bundled skills, the
    * plugins', and PrivateCode's own two skill folders — a skill is a slash command too, as in
    * Claude Code, and ours are listed last so they win a clash.
    */
   private commandSources(): CommandSource[] {
     const root = this.workspaceRoot
     return [
-      ...(this.standalone?.commandSources ?? []),
+      ...bundledSkillSources().map((s): CommandSource => ({ dir: s.dir, kind: 'skills', label: s.label ?? 'bundled skills' })),
       ...(this.plugins?.commandSources ?? []),
       { dir: userSkillsDir(), kind: 'skills', label: 'skills (user)' },
       ...(root !== undefined ? [{ dir: projectSkillsDir(root), kind: 'skills' as const, label: `${PRIVATE_DIR}/skills` }] : []),
@@ -791,7 +788,7 @@ export class SessionHost {
   /**
    * `/reload-plugins`: re-reads the enabled set and applies what a running workspace can
    * take — the servers of plugins now enabled connect, those of plugins now disabled go,
-   * commands and `delegate` roles change at once. Skills are listed in a session's message
+   * commands and `Agent` roles change at once. Skills are listed in a session's message
    * 0, so a new skill reaches the NEXT session; the report says so.
    */
   async reloadPlugins(): Promise<{ problems: string[]; connected: string[]; closed: string[]; plugins: string[] }> {
@@ -827,13 +824,12 @@ export class SessionHost {
    * restarting a set of server processes on every click of Resume would be slow, visible,
    * and would drop whatever state those servers were holding.
    *
-   * Claude Code's files first (`.mcp.json`, `.claude/settings*.json`), then the enabled
-   * plugins', then PrivateCode's own settings — later wins by name, so a server defined in
-   * both `.mcp.json` and `.privatecode/settings.json` is the latter's.
+   * The enabled plugins' servers first, then PrivateCode's own settings — later wins by
+   * name, so a server defined in `.privatecode/settings.json` is the one that runs.
    */
   private async connectMcpServers(workspaceRoot: string): Promise<string[]> {
     const { servers, problems } = loadServers(workspaceRoot)
-    const all = mergeServers(this.standalone?.mcpServers ?? [], this.plugins?.mcpServers ?? [], servers)
+    const all = mergeServers(this.plugins?.mcpServers ?? [], servers)
     if (all.length === 0) return problems
     const manager = new McpManager()
     this.mcp = manager
@@ -1054,7 +1050,7 @@ export class SessionHost {
       // one shape where this grant would exceed the exact command — so such a command
       // simply keeps its approval card.
       if (command.trimEnd().endsWith(':*')) continue
-      engine.addSessionRule(`run_command(${command})`)
+      engine.addSessionRule(`Bash(${command})`)
     }
 
     const sessionOpts: SessionOptions = {
@@ -1105,13 +1101,12 @@ export class SessionHost {
       sessionOpts.rerankRepoMap = (focus) => renderIndex(index, this.mapChars, focus, this.referenceEdges)
     }
     if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
-    // Every hook this workspace has — PrivateCode's own `[{ after, command }]` list, the
-    // Claude Code `hooks` objects in `.claude/settings*.json`, the enabled plugins' — in one
-    // engine (docs/PLUGINS-2026-09.md §5). Built per session so a hook's failure count and
-    // its session id are the session's.
+    // Every hook this workspace has — PrivateCode's own `[{ after, command }]` list and the
+    // enabled plugins' — in one engine (docs/PLUGINS-2026-09.md §5). Built per session so a
+    // hook's failure count and its session id are the session's.
     const hookEngine = createHookEngine({
       legacy: hooking.hooks,
-      sources: [...(this.standalone?.hookSources ?? []), ...(this.plugins?.hookSources ?? [])],
+      sources: this.plugins?.hookSources ?? [],
       workspace,
       sessionId: () => this.session?.id ?? resumeId ?? 'new',
       permissionMode: () => this.session?.mode ?? profile.mode ?? 'normal',
@@ -1254,7 +1249,7 @@ export class SessionHost {
     for (const p of problems) this.emit('settings.problem', { text: p })
 
     // The plan panel after a restart: the store reloaded state/plan.json, but the only
-    // `todos` emit lived inside todo_write — so a resumed session showed an empty Plan
+    // `todos` emit lived inside TodoWrite — so a resumed session showed an empty Plan
     // card over a live plan until the model happened to touch it. Deferred past this
     // reply on purpose: the app resets its state when the init/resume result lands, and
     // an event sent before it would be wiped with everything else.
@@ -2054,7 +2049,7 @@ export class SessionHost {
   }
 
   /**
-   * A much thinner cousin of `read_file`: no `start_line`/`end_line` (the protocol's
+   * A much thinner cousin of `Read`: no `start_line`/`end_line` (the protocol's
    * `FsReadParams` has only `path`), no binary sniff, no BOM stripping, no oversized-file
    * refusal -- this is a UI file preview, not model-facing context that has to stay small
    * and clean forever, so those model-specific concerns are left out rather than
@@ -2288,6 +2283,7 @@ export class SessionHost {
       dirs: [
         { scope: 'project', path: projectSkillsDir(workspaceRoot) },
         { scope: 'user', path: userSkillsDir() },
+        ...bundledSkillSources().map((s): { scope: 'bundled'; path: string } => ({ scope: 'bundled', path: s.dir })),
       ],
     }
   }

@@ -328,7 +328,7 @@ export function backgroundTaskTool(tasks: BackgroundTasks): Tool<BackgroundTaskA
       if (r.command !== undefined) args.command = r.command
       if (r.id !== undefined) args.id = r.id
       if (r.wait_seconds !== undefined) args.wait_seconds = r.wait_seconds
-      // Added alongside `run_command`'s, because a tool pair where one takes a cwd and the
+      // Added alongside `Bash`'s, because a tool pair where one takes a cwd and the
       // other does not teaches the wrong lesson twice: the model learns "set cwd to move"
       // from one and then has to `cd ../engine` inside the command on the other.
       if (r.cwd !== undefined) {
@@ -402,7 +402,7 @@ export function backgroundTaskTool(tasks: BackgroundTasks): Tool<BackgroundTaskA
       if (args.action === 'start') {
         let cwd = ctx.workspace.root
         if (args.cwd !== undefined) {
-          // Through the model's own jail, exactly as `run_command` resolves its cwd: a
+          // Through the model's own jail, exactly as `Bash` resolves its cwd: a
           // background process is no less able to touch the disk than a foreground one.
           try {
             cwd = ctx.workspace.resolve(args.cwd)

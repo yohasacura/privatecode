@@ -160,13 +160,13 @@ describe('clipOutput', () => {
 describe('permission surface', () => {
   it('exposes the exact command as its permission key', () => {
     expect(runCommandTool.permissionKey!({ commands: ['git status'] }))
-      .toEqual({ tool: 'run_command', command: 'git status' })
+      .toEqual({ tool: 'Bash', command: 'git status' })
 
     // A list is keyed by the `; `-joined form — the exact shape the model used to send as one
     // string, so a rule someone already wrote keeps matching what it always matched, and
     // HARD_DENY's `[^|;&]*`-bounded patterns still catch a `git push` in the second half.
     expect(runCommandTool.permissionKey!({ commands: ['npm install', 'npm test'] }))
-      .toEqual({ tool: 'run_command', command: 'npm install; npm test' })
+      .toEqual({ tool: 'Bash', command: 'npm install; npm test' })
   })
 })
 

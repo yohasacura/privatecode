@@ -13,14 +13,14 @@ import {
  * uses to build plan mode's tool list (agent/loop.ts, mode === 'plan'), so a wrong flag on
  * one of the real tools is a silent safety hole that no other test catches: flip
  * edit-file.ts's readOnly to true and every other test in the suite still passes while
- * plan mode quietly offers and executes edit_file. This test is what turns that into a
+ * plan mode quietly offers and executes Edit. This test is what turns that into a
  * failing test instead of a shipped defect.
  */
 test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
   expect(buildRegistry().readOnlyNames().sort()).toEqual(
-    ['ask_user',
+    ['AskUserQuestion',
      // Parses C# and answers a question about it. Available in PLAN mode for the same
-     // reason as use_skill: understanding how the code connects is most of what planning
+     // reason as Skill: understanding how the code connects is most of what planning
      // is, and it is the one tool that answers that without reading files.
      'csharp_nav',
      // Reads a database and cannot change one: the helper behind it has no operation that
@@ -29,23 +29,23 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
      // written against what the code claims the schema is, rather than what it is, is the
      // plan that fails at the first migration.
      'database',
-     'find_files', 'git_status', 'list_dir', 'read_file',
+     'Glob', 'git_status', 'list_dir', 'Read',
      // Reads back the notes `remember` wrote, through the SAME freshness filter that puts
      // them in message 0. Read-only, and in plan mode deliberately: what earlier sessions
      // worked out about this project is most of what a plan should be built on, and the
      // alternative the model reached for without it was reading the notes file directly —
      // which returns the stale notes the filter exists to drop.
      'recall',
-     'search_code',
+     'Grep',
      // Lists, reads and searches the stored conversations; it changes nothing. In plan mode
      // deliberately — "what did we decide about this last time" and "what were we doing on
      // Tuesday" are questions a plan should be built on rather than re-derived around.
      'sessions',
-     'symbol_outline', 'todo_write',
+     'symbol_outline', 'TodoWrite',
      // Reads a file the user wrote and returns its text; it runs nothing. Read-only is
      // what makes it available in PLAN mode, which is where reading a procedure before
      // proposing a plan is most of the point.
-     'use_skill'],
+     'Skill'].sort(),
   )
 })
 
@@ -85,7 +85,10 @@ test('BUILT_IN_TOOL_NAMES is what buildRegistry() ships, plus only what was reti
   const registered = buildRegistry().schemas().map((s) => s.function.name)
   for (const name of registered) expect(BUILT_IN_TOOL_NAMES.has(name)).toBe(true)
   const extra = [...BUILT_IN_TOOL_NAMES].filter((n) => !registered.includes(n)).sort()
-  expect(extra).toEqual(['doctor'])
+  expect(extra).toEqual([
+    'ask_user', 'delegate', 'doctor', 'edit_file', 'find_files', 'read_file', 'run_command', 'search_code',
+    'todo_write', 'use_skill', 'web', 'write_file',
+  ])
 })
 
 test('the retired doctor is not offered to the model, in any mode', () => {
@@ -101,7 +104,7 @@ test('the retired doctor is not offered to the model, in any mode', () => {
  *
  * `EDITING_TOOL_NAMES` decides whether the model's answer to a failed check counts as a fix
  * or as an argument, so drift here does not produce a missing row — it produces a WRONG
- * verdict. If `edit_file` fell out of this set, a session where the model dutifully fixed
+ * verdict. If `Edit` fell out of this set, a session where the model dutifully fixed
  * every build failure would be reported as one where it only ever looked, and the report
  * would be read as evidence.
  */

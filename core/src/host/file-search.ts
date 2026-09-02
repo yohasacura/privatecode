@@ -4,14 +4,14 @@ import { join } from 'node:path'
 /**
  * Finding a file by typing part of its name.
  *
- * Separate from `find_files`, which is the MODEL's tool and takes a glob: a person typing
+ * Separate from `Glob`, which is the MODEL's tool and takes a glob: a person typing
  * `@stat` into the composer is not writing a pattern, they are half-remembering a name. So
  * this is subsequence matching with a ranking, and it is deliberately its own module
  * because the ranking is the part worth testing — a picker that puts the right file third
  * is a picker you stop using.
  */
 
-/** Directories never walked. The same list `list_dir` and `find_files` refuse to enumerate,
+/** Directories never walked. The same list `list_dir` and `Glob` refuse to enumerate,
  * for the same reason: nobody is looking for a file inside `node_modules` by name. */
 // `bin` and `obj` are .NET build output, and they are not merely noise here: 10 of the 40
 // files in one C# workspace's map were generated `obj/**/*.g.cs`, so a quarter of what the

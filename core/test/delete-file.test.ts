@@ -11,10 +11,10 @@ import { Workspace } from '../src/workspace.js'
  *
  * The C# navigation index is built once per workspace: `ensureLoaded` answers
  * `{ ok: true, cached: true }` for as long as `loadedRoot` matches, and nothing but an
- * explicit `invalidate()` ever clears it. edit_file, write_file and move_file all report
+ * explicit `invalidate()` ever clears it. Edit, Write and move_file all report
  * their writes; delete_file reported nothing, so `csharp_nav` went on naming a definition in
  * a file that no longer existed — with ok:true, which the model has no reason to doubt until
- * `read_file` on that path answers "File not found".
+ * `Read` on that path answers "File not found".
  *
  * The helper is never spawned here: `navProcess()` only constructs, and a .NET process starts
  * on the first question, which these tests do not ask.

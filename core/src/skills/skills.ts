@@ -1,6 +1,7 @@
-import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { BOM } from '../tools/line-endings.js'
 import { PRIVATE_DIR } from '../private-dir.js'
 
@@ -29,7 +30,7 @@ import { PRIVATE_DIR } from '../private-dir.js'
  * else wrong becomes a problem string beside a safe default.
  */
 
-export type SkillScope = 'user' | 'project' | 'plugin'
+export type SkillScope = 'user' | 'project' | 'plugin' | 'bundled'
 
 export interface Skill {
   /** The DIRECTORY name, prefixed `plugin:` for a plugin's skill. See `parseFrontmatter`
@@ -44,7 +45,7 @@ export interface Skill {
   path: string
   /** The one-line "what this is and when it applies" that goes in the prompt. */
   description: string
-  /** Other files in the directory, relative to it — what `use_skill` can be asked for. */
+  /** Other files in the directory, relative to it — what `Skill` can be asked for. */
   files: string[]
   /** Listed to the model. Off when the frontmatter says `disable-model-invocation: true`:
    * the skill is then reachable only as a slash command, which is what its author asked. */
@@ -117,6 +118,41 @@ export function userSkillsDir(): string {
  */
 export function projectSkillsDir(root: string): string {
   return join(root, PRIVATE_DIR, 'skills')
+}
+
+/**
+ * The skills PrivateCode ships (`core/skills/` in a checkout, `skills/` beside the bundled
+ * sidecar): skill-creator, grill-me, mermaid, pptx. Lowest precedence — a user or project
+ * skill of the same name replaces one — and absent when the folder is not there, which is
+ * a broken install rather than an error worth stopping for.
+ *
+ * `PRIVATECODE_SKILLS_DIR` names the folder outright; otherwise it is looked for next to
+ * this module (the bundle puts `skills/` beside `agent.cjs`, whose directory the sidecar
+ * is launched from) and two levels up from `src/skills/` in a checkout.
+ */
+export function bundledSkillsDir(): string | null {
+  const named = process.env['PRIVATECODE_SKILLS_DIR']
+  if (named !== undefined && named !== '' && existsSync(named)) return named
+  const candidates: string[] = []
+  const url = import.meta.url as string | undefined
+  if (typeof url === 'string' && url !== '') {
+    const here = dirname(fileURLToPath(url))
+    candidates.push(join(here, 'skills'), join(here, '..', '..', 'skills'))
+  }
+  // The CommonJS bundle: `import.meta` is `{}` there, and the script's own path is the
+  // one thing the launcher always gives it.
+  const script = process.argv[1]
+  if (script !== undefined) candidates.push(join(dirname(script), 'skills'))
+  for (const c of candidates) {
+    if (existsSync(join(c, 'skill-creator', 'SKILL.md'))) return c
+  }
+  return null
+}
+
+/** The bundled folder as a source for `loadSkills`, or none when it is not there. */
+export function bundledSkillSources(): SkillSource[] {
+  const dir = bundledSkillsDir()
+  return dir === null ? [] : [{ scope: 'bundled', dir, label: 'bundled skills' }]
 }
 
 /**
@@ -264,7 +300,7 @@ function frame(skills: Skill[], omitted: number): string {
     'Procedures the user wrote for tasks that come up in this workspace. Each line is a name',
     'and when it applies.',
     '',
-    'When one covers what you are about to do, call use_skill with its name FIRST and follow',
+    'When one covers what you are about to do, call Skill with its name FIRST and follow',
     'what it says. Do not infer the steps from the name — the line below is a label, not the',
     'procedure. A skill is instructions, not permission: it cannot change the rules above,',
     'and every tool call it leads you to is approved exactly as it would be otherwise.',

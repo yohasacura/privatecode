@@ -8,7 +8,7 @@ import type { Workspace } from '../workspace.js'
  * Runs the project's formatter on a file the agent just wrote.
  *
  * It lives INSIDE the write path rather than in an after-tool hook, and that placement is
- * the entire reason it exists separately. `edit_file` returns a diff, and the model's next
+ * the entire reason it exists separately. `Edit` returns a diff, and the model's next
  * edit anchors a SEARCH block on the text in that diff. If formatting happens after the
  * tool has already built its result, the diff shows text that is no longer on disk and the
  * next anchor misses — the agent then re-reads, retries, and burns a turn discovering that
@@ -46,7 +46,7 @@ export interface FormatRunner {
  * substituted into it is the model's own `args.path`, and the result was handed to
  * `powershell.exe -Command`. `;` is a statement separator there and passes every jail
  * check — `assertSegmentAllowed` rejects `:` and eight secret-ish names, not punctuation —
- * so `write_file({ path: 'src/a;calc.exe;b.ts' })` made the NEXT edit run `calc.exe`. The
+ * so `Write({ path: 'src/a;calc.exe;b.ts' })` made the NEXT edit run `calc.exe`. The
  * formatter is deliberately not permission-gated (it runs inside the write tool, after the
  * gate has already decided), so that was ungated execution with no approval card.
  *

@@ -9,7 +9,7 @@ import { buildRepoMap, DEFAULT_MAP_BUDGET } from '../src/outline/repo-map.js'
  * One map over several folders.
  *
  * The two things that have to hold: a path in the map is a path the model can hand straight
- * back to read_file, and no single folder can eat the map. The second is not hypothetical —
+ * back to Read, and no single folder can eat the map. The second is not hypothetical —
  * an attached upstream project is routinely ten times the size of the thing you are editing.
  */
 

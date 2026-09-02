@@ -122,7 +122,7 @@ async function hostOver(
 
 test('two commands in one step are both recorded in the work log, each with its own text', async () => {
   // `Session.lastToolArgs` holds ONE slot per tool name, because `onToolResult` carries the
-  // result and not the arguments. Two `run_command` calls in a step is the case that slot was
+  // result and not the arguments. Two `Bash` calls in a step is the case that slot was
   // never given: if the second call were announced before the first one's result — which is
   // what any concurrent version of the loop would do — both lines of the night's log would
   // read as the SECOND command, and the first would be invisible while having really run.
@@ -133,8 +133,8 @@ test('two commands in one step are both recorded in the work log, each with its 
   const { host, transport } = await hostOver(root, (call) =>
     call === 1
       ? multiCallSSE([
-        { id: 'k1', name: 'run_command', args: JSON.stringify({ command: 'Write-Output first' }) },
-        { id: 'k2', name: 'run_command', args: JSON.stringify({ command: 'Write-Output second' }) },
+        { id: 'k1', name: 'Bash', args: JSON.stringify({ command: 'Write-Output first' }) },
+        { id: 'k2', name: 'Bash', args: JSON.stringify({ command: 'Write-Output second' }) },
       ])
       : undefined)
   try {
@@ -155,7 +155,7 @@ test('two commands in one step are both recorded in the work log, each with its 
 test('one step writing into two folders verifies both of them', async () => {
   // `writtenMounts` decides where `verify` runs, and it is filled from the same single slot:
   // `notePathWritten(this.lastToolArgs.get(name))`, once per successful write. Two writes to
-  // two folders in ONE step means the slot is read twice for the name `write_file`, and a
+  // two folders in ONE step means the slot is read twice for the name `Write`, and a
   // wrong answer here is silent — the folder that was skipped simply never reports, and a
   // broken build in it is found by a person hours later.
   const root = newWorkspace()
@@ -181,8 +181,8 @@ test('one step writing into two folders verifies both of them', async () => {
   const { host, transport } = await hostOver(root, (call) =>
     call === 1
       ? multiCallSSE([
-        { id: 'w1', name: 'write_file', args: JSON.stringify({ path: `${primary}/here.txt`, content: 'x' }) },
-        { id: 'w2', name: 'write_file', args: JSON.stringify({ path: 'engine/there.txt', content: 'y' }) },
+        { id: 'w1', name: 'Write', args: JSON.stringify({ path: `${primary}/here.txt`, content: 'x' }) },
+        { id: 'w2', name: 'Write', args: JSON.stringify({ path: 'engine/there.txt', content: 'y' }) },
       ])
       : undefined)
   try {
@@ -222,7 +222,7 @@ test('a session driven without the host records its outcomes too', async () => {
             role: 'assistant', content: null,
             tool_calls: [{
               id: 'z1', type: 'function',
-              function: { name: 'read_file', arguments: JSON.stringify({ path: 'nope.txt' }) },
+              function: { name: 'Read', arguments: JSON.stringify({ path: 'nope.txt' }) },
             }],
           },
           finish_reason: 'tool_calls',
@@ -262,10 +262,10 @@ test('every call of a step gets its own recorded outcome, under its own id', asy
   const { host, transport } = await hostOver(root, (call) =>
     call === 1
       ? multiCallSSE([
-        { id: 'o1', name: 'write_file', args: JSON.stringify({ path: 'ok.txt', content: 'x' }) },
+        { id: 'o1', name: 'Write', args: JSON.stringify({ path: 'ok.txt', content: 'x' }) },
         // Fails: no such file. Which also halts the step, so the third never runs.
-        { id: 'o2', name: 'read_file', args: JSON.stringify({ path: 'missing.txt' }) },
-        { id: 'o3', name: 'write_file', args: JSON.stringify({ path: 'never.txt', content: 'z' }) },
+        { id: 'o2', name: 'Read', args: JSON.stringify({ path: 'missing.txt' }) },
+        { id: 'o3', name: 'Write', args: JSON.stringify({ path: 'never.txt', content: 'z' }) },
       ])
       : undefined)
   try {

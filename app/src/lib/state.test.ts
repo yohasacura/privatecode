@@ -62,7 +62,7 @@ describe('which call of a multi-call step is the one running', () => {
   // A step runs its calls in order, so by the time call 1 executes, calls 2 and 3 already
   // have cards. Two consumers used `items[items.length - 1]` to mean "the call in progress"
   // and got the one the model wrote LAST instead: the composer labelled a three-minute
-  // `npm test` as `running write_file`, and the transcript blanked an unrelated row while an
+  // `npm test` as `running Write`, and the transcript blanked an unrelated row while an
   // approval was open, leaving the approved call's stub duplicated under the card.
   //
   // `pendingTool` is the rule the reducer already routes results with — oldest unanswered,
@@ -70,29 +70,29 @@ describe('which call of a multi-call step is the one running', () => {
   it('is the one the loop announced, not the last card on screen', () => {
     // The real event order: both calls stream their names during generation, opening two
     // cards; then the loop announces call 1 and runs it. Card 2 is still `writing` — the loop
-    // has not reached it — so it is the LAST item while `run_command` is what is executing.
+    // has not reached it — so it is the LAST item while `Bash` is what is executing.
     const state = run([
       { type: 'turn-started' },
-      { type: 'tool.call.delta', index: 0, name: 'run_command' },
-      { type: 'tool.call.delta', index: 1, name: 'write_file' },
-      { type: 'tool.call', name: 'run_command', args: '{"command":"npm test"}' },
+      { type: 'tool.call.delta', index: 0, name: 'Bash' },
+      { type: 'tool.call.delta', index: 1, name: 'Write' },
+      { type: 'tool.call', name: 'Bash', args: '{"command":"npm test"}' },
     ])
     const last = state.items[state.items.length - 1]
     // What the composer and the transcript used to read, and what it gave them:
-    expect(last?.kind === 'tool' && last.name).toBe('write_file')
+    expect(last?.kind === 'tool' && last.name).toBe('Write')
     // What is actually running:
-    expect(pendingTool(state.items)?.name).toBe('run_command')
+    expect(pendingTool(state.items)?.name).toBe('Bash')
   })
 
   it('skips a card whose arguments are still streaming', () => {
     const state = run([
       { type: 'turn-started' },
-      { type: 'tool.call.delta', index: 0, name: 'run_command' },
-      { type: 'tool.call', name: 'run_command', args: '{"command":"npm test"}' },
+      { type: 'tool.call.delta', index: 0, name: 'Bash' },
+      { type: 'tool.call', name: 'Bash', args: '{"command":"npm test"}' },
       // The next call of the same step, still being written.
-      { type: 'tool.call.delta', index: 1, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 1, name: 'Edit' },
     ])
-    expect(pendingTool(state.items)?.name).toBe('run_command')
+    expect(pendingTool(state.items)?.name).toBe('Bash')
   })
 })
 
@@ -104,7 +104,7 @@ describe('a call abandoned mid-write', () => {
   it('is closed with the `Not run:` prefix every reader tests for', () => {
     const state = run([
       { type: 'turn-started' },
-      { type: 'tool.call.delta', index: 0, name: 'write_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Write' },
       { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts","cont' },
       { type: 'turn.done', stoppedBecause: 'truncated' },
     ])
@@ -121,15 +121,15 @@ describe('a call abandoned mid-write', () => {
     const state = run([
       { type: 'turn-started' },
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
-      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Edit' },
       { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts","old' },
       // Out of room mid-argument: the core drops the partial call and re-asks with
       // tool_choice 'required'.
       { type: 'step.continuation', atMs: 1_000 },
-      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Edit' },
       { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts","old":"x","new":"y"}' },
-      { type: 'tool.call', name: 'edit_file', args: '{"path":"a.ts","old":"x","new":"y"}' },
-      { type: 'tool.result', name: 'edit_file', ok: true, content: 'a.ts edited' },
+      { type: 'tool.call', name: 'Edit', args: '{"path":"a.ts","old":"x","new":"y"}' },
+      { type: 'tool.result', name: 'Edit', ok: true, content: 'a.ts edited' },
     ])
     const cards = state.items.filter((i) => i.kind === 'tool')
     expect(cards).toHaveLength(2)
@@ -194,14 +194,14 @@ describe('what a restored transcript makes of its assistant entries', () => {
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
       { type: 'thinking.delta', text: 'which file holds the config' },
       { type: 'text.delta', text: 'Let me read the config file.' },
-      { type: 'tool.call.delta', index: 0, name: 'read_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Read' },
       { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts"}' },
       // step.done lands before the whole-string event: the core announces the prose only
       // once the generation has resolved, and resolving is what ends the step.
       { type: 'step.done', step: 1, seconds: 2 },
       { type: 'assistant.text', text: 'Let me read the config file.' },
-      { type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' },
-      { type: 'tool.result', name: 'read_file', ok: true, content: 'export const x = 1' },
+      { type: 'tool.call', name: 'Read', args: '{"path":"a.ts"}' },
+      { type: 'tool.result', name: 'Read', ok: true, content: 'export const x = 1' },
     ])
     const said = state.items.flatMap((i) => (i.kind === 'assistant' ? [i.text] : []))
     expect(said).toEqual(['Let me read the config file.'])
@@ -216,13 +216,13 @@ describe('what a restored transcript makes of its assistant entries', () => {
       { type: 'turn-started' },
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
       { type: 'text.delta', text: 'Checking the tests.' },
-      { type: 'tool.call.delta', index: 0, name: 'read_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Read' },
       { type: 'step.done', step: 1, seconds: 1 },
       { type: 'assistant.text', text: 'Checking the tests.' },
-      { type: 'tool.call', name: 'read_file', args: '{"path":"a.test.ts"}' },
-      { type: 'tool.result', name: 'read_file', ok: true, content: 'it(...)' },
+      { type: 'tool.call', name: 'Read', args: '{"path":"a.test.ts"}' },
+      { type: 'tool.result', name: 'Read', ok: true, content: 'it(...)' },
       { type: 'step.start', step: 2, timeoutMs: 90_000, startedAtMs: 5_000 },
-      { type: 'tool.call.delta', index: 0, name: 'read_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Read' },
       { type: 'step.done', step: 2, seconds: 1 },
       { type: 'assistant.text', text: 'Checking the tests.' },
     ])
@@ -241,7 +241,7 @@ describe('a server-death retry inside the step', () => {
       { type: 'turn-started' },
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 1_000 },
       { type: 'thinking.delta', text: 'partial thought cut by the crash' },
-      { type: 'tool.call.delta', index: 0, name: 'write_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Write' },
       { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts","cont' },
       { type: 'step.retry', atMs: 2_000 },
     ])
@@ -256,9 +256,9 @@ describe('a server-death retry inside the step', () => {
     const state = run([
       { type: 'turn-started' },
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 1_000 },
-      { type: 'tool.call.delta', index: 0, name: 'run_command' },
-      { type: 'tool.call', name: 'run_command', args: '{"command":"npm test"}' },
-      { type: 'tool.result', name: 'run_command', ok: true, content: 'exit 0' },
+      { type: 'tool.call.delta', index: 0, name: 'Bash' },
+      { type: 'tool.call', name: 'Bash', args: '{"command":"npm test"}' },
+      { type: 'tool.result', name: 'Bash', ok: true, content: 'exit 0' },
       // The next model call: its own mark, so a retry inside it reaches back only this far.
       { type: 'step.start', step: 2, timeoutMs: 90_000, startedAtMs: 2_000 },
       { type: 'thinking.delta', text: 'dead partial' },
@@ -403,7 +403,7 @@ describe('reduceChat: delta accumulation', () => {
     const state = run([
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
       { type: 'thinking.delta', text: 'I should read the file' },
-      { type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}', atMs: 900 },
+      { type: 'tool.call', name: 'Read', args: '{"path":"a.ts"}', atMs: 900 },
     ])
     expect(state.items[0]).toEqual({
       kind: 'thinking', id: 1, step: 1, text: 'I should read the file', done: true, startedAtMs: 0, endedAtMs: 900,
@@ -414,8 +414,8 @@ describe('reduceChat: delta accumulation', () => {
     const state = run([
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
       { type: 'thinking.delta', text: 'think' },
-      { type: 'tool.call', name: 'read_file', args: '{}' },
-      { type: 'tool.result', name: 'read_file', ok: true, content: 'contents' },
+      { type: 'tool.call', name: 'Read', args: '{}' },
+      { type: 'tool.result', name: 'Read', ok: true, content: 'contents' },
       { type: 'step.done', step: 1, seconds: 2 },
       { type: 'step.start', step: 2, timeoutMs: 90_000, startedAtMs: 3_000 },
       { type: 'thinking.delta', text: 'now answer' },
@@ -633,13 +633,13 @@ describe('reduceChat: tool calls', () => {
     // approval.answered (which APPENDS a record) -> tool.result. Matching only the last
     // item dropped the result and left the card spinning forever.
     const state = run([
-      { type: 'tool.call', name: 'edit_file', args: '{"path":"a.ts"}' },
+      { type: 'tool.call', name: 'Edit', args: '{"path":"a.ts"}' },
       {
-        type: 'approval.request', requestId: 'r1', tool: 'edit_file',
+        type: 'approval.request', requestId: 'r1', tool: 'Edit',
         summary: 'edit a.ts', detail: 'detail', suggestedRules: [],
       },
       { type: 'approval.answered', decision: { verdict: 'allow' } },
-      { type: 'tool.result', name: 'edit_file', ok: true, content: '--- a.ts\n+++ a.ts\n@@ line 1 @@\n+new' },
+      { type: 'tool.result', name: 'Edit', ok: true, content: '--- a.ts\n+++ a.ts\n@@ line 1 @@\n+new' },
     ])
     const toolItem = state.items.find((i) => i.kind === 'tool')
     expect(toolItem?.kind === 'tool' && toolItem.result?.ok).toBe(true)
@@ -648,12 +648,12 @@ describe('reduceChat: tool calls', () => {
   })
 
   it('opens a tool row on tool.call and patches it in place on tool.result', () => {
-    const opened = run([{ type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' }])
-    expect(opened.items).toEqual([{ kind: 'tool', id: 1, name: 'read_file', args: '{"path":"a.ts"}', startedAtMs: 0 }])
+    const opened = run([{ type: 'tool.call', name: 'Read', args: '{"path":"a.ts"}' }])
+    expect(opened.items).toEqual([{ kind: 'tool', id: 1, name: 'Read', args: '{"path":"a.ts"}', startedAtMs: 0 }])
 
-    const done = reduceChat(opened, { type: 'tool.result', name: 'read_file', ok: true, content: 'line one\nline two' })
+    const done = reduceChat(opened, { type: 'tool.result', name: 'Read', ok: true, content: 'line one\nline two' })
     expect(done.items).toEqual([
-      { kind: 'tool', id: 1, name: 'read_file', args: '{"path":"a.ts"}', startedAtMs: 0,
+      { kind: 'tool', id: 1, name: 'Read', args: '{"path":"a.ts"}', startedAtMs: 0,
         // No `display` on the wire means the tool did not clip anything, so what the
         // person sees and what the model saw are the same string.
         result: { ok: true, preview: 'line one', content: 'line one\nline two', display: 'line one\nline two' } },
@@ -661,11 +661,11 @@ describe('reduceChat: tool calls', () => {
   })
 
   it('keeps the untruncated display copy separate from what the model was given', () => {
-    // run_command hands the model a middle-elided 8 KB and the UI the whole log; showing
+    // Bash hands the model a middle-elided 8 KB and the UI the whole log; showing
     // the model's copy is why a build log used to be unreadable in the transcript.
     const state = run([
-      { type: 'tool.call', name: 'run_command', args: '{"command":"dotnet test"}' },
-      { type: 'tool.result', name: 'run_command', ok: true, content: 'exit 0\nclipped…', display: 'exit 0\nevery single line' },
+      { type: 'tool.call', name: 'Bash', args: '{"command":"dotnet test"}' },
+      { type: 'tool.result', name: 'Bash', ok: true, content: 'exit 0\nclipped…', display: 'exit 0\nevery single line' },
     ])
     const item = state.items[0]
     expect(item?.kind === 'tool' && item.result).toEqual({
@@ -689,25 +689,25 @@ describe('reduceChat: user messages', () => {
 describe('reduceChat: approval card state machine (pending -> answered, single-fire)', () => {
   it('opens a pending approval on approval.request', () => {
     const state = reduceChat(initialChatState(), {
-      type: 'approval.request', requestId: 'r1', tool: 'edit_file', summary: 'change a.ts',
-      detail: '- old\n+ new', suggestedRules: ['edit_file(a.ts)'],
+      type: 'approval.request', requestId: 'r1', tool: 'Edit', summary: 'change a.ts',
+      detail: '- old\n+ new', suggestedRules: ['Edit(a.ts)'],
     })
     expect(state.pendingApproval).toEqual({
-      requestId: 'r1', tool: 'edit_file', summary: 'change a.ts', detail: '- old\n+ new',
-      suggestedRules: ['edit_file(a.ts)'],
+      requestId: 'r1', tool: 'Edit', summary: 'change a.ts', detail: '- old\n+ new',
+      suggestedRules: ['Edit(a.ts)'],
     })
     expect(state.items).toEqual([])
   })
 
   it('collapses the pending card into a one-line record on approval.answered, exactly once', () => {
     const opened = reduceChat(initialChatState(), {
-      type: 'approval.request', requestId: 'r1', tool: 'edit_file', summary: 'change a.ts',
+      type: 'approval.request', requestId: 'r1', tool: 'Edit', summary: 'change a.ts',
       detail: '- old\n+ new', suggestedRules: [],
     })
     const answered = reduceChat(opened, { type: 'approval.answered', decision: { verdict: 'allow' } })
     expect(answered.pendingApproval).toBeNull()
     expect(answered.items).toEqual([
-      { kind: 'approval-record', id: 1, tool: 'edit_file', summary: 'change a.ts', decision: { verdict: 'allow' } },
+      { kind: 'approval-record', id: 1, tool: 'Edit', summary: 'change a.ts', decision: { verdict: 'allow' } },
     ])
 
     // Single-fire: a SECOND answer (e.g. a stale double-click) with nothing pending must
@@ -718,14 +718,14 @@ describe('reduceChat: approval card state machine (pending -> answered, single-f
 
   it('records a deny decision with its comment', () => {
     const opened = reduceChat(initialChatState(), {
-      type: 'approval.request', requestId: 'r1', tool: 'run_command', summary: 'npm test',
+      type: 'approval.request', requestId: 'r1', tool: 'Bash', summary: 'npm test',
       detail: 'npm test', suggestedRules: [],
     })
     const denied = reduceChat(opened, {
       type: 'approval.answered', decision: { verdict: 'deny', comment: 'use vitest instead' },
     })
     expect(denied.items).toEqual([
-      { kind: 'approval-record', id: 1, tool: 'run_command', summary: 'npm test',
+      { kind: 'approval-record', id: 1, tool: 'Bash', summary: 'npm test',
         decision: { verdict: 'deny', comment: 'use vitest instead' } },
     ])
   })
@@ -795,7 +795,7 @@ describe('reduceChat: session switching', () => {
     const busy = run([
       { type: 'user-message', text: 'hi' },
       { type: 'todos', items: [{ text: 'x', status: 'pending' }] },
-      { type: 'approval.request', requestId: 'r1', tool: 'edit_file', summary: 's', detail: 'd', suggestedRules: [] },
+      { type: 'approval.request', requestId: 'r1', tool: 'Edit', summary: 's', detail: 'd', suggestedRules: [] },
     ])
     expect(busy.items).not.toEqual([])
     expect(busy.pendingApproval).not.toBeNull()
@@ -891,7 +891,7 @@ describe('reduceChat: a turn that outlived its session', () => {
     // roughly every second write silently failed to refresh the file tree.
     const first = run([
       { type: 'user-message', text: 'one' },
-      { type: 'tool.call', name: 'write_file', args: '{"path":"a.ts"}' },
+      { type: 'tool.call', name: 'Write', args: '{"path":"a.ts"}' },
     ])
     const switched = reduceChat(first, {
       type: 'session-switched', gateMode: 'auto', sessionId: 's2', mode: 'normal', contextLength: null, title: '',
@@ -915,8 +915,8 @@ describe('reduceChat: transcript-restored', () => {
       { type: 'user-message', text: 'add a docstring' },
       { type: 'step.start', step: 1, timeoutMs: 90_000, startedAtMs: 0 },
       { type: 'thinking.delta', text: 'read it first' },
-      { type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' },
-      { type: 'tool.result', name: 'read_file', ok: true, content: 'a.ts (2 lines)' },
+      { type: 'tool.call', name: 'Read', args: '{"path":"a.ts"}' },
+      { type: 'tool.result', name: 'Read', ok: true, content: 'a.ts (2 lines)' },
       { type: 'assistant.text', text: 'Done.' },
     ])
 
@@ -926,8 +926,8 @@ describe('reduceChat: transcript-restored', () => {
         entries: [
           { kind: 'user', text: 'add a docstring' },
           { kind: 'reasoning', step: 1, text: 'read it first' },
-          { kind: 'tool-call', name: 'read_file', args: '{"path":"a.ts"}' },
-          { kind: 'tool-result', name: 'read_file', ok: true, content: 'a.ts (2 lines)' },
+          { kind: 'tool-call', name: 'Read', args: '{"path":"a.ts"}' },
+          { kind: 'tool-result', name: 'Read', ok: true, content: 'a.ts (2 lines)' },
           { kind: 'assistant', text: 'Done.' },
         ],
       },
@@ -963,8 +963,8 @@ describe('reduceChat: transcript-restored', () => {
       {
         type: 'transcript-restored',
         entries: [
-          { kind: 'tool-call', name: 'run_command', args: '{}' },
-          { kind: 'tool-result', name: 'run_command', ok: false, content: 'exit 1' },
+          { kind: 'tool-call', name: 'Bash', args: '{}' },
+          { kind: 'tool-result', name: 'Bash', ok: false, content: 'exit 1' },
         ],
       },
     ])
@@ -1025,15 +1025,15 @@ describe('reduceChat: a tool call arriving as it is written', () => {
     // The whole point. On a large edit the model spends most of the step writing the
     // argument; the name arrives on the first fragment, so the row can be there for all of
     // it instead of appearing at the end.
-    const state = run([{ type: 'tool.call.delta', index: 0, name: 'edit_file', atMs: 5 }])
+    const state = run([{ type: 'tool.call.delta', index: 0, name: 'Edit', atMs: 5 }])
     expect(state.items).toEqual([
-      { kind: 'tool', id: 1, name: 'edit_file', args: '', startedAtMs: 5, writing: true, callIndex: 0 },
+      { kind: 'tool', id: 1, name: 'Edit', args: '', startedAtMs: 5, writing: true, callIndex: 0 },
     ])
   })
 
   it('grows the card as the argument is generated', () => {
     const state = run([
-      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Edit' },
       { type: 'tool.call.delta', index: 0, args: '{"path":"a' },
       { type: 'tool.call.delta', index: 0, args: '.ts","old":"x"}' },
     ])
@@ -1045,13 +1045,13 @@ describe('reduceChat: a tool call arriving as it is written', () => {
     // `tool.call` is the authoritative event: it carries the assembled document the tool
     // actually runs on. Appending a second row for it would show every call twice.
     const state = run([
-      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Edit' },
       { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts"' },
-      { type: 'tool.call', name: 'edit_file', args: '{"path":"a.ts","old":"x","new":"y"}' },
+      { type: 'tool.call', name: 'Edit', args: '{"path":"a.ts","old":"x","new":"y"}' },
     ])
     expect(state.items).toEqual([
       {
-        kind: 'tool', id: 1, name: 'edit_file', args: '{"path":"a.ts","old":"x","new":"y"}',
+        kind: 'tool', id: 1, name: 'Edit', args: '{"path":"a.ts","old":"x","new":"y"}',
         startedAtMs: 0,
       },
     ])
@@ -1059,9 +1059,9 @@ describe('reduceChat: a tool call arriving as it is written', () => {
 
   it('still shows a call whose streaming this window never saw', () => {
     // Streaming is off, or the window was opened mid-step. The call happened either way.
-    const state = run([{ type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' }])
+    const state = run([{ type: 'tool.call', name: 'Read', args: '{"path":"a.ts"}' }])
     expect(state.items).toHaveLength(1)
-    expect(state.items[0]).toMatchObject({ kind: 'tool', name: 'read_file' })
+    expect(state.items[0]).toMatchObject({ kind: 'tool', name: 'Read' })
     expect(state.items[0]).not.toHaveProperty('writing')
   })
 
@@ -1078,17 +1078,17 @@ describe('reduceChat: a tool call arriving as it is written', () => {
     // did not exist. The core runs every proposed call now, and it still emits them strictly
     // interleaved: announce, run, answer, next.
     const state = run([
-      { type: 'tool.call.delta', index: 0, name: 'read_file' },
-      { type: 'tool.call.delta', index: 1, name: 'read_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Read' },
+      { type: 'tool.call.delta', index: 1, name: 'Read' },
       { type: 'tool.call.delta', index: 1, args: '{"path":"second' },
       { type: 'tool.call.delta', index: 0, args: '{"path":"first' },
-      { type: 'tool.call', name: 'read_file', args: '{"path":"first.ts"}' },
-      { type: 'tool.result', name: 'read_file', ok: true, content: 'first.ts (2 lines)' },
+      { type: 'tool.call', name: 'Read', args: '{"path":"first.ts"}' },
+      { type: 'tool.result', name: 'Read', ok: true, content: 'first.ts (2 lines)' },
       // The second call of the same step, with an outcome of its own — here a failure, which
       // is also what stops the core running anything after it.
-      { type: 'tool.call', name: 'read_file', args: '{"path":"second.ts"}' },
+      { type: 'tool.call', name: 'Read', args: '{"path":"second.ts"}' },
       {
-        type: 'tool.result', name: 'read_file', ok: false,
+        type: 'tool.result', name: 'Read', ok: false,
         content: 'second.ts: no such file',
       },
     ])
@@ -1110,12 +1110,12 @@ describe('reduceChat: a tool call arriving as it is written', () => {
     // A card with no result and a card still generating look alike to a recency match, and
     // the second cannot possibly be what a result belongs to.
     const state = run([
-      { type: 'tool.call', name: 'read_file', args: '{"path":"a.ts"}' },
-      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
-      { type: 'tool.result', name: 'read_file', ok: true, content: 'a.ts (2 lines)' },
+      { type: 'tool.call', name: 'Read', args: '{"path":"a.ts"}' },
+      { type: 'tool.call.delta', index: 0, name: 'Edit' },
+      { type: 'tool.result', name: 'Read', ok: true, content: 'a.ts (2 lines)' },
     ])
-    expect(state.items[0]).toMatchObject({ name: 'read_file', result: { ok: true } })
-    expect(state.items[1]).toMatchObject({ name: 'edit_file', writing: true })
+    expect(state.items[0]).toMatchObject({ name: 'Read', result: { ok: true } })
+    expect(state.items[1]).toMatchObject({ name: 'Edit', writing: true })
     expect(state.items[1]).not.toHaveProperty('result')
   })
 
@@ -1133,12 +1133,12 @@ describe('reduceChat: a tool call that never runs', () => {
     // result, shown against another call's card.
     const state = run([
       { type: 'turn-started' },
-      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Edit' },
       { type: 'tool.call.delta', index: 0, args: '{"path":"a.ts"' },
       { type: 'turn.done', stoppedBecause: 'aborted', atMs: 10 },
     ])
     const card = state.items.find((i) => i.kind === 'tool')
-    expect(card).toMatchObject({ name: 'edit_file', result: { ok: false } })
+    expect(card).toMatchObject({ name: 'Edit', result: { ok: false } })
     expect(card).not.toHaveProperty('writing')
   })
 
@@ -1146,12 +1146,12 @@ describe('reduceChat: a tool call that never runs', () => {
     // The failure the closing exists to prevent, stated directly.
     const first = run([
       { type: 'turn-started' },
-      { type: 'tool.call.delta', index: 0, name: 'edit_file' },
+      { type: 'tool.call.delta', index: 0, name: 'Edit' },
       { type: 'turn.done', stoppedBecause: 'aborted', atMs: 10 },
     ])
     const after = [
       { type: 'turn-started' as const },
-      { type: 'tool.call' as const, name: 'edit_file', args: '{"path":"b.ts"}' },
+      { type: 'tool.call' as const, name: 'Edit', args: '{"path":"b.ts"}' },
     ].reduce(reduceChat, first)
     const cards = after.items.filter((i) => i.kind === 'tool')
     expect(cards).toHaveLength(2)
@@ -1224,7 +1224,7 @@ describe('reduceChat: a run ending clears what it orphaned', () => {
     // "Paused, waiting for you" forever, and Allow answered a requestId that was gone.
     const state = run([
       { type: 'run-started', task: 't', atMs: 0 },
-      { type: 'approval.request', requestId: 'r1', tool: 'run_command', summary: 's', detail: 'd', suggestedRules: [] },
+      { type: 'approval.request', requestId: 'r1', tool: 'Bash', summary: 's', detail: 'd', suggestedRules: [] },
       { type: 'question.request', requestId: 'q1', question: '?', options: [] },
       { type: 'run.ended', turns: 3, stoppedBecause: 'budget', detail: 'done' },
     ])
@@ -1299,7 +1299,7 @@ describe('live tool output', () => {
   it('attaches to the running call, tail-caps, and yields to the result', () => {
     let state = run([
       { type: 'turn-started' },
-      { type: 'tool.call', name: 'run_command', args: '{"command":"npm test"}' },
+      { type: 'tool.call', name: 'Bash', args: '{"command":"npm test"}' },
       { type: 'tool.output', text: 'compiling...\n' },
       { type: 'tool.output', text: 'test 1 ok\n' },
     ])
@@ -1314,7 +1314,7 @@ describe('live tool output', () => {
     expect(capped.live!.startsWith('…')).toBe(true)
 
     // The result is the authoritative record; the live viewport goes with the run.
-    state = reduceChat(state, { type: 'tool.result', name: 'run_command', ok: true, content: 'all output' })
+    state = reduceChat(state, { type: 'tool.result', name: 'Bash', ok: true, content: 'all output' })
     const done = state.items.find((i) => i.kind === 'tool')
     expect(done?.kind === 'tool' && done.live).toBeUndefined()
   })

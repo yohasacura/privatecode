@@ -3,7 +3,26 @@ import { join } from 'node:path'
 import { execa } from 'execa'
 import { killTree, POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import { substitutePluginVars, type HookSource } from '../plugins/components.js'
-import { matcherCovers, toClaudeTool } from '../plugins/tool-names.js'
+import { CLAUDE_CODE_OLD_NAMES } from '../tools/built-in-names.js'
+
+/**
+ * Whether a Claude Code matcher (`*`, `Edit|Write`, a regex) names this tool. The tools
+ * carry Claude Code's names, so a matcher is compared to the name itself; the three names
+ * Claude Code retired (`Task` for `Agent`, …) are read as the tools they became.
+ */
+export function matcherCovers(matcher: string | undefined, toolName: string): boolean {
+  const m = (matcher ?? '').trim()
+  if (m === '' || m === '*') return true
+  const alternatives = m.split('|').map((s) => s.trim()).filter((s) => s !== '')
+  if (alternatives.every((a) => /^[A-Za-z0-9_*]+$/.test(a))) {
+    return alternatives.some((a) => a === '*' || a === toolName || CLAUDE_CODE_OLD_NAMES[a] === toolName)
+  }
+  try {
+    return new RegExp(m).test(toolName)
+  } catch {
+    return alternatives.some((a) => a === toolName)
+  }
+}
 import type { PermissionKey, ToolResult } from '../tools/types.js'
 import type { Workspace } from '../workspace.js'
 import { createHookRunner, type HookSpec } from './hooks.js'
@@ -191,16 +210,16 @@ async function runHook(def: HookDefinition, input: Record<string, unknown>, shel
 
 /**
  * `tool_input` carries PrivateCode's arguments AND the Claude Code aliases, so a hook that
- * reads `.tool_input.file_path` works against `edit_file`'s `path` (docs §4).
+ * reads `.tool_input.file_path` works against `Edit`'s `path` (docs §4).
  */
 export function claudeToolInput(name: string, args: unknown): Record<string, unknown> {
   const a: Record<string, unknown> = isRecord(args) ? { ...args } : {}
   switch (name) {
-    case 'edit_file': return { ...a, file_path: a['path'], old_string: a['search_text'], new_string: a['replace_text'] }
-    case 'write_file': case 'read_file': case 'delete_file': case 'list_dir': return { ...a, file_path: a['path'] }
+    case 'Edit': return { ...a, file_path: a['path'], old_string: a['search_text'], new_string: a['replace_text'] }
+    case 'Write': case 'Read': case 'delete_file': case 'list_dir': return { ...a, file_path: a['path'] }
     case 'move_file': return { ...a, file_path: a['from'], new_path: a['to'] }
-    case 'run_command': return { ...a, command: Array.isArray(a['commands']) ? (a['commands'] as unknown[]).join(' && ') : a['command'] }
-    case 'find_files': return { ...a, pattern: a['glob'] }
+    case 'Bash': return { ...a, command: Array.isArray(a['commands']) ? (a['commands'] as unknown[]).join(' && ') : a['command'] }
+    case 'Glob': return { ...a, pattern: a['glob'] }
     default: return a
   }
 }
@@ -210,14 +229,14 @@ export function fromClaudeToolInput(name: string, updated: unknown, original: un
   if (!isRecord(updated)) return original
   const out: Record<string, unknown> = { ...(isRecord(original) ? original : {}) }
   const aliases: Record<string, Record<string, string>> = {
-    edit_file: { file_path: 'path', old_string: 'search_text', new_string: 'replace_text' },
-    write_file: { file_path: 'path' }, read_file: { file_path: 'path' }, delete_file: { file_path: 'path' }, list_dir: { file_path: 'path' },
+    Edit: { file_path: 'path', old_string: 'search_text', new_string: 'replace_text' },
+    Write: { file_path: 'path' }, Read: { file_path: 'path' }, delete_file: { file_path: 'path' }, list_dir: { file_path: 'path' },
     move_file: { file_path: 'from', new_path: 'to' },
-    find_files: { pattern: 'glob' },
+    Glob: { pattern: 'glob' },
   }
   const map = aliases[name] ?? {}
   for (const [key, value] of Object.entries(updated)) {
-    if (name === 'run_command' && key === 'command' && typeof value === 'string') { out['commands'] = [value]; continue }
+    if (name === 'Bash' && key === 'command' && typeof value === 'string') { out['commands'] = [value]; continue }
     out[map[key] ?? key] = value
   }
   return out
@@ -359,7 +378,7 @@ export function createHookEngine(opts: HookEngineOptions): HookEngine {
       let args = call.args
       const rank = { deny: 3, ask: 2, allow: 1 } as const
       for (const def of hooks) {
-        const input = { ...base('PreToolUse'), tool_name: toClaudeTool(call.name), tool_input: claudeToolInput(call.name, args), ...(call.toolUseId !== undefined ? { tool_use_id: call.toolUseId } : {}) }
+        const input = { ...base('PreToolUse'), tool_name: call.name, tool_input: claudeToolInput(call.name, args), ...(call.toolUseId !== undefined ? { tool_use_id: call.toolUseId } : {}) }
         const o = await runOne(def, input, out.notes, call.signal)
         if (o === null) continue
         const label = `[hook ${def.owner}]`
@@ -403,7 +422,7 @@ export function createHookEngine(opts: HookEngineOptions): HookEngine {
       if (hooks.length === 0) return current
       const notes: string[] = []
       const input = {
-        ...base(event), tool_name: toClaudeTool(call.name), tool_input: claudeToolInput(call.name, call.args),
+        ...base(event), tool_name: call.name, tool_input: claudeToolInput(call.name, call.args),
         ...(call.toolUseId !== undefined ? { tool_use_id: call.toolUseId } : {}),
         tool_response: { ok: current.ok, content: current.content },
         ...(current.ok ? {} : { error: current.content }),

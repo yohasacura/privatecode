@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { PermissionEngine } from '../src/permissions/engine.js'
 import type { PermissionKey } from '../src/tools/types.js'
-import { webTool } from '../src/tools/web.js'
+import { webFetchTool, webSearchTool } from '../src/tools/web.js'
 import {
   extractReadable, isPrivateHost, redirectRefusal, redirectRefusalResolved,
 } from '../src/web/read.js'
@@ -257,24 +257,24 @@ describe('resolved redirect gating', () => {
 // The tool's contract surface
 // ---------------------------------------------------------------------------------------
 
-describe('webTool validate + permission keys', () => {
+describe('WebSearch and WebFetch validate + permission keys', () => {
   test('refuses junk and non-http schemes, accepts the two real shapes', () => {
-    expect(webTool.validate({ action: 'nope' }).ok).toBe(false)
-    expect(webTool.validate({ action: 'search', query: '  ' }).ok).toBe(false)
-    expect(webTool.validate({ action: 'search', query: 'x'.repeat(500) }).ok).toBe(false)
-    expect(webTool.validate({ action: 'read', url: 'notaurl' }).ok).toBe(false)
-    expect(webTool.validate({ action: 'read', url: 'file:///C:/secrets.txt' }).ok).toBe(false)
+    expect(webSearchTool.validate({}).ok).toBe(false)
+    expect(webSearchTool.validate({ query: '  ' }).ok).toBe(false)
+    expect(webSearchTool.validate({ query: 'x'.repeat(500) }).ok).toBe(false)
+    expect(webFetchTool.validate({ url: 'notaurl' }).ok).toBe(false)
+    expect(webFetchTool.validate({ url: 'file:///C:/secrets.txt' }).ok).toBe(false)
     // Credentials in a URL poison the permission key and can never match an origin rule.
-    expect(webTool.validate({ action: 'read', url: 'https://user:pass@host.example/x' }).ok).toBe(false)
-    expect(webTool.validate({ action: 'search', query: 'node lts version' }).ok).toBe(true)
-    expect(webTool.validate({ action: 'read', url: 'https://nodejs.org/en' }).ok).toBe(true)
+    expect(webFetchTool.validate({ url: 'https://user:pass@host.example/x' }).ok).toBe(false)
+    expect(webSearchTool.validate({ query: 'node lts version' }).ok).toBe(true)
+    expect(webFetchTool.validate({ url: 'https://nodejs.org/en' }).ok).toBe(true)
   })
 
-  test('search carries the fixed target; read carries the URL', () => {
-    expect(webTool.permissionKey!({ action: 'search', query: 'q' }))
-      .toEqual({ tool: 'web', target: 'search' })
-    expect(webTool.permissionKey!({ action: 'read', url: 'https://a.dev/x' }))
-      .toEqual({ tool: 'web', target: 'https://a.dev/x' })
+  test('search carries the fixed target; fetch carries the URL', () => {
+    expect(webSearchTool.permissionKey!({ query: 'q' }, {} as never))
+      .toEqual({ tool: 'WebSearch', target: 'search' })
+    expect(webFetchTool.permissionKey!({ url: 'https://a.dev/x' }, {} as never))
+      .toEqual({ tool: 'WebFetch', target: 'https://a.dev/x' })
   })
 })
 
@@ -286,8 +286,8 @@ const root = 'C:\\ws'
 const engineIn = (mode: 'normal' | 'plan' | 'auto-edit' | 'autopilot') =>
   new PermissionEngine({ layers: [], mode, workspaceRoot: root })
 
-const SEARCH: PermissionKey = { tool: 'web', target: 'search' }
-const READ: PermissionKey = { tool: 'web', target: 'https://stackoverflow.com/q/1' }
+const SEARCH: PermissionKey = { tool: 'WebSearch', target: 'search' }
+const READ: PermissionKey = { tool: 'WebFetch', target: 'https://stackoverflow.com/q/1' }
 
 describe('web permissions', () => {
   test('search is free in every working mode; reads ask like the browser', () => {
@@ -306,7 +306,7 @@ describe('web permissions', () => {
 
   test('an explicit deny rule still kills search — the kill switch stands', () => {
     const engine = new PermissionEngine({
-      layers: [{ scope: 'project', path: 'p', permissions: { allow: [], ask: [], deny: ['web'] } }],
+      layers: [{ scope: 'project', path: 'p', permissions: { allow: [], ask: [], deny: ['WebSearch', 'WebFetch'] } }],
       mode: 'autopilot',
       workspaceRoot: root,
     })
@@ -314,16 +314,26 @@ describe('web permissions', () => {
     expect(engine.decide(READ).verdict).toBe('deny')
   })
 
-  test('an origin allow rule lets reads through without asking', () => {
+  test('a rule written before the rename still works: web(search) and web(origin)', () => {
+    const engine = new PermissionEngine({
+      layers: [{ scope: 'project', path: 'p', permissions: { allow: [], ask: [], deny: ['web(search)', 'web(https://stackoverflow.com:*)'] } }],
+      mode: 'autopilot',
+      workspaceRoot: root,
+    })
+    expect(engine.decide(SEARCH).verdict).toBe('deny')
+    expect(engine.decide(READ).verdict).toBe('deny')
+  })
+
+  test('an origin allow rule lets fetches through without asking', () => {
     const engine = new PermissionEngine({
       layers: [{
         scope: 'project', path: 'p',
-        permissions: { allow: ['web(https://stackoverflow.com:*)'], ask: [], deny: [] },
+        permissions: { allow: ['WebFetch(https://stackoverflow.com:*)'], ask: [], deny: [] },
       }],
       mode: 'normal',
       workspaceRoot: root,
     })
     expect(engine.decide(READ).verdict).toBe('allow')
-    expect(engine.decide({ tool: 'web', target: 'https://elsewhere.dev/x' }).verdict).toBe('ask')
+    expect(engine.decide({ tool: 'WebFetch', target: 'https://elsewhere.dev/x' }).verdict).toBe('ask')
   })
 })

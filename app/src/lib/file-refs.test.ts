@@ -68,7 +68,7 @@ describe('what is not a path', () => {
   })
 
   it('leaves versions, shortcuts and tool names alone', () => {
-    expect(refs('ship v0.1.0, bind Ctrl+E, and make todo_write index-sized')).toEqual([])
+    expect(refs('ship v0.1.0, bind Ctrl+E, and make TodoWrite index-sized')).toEqual([])
   })
 
   it('does not mistake the tail of a URL for a file', () => {

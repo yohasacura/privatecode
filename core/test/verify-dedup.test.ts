@@ -52,11 +52,11 @@ test("the model's own successful run of the verify command replaces the automati
   dirs.push(root)
 
   const registry = new ToolRegistry()
-  registry.register(fakeTool('write_file', 'wrote a.txt'))
-  // The fake run_command REALLY runs the check, like the live tool would: the byte it
+  registry.register(fakeTool('Write', 'wrote a.txt'))
+  // The fake Bash REALLY runs the check, like the live tool would: the byte it
   // appends is the model's run, and any byte after it is the app repeating the question.
   registry.register({
-    name: 'run_command',
+    name: 'Bash',
     readOnly: false,
     description: 'run',
     parameters: { type: 'object', properties: {} },
@@ -78,7 +78,7 @@ test("the model's own successful run of the verify command replaces the automati
         choices: [{
           message: {
             role: 'assistant', content: null,
-            tool_calls: [{ id: 'c1', type: 'function', function: { name: 'write_file', arguments: '{"path":"a.txt","content":"hi"}' } }],
+            tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Write', arguments: '{"path":"a.txt","content":"hi"}' } }],
           },
           finish_reason: 'tool_calls',
         }],
@@ -90,7 +90,7 @@ test("the model's own successful run of the verify command replaces the automati
         choices: [{
           message: {
             role: 'assistant', content: null,
-            tool_calls: [{ id: 'c2', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: VERIFY_CMD }) } }],
+            tool_calls: [{ id: 'c2', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command: VERIFY_CMD }) } }],
           },
           finish_reason: 'tool_calls',
         }],

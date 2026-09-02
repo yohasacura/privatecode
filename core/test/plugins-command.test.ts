@@ -39,19 +39,14 @@ describe('parsePluginCommand', () => {
 describe('runPluginCommand', () => {
   let tmp: string
   let ctx: CommandContext
-  let saved: string | undefined
   beforeAll(() => {
     tmp = mkdtempSync(join(tmpdir(), 'pc-plugins-cmd-'))
-    saved = process.env['CLAUDE_CONFIG_DIR']
-    process.env['CLAUDE_CONFIG_DIR'] = join(tmp, 'claude')
     writeMarketplace(join(tmp, 'mkt'), 'fixture-market')
     const ws = join(tmp, 'ws')
     mkdirSync(ws, { recursive: true })
     ctx = { store: new PluginStore(join(tmp, 'store')), workspaceRoot: ws, cwd: tmp, userPath: join(tmp, 'user-settings.json') }
   })
   afterAll(() => {
-    if (saved === undefined) delete process.env['CLAUDE_CONFIG_DIR']
-    else process.env['CLAUDE_CONFIG_DIR'] = saved
     try { rmSync(tmp, { recursive: true, force: true }) } catch { /* a handle still open on Windows */ }
   })
   const run = (line: string) => {

@@ -9,13 +9,13 @@ import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory, type LoadedMemory } from '../memory/project-memory.js'
-import { loadSkills, projectSkillsDir, userSkillsDir, type LoadedSkills } from '../skills/skills.js'
+import { bundledSkillSources, loadSkills, projectSkillsDir, userSkillsDir, type LoadedSkills } from '../skills/skills.js'
 import { ROLES } from '../agent/subagent.js'
 import { createDelegateTool } from '../tools/delegate.js'
 import { createHookEngine } from '../hooks/engine.js'
 import {
   PluginStore, adoptDeclaredMarketplaces, ensureDefaultMarketplaces, loadPluginComponents, parsePluginCommand,
-  pluginHelpText, runPluginCommand, standaloneComponents,
+  pluginHelpText, runPluginCommand,
 } from '../plugins/index.js'
 import { Workspace } from '../workspace.js'
 import { Session, type SessionOptions } from '../session/session.js'
@@ -254,7 +254,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
 
     const { layers, problems } = loadLayers(opts.workspaceRoot)
     const memory = loadProjectMemory(opts.workspaceRoot)
-    // The enabled plugins and Claude Code's own folders, exactly as the window loads them
+    // The bundled skills and the enabled plugins, exactly as the window loads them
     // (docs/PLUGINS-2026-09.md §4): skills, commands, agents, hooks, `bin/`.
     const pluginStore = new PluginStore()
     let pluginProblems: string[] = []
@@ -265,18 +265,17 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       pluginProblems = [`plugins: the store could not be prepared: ${(e as Error).message}`]
     }
     const plugins = loadPluginComponents(pluginStore, opts.workspaceRoot)
-    const standalone = standaloneComponents(opts.workspaceRoot)
-    const skills = loadSkills(opts.workspaceRoot, undefined, [...standalone.skillSources, ...plugins.skillSources])
+    const skills = loadSkills(opts.workspaceRoot, undefined, [...bundledSkillSources(), ...plugins.skillSources])
     const formatting = loadFormatRules(opts.workspaceRoot)
     const hooking = loadHooks(opts.workspaceRoot)
     const verifying = loadVerify(opts.workspaceRoot)
     const roleNames = new Set(ROLES.map((r) => r.name))
-    const roles = [...standalone.agents, ...plugins.agents].filter((r) => (roleNames.has(r.name) ? false : (roleNames.add(r.name), true)))
-    opts.toolset.registry.unregister('delegate')
+    const roles = plugins.agents.filter((r) => (roleNames.has(r.name) ? false : (roleNames.add(r.name), true)))
+    opts.toolset.registry.unregister('Agent')
     opts.toolset.registry.register(createDelegateTool([...ROLES, ...roles]))
     const hookEngine = createHookEngine({
       legacy: hooking.hooks,
-      sources: [...standalone.hookSources, ...plugins.hookSources],
+      sources: plugins.hookSources,
       workspace: new Workspace(opts.workspaceRoot),
       sessionId: () => (sessionBuilt ? session.id : 'new'),
       permissionMode: () => (sessionBuilt ? session.mode : explicitMode ?? 'normal'),
@@ -286,7 +285,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     loadedSkills = skills
     memoryProblems = [...memory.problems, ...skills.problems, ...formatting.problems,
                       ...hooking.problems, ...pluginProblems, ...plugins.problems, ...plugins.ignored,
-                      ...standalone.problems, ...hookEngine.problems]
+                      ...hookEngine.problems]
     const newEngine = new PermissionEngine({
       layers, mode: explicitMode ?? 'normal', workspaceRoot: opts.workspaceRoot, problems,
     })

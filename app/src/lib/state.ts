@@ -65,7 +65,7 @@ export type ChatItem =
     /**
      * The WORKER that made this call, absent when the main model made it.
      *
-     * Rendered as a badge and an indent under the `delegate` row that caused it. Without it
+     * Rendered as a badge and an indent under the `Agent` row that caused it. Without it
      * a delegation looked like the main model suddenly reading eight files by itself — the
      * owner's report: you cannot tell where the sub-agent acts and where the main model does.
      */
@@ -86,7 +86,7 @@ export type ChatItem =
      * Terminal tab, which interleaves the agent's commands with the user's own. `0` when
      * the caller had no clock (a test). */
     startedAtMs: number
-    /** Live output while the tool RUNS (run_command's stdout/stderr so far), tail-capped —
+    /** Live output while the tool RUNS (Bash's stdout/stderr so far), tail-capped —
      * display only. Dropped when the result arrives: the result is the complete record. */
     live?: string
     result?: {
@@ -729,7 +729,7 @@ function closeWritingCalls(items: ChatItem[], reason: string = ABANDONED): ChatI
  * behind, and the forced continuation opens a SECOND card for the same call. That one is
  * closed the moment the continuation starts, with `TRUNCATED_BEFORE_CALL` below — and, while
  * it was closed with plain prose, it went into the Changes tab as the newest write to that
- * path, holding a path and a `write_file` name, taking the real write's diff and its
+ * path, holding a path and a `Write` name, taking the real write's diff and its
  * "Put back" button with it. What is left for this text is the turn that simply ended on top
  * of an open card: aborted, timed out, or truncated twice.
  */

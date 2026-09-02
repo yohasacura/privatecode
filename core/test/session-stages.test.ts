@@ -163,16 +163,16 @@ test('the reviewer detail says which file, not which JSON', () => {
     reviewerDetail(name: string, args: string): string
   }).reviewerDetail
 
-  expect(detail('read_file', '{"path":"core/src/session/session.ts"}'))
+  expect(detail('Read', '{"path":"core/src/session/session.ts"}'))
     .toBe('reading core/src/session/session.ts')
-  expect(detail('search_code', '{"pattern":"applyCompactionSwap","max_results":40}'))
+  expect(detail('Grep', '{"pattern":"applyCompactionSwap","max_results":40}'))
     .toBe('searching for applyCompactionSwap')
   expect(detail('list_dir', '{"path":"core/src"}')).toBe('listing core/src')
   // A half-streamed call still has a usable name; it must not throw.
-  expect(detail('read_file', '{"path":')).toBe('read_file')
+  expect(detail('Read', '{"path":')).toBe('Read')
   // Long values are clipped, because a status line that wraps pushes the composer around
   // while you are trying to type in it.
-  const long = detail('read_file', JSON.stringify({ path: 'a/'.repeat(60) + 'b.ts' }))
+  const long = detail('Read', JSON.stringify({ path: 'a/'.repeat(60) + 'b.ts' }))
   expect(long.length).toBeLessThan(80)
   expect(long.endsWith('...')).toBe(true)
 })

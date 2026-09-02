@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { affectedDirectories } from './tree'
 
 describe('affectedDirectories (tree-refresh path parser)', () => {
-  it('names the parent directory of an edit_file path', () => {
-    expect(affectedDirectories('edit_file', JSON.stringify({ path: 'src/lib/foo.ts' }))).toEqual(['src/lib'])
+  it('names the parent directory of an Edit path', () => {
+    expect(affectedDirectories('Edit', JSON.stringify({ path: 'src/lib/foo.ts' }))).toEqual(['src/lib'])
   })
 
-  it('names the workspace root ("") for a top-level write_file path', () => {
-    expect(affectedDirectories('write_file', JSON.stringify({ path: 'README.md' }))).toEqual([''])
+  it('names the workspace root ("") for a top-level Write path', () => {
+    expect(affectedDirectories('Write', JSON.stringify({ path: 'README.md' }))).toEqual([''])
   })
 
   it('names the parent directory of a delete_file path', () => {
@@ -24,19 +24,19 @@ describe('affectedDirectories (tree-refresh path parser)', () => {
   })
 
   it('tolerates backslash-separated paths', () => {
-    expect(affectedDirectories('edit_file', JSON.stringify({ path: 'src\\lib\\foo.ts' }))).toEqual(['src/lib'])
+    expect(affectedDirectories('Edit', JSON.stringify({ path: 'src\\lib\\foo.ts' }))).toEqual(['src/lib'])
   })
 
   it('returns nothing for a read-only tool', () => {
-    expect(affectedDirectories('read_file', JSON.stringify({ path: 'a.ts' }))).toEqual([])
+    expect(affectedDirectories('Read', JSON.stringify({ path: 'a.ts' }))).toEqual([])
   })
 
   it('returns nothing for malformed JSON rather than throwing', () => {
-    expect(affectedDirectories('edit_file', '{not json')).toEqual([])
+    expect(affectedDirectories('Edit', '{not json')).toEqual([])
   })
 
   it('returns nothing when the expected field is missing or the wrong type', () => {
-    expect(affectedDirectories('edit_file', JSON.stringify({ notPath: 'a.ts' }))).toEqual([])
-    expect(affectedDirectories('edit_file', JSON.stringify({ path: 42 }))).toEqual([])
+    expect(affectedDirectories('Edit', JSON.stringify({ notPath: 'a.ts' }))).toEqual([])
+    expect(affectedDirectories('Edit', JSON.stringify({ path: 42 }))).toEqual([])
   })
 })

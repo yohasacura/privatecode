@@ -71,7 +71,7 @@ export interface PromptOptions {
    */
   folders?: { name: string; access: 'write' | 'read' }[]
   /**
-   * Whether the `delegate` tool is actually on offer, which is what earns the paragraph
+   * Whether the `Agent` tool is actually on offer, which is what earns the paragraph
    * below its place. Five framings were measured against the live model
    * (`spike/delegate-prompt-probe.mts`), same jobs, same tools:
    *
@@ -92,7 +92,7 @@ export interface PromptOptions {
    * that edited files — when one is configured.
    *
    * Named in the prompt because of what the recorded sessions show without it: 137 of 766
-   * tool calls were `run_command`, and the bulk of those were the model running
+   * tool calls were `Bash`, and the bulk of those were the model running
    * `dotnet build` on its own work the step after every edit, in a session where the
    * harness was about to run the same command for free. The result line the harness
    * appends is the structural half of the fix (it now lands right after the edit, so the
@@ -172,7 +172,7 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     ...(opts.delegation === true
       ? [
         'When the request asks you to find out, map, trace or investigate something across',
-        'the codebase, your FIRST call is delegate: hand the whole question to a worker and',
+        'the codebase, your FIRST call is Agent: hand the whole question to a worker and',
         'continue from its answer. Read files yourself for small, specific look-ups — one',
         'named file, one symbol, one quick check.',
         '',

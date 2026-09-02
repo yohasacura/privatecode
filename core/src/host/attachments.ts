@@ -7,14 +7,14 @@ import { walkFiles } from './file-search.js'
  * Files the user attached to a message with `@`.
  *
  * The point is to save a round trip: without it the model spends a whole step calling
- * `read_file` on a path the person already knew, and sometimes spends two because it guessed
+ * `Read` on a path the person already knew, and sometimes spends two because it guessed
  * the path wrong. The cost is that the contents land in the transcript permanently — the
  * transcript IS the model's context and it is append-only — so this is budgeted, and the
  * budget is reported rather than applied quietly. An attachment that silently lost half a
  * file would be worse than no attachment: the model would answer confidently about code it
  * was never shown.
  *
- * Rendered in `read_file`'s own format, numbered lines and all, because the model has
+ * Rendered in `Read`'s own format, numbered lines and all, because the model has
  * already seen thousands of those and a second format to learn buys nothing.
  */
 
@@ -32,7 +32,7 @@ const ATTACH_PER_FILE_CHARS = 24_000
  * source directory is routinely megabytes, so every folder attachment would spend the whole
  * budget on whichever files happened to be walked first and report the rest as dropped.
  * What the model actually needs from a folder is which files are IN it — from there
- * `read_file` fetches the two that matter, at the moment it knows which two those are.
+ * `Read` fetches the two that matter, at the moment it knows which two those are.
  *
  * Walked with the same skip list and the same ceiling the `@` picker uses (`file-search.ts`),
  * so a folder cannot attach a dependency tree and the walk cannot run away on a monorepo.
@@ -69,7 +69,7 @@ async function folderListing(
   let files: string[]
   try {
     // One over the cap, so "there were exactly this many" and "there were more" are
-    // distinguishable — the same trick `search_code` plays on ripgrep's `--max-count`.
+    // distinguishable — the same trick `Grep` plays on ripgrep's `--max-count`.
     files = await walkFiles(absolute, ATTACH_LISTING_MAX_FILES + 1)
   } catch (e) {
     return {
@@ -87,7 +87,7 @@ async function folderListing(
     ? {
         body,
         note: `folder listing, first ${ATTACH_LISTING_MAX_FILES} files of more; ` +
-          'find_files can narrow it',
+          'Glob can narrow it',
       }
     : { body: body, note: `folder listing, ${shown.length} ${shown.length === 1 ? 'file' : 'files'}` }
 }
@@ -179,7 +179,7 @@ export async function attachFiles(
     spent += body.length
 
     if (clipped) {
-      const note = `${path} was clipped to its first ${lines} lines; read_file can fetch the rest`
+      const note = `${path} was clipped to its first ${lines} lines; Read can fetch the rest`
       attachments.push({ path, body, note })
       notes.push(note)
     } else {

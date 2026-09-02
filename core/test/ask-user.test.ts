@@ -18,7 +18,7 @@ function ctxWith(answer: string, seen: UserQuestion[]): ToolContext {
   } as unknown as ToolContext
 }
 
-describe('ask_user validation', () => {
+describe('AskUserQuestion validation', () => {
   test('multi_select is optional, boolean, and snake case on the wire', () => {
     const base = { question: 'which?', options: ['a', 'b'] }
     expect(askUserTool.validate({ ...base }).ok).toBe(true)

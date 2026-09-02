@@ -141,7 +141,7 @@ describe('ranking', () => {
 describe('rendering', () => {
   test('a class carries its members on its own line, every name with its line number', () => {
     // The line numbers are what make a map entry the ARGUMENT of the next call: with them,
-    // `read_file(path, start_line, end_line)` for one method is writable from the map alone;
+    // `Read(path, start_line, end_line)` for one method is writable from the map alone;
     // without them the only way to reach the method is to read the file — which is what the
     // recorded sessions show, 285 reads to 0 outlines.
     const file: FileOutline = {
@@ -162,7 +162,7 @@ describe('rendering', () => {
     const text = renderRepoMap([outline('a.ts', [['function', 'f', 0]])])
     expect(text).toMatch(/snapshot/i)
     expect(text).toMatch(/out of date/i)
-    expect(text).toMatch(/read_file|symbol_outline/)
+    expect(text).toMatch(/Read|symbol_outline/)
   })
 
   test('a budget that cuts the listing SAYS how much it cut', () => {

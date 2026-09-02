@@ -22,11 +22,11 @@ test('plan mode denies writes and commands even when the Agent was built in anot
   // Exactly what Session.setMode does mid-turn: mutate the live engine.
   engine.mode = 'plan'
 
-  for (const tool of ['write_file', 'edit_file', 'delete_file', 'move_file']) {
+  for (const tool of ['Write', 'Edit', 'delete_file', 'move_file']) {
     const d = engine.decide({ tool, paths: ['src/app.ts'] })
     expect(d.verdict, `${tool} must not be auto-allowed by plan mode`).toBe('deny')
   }
-  for (const tool of ['run_command', 'background_task']) {
+  for (const tool of ['Bash', 'background_task']) {
     const d = engine.decide({ tool, command: 'npm test' })
     expect(d.verdict, `${tool} must not be auto-allowed by plan mode`).toBe('deny')
   }
@@ -34,8 +34,8 @@ test('plan mode denies writes and commands even when the Agent was built in anot
 
 test('plan mode still allows read-only tools, and background_task control ops', () => {
   const engine = new PermissionEngine({ layers: [], mode: 'plan', workspaceRoot: root })
-  expect(engine.decide({ tool: 'read_file', paths: ['a.ts'] }).verdict).toBe('allow')
-  expect(engine.decide({ tool: 'search_code' }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'Read', paths: ['a.ts'] }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'Grep' }).verdict).toBe('allow')
   // Keyless EXEC key = poll/stop on a process whose start was already approved. It
   // short-circuits before the mode switch and must stay allowed.
   expect(engine.decide({ tool: 'background_task' }).verdict).toBe('allow')
@@ -43,8 +43,8 @@ test('plan mode still allows read-only tools, and background_task control ops', 
 
 test('normal mode still asks rather than denying, so the fix did not widen the deny tier', () => {
   const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })
-  expect(engine.decide({ tool: 'write_file', paths: ['a.ts'] }).verdict).toBe('ask')
-  expect(engine.decide({ tool: 'run_command', command: 'npm test' }).verdict).toBe('ask')
+  expect(engine.decide({ tool: 'Write', paths: ['a.ts'] }).verdict).toBe('ask')
+  expect(engine.decide({ tool: 'Bash', command: 'npm test' }).verdict).toBe('ask')
 })
 
 /**
@@ -69,7 +69,7 @@ test('writes under .privatecode are denied in every mode', () => {
                      'app/.privatecode/settings.json',
                      String.raw`app\.privatecode\hooks.json`,
                      'engine/.privatecode/settings.local.json']) {
-      const d = engine.decide({ tool: 'write_file', paths: [p] })
+      const d = engine.decide({ tool: 'Write', paths: [p] })
       expect(d.verdict, `${mode}: ${p}`).toBe('deny')
       expect(d.source, `${mode}: ${p}`).toBe('builtin')
     }
@@ -78,11 +78,11 @@ test('writes under .privatecode are denied in every mode', () => {
 
 test('reading inside .privatecode stays allowed', () => {
   const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })
-  expect(engine.decide({ tool: 'read_file', paths: ['.privatecode/state/logs/run.log'] }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'Read', paths: ['.privatecode/state/logs/run.log'] }).verdict).toBe('allow')
 })
 
 test('a path that merely starts with the same letters is untouched', () => {
   const engine = new PermissionEngine({ layers: [], mode: 'auto-edit', workspaceRoot: root })
-  expect(engine.decide({ tool: 'write_file', paths: ['privatecode.md'] }).verdict).toBe('allow')
-  expect(engine.decide({ tool: 'write_file', paths: ['src/.privatecoded/a.ts'] }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'Write', paths: ['privatecode.md'] }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'Write', paths: ['src/.privatecoded/a.ts'] }).verdict).toBe('allow')
 })

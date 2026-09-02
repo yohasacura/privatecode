@@ -66,7 +66,7 @@ describe('what the caller may ask for', () => {
 describe('what comes back', () => {
   test('the answer, with what it cost in front of it', async () => {
     // Several steps and several seconds hide behind one call. Unreported, a delegate call
-    // looks free next to a read_file — and the whole reason to have it is that it is not.
+    // looks free next to a Read — and the whole reason to have it is that it is not.
     const r = await call(
       { role: 'investigate', task: 'where does the slug helper live' },
       { delegate: async () => outcome() },
@@ -118,12 +118,12 @@ describe('the tool as the registry sees it', () => {
     // and cost framings went 0/6 (spike/delegate-prompt-probe.mts). The tool and its prompt
     // paragraph now arrive together: `delegation:` in buildSystemPrompt is computed from
     // this registration.
-    expect(buildRegistry().schemas().map((s) => s.function.name)).toContain('delegate')
+    expect(buildRegistry().schemas().map((s) => s.function.name)).toContain('Agent')
   })
 
   test('its permission key names the role and the job', () => {
     const key = delegateTool.permissionKey!({ role: 'investigate', task: 'find the slug helper' })
-    expect(key.tool).toBe('delegate')
+    expect(key.tool).toBe('Agent')
     expect(key.command).toContain('investigate')
     expect(key.command).toContain('slug')
   })
@@ -139,7 +139,7 @@ describe('a worker that could act', () => {
     // approval and no rules, and nothing about adding it would have looked wrong.
     const acting = {
       name: 'implement', purpose: 'x', brief: 'x',
-      tools: ['write_file'], mode: 'normal' as const, maxSteps: 4,
+      tools: ['Write'], mode: 'normal' as const, maxSteps: 4,
     }
     const out = await runSubAgent(
       { client: null as never, registry: null as never, context: { workspace: new Workspace(root) } },
@@ -218,12 +218,12 @@ describe('a worker\'s events are the worker\'s', () => {
       onToolResult: (n: string, _r: unknown, _id: string, agent?: string) => seen.push({ name: `${n}:result`, ...(agent !== undefined ? { agent } : {}) }),
     })
 
-    wrapped.onToolCall?.('read_file', '{}')
-    wrapped.onToolResult?.('read_file', { ok: true, content: 'x' }, 'c1')
+    wrapped.onToolCall?.('Read', '{}')
+    wrapped.onToolResult?.('Read', { ok: true, content: 'x' }, 'c1')
 
     expect(seen).toEqual([
-      { name: 'read_file', agent: 'investigate' },
-      { name: 'read_file:result', agent: 'investigate' },
+      { name: 'Read', agent: 'investigate' },
+      { name: 'Read:result', agent: 'investigate' },
     ])
   })
 

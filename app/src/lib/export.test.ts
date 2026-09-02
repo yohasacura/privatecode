@@ -17,11 +17,11 @@ const items: ChatItem[] = [
     done: true, startedAtMs: 0, endedAtMs: null,
   },
   {
-    kind: 'tool', id: 3, name: 'read_file', args: '{"path":"src/fetcher.ts"}', startedAtMs: 0,
+    kind: 'tool', id: 3, name: 'Read', args: '{"path":"src/fetcher.ts"}', startedAtMs: 0,
     result: { ok: true, preview: 'src/fetcher.ts (80 lines)', content: 'x'.repeat(60_000), display: 'big' },
   },
   {
-    kind: 'tool', id: 4, name: 'edit_file', args: '{"path":"src/fetcher.ts"}', startedAtMs: 0,
+    kind: 'tool', id: 4, name: 'Edit', args: '{"path":"src/fetcher.ts"}', startedAtMs: 0,
     result: { ok: false, preview: 'no match for the search text', content: 'no match', display: 'no match' },
   },
   { kind: 'assistant', id: 5, text: 'Added a retry with backoff.', interrupted: false },
@@ -34,8 +34,8 @@ describe('conversationAsMarkdown', () => {
     expect(md).toContain('# Retry work')
     expect(md).toContain('## You\n\nadd a retry to the fetcher')
     expect(md).toContain('## PrivateCode\n\nAdded a retry with backoff.')
-    expect(md).toContain('- `read_file` — src/fetcher.ts (80 lines)')
-    expect(md).toContain('- `edit_file` — failed: no match for the search text')
+    expect(md).toContain('- `Read` — src/fetcher.ts (80 lines)')
+    expect(md).toContain('- `Edit` — failed: no match for the search text')
     expect(md).toContain('- verify `npm test` — passed')
     // The two exclusions that make the export usable: no sixty-thousand-character tool
     // dump, and no inner monologue.
@@ -50,7 +50,7 @@ describe('conversationAsMarkdown', () => {
     // not ended.
     const md = conversationAsMarkdown([
       { kind: 'question-record', id: 1, question: 'Deploy to staging first?', answer: 'Yes' },
-      { kind: 'tool', id: 2, name: 'run_command', args: '{"command":"npm test"}', startedAtMs: 0 },
+      { kind: 'tool', id: 2, name: 'Bash', args: '{"command":"npm test"}', startedAtMs: 0 },
     ], 't')
     expect(md).toContain('asked: "Deploy to staging first?" — answered: "Yes"')
     expect(md).toContain('still running when this was copied')

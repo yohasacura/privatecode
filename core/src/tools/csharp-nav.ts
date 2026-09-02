@@ -15,7 +15,7 @@ const ACTIONS: readonly CsharpNavArgs['action'][] = ['definition', 'references',
  * This exists because of a measurement, not a wish. Over a 27-minute run on a real backend
  * the model prefilled 394k tokens and generated 29k — two thirds of the wall clock spent
  * re-ingesting context, most of it file contents read in order to work out what calls what.
- * `search_code` finds a string and `symbol_outline` describes one file; neither can answer
+ * `Grep` finds a string and `symbol_outline` describes one file; neither can answer
  * "who calls this" without the model reading the callers and deciding for itself.
  *
  * One question here replaces that reading. Measured against the same project: `references`
@@ -23,7 +23,7 @@ const ACTIONS: readonly CsharpNavArgs['action'][] = ['definition', 'references',
  * that takes it and the line that registers it in DI — five files, as four lines.
  *
  * `readOnly`, and meant literally: it parses and answers. It is available in plan mode for
- * the same reason `use_skill` is — understanding the code is most of what planning is.
+ * the same reason `Skill` is — understanding the code is most of what planning is.
  */
 export const csharpNavTool: Tool<CsharpNavArgs> = {
   name: 'csharp_nav',
@@ -39,7 +39,7 @@ export const csharpNavTool: Tool<CsharpNavArgs> = {
     'Reach for it before opening a .cs file: one call replaces reading every file that ' +
     'mentions the name, it finds a class that inherits an implementation without naming it, ' +
     'and it tells a real use apart from a comment, a string, or a same-named member of ' +
-    'another type. C# only — for other languages use search_code.',
+    'another type. C# only — for other languages use Grep.',
   parameters: {
     type: 'object',
     properties: {
@@ -85,7 +85,7 @@ export const csharpNavTool: Tool<CsharpNavArgs> = {
         ok: false,
         content:
           'C# navigation is not available in this build (the helper binary is not installed). ' +
-          'Use search_code and symbol_outline instead.',
+          'Use Grep and symbol_outline instead.',
       }
     }
 
@@ -134,7 +134,7 @@ export const csharpNavTool: Tool<CsharpNavArgs> = {
         ok: true,
         content: note ??
           `No ${args.action} found for "${args.symbol}"${where}. If it is not C#, or lives ` +
-          'outside the folder that was indexed, use search_code instead.',
+          'outside the folder that was indexed, use Grep instead.',
       }
     }
 

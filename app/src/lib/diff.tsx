@@ -2,7 +2,7 @@ import { useMemo, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 
 /**
- * Renders the diff text `edit_file` produces (`core/src/tools/edit-file.ts`'s `renderDiff`)
+ * Renders the diff text `Edit` produces (`core/src/tools/edit-file.ts`'s `renderDiff`)
  * as a real, gutter-numbered, coloured diff instead of a wall of `pre`.
  *
  * The format it emits is:
@@ -16,7 +16,7 @@ import type { VNode } from 'preact'
  *
  * — all removals, then all additions, from one starting line. That is enough to number both
  * sides correctly, which is what makes a diff readable at a glance. Anything that is NOT in
- * that shape (a `write_file` confirmation, a `delete_file` note, a tool error) still renders
+ * that shape (a `Write` confirmation, a `delete_file` note, a tool error) still renders
  * here, just without gutters: this component never assumes it was handed a diff.
  */
 

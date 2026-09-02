@@ -39,7 +39,7 @@ const MAX_WARNING_LINES = 3
 const MAX_WARNING_CHARS = 300
 
 /**
- * The same names `Workspace`'s denylist refuses for `read_file`, expressed as ripgrep
+ * The same names `Workspace`'s denylist refuses for `Read`, expressed as ripgrep
  * `--iglob` exclusions. This is belt, not suspenders: it keeps ripgrep from walking into
  * these files at all in the common case, but the actual guarantee is the per-line
  * `ctx.workspace.resolve()` check below, which is what still holds if one of these
@@ -202,7 +202,7 @@ async function verifyIsRipgrep(path: string): Promise<RgCheck> {
 type RgResolution = { ok: true; path: string } | { ok: false; message: string }
 
 const REMEDY =
-  'search_code cannot run without ripgrep - restore vendor/ripgrep/rg.exe, install ' +
+  'Grep cannot run without ripgrep - restore vendor/ripgrep/rg.exe, install ' +
   'ripgrep on PATH, or set PRIVATECODE_RG to a working rg executable.'
 
 /**
@@ -274,7 +274,7 @@ function resolveRg(): Promise<RgResolution> {
 /**
  * Whether a `path:line:text` result line names a file `ctx.workspace.resolve()` accepts.
  * This is the actual boundary, independent of whether `DENIED_GLOBS` above matched: it
- * runs every result path through the same jail `read_file` uses, including the
+ * runs every result path through the same jail `Read` uses, including the
  * canonicalization and 8.3/junction checks a glob pattern cannot express.
  *
  * A line that does not parse is dropped, not passed through. Nothing ripgrep prints under
@@ -351,7 +351,7 @@ function warningSuffix(stderr: string): string {
 }
 
 export const searchCodeTool: Tool<SearchCodeArgs> = {
-  name: 'search_code',
+  name: 'Grep',
   readOnly: true,
   description:
     // "The primary way to locate code" claimed the whole territory, including questions it
@@ -398,11 +398,11 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
     } catch (e) {
       return {
         ok: false,
-        content: `search_code failed: ripgrep could not be resolved (${(e as Error).message})`,
+        content: `Grep failed: ripgrep could not be resolved (${(e as Error).message})`,
       }
     }
     if (!resolution.ok) {
-      return { ok: false, content: `search_code failed: ${resolution.message}` }
+      return { ok: false, content: `Grep failed: ${resolution.message}` }
     }
 
     const max = args.max_results ?? DEFAULT_MAX
@@ -494,7 +494,7 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
         // search result.
         return {
           ok: false,
-          content: `search_code failed: ripgrep could not be run (${(e as Error).message})`,
+          content: `Grep failed: ripgrep could not be run (${(e as Error).message})`,
         }
       }
 
@@ -507,7 +507,7 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
         return {
           ok: false,
           content:
-            `search_code failed: ripgrep did not run (${result.shortMessage ?? 'unknown spawn failure'})`,
+            `Grep failed: ripgrep did not run (${result.shortMessage ?? 'unknown spawn failure'})`,
         }
       }
       const exitCode = result.exitCode
@@ -515,7 +515,7 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
         return {
           ok: false,
           content:
-            `search_code failed: ripgrep exited with unexpected status ${exitCode}` +
+            `Grep failed: ripgrep exited with unexpected status ${exitCode}` +
             `${result.stderr ? `: ${summariseStderr(result.stderr)}` : ''}`,
         }
       }
@@ -529,7 +529,7 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
         return {
           ok: false,
           content:
-            'search_code failed: ripgrep reported matches (exit 0) but printed nothing, so ' +
+            'Grep failed: ripgrep reported matches (exit 0) but printed nothing, so ' +
             'the search cannot be trusted' + (stderr ? `: ${summariseStderr(stderr)}` : ''),
         }
       }
@@ -542,7 +542,7 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
           // warning (e.g. a malformed ignore-file line) exits 1 with prefixed stderr and
           // falls through to the ordinary "no matches" path below, warning attached.
           content:
-            'search_code failed: ripgrep exited 1 (nothing found) but wrote to stderr that ' +
+            'Grep failed: ripgrep exited 1 (nothing found) but wrote to stderr that ' +
             `is not one of its own diagnostics, so the search did not run as asked: ${summariseStderr(stderr)}`,
         }
       }
@@ -561,7 +561,7 @@ export const searchCodeTool: Tool<SearchCodeArgs> = {
       // ok: false. One ACL-restricted file, cloud placeholder or locked file must not make
       // search useless workspace-wide. Hard-fail only when there is nothing usable.
       if (exitCode === 2 && lines.length === 0) {
-        return { ok: false, content: `search_code failed: ${summariseStderr(stderr) || 'ripgrep reported an error'}` }
+        return { ok: false, content: `Grep failed: ${summariseStderr(stderr) || 'ripgrep reported an error'}` }
       }
       return { ok: true, lines, stderr }
     }

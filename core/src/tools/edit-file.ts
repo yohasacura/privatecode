@@ -12,27 +12,27 @@ export interface EditFileArgs {
 }
 
 /**
- * The same ceiling read_file applies, for the same reason: the file is about to be held in
- * memory as a string, twice over. Duplicated rather than shared because read_file owns its
+ * The same ceiling Read applies, for the same reason: the file is about to be held in
+ * memory as a string, twice over. Duplicated rather than shared because Read owns its
  * own constants; the two must not drift.
  */
 const MAX_FILE_BYTES = 10 * 1024 * 1024
 
-/** How many leading bytes the "is this actually text?" sniff inspects. Matches read_file. */
+/** How many leading bytes the "is this actually text?" sniff inspects. Matches Read. */
 const SNIFF_BYTES = 4096
 
 /**
  * Ceiling on the rendered diff. A diff is a receipt, not content: the model already holds
  * both search_text and replace_text, and everything returned lands in an append-only
  * transcript. Unbounded, an eleven-character edit to a one-line minified file rendered
- * 1.6 million characters — twenty-six times read_file's entire per-call budget.
+ * 1.6 million characters — twenty-six times Read's entire per-call budget.
  */
 const MAX_DIFF_CHARS = 4_000
 
 /** Ceiling on one rendered row, so a single minified line cannot blow the budget alone. */
 const MAX_DIFF_LINE_CHARS = 400
 
-/** Mirrors read_file's size wording so the two tools describe the same file the same way. */
+/** Mirrors Read's size wording so the two tools describe the same file the same way. */
 function describeBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} bytes`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -41,7 +41,7 @@ function describeBytes(bytes: number): string {
 
 /**
  * Why the head of this file is not UTF-8 text, or null if it looks like text. Kept in step
- * with read_file's sniff of the same name: read_file refusing a file that edit_file will
+ * with Read's sniff of the same name: Read refusing a file that Edit will
  * happily rewrite is precisely the hole this closes.
  */
 function notTextReason(head: Buffer): string | null {
@@ -133,7 +133,7 @@ export function renderDiff(before: string, after: string, path: string): string 
 }
 
 export const editFileTool: Tool<EditFileArgs> = {
-  name: 'edit_file',
+  name: 'Edit',
   readOnly: false,
   description:
     'Replace an exact fragment of a file. search_text must be copied verbatim from the ' +
@@ -172,13 +172,13 @@ export const editFileTool: Tool<EditFileArgs> = {
     }
   },
   permissionKey(args): PermissionKey {
-    return { tool: 'edit_file', paths: [args.path] }
+    return { tool: 'Edit', paths: [args.path] }
   },
   approvalPreview(args): ApprovalPreview {
     const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}\n... (clipped)` : s)
     return {
       summary: `edit ${args.path}`,
-      detail: `edit_file ${args.path}\n<<<<<<< SEARCH\n${clip(args.search_text, 1_500)}\n` +
+      detail: `Edit ${args.path}\n<<<<<<< SEARCH\n${clip(args.search_text, 1_500)}\n` +
               `=======\n${clip(args.replace_text, 1_500)}\n>>>>>>> REPLACE`,
     }
   },
@@ -200,7 +200,7 @@ export const editFileTool: Tool<EditFileArgs> = {
     try {
       const info = await stat(abs)
       if (info.isDirectory()) {
-        return { ok: false, content: `${args.path} is a directory; edit_file changes files` }
+        return { ok: false, content: `${args.path} is a directory; Edit changes files` }
       }
       if (!info.isFile()) {
         return { ok: false, content: `${args.path} is not a regular file` }
@@ -211,7 +211,7 @@ export const editFileTool: Tool<EditFileArgs> = {
       return {
         ok: false,
         content: err.code === 'ENOENT'
-          ? `File not found: ${args.path}. Use write_file to create it.`
+          ? `File not found: ${args.path}. Use Write to create it.`
           : `Could not read ${args.path}: ${fsErrorReason(abs, e)}`,
       }
     }
@@ -220,9 +220,9 @@ export const editFileTool: Tool<EditFileArgs> = {
       return {
         ok: false,
         content:
-          `${args.path} is ${describeBytes(size)}; edit_file refuses files larger than ` +
-          `${describeBytes(MAX_FILE_BYTES)}, the ceiling read_file applies. An anchor cannot ` +
-          'have been copied out of a file this size, because read_file refuses it too.',
+          `${args.path} is ${describeBytes(size)}; Edit refuses files larger than ` +
+          `${describeBytes(MAX_FILE_BYTES)}, the ceiling Read applies. An anchor cannot ` +
+          'have been copied out of a file this size, because Read refuses it too.',
       }
     }
 
@@ -234,7 +234,7 @@ export const editFileTool: Tool<EditFileArgs> = {
       return {
         ok: false,
         content: err.code === 'ENOENT'
-          ? `File not found: ${args.path}. Use write_file to create it.`
+          ? `File not found: ${args.path}. Use Write to create it.`
           : `Could not read ${args.path}: ${fsErrorReason(abs, e)}`,
       }
     }
@@ -242,14 +242,14 @@ export const editFileTool: Tool<EditFileArgs> = {
     // Read as bytes and prove they are text before rewriting them as text. `readFile(abs,
     // 'utf8')` maps every invalid byte to U+FFFD and the write puts it back as EF BF BD,
     // so editing a PNG used to report success while destroying the header. The sniff is
-    // read_file's, so the two tools agree about what they will touch; the round-trip check
+    // Read's, so the two tools agree about what they will touch; the round-trip check
     // then catches what a 4 KB sniff cannot — a stray Latin-1 byte with no NUL near it.
     const reason = notTextReason(buffer.subarray(0, SNIFF_BYTES))
     if (reason) {
       return {
         ok: false,
         content:
-          `Cannot edit ${args.path} (${describeBytes(size)}): ${reason}. edit_file rewrites ` +
+          `Cannot edit ${args.path} (${describeBytes(size)}): ${reason}. Edit rewrites ` +
           'the whole file as UTF-8 text, which would destroy it.',
       }
     }
@@ -269,7 +269,7 @@ export const editFileTool: Tool<EditFileArgs> = {
     const hasBom = raw.charCodeAt(0) === 0xfeff
     const body = hasBom ? raw.slice(1) : raw
 
-    // read_file splits on /\r?\n/, so the model never sees a carriage return and the anchor
+    // Read splits on /\r?\n/, so the model never sees a carriage return and the anchor
     // it copies back is always LF-joined — against a CRLF file that anchor cannot match
     // any line boundary, on either the exact or the whitespace-tolerant path, and the
     // not-found hint tells the model to do exactly what it just did. Matching happens on
@@ -282,7 +282,7 @@ export const editFileTool: Tool<EditFileArgs> = {
 
     const outcome = applySearchReplace(lfBody, search, replace)
     if (!outcome.ok) {
-      return { ok: false, content: `edit_file could not apply the change: ${outcome.hint}` }
+      return { ok: false, content: `Edit could not apply the change: ${outcome.hint}` }
     }
 
     const restored = applyEndings(outcome.text, endings.eol)

@@ -63,7 +63,7 @@ describe('list_dir', () => {
   })
 })
 
-describe('find_files', () => {
+describe('Glob', () => {
   test('a pattern with no folder name searches every folder', async () => {
     const r = await findFilesTool.execute({ glob: '**/*.ts' }, { workspace: ws })
     expect(r.ok).toBe(true)
@@ -89,7 +89,7 @@ describe('find_files', () => {
   })
 })
 
-describe('search_code', () => {
+describe('Grep', () => {
   test('one search covers every folder, and each hit says which one', async () => {
     const r = await searchCodeTool.execute({ pattern: 'boot' }, { workspace: ws })
     expect(r.ok).toBe(true)
@@ -244,10 +244,10 @@ describe('the delegation paragraph', () => {
     // model to delegate in plan mode, where the tool is filtered out, would be an
     // instruction to do the impossible.
     const withIt = buildSystemPrompt({ workspaceRoot: 'D:\p', mode: 'normal', delegation: true })
-    expect(withIt).toContain('your FIRST call is delegate')
+    expect(withIt).toContain('your FIRST call is Agent')
 
     const without = buildSystemPrompt({ workspaceRoot: 'D:\p', mode: 'normal' })
-    expect(without).not.toContain('delegate')
+    expect(without).not.toContain('FIRST call is Agent')
     expect(without).toBe(buildSystemPrompt({ workspaceRoot: 'D:\p', mode: 'normal', delegation: false }))
   })
 })

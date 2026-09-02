@@ -8,22 +8,20 @@ import { settingsText } from '../permissions/settings.js'
 import { readAgentsDir } from './agents.js'
 import { effectivePlugins, pluginPaths } from './installer.js'
 import { insidePlugin, isRecord, type PluginManifest } from './manifest.js'
-import { claudeConfigDir } from './settings.js'
 import type { PluginStore } from './store.js'
 
 /**
  * What the enabled plugins put into a session (docs/PLUGINS-2026-09.md §4), gathered once
  * per session build and handed to the loaders that already exist: skills as extra skill
- * sources, commands as extra command sources, agents as `delegate` roles, MCP servers as
+ * sources, commands as extra command sources, agents as `Agent` roles, MCP servers as
  * server configs, hooks as raw configs for the hook engine, `bin/` folders for PATH.
  *
- * Also the standalone conventions of §0: `.claude/skills`, `.claude/commands`,
- * `.claude/agents`, `.mcp.json` and their `~/.claude/` twins, read the same way and handed
- * over first, so PrivateCode's own folders win a name clash.
+ * Plugins only. PrivateCode reads its own folders (`.privatecode/`, `%APPDATA%\PrivateCode\`)
+ * and the plugins it installed; it does not read another tool's `.claude/` folder.
  */
 
 export interface HookSource {
-  /** `plugin:<name>`, or `.claude/settings.json` and the like for a standalone file. */
+  /** `plugin:<name>` */
   owner: string
   /** `${CLAUDE_PLUGIN_ROOT}` — absent for a hook that is not a plugin's. */
   root?: string
@@ -198,61 +196,6 @@ export function loadPluginComponents(store: PluginStore, workspaceRoot: string, 
     const bin = join(plugin.root, 'bin')
     if (existsSync(bin) && statSync(bin).isDirectory()) out.binDirs.push(bin)
     if (p.inventory.unsupported.length > 0) out.ignored.push(`${p.id} declares ${p.inventory.unsupported.join(', ')}, which PrivateCode does not act on`)
-  }
-  return out
-}
-
-export interface StandaloneComponents {
-  skillSources: SkillSource[]
-  commandSources: CommandSource[]
-  agents: SubAgentRole[]
-  /** From `.mcp.json` and the `.claude/` settings files, lowest precedence first. */
-  mcpServers: ServerConfig[]
-  hookSources: HookSource[]
-  problems: string[]
-}
-
-function serversFromFile(path: string, where: string, problems: string[]): ServerConfig[] {
-  if (!existsSync(path)) return []
-  let raw: unknown
-  try { raw = JSON.parse(settingsText(readFileSync(path, 'utf8'))) } catch (e) { problems.push(`${where} is not valid JSON: ${(e as Error).message}`); return [] }
-  if (!isRecord(raw) || !isRecord(raw['mcpServers'])) return []
-  return readServersObject(raw['mcpServers'], where, problems)
-}
-
-function hooksFromFile(path: string, where: string): HookSource[] {
-  if (!existsSync(path)) return []
-  let raw: unknown
-  // A JSON error is reported once, by `serversFromFile` over the same file.
-  try { raw = JSON.parse(settingsText(readFileSync(path, 'utf8'))) } catch { return [] }
-  if (!isRecord(raw) || !isRecord(raw['hooks']) || Array.isArray(raw['hooks'])) return []
-  return [{ owner: where, config: raw['hooks'], where }]
-}
-
-/**
- * Claude Code's own folders and files, read as PrivateCode reads its own — `.claude/skills`,
- * `.claude/commands`, `.claude/agents`, `.mcp.json`, and `mcpServers`/`hooks` in the
- * `.claude/settings*.json` files — user level first, then the project.
- */
-export function standaloneComponents(workspaceRoot: string, claudeDir = claudeConfigDir()): StandaloneComponents {
-  const out: StandaloneComponents = { skillSources: [], commandSources: [], agents: [], mcpServers: [], hookSources: [], problems: [] }
-  const project = join(workspaceRoot, '.claude')
-  for (const [scope, base, label] of [['user', claudeDir, '~/.claude'], ['project', project, '.claude']] as const) {
-    const skills = join(base, 'skills')
-    if (existsSync(skills)) {
-      out.skillSources.push({ scope, dir: skills, label: `${label}/skills` })
-      out.commandSources.push({ dir: skills, kind: 'skills', label: `${label}/skills` })
-    }
-    const commands = join(base, 'commands')
-    if (existsSync(commands)) out.commandSources.push({ dir: commands, kind: 'commands', label: `${label}/commands` })
-    out.agents.push(...readAgentsDir(join(base, 'agents'), null, `${label}/agents`, out.problems))
-  }
-  out.mcpServers.push(...serversFromFile(join(claudeDir, 'settings.json'), '~/.claude/settings.json', out.problems))
-  out.hookSources.push(...hooksFromFile(join(claudeDir, 'settings.json'), '~/.claude/settings.json'))
-  out.mcpServers.push(...serversFromFile(join(workspaceRoot, '.mcp.json'), '.mcp.json', out.problems))
-  for (const file of ['settings.json', 'settings.local.json']) {
-    out.mcpServers.push(...serversFromFile(join(project, file), `.claude/${file}`, out.problems))
-    out.hookSources.push(...hooksFromFile(join(project, file), `.claude/${file}`))
   }
   return out
 }

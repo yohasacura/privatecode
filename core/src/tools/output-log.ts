@@ -14,12 +14,12 @@ import type { Workspace } from '../workspace.js'
  *
  * Instead the whole output is written to a file inside the workspace, and the model is
  * told the path and the line count. From there it uses the tools it already has:
- * `read_file` with `start_line`/`end_line` walks it in pages, `search_code` with `path`
+ * `Read` with `start_line`/`end_line` walks it in pages, `Grep` with `path`
  * filters it. Nothing is lost, nothing is guessed, and paging costs one small tool call
  * per page instead of one whole command re-run.
  *
  * The directory is `.privatecode/state/logs/` under the primary folder — already ours
- * (sessions live beside it), already inside the jail so `read_file` accepts it, and
+ * (sessions live beside it), already inside the jail so `Read` accepts it, and
  * conventionally ignored by tooling.
  */
 
@@ -38,7 +38,7 @@ function logName(prefix: string, now: Date): string {
 
 export interface SpilledLog {
   /** Workspace-relative path, forward slashes, carrying the folder name when the workspace
-   * has several — ready to paste into a `read_file` call. */
+   * has several — ready to paste into a `Read` call. */
   path: string
   lines: number
 }
@@ -69,7 +69,7 @@ export async function spillToLog(
     // WorkspaceViolation, the catch below turned that into `null`, and every oversized
     // output quietly reverted to the middle-elided dead end this module exists to
     // prevent — with two folders attached, spilling never worked once. `display` spells
-    // the path the way the model's own read_file/search_code will accept it, in a
+    // the path the way the model's own Read/Grep will accept it, in a
     // single-folder workspace and a multi-folder one alike.
     return { path: workspace.display(abs), lines: countLines(text) }
   } catch {
@@ -77,7 +77,7 @@ export async function spillToLog(
   }
 }
 
-/** Line count as `read_file` counts them, so "of N lines" agrees with what paging shows. */
+/** Line count as `Read` counts them, so "of N lines" agrees with what paging shows. */
 export function countLines(text: string): number {
   if (text === '') return 0
   const lines = text.split(/\r?\n/)
@@ -124,8 +124,8 @@ export async function pruneLogs(dir: string, prefix: string): Promise<void> {
 export function overflowNotice(log: SpilledLog, shownLines: number): string {
   return `\n... ${log.lines - shownLines} more lines not shown here.\n` +
     `The complete output (${log.lines} lines) is saved at ${log.path}\n` +
-    `Read any part of it with read_file(path="${log.path}", start_line=…, end_line=…), ` +
-    `or find lines in it with search_code(pattern="…", path="${log.path}"). ` +
+    `Read any part of it with Read(path="${log.path}", start_line=…, end_line=…), ` +
+    `or find lines in it with Grep(pattern="…", path="${log.path}"). ` +
     'Do NOT re-run the command to see what was cut.'
 }
 

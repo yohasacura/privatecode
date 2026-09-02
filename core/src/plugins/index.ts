@@ -11,6 +11,5 @@ export {
 export * from './marketplaces.js'
 export * from './installer.js'
 export * from './command.js'
-export * from './tool-names.js'
 export * from './agents.js'
 export * from './components.js'

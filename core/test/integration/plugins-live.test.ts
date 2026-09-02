@@ -36,18 +36,14 @@ function resultOf<T>(transport: Transport, id: number): T {
 
 let tmp: string
 let savedAppData: string | undefined
-let savedClaudeDir: string | undefined
 
 beforeAll(() => {
   tmp = mkdtempSync(join(tmpdir(), 'pc-plugins-live-'))
   savedAppData = process.env['APPDATA']
-  savedClaudeDir = process.env['CLAUDE_CONFIG_DIR']
   process.env['APPDATA'] = join(tmp, 'appdata')
-  process.env['CLAUDE_CONFIG_DIR'] = join(tmp, 'claude')
 })
 afterAll(() => {
   if (savedAppData === undefined) delete process.env['APPDATA']; else process.env['APPDATA'] = savedAppData
-  if (savedClaudeDir === undefined) delete process.env['CLAUDE_CONFIG_DIR']; else process.env['CLAUDE_CONFIG_DIR'] = savedClaudeDir
   try { rmSync(tmp, { recursive: true, force: true }) } catch { /* a handle still open on Windows */ }
 })
 

@@ -103,7 +103,7 @@ describe('what a value is ABOUT, keyed on our own schema', () => {
   })
 
   test('an array argument contributes each of its entries', () => {
-    // `run_command` takes `commands: string[]`, and each line is its own attempt at
+    // `Bash` takes `commands: string[]`, and each line is its own attempt at
     // something — treating the array as one blob would hide which line was wrong.
     const subjects = subjectsOf(JSON.stringify({ commands: ['cd x', 'dotnet build'] }))
     expect(subjects).toHaveLength(2)

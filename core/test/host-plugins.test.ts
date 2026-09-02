@@ -20,7 +20,6 @@ let tmp: string
 let workspace: string
 let mkt: string
 let savedAppData: string | undefined
-let savedClaudeDir: string | undefined
 let stop: (() => Promise<void>) | undefined
 
 interface Transport { messages: HostOutbound[]; send(msg: HostOutbound): void }
@@ -35,10 +34,8 @@ function resultOf<T>(transport: Transport, id: number): T {
 beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'pc-host-plugins-'))
   savedAppData = process.env['APPDATA']
-  savedClaudeDir = process.env['CLAUDE_CONFIG_DIR']
   // The store lives under %APPDATA%: pointed at a temp folder so the machine's own plugins are untouched.
   process.env['APPDATA'] = join(tmp, 'appdata')
-  process.env['CLAUDE_CONFIG_DIR'] = join(tmp, 'claude')
   workspace = join(tmp, 'ws')
   mkdirSync(workspace, { recursive: true })
   mkt = join(tmp, 'mkt')
@@ -54,7 +51,6 @@ beforeAll(async () => {
 afterAll(async () => {
   await stop?.()
   if (savedAppData === undefined) delete process.env['APPDATA']; else process.env['APPDATA'] = savedAppData
-  if (savedClaudeDir === undefined) delete process.env['CLAUDE_CONFIG_DIR']; else process.env['CLAUDE_CONFIG_DIR'] = savedClaudeDir
   try { rmSync(tmp, { recursive: true, force: true }) } catch { /* a handle still open on Windows */ }
 })
 let serverUrl = ''

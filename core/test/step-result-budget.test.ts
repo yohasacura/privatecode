@@ -13,7 +13,7 @@ import type { Tool } from '../src/tools/types.js'
  * One step must not be able to bury the context window.
  *
  * Found by the first honest run at the real 131,072 window, not by reading. The model —
- * invited by the prompt to batch — proposed TWELVE `read_file` calls in one step; the loop
+ * invited by the prompt to batch — proposed TWELVE `Read` calls in one step; the loop
  * (which runs every proposed call since 6f116d0) appended ~198k tokens of results in one
  * go, and the next request was 201,584 tokens against a 131,072 window. Every guard failed
  * at once, each for its own reason:

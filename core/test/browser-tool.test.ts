@@ -84,7 +84,7 @@ describe('validate', () => {
   test('refuses file: and points at the tool that is jailed', () => {
     const v = browserTool.validate({ action: 'open', url: 'file:///C:/Windows/win.ini' })
     expect(v.ok).toBe(false)
-    expect((v as { error: string }).error).toMatch(/read_file/)
+    expect((v as { error: string }).error).toMatch(/Read/)
   })
 
   test('a URL with no scheme is a clear error, not a crash', () => {
@@ -181,7 +181,7 @@ describe('execute', () => {
   test('page text over the cap is paged, not elided', async () => {
     const huge = Array.from({ length: 3000 }, (_, i) => `line ${i} of a very long page`).join('\n')
     const result = await browserTool.execute(valid({ action: 'read' }), ctxWith({ text: huge }))
-    expect(result.content).toMatch(/read_file\(path="\.privatecode\/state\/logs\//)
+    expect(result.content).toMatch(/Read\(path="\.privatecode\/state\/logs\//)
     expect(result.content!.length).toBeLessThan(huge.length)
     // The person watching gets all of it.
     expect(result.display!.length).toBeGreaterThan(huge.length - 100)

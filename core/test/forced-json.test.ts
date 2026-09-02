@@ -21,7 +21,7 @@ afterEach(async () => { await stop?.(); stop = undefined })
 
 const tool: ToolSchema = {
   type: 'function',
-  function: { name: 'read_file', description: 'r', parameters: { type: 'object', properties: {} } },
+  function: { name: 'Read', description: 'r', parameters: { type: 'object', properties: {} } },
 }
 const answer = { choices: [{ message: { role: 'assistant', content: '{"ok":true}' }, finish_reason: 'stop' }] }
 

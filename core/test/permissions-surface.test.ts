@@ -31,33 +31,33 @@ const rulesOf = (list: 'allow' | 'ask' | 'deny'): string[] =>
 describe('withdrawing a rule', () => {
   test('takes it out, and says it was there', () => {
     const path = projectSettingsPath(root)
-    addRuleToSettings(path, 'allow', 'run_command(npm test:*)')
-    addRuleToSettings(path, 'allow', 'edit_file(src/**)')
+    addRuleToSettings(path, 'allow', 'Bash(npm test:*)')
+    addRuleToSettings(path, 'allow', 'Edit(src/**)')
 
-    expect(removeRuleFromSettings(path, 'allow', 'run_command(npm test:*)')).toBe(true)
-    expect(rulesOf('allow')).toEqual(['edit_file(src/**)'])
+    expect(removeRuleFromSettings(path, 'allow', 'Bash(npm test:*)')).toBe(true)
+    expect(rulesOf('allow')).toEqual(['Edit(src/**)'])
   })
 
   test('a rule that is not there is reported, not silently succeeded', () => {
     // A revocation that raced another window, or a file edited by hand between the list and
     // the click. Saying so is what stops the screen showing a rule as gone while it is not.
     const path = projectSettingsPath(root)
-    addRuleToSettings(path, 'allow', 'edit_file(src/**)')
-    expect(removeRuleFromSettings(path, 'allow', 'run_command(rm:*)')).toBe(false)
-    expect(rulesOf('allow')).toEqual(['edit_file(src/**)'])
+    addRuleToSettings(path, 'allow', 'Edit(src/**)')
+    expect(removeRuleFromSettings(path, 'allow', 'Bash(rm:*)')).toBe(false)
+    expect(rulesOf('allow')).toEqual(['Edit(src/**)'])
   })
 
   test('only the named list loses it, so an allow cannot delete a deny', () => {
     // `deny` is the list a user writes to protect themselves. The same rule text can sit in
     // two lists at once, and revoking the permissive one must not touch the protective one.
     const path = projectSettingsPath(root)
-    addRuleToSettings(path, 'allow', 'run_command(git push:*)')
-    addRuleToSettings(path, 'deny', 'run_command(git push:*)')
+    addRuleToSettings(path, 'allow', 'Bash(git push:*)')
+    addRuleToSettings(path, 'deny', 'Bash(git push:*)')
 
-    removeRuleFromSettings(path, 'allow', 'run_command(git push:*)')
+    removeRuleFromSettings(path, 'allow', 'Bash(git push:*)')
 
     expect(rulesOf('allow')).toEqual([])
-    expect(rulesOf('deny')).toEqual(['run_command(git push:*)'])
+    expect(rulesOf('deny')).toEqual(['Bash(git push:*)'])
   })
 
   test('and a deny can be lifted without the allow list leaking into it', () => {
@@ -67,18 +67,18 @@ describe('withdrawing a rule', () => {
     //   - removing from `deny` with BOTH lists holding the same rule also passes, because
     //     filtering the wrong list produced the same answer.
     // The lists have to hold DIFFERENT things for the wrong one to be visible. Here `allow`
-    // keeps an extra rule, so filtering it instead of `deny` would move `edit_file(src/**)`
+    // keeps an extra rule, so filtering it instead of `deny` would move `Edit(src/**)`
     // into the deny list — which is not a subtle failure, it is the agent forbidden from
     // doing the thing you allowed.
     const path = projectSettingsPath(root)
-    addRuleToSettings(path, 'allow', 'run_command(git push:*)')
-    addRuleToSettings(path, 'allow', 'edit_file(src/**)')
-    addRuleToSettings(path, 'deny', 'run_command(git push:*)')
+    addRuleToSettings(path, 'allow', 'Bash(git push:*)')
+    addRuleToSettings(path, 'allow', 'Edit(src/**)')
+    addRuleToSettings(path, 'deny', 'Bash(git push:*)')
 
-    expect(removeRuleFromSettings(path, 'deny', 'run_command(git push:*)')).toBe(true)
+    expect(removeRuleFromSettings(path, 'deny', 'Bash(git push:*)')).toBe(true)
 
     expect(rulesOf('deny')).toEqual([])
-    expect(rulesOf('allow')).toEqual(['run_command(git push:*)', 'edit_file(src/**)'])
+    expect(rulesOf('allow')).toEqual(['Bash(git push:*)', 'Edit(src/**)'])
   })
 
   test('everything else in the file survives', () => {
@@ -89,15 +89,15 @@ describe('withdrawing a rule', () => {
     writeFileSync(path, JSON.stringify({
       verify: 'npm test',
       mcpServers: { docs: { command: 'node', args: ['docs.js'] } },
-      permissions: { allow: ['edit_file(**)'], deny: ['run_command(rm:*)'] },
+      permissions: { allow: ['Edit(**)'], deny: ['Bash(rm:*)'] },
     }, null, 2), 'utf8')
 
-    removeRuleFromSettings(path, 'allow', 'edit_file(**)')
+    removeRuleFromSettings(path, 'allow', 'Edit(**)')
 
     const doc = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
     expect(doc['verify']).toBe('npm test')
     expect(doc['mcpServers']).toEqual({ docs: { command: 'node', args: ['docs.js'] } })
-    expect(rulesOf('deny')).toEqual(['run_command(rm:*)'])
+    expect(rulesOf('deny')).toEqual(['Bash(rm:*)'])
   })
 
   test('a file that does not exist is not created by revoking from it', () => {
@@ -124,13 +124,13 @@ describe('withdrawing a rule', () => {
       mode: 'normal',
       workspaceRoot: root,
     })
-    engine.remember('run_command(npm test:*)', 'project')
-    expect(engine.decide({ tool: 'run_command', command: 'npm test --watch' }).verdict).toBe('allow')
+    engine.remember('Bash(npm test:*)', 'project')
+    expect(engine.decide({ tool: 'Bash', command: 'npm test --watch' }).verdict).toBe('allow')
 
-    engine.forget('project', 'allow', 'run_command(npm test:*)')
+    engine.forget('project', 'allow', 'Bash(npm test:*)')
 
     // The same key now falls through to the mode default — asked, not auto-allowed.
-    expect(engine.decide({ tool: 'run_command', command: 'npm test --watch' }).verdict).toBe('ask')
+    expect(engine.decide({ tool: 'Bash', command: 'npm test --watch' }).verdict).toBe('ask')
   })
 
   test('lifting a deny reaches the live engine the same way', () => {
@@ -141,17 +141,17 @@ describe('withdrawing a rule', () => {
       layers: [
         {
           scope: 'project', path: projectSettingsPath(root),
-          permissions: { allow: [], ask: [], deny: ['run_command(npm publish:*)'] },
+          permissions: { allow: [], ask: [], deny: ['Bash(npm publish:*)'] },
         },
       ],
       mode: 'autopilot',
       workspaceRoot: root,
     })
-    expect(engine.decide({ tool: 'run_command', command: 'npm publish --tag next' }).verdict).toBe('deny')
+    expect(engine.decide({ tool: 'Bash', command: 'npm publish --tag next' }).verdict).toBe('deny')
 
-    engine.forget('project', 'deny', 'run_command(npm publish:*)')
+    engine.forget('project', 'deny', 'Bash(npm publish:*)')
 
-    expect(engine.decide({ tool: 'run_command', command: 'npm publish --tag next' }).verdict).toBe('allow')
+    expect(engine.decide({ tool: 'Bash', command: 'npm publish --tag next' }).verdict).toBe('allow')
   })
 
   test('a written rule applies to the live engine immediately, in any list', () => {
@@ -166,11 +166,11 @@ describe('withdrawing a rule', () => {
       mode: 'autopilot',
       workspaceRoot: root,
     })
-    expect(engine.decide({ tool: 'run_command', command: 'npm publish' }).verdict).toBe('allow')
+    expect(engine.decide({ tool: 'Bash', command: 'npm publish' }).verdict).toBe('allow')
 
-    expect(engine.adopt('project', 'deny', 'run_command(npm publish:*)')).toBeNull()
+    expect(engine.adopt('project', 'deny', 'Bash(npm publish:*)')).toBeNull()
 
-    expect(engine.decide({ tool: 'run_command', command: 'npm publish' }).verdict).toBe('deny')
+    expect(engine.decide({ tool: 'Bash', command: 'npm publish' }).verdict).toBe('deny')
   })
 
   test('a malformed rule is refused with a reason and adopts nothing', () => {
@@ -183,7 +183,7 @@ describe('withdrawing a rule', () => {
     })
     const problem = engine.adopt('project', 'deny', '!!not a rule!!')
     expect(problem).toMatch(/not a valid rule/)
-    expect(engine.decide({ tool: 'run_command', command: 'anything' }).verdict).toBe('ask')
+    expect(engine.decide({ tool: 'Bash', command: 'anything' }).verdict).toBe('ask')
   })
 
   test('a broken file is refused rather than overwritten', () => {
@@ -215,38 +215,38 @@ describe('what an approval offers to remember', () => {
   const BUILD_20 = 'dotnet build src/W.csproj 2>&1 | Select-Object -Last 20'
 
   test('the verb-plus-subcommand rule leads, and it survives the tail changing', () => {
-    const offers = suggestRules({ tool: 'run_command', command: BUILD_30 })
-    expect(offers[0]).toBe('run_command(dotnet build:*)')
+    const offers = suggestRules({ tool: 'Bash', command: BUILD_30 })
+    expect(offers[0]).toBe('Bash(dotnet build:*)')
 
     // The property the ordering exists for: what the user accepted still covers the NEXT
     // call. Asserted through the matcher, not by eyeballing the string.
     const rule = parseRule(offers[0]!)
     expect(rule).not.toBeNull()
-    expect(ruleMatches(rule!, { tool: 'run_command', command: BUILD_20 })).toBe(true)
+    expect(ruleMatches(rule!, { tool: 'Bash', command: BUILD_20 })).toBe(true)
   })
 
   test('the exact command is still offered, and it is the one that does NOT survive', () => {
-    const offers = suggestRules({ tool: 'run_command', command: BUILD_30 })
+    const offers = suggestRules({ tool: 'Bash', command: BUILD_30 })
     // Lowercased: `normalizeCommand` folds case, which is why a rule matches `GIT.EXE PUSH`
     // as well as `git push`.
     const exact = offers.find((o) => o.includes('last 30'))
     expect(exact).toBeDefined()
     const rule = parseRule(exact!)
-    expect(ruleMatches(rule!, { tool: 'run_command', command: BUILD_30 })).toBe(true)
-    expect(ruleMatches(rule!, { tool: 'run_command', command: BUILD_20 })).toBe(false)
+    expect(ruleMatches(rule!, { tool: 'Bash', command: BUILD_30 })).toBe(true)
+    expect(ruleMatches(rule!, { tool: 'Bash', command: BUILD_20 })).toBe(false)
   })
 
   test('a one-word command has no subcommand to generalise, so the exact rule leads', () => {
-    expect(suggestRules({ tool: 'run_command', command: 'ls' }))
-      .toEqual(['run_command(ls)', 'run_command(ls:*)'])
+    expect(suggestRules({ tool: 'Bash', command: 'ls' }))
+      .toEqual(['Bash(ls)', 'Bash(ls:*)'])
   })
 
   test('a session grant made from the leading offer stops the second prompt', () => {
     // End to end through the engine, because that is where the user's complaint lives:
     // ask once, remember, and the next variant must not ask again.
     const engine = new PermissionEngine({ layers: [], mode: 'normal', workspaceRoot: root })
-    expect(engine.decide({ tool: 'run_command', command: BUILD_30 }).verdict).toBe('ask')
-    engine.addSessionRule(suggestRules({ tool: 'run_command', command: BUILD_30 })[0]!)
-    expect(engine.decide({ tool: 'run_command', command: BUILD_20 }).verdict).toBe('allow')
+    expect(engine.decide({ tool: 'Bash', command: BUILD_30 }).verdict).toBe('ask')
+    engine.addSessionRule(suggestRules({ tool: 'Bash', command: BUILD_30 })[0]!)
+    expect(engine.decide({ tool: 'Bash', command: BUILD_20 }).verdict).toBe('allow')
   })
 })

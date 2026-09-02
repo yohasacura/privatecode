@@ -122,11 +122,11 @@ describe('read — the thing that did not exist', () => {
   beforeEach(() => {
     write('a', 'wire up the ledger import', '2026-08-20', [
       person('wire up the ledger import'),
-      callsTool('read_file', { path: 'src/Posting.cs' }),
+      callsTool('Read', { path: 'src/Posting.cs' }),
       toolResult('1\tnamespace Posting;\n2\tclass Engine {}'),
       model('The posting engine needs the cutover flag.'),
       { role: 'user', content: `${VERIFY_FAILED_PREFIX}\n\`dotnet build\` exited 1` },
-      callsTool('edit_file', { path: 'src/Posting.cs', old: 'x', new: 'y' }),
+      callsTool('Edit', { path: 'src/Posting.cs', old: 'x', new: 'y' }),
       toolResult('edited'),
       model('Fixed and the build is green.'),
     ])
@@ -136,8 +136,8 @@ describe('read — the thing that did not exist', () => {
     const out = await run({ action: 'read', id: 'a' })
     expect(out).toContain('wire up the ledger import')
     expect(out).toContain('The posting engine needs the cutover flag')
-    expect(out).toContain('→ read_file')
-    expect(out).toContain('→ edit_file')
+    expect(out).toContain('→ Read')
+    expect(out).toContain('→ Edit')
   })
 
   test('the harness is marked by which check spoke, not shown as the person', async () => {

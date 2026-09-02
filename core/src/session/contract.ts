@@ -182,7 +182,7 @@ function distillContext(transcript: readonly ChatMessage[]): ChatMessage[] {
   const recent = transcript.slice(Math.max(head.length, transcript.length - DISTILL_TAIL_MESSAGES))
     .map((m) => {
       // `content` is only half of a message's bulk, and on a write-heavy tail it is the
-      // empty half: a `write_file` call carries the whole file in
+      // empty half: a `Write` call carries the whole file in
       // `tool_calls[0].function.arguments` with `content: null` — bounded only by
       // DEFAULT_MAX_TOKENS_PER_STEP, i.e. 8,000 tokens each. The old guard short-circuited
       // on `typeof m.content !== 'string'`, so those messages were never clipped by any
@@ -662,7 +662,7 @@ export async function improveDraft(
   return parsedImprove === null ? null : readSuggestions(parsedImprove)
 }
 
-/** The tool text/`done_when` cap `todo_write` enforces; planned items obey the same one
+/** The tool text/`done_when` cap `TodoWrite` enforces; planned items obey the same one
  * so a harness-written plan is indistinguishable from a model-written one. */
 const TODO_TEXT_CAP = 200
 

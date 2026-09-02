@@ -389,7 +389,7 @@ export async function stopNavProcess(): Promise<void> {
  * The helper reports the path it was given, which is absolute and — because it joins a
  * forward-slashed root to Windows-relative parts — mixed-separator. The model addresses
  * workspace-relative forward-slashed paths and nothing else, so this is not cosmetic: a
- * path it cannot pass back to `read_file` is a dead end.
+ * path it cannot pass back to `Read` is a dead end.
  */
 export function toWorkspacePath(absolute: string, workspaceRoot: string): string {
   const normalisedAbs = absolute.replace(/[\\/]+/g, sep)

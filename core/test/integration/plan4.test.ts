@@ -183,7 +183,7 @@ describe('plan 4 acceptance -- shipped sidecar over stdio', () => {
       }
       await driver.request('init', { workspaceRoot: ws, serverUrl: SERVER })
       const sent = await driver.request('send', {
-        text: 'Fix the typo in greet.txt: "helo" should be "hello". Use edit_file, then say done.',
+        text: 'Fix the typo in greet.txt: "helo" should be "hello". Use Edit, then say done.',
       })
       expect(sent.turn.stoppedBecause).toBe('done')
       expect(readFileSync(join(ws, 'greet.txt'), 'utf8')).toContain('hello')
@@ -208,7 +208,7 @@ describe('plan 4 acceptance -- shipped sidecar over stdio', () => {
       driver = new Driver(ws)
       let denied = false
       driver.autoApprove = (req) => {
-        if (!denied && req.tool === 'write_file') {
+        if (!denied && req.tool === 'Write') {
           denied = true
           return { verdict: 'deny', comment: 'do not create new files; edit notes.txt instead' }
         }

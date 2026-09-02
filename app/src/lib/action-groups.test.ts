@@ -16,8 +16,8 @@ const verify = (id: number, ok: boolean): ChatItem => ({ kind: 'verify-record', 
 describe('folding the work between answers', () => {
   test('two or more activity items become one group; a lone one stays a row', () => {
     const units = groupItems([
-      user(1), tool(2, 'read_file', { path: 'a.cs' }), tool(3, 'edit_file', { path: 'a.cs' }), verify(4, true), prose(5),
-      tool(6, 'read_file', { path: 'b.cs' }), prose(7),
+      user(1), tool(2, 'Read', { path: 'a.cs' }), tool(3, 'Edit', { path: 'a.cs' }), verify(4, true), prose(5),
+      tool(6, 'Read', { path: 'b.cs' }), prose(7),
     ], false)
     expect(units.map((u) => u.kind)).toEqual(['single', 'group', 'single', 'single', 'single'])
     const group = units[1]
@@ -27,9 +27,9 @@ describe('folding the work between answers', () => {
   })
 
   test('the last group is live while the turn runs and nothing has followed it', () => {
-    const live = groupItems([user(1), tool(2, 'read_file', { path: 'a.cs' }), pending(3, 'edit_file', { path: 'a.cs' })], true)
+    const live = groupItems([user(1), tool(2, 'Read', { path: 'a.cs' }), pending(3, 'Edit', { path: 'a.cs' })], true)
     expect(live[1]).toMatchObject({ kind: 'group', live: true })
-    const followed = groupItems([user(1), tool(2, 'read_file', { path: 'a.cs' }), tool(3, 'edit_file', { path: 'a.cs' }), prose(4)], true)
+    const followed = groupItems([user(1), tool(2, 'Read', { path: 'a.cs' }), tool(3, 'Edit', { path: 'a.cs' }), prose(4)], true)
     expect(followed[1]).toMatchObject({ kind: 'group', live: false })
   })
 })
@@ -37,12 +37,12 @@ describe('folding the work between answers', () => {
 describe('the summary line', () => {
   test('counts by what the tools do and names the latest action', () => {
     const s = summarise([
-      tool(1, 'read_file', { path: 'src/Snapshot.cs' }),
-      tool(2, 'search_code', { pattern: 'SaveSnapshot' }),
-      tool(3, 'edit_file', { path: 'src/Snapshot.cs' }),
-      tool(4, 'run_command', { commands: ['dotnet build'] }, false),
+      tool(1, 'Read', { path: 'src/Snapshot.cs' }),
+      tool(2, 'Grep', { pattern: 'SaveSnapshot' }),
+      tool(3, 'Edit', { path: 'src/Snapshot.cs' }),
+      tool(4, 'Bash', { commands: ['dotnet build'] }, false),
       verify(5, true),
-      pending(6, 'read_file', { path: 'src/Store.cs' }),
+      pending(6, 'Read', { path: 'src/Store.cs' }),
     ])
     expect(s).toMatchObject({ reads: 3, edits: 1, commands: 1, failed: 1, checks: 1, checksFailed: 0 })
     expect(s.latest).toBe('Reading Store.cs…')

@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
-  addMarketplace, installPlugin, loadPluginComponents, matcherCovers, mergeServers, parseAgentMarkdown, PluginStore,
-  standaloneComponents, substitutePluginVars, toClaudeTool, toPrivateToolList, toPrivateTools, type PluginComponents,
+  addMarketplace, installPlugin, loadPluginComponents, mergeServers, parseAgentMarkdown, PluginStore, readToolList,
+  substitutePluginVars, type PluginComponents,
 } from '../src/plugins/index.js'
+import { matcherCovers } from '../src/hooks/engine.js'
 import { loadSkills } from '../src/skills/skills.js'
 import { expandCommand, listCommands, substituteArguments } from '../src/commands/custom.js'
 import { createDelegateTool } from '../src/tools/delegate.js'
@@ -18,12 +19,9 @@ let store: PluginStore
 let userPath: string
 let userSkills: string
 let comps: PluginComponents
-let savedClaudeDir: string | undefined
 
 beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'pc-plugins-comp-'))
-  savedClaudeDir = process.env['CLAUDE_CONFIG_DIR']
-  process.env['CLAUDE_CONFIG_DIR'] = join(tmp, 'claude')
   ws = join(tmp, 'ws')
   mkdirSync(ws, { recursive: true })
   userPath = join(tmp, 'user', 'settings.json')
@@ -38,7 +36,7 @@ beforeAll(async () => {
     mcpServers: { memory: { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/server.js'], env: { TOKEN: '${FIXTURE_TOKEN_UNSET:-none}' } } },
   }))
   writeFileSync(join(alpha, 'agents', 'reviewer.md'), [
-    '---', 'name: reviewer', 'description: Reviews code for defects', 'tools: Read, Grep, Bash(git *)',
+    '---', 'name: reviewer', 'description: Reviews code for defects', 'tools: Read, Grep, Bash(git *), Task, NotebookEdit',
     'permissionMode: plan', 'maxTurns: 6', 'model: opus', '---', 'You review carefully.', '',
   ].join('\n'))
   writeFileSync(join(alpha, 'commands', 'status.md'), '---\ndescription: Repo status\n---\nCurrent status: !`git status`\nThen $1 and $2.\n')
@@ -53,8 +51,6 @@ beforeAll(async () => {
   comps = loadPluginComponents(store, ws, { userPath })
 })
 afterAll(() => {
-  if (savedClaudeDir === undefined) delete process.env['CLAUDE_CONFIG_DIR']
-  else process.env['CLAUDE_CONFIG_DIR'] = savedClaudeDir
   try { rmSync(tmp, { recursive: true, force: true }) } catch { /* a handle still open on Windows */ }
 })
 
@@ -98,16 +94,17 @@ describe('what enabled plugins contribute', () => {
     expect(substituteArguments('Only $1', '')).toBe('Only ')
   })
 
-  it('reads an agent as a delegate role the tool can name', () => {
+  it("reads an agent as an Agent role the tool can name — the tools' names are Claude Code's, taken as written", () => {
     const reviewer = comps.agents.find((r) => r.name === 'alpha:reviewer')
     expect(reviewer).toBeDefined()
     expect(reviewer?.purpose).toBe('Reviews code for defects')
     expect(reviewer?.brief).toBe('You review carefully.')
-    expect(reviewer?.tools).toEqual(['read_file', 'search_code', 'run_command', 'background_task'])
+    expect(reviewer?.tools).toEqual(['Read', 'Grep', 'Bash', 'Agent'])
     expect(reviewer?.mode).toBe('plan')
     expect(reviewer?.maxSteps).toBe(6)
     expect(comps.problems).toEqual(expect.arrayContaining([
       expect.stringContaining('the pattern in "Bash(git *)" is not applied'),
+      expect.stringContaining('"NotebookEdit" is not a tool PrivateCode has'),
       expect.stringContaining('model is not acted on'),
     ]))
     const tool = createDelegateTool([...ROLES, ...comps.agents])
@@ -127,6 +124,7 @@ describe('what enabled plugins contribute', () => {
       expect(memory.spec.env?.['TOKEN']).toBe('none')
       expect(memory.spec.env?.['CLAUDE_PLUGIN_ROOT']).toBe(root)
     }
+    expect(mergeServers(comps.mcpServers, [{ name: 'plugin:alpha:memory', spec: { kind: 'stdio', command: 'ours' }, source: 'ours', trustReadOnlyHints: false }]).map((s) => s.source)).toEqual(['ours'])
   })
 
   it('collects hooks and bin/ for the engine and PATH', () => {
@@ -141,75 +139,23 @@ describe('what enabled plugins contribute', () => {
   })
 })
 
-describe("Claude Code's own folders", () => {
-  let standalone: ReturnType<typeof standaloneComponents>
-  beforeAll(() => {
-    const claude = join(tmp, 'claude')
-    mkdirSync(join(claude, 'skills', 'deploy'), { recursive: true })
-    writeFileSync(join(claude, 'skills', 'deploy', 'SKILL.md'), '---\ndescription: Deploy from the user folder\n---\nUser deploy.\n')
-    writeFileSync(join(claude, 'settings.json'), JSON.stringify({
-      mcpServers: { home: { url: 'https://example.com/mcp' } },
-      hooks: { PostToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'echo edited' }] }] },
-    }))
-    mkdirSync(join(ws, '.claude', 'skills', 'deploy'), { recursive: true })
-    writeFileSync(join(ws, '.claude', 'skills', 'deploy', 'SKILL.md'), '---\ndescription: Deploy from .claude\n---\nProject deploy.\n')
-    mkdirSync(join(ws, '.claude', 'commands'), { recursive: true })
-    writeFileSync(join(ws, '.claude', 'commands', 'ship.md'), 'Ship it: $ARGUMENTS\n')
-    mkdirSync(join(ws, '.claude', 'agents'), { recursive: true })
-    writeFileSync(join(ws, '.claude', 'agents', 'helper.md'), '---\ndescription: Helps\npermissionMode: acceptEdits\n---\nYou help.\n')
-    writeFileSync(join(ws, '.mcp.json'), JSON.stringify({ mcpServers: { db: { command: 'db-server' } } }))
-    mkdirSync(join(ws, '.privatecode', 'skills', 'deploy'), { recursive: true })
-    writeFileSync(join(ws, '.privatecode', 'skills', 'deploy', 'SKILL.md'), '---\ndescription: Deploy from .privatecode\n---\nOurs.\n')
-    mkdirSync(join(ws, '.privatecode', 'commands'), { recursive: true })
-    writeFileSync(join(ws, '.privatecode', 'commands', 'ship.md'), 'Our ship: $ARGUMENTS\n')
-    standalone = standaloneComponents(ws, claude)
-  })
-
-  it('reads skills, commands, agents, servers and hooks from both levels', () => {
-    expect(standalone.skillSources.map((s) => s.label)).toEqual(['~/.claude/skills', '.claude/skills'])
-    expect(standalone.commandSources.map((s) => `${s.kind}:${s.label}`)).toEqual(['skills:~/.claude/skills', 'skills:.claude/skills', 'commands:.claude/commands'])
-    expect(standalone.agents.map((a) => `${a.name}:${a.mode}`)).toEqual(['helper:auto-edit'])
-    expect(standalone.mcpServers.map((s) => s.name)).toEqual(['home', 'db'])
-    expect(standalone.hookSources.map((h) => h.owner)).toEqual(['~/.claude/settings.json'])
-    expect(standalone.problems).toEqual([])
-  })
-
-  it("PrivateCode's own folders win a name clash, and the clash is reported", () => {
-    const skills = loadSkills(ws, userSkills, standalone.skillSources)
-    const deploy = skills.skills.find((s) => s.name === 'deploy')
-    expect(deploy?.path).toBe(join(ws, '.privatecode', 'skills', 'deploy', 'SKILL.md'))
-    expect(skills.problems.filter((p) => p.includes('"deploy" is defined twice'))).toHaveLength(2)
-    // The host lists PrivateCode's own skill folders after Claude Code's, so `/deploy` is ours.
-    const { commands } = listCommands(ws, [...standalone.commandSources, { dir: join(ws, '.privatecode', 'skills'), kind: 'skills', label: '.privatecode/skills' }])
-    expect(commands.find((c) => c.name === 'ship')?.template).toBe('Our ship: $ARGUMENTS')
-    expect(commands.find((c) => c.name === 'deploy')?.source).toBe('.privatecode/skills')
-    expect(mergeServers(standalone.mcpServers, [{ name: 'db', spec: { kind: 'stdio', command: 'ours' }, source: 'ours', trustReadOnlyHints: false }]).map((s) => `${s.name}:${s.source}`)).toEqual(['home:~/.claude/settings.json', 'db:ours'])
-  })
-})
-
-describe('tool names, both ways', () => {
-  it('translates Claude Code names, patterns and MCP names', () => {
-    expect(toPrivateTools('Bash')).toEqual({ tools: ['run_command', 'background_task'] })
-    expect(toPrivateTools('Edit(src/**)')).toEqual({ tools: ['edit_file'], pattern: 'src/**' })
-    expect(toPrivateTools('mcp__github__create_issue')).toEqual({ tools: ['mcp__github__create_issue'] })
-    expect(toPrivateTools('NotebookEdit')).toMatchObject({ tools: [], problem: expect.stringContaining('no equivalent') })
-    expect(toPrivateTools('search_code')).toEqual({ tools: ['search_code'] })
-    expect(toPrivateTools('Frobnicate')).toMatchObject({ tools: [] })
+describe('tool names, as Claude Code writes them', () => {
+  it('a tools: line is taken as written; the three names Claude Code retired are read as what they became', () => {
     const problems: string[] = []
-    expect(toPrivateToolList('Read, Write, NotebookEdit', 'x', problems)).toEqual(['read_file', 'write_file'])
-    expect(problems).toEqual([expect.stringContaining('NotebookEdit')])
-    expect(toClaudeTool('edit_file')).toBe('Edit')
-    expect(toClaudeTool('mcp__x__y')).toBe('mcp__x__y')
+    expect(readToolList('Read, Write, Task, MultiEdit, LS, mcp__github__issues, NotebookEdit, Frobnicate', 'x', problems))
+      .toEqual(['Read', 'Write', 'Agent', 'Edit', 'list_dir', 'mcp__github__issues'])
+    expect(problems).toEqual([expect.stringContaining('"NotebookEdit"'), expect.stringContaining('"Frobnicate"')])
+    expect(readToolList('["Bash", "Grep"]', 'x', [])).toEqual(['Bash', 'Grep'])
   })
 
-  it('matches hook matchers against either name', () => {
-    expect(matcherCovers('Edit|Write', 'edit_file')).toBe(true)
-    expect(matcherCovers('Edit|Write', 'read_file')).toBe(false)
+  it('a hook matcher names the tool itself', () => {
+    expect(matcherCovers('Edit|Write', 'Edit')).toBe(true)
+    expect(matcherCovers('Edit|Write', 'Read')).toBe(false)
     expect(matcherCovers('*', 'anything')).toBe(true)
     expect(matcherCovers(undefined, 'anything')).toBe(true)
-    expect(matcherCovers('^(Read|Grep)$', 'search_code')).toBe(true)
-    expect(matcherCovers('Bash', 'background_task')).toBe(true)
-    expect(matcherCovers('run_command', 'run_command')).toBe(true)
+    expect(matcherCovers('^(Read|Grep)$', 'Grep')).toBe(true)
+    expect(matcherCovers('Task', 'Agent')).toBe(true)
+    expect(matcherCovers('Bash', 'background_task')).toBe(false)
     expect(matcherCovers('mcp__.*', 'mcp__github__issues')).toBe(true)
   })
 })
@@ -218,7 +164,7 @@ describe('agent files', () => {
   it('maps permission modes, reads limits, and says what it ignores', () => {
     const problems: string[] = []
     const role = parseAgentMarkdown('---\ndescription: X\npermissionMode: bypassPermissions\nmaxTurns: 99\ndisallowedTools: Write, Edit\ncolor: red\n---\nDo X.\n', 'x', 'p', 'p/x.md', problems)
-    expect(role).toMatchObject({ name: 'p:x', mode: 'autopilot', maxSteps: 40, disallowedTools: ['write_file', 'edit_file'] })
+    expect(role).toMatchObject({ name: 'p:x', mode: 'autopilot', maxSteps: 40, disallowedTools: ['Write', 'Edit'] })
     expect(problems).toEqual([expect.stringContaining('color is not acted on')])
     const bare = parseAgentMarkdown('# Just a heading\nBody.\n', 'bare', null, 'bare.md', problems)
     expect(bare).toMatchObject({ name: 'bare', purpose: 'Just a heading', maxSteps: 12 })

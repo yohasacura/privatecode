@@ -59,14 +59,14 @@ turn('wire the ZebraCorp ledger import into the AcmeBank posting engine')
 
 // A path guessed one folder too deep, dropped on the retry — the multi-folder mistake.
 for (const file of ['PostingEngine.cs', 'LedgerImport.cs']) {
-  result(call('read_file', { path: `src/AcmeBank/Ledger/${file}` }), false,
+  result(call('Read', { path: `src/AcmeBank/Ledger/${file}` }), false,
     `File not found: src/AcmeBank/Ledger/${file}`)
-  result(call('read_file', { path: `AcmeBank/Ledger/${file}` }), true, '1\tnamespace AcmeBank.Ledger;')
+  result(call('Read', { path: `AcmeBank/Ledger/${file}` }), true, '1\tnamespace AcmeBank.Ledger;')
 }
 // `&&` in a shell that has no such operator.
-result(call('run_command', { commands: ['cd D:/clients/zebracorp/api && dotnet build'] }), false,
+result(call('Bash', { commands: ['cd D:/clients/zebracorp/api && dotnet build'] }), false,
   "The token '&&' is not a valid statement separator in this version.")
-result(call('run_command', { commands: ['cd D:/clients/zebracorp/api; dotnet build'] }), true,
+result(call('Bash', { commands: ['cd D:/clients/zebracorp/api; dotnet build'] }), true,
   'Build succeeded.')
 // An MCP tool named after the client's production server.
 result(call('mcp__acmebank_prod__query_ledger', { query: 'select top 1 * from Postings' }), true, '1 row')
@@ -79,11 +79,11 @@ said('That error is in ZebraCorp code that was already broken before my change.'
 lines.push({ role: 'user',
   content: `[${MIDTURN_VERIFY_PREFIX}${VERIFY_FAILED_PREFIX} \`dotnet build\` exited 1 after ` +
     'your changes:\n\nsrc/AcmeBank/Ledger/PostingEngine.cs(42): error CS1002: ; expected\n]' })
-result(call('edit_file', { path: 'AcmeBank/Ledger/PostingEngine.cs', old: 'x', new: 'y' }), true, 'edited')
+result(call('Edit', { path: 'AcmeBank/Ledger/PostingEngine.cs', old: 'x', new: 'y' }), true, 'edited')
 
 // A second and third request, so the harness/person ratio has a sample worth printing.
 turn('now make the cutover date configurable')
-result(call('read_file', { path: 'AcmeBank/Ledger/PostingEngine.cs' }), true, '1	namespace AcmeBank.Ledger;')
+result(call('Read', { path: 'AcmeBank/Ledger/PostingEngine.cs' }), true, '1	namespace AcmeBank.Ledger;')
 
 // The window fills mid-request and the earlier history is swapped out.
 //
@@ -112,9 +112,9 @@ for (const m of lines.slice(tailStart, beforeMarker)) lines.push(m)
 
 // Then the post-turn chain: the contract is not met, then the reviewer finds something.
 lines.push({ role: 'user', content: `${ACCEPTANCE_FIXER_PREFIX}\n- the merger cutover date is not handled` })
-result(call('edit_file', { path: 'AcmeBank/Ledger/PostingEngine.cs', old: 'a', new: 'b' }), true, 'edited')
+result(call('Edit', { path: 'AcmeBank/Ledger/PostingEngine.cs', old: 'a', new: 'b' }), true, 'edited')
 lines.push({ role: 'user', content: `${REVIEW_FIXER_PREFIX}\n- ZebraCorp account ids are logged in clear` })
-result(call('edit_file', { path: 'AcmeBank/Ledger/PostingEngine.cs', old: 'b', new: 'c' }), true, 'edited')
+result(call('Edit', { path: 'AcmeBank/Ledger/PostingEngine.cs', old: 'b', new: 'c' }), true, 'edited')
 
 const id = 's-20260820-090000-aaaa'
 writeFileSync(join(sessions, `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8')

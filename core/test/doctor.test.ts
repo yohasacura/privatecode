@@ -81,7 +81,7 @@ describe('nothing from the transcript can reach the report', () => {
           content: 'I will look at SECRET-ASSISTANT-PROSE',
           tool_calls: [{
             id: `c${i}`, type: 'function',
-            function: { name: 'read_file', arguments: `{"path":"src/SECRET-ARGUMENT-PATH${i}.ts"}` },
+            function: { name: 'Read', arguments: `{"path":"src/SECRET-ARGUMENT-PATH${i}.ts"}` },
           }],
         },
         { role: 'tool', tool_call_id: `c${i}`, content: `File not found: src/SECRET-TOOL-OUTPUT${i}.ts` },
@@ -103,7 +103,7 @@ describe('nothing from the transcript can reach the report', () => {
         role: 'assistant',
         tool_calls: [{
           id: 'c1', type: 'function',
-          function: { name: 'read_file', arguments: '{"path":"secret.ts"}' },
+          function: { name: 'Read', arguments: '{"path":"secret.ts"}' },
         }],
       },
       { role: 'tool', tool_call_id: 'c1', content: 'File not found: secret.ts' },
@@ -113,7 +113,7 @@ describe('nothing from the transcript can reach the report', () => {
 
     // The tool name survives because it is SHAPED like one; see the shape-check tests
     // below for what happens to a name that is not.
-    expect(report).toContain('read_file')
+    expect(report).toContain('Read')
     // The category is one of twelve literals declared in the module.
     expect(report).toContain('not-found')
     expect(report).not.toContain('secret.ts')
@@ -131,7 +131,7 @@ describe('the counting itself', () => {
   test('counts calls, failures and exact repeats', () => {
     const call = (id: string, args: string) => ({
       role: 'assistant',
-      tool_calls: [{ id, type: 'function' as const, function: { name: 'read_file', arguments: args } }],
+      tool_calls: [{ id, type: 'function' as const, function: { name: 'Read', arguments: args } }],
     })
     const metas = [session('s1', [
       call('c1', '{"path":"a.ts"}'),
@@ -148,7 +148,7 @@ describe('the counting itself', () => {
 
     expect(d.toolCalls).toBe(3)
     expect(d.toolFailures).toBe(1)
-    const readFile = d.tools.find((t) => t.name === 'read_file')
+    const readFile = d.tools.find((t) => t.name === 'Read')
     expect(readFile?.calls).toBe(3)
     expect(readFile?.repeats).toBe(1)
     expect(readFile?.failures['not-found']).toBe(1)
@@ -182,7 +182,7 @@ describe('the counting itself', () => {
     const metas = [session('s1', [
       {
         role: 'assistant',
-        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Read', arguments: '{}' } }],
       },
       { role: 'tool', tool_call_id: 'c1', content: 'File not found: x' },
     ])] // no outcomes written
@@ -205,7 +205,7 @@ describe('classifying a failure without quoting it', () => {
     expect(classify('File not found: src/a.ts')).toBe('not-found')
     expect(classify('src/a.ts is outside the workspace')).toBe('outside-workspace')
     expect(classify('Invalid glob pattern "**{": unclosed \'{\'')).toBe('bad-arguments')
-    expect(classify('big.bin is 12.0 MB; read_file refuses files larger than 10.0 MB'))
+    expect(classify('big.bin is 12.0 MB; Read refuses files larger than 10.0 MB'))
       .toBe('too-large')
     expect(classify('the command timed out after 60s')).toBe('timeout')
     expect(classify('something nobody predicted')).toBe('other')
@@ -261,9 +261,9 @@ describe('values that come off disk and get printed', () => {
   test('a real tool name survives untouched', () => {
     const metas = [session('s1', [{
       role: 'assistant',
-      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_code', arguments: '{}' } }],
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Grep', arguments: '{}' } }],
     }])]
-    expect(renderDiagnosis(diagnose(root, metas))).toContain('search_code')
+    expect(renderDiagnosis(diagnose(root, metas))).toContain('Grep')
   })
 
   test('a mode and a version that are not what they claim are replaced', () => {
@@ -388,7 +388,7 @@ describe('membership, not shape', () => {
     const metas = [session('s1', [
       {
         role: 'assistant',
-        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Read', arguments: '{}' } }],
       },
       { role: 'tool', tool_call_id: 'c1', content: 'File not found: a' },
       // A result whose call was never announced. Attributing it produced "1 calls, 2 failed
@@ -433,8 +433,8 @@ describe('classify against the real messages', () => {
     // core/src/workspace.ts:372 — a read-only mount, which named neither denial nor permission.
     ['"docs" is attached read-only, so nothing can be written to docs/a.md.', 'denied'],
     // core/src/tools/registry.ts:70, :78
-    ['Arguments for edit_file could not be parsed as JSON: Unexpected token', 'bad-arguments'],
-    ['Invalid arguments for edit_file: path must be a non-empty workspace-relative path', 'bad-arguments'],
+    ['Arguments for Edit could not be parsed as JSON: Unexpected token', 'bad-arguments'],
+    ['Invalid arguments for Edit: path must be a non-empty workspace-relative path', 'bad-arguments'],
     // The ones that already worked, kept so a rewrite of the list cannot lose them.
     ['File not found: src/a.ts', 'not-found'],
     ['the command timed out after 60s', 'timeout'],
@@ -449,7 +449,7 @@ describe('classify against the real messages', () => {
 })
 
 test('the user\'s own content cannot steer the classification', () => {
-  // `edit_file` quotes the near-miss window out of THEIR file into the message. Matching the
+  // `Edit` quotes the near-miss window out of THEIR file into the message. Matching the
   // whole string made the category depend on what happened to be in that window: measured,
   // the same hint returned `not-found` normally and `denied` when the quoted lines contained
   // the word "permission". Not a leak — the return type still cannot carry text — but counts
@@ -468,16 +468,16 @@ test('a failure survives a missing outcomes file, and is labelled as estimated',
   const metas = [session('s1', [
     {
       role: 'assistant',
-      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'edit_file', arguments: '{}' } }],
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Edit', arguments: '{}' } }],
     },
     // No keyword from the old list anywhere in this sentence.
-    { role: 'tool', tool_call_id: 'c1', content: 'Invalid arguments for edit_file: path must be a non-empty workspace-relative path' },
+    { role: 'tool', tool_call_id: 'c1', content: 'Invalid arguments for Edit: path must be a non-empty workspace-relative path' },
   ])] // deliberately no outcomes sidecar — the shape a crashed session leaves behind
 
   const d = diagnose(root, metas)
 
   expect(d.toolFailures).toBe(1)
-  expect(d.tools.find((t) => t.name === 'edit_file')?.failures['bad-arguments']).toBe(1)
+  expect(d.tools.find((t) => t.name === 'Edit')?.failures['bad-arguments']).toBe(1)
   // And said out loud, because a guess presented as a count is worse where it matters most:
   // the sessions missing this file are the ones that crashed.
   expect(d.estimatedFailures).toBe(1)
@@ -510,16 +510,16 @@ describe('failure, what happened next, and whether it worked', () => {
       const bad = `c${i}a`
       const good = `c${i}b`
       lines.push(
-        call(bad, 'read_file', JSON.stringify({ path: `src/Engine/${name}.cs` })),
+        call(bad, 'Read', JSON.stringify({ path: `src/Engine/${name}.cs` })),
         { role: 'tool', tool_call_id: bad, content: `File not found: src/Engine/${name}.cs` },
-        call(good, 'read_file', JSON.stringify({ path: `Engine/${name}.cs` })),
+        call(good, 'Read', JSON.stringify({ path: `Engine/${name}.cs` })),
         { role: 'tool', tool_call_id: good, content: '1\tnamespace Engine;' },
       )
       outcomes.push({ id: bad, ok: false }, { id: good, ok: true })
     }
     const report = renderDiagnosis(diagnose(root, [session('s1', lines, {}, outcomes)]))
 
-    expect(report).toContain('read_file · not-found on a place in the workspace — 2 times')
+    expect(report).toContain('Read · not-found on a place in the workspace — 2 times')
     expect(report).toContain('dropped a leading part of it, which worked 2 of 2 times')
     // The finding is the RELATION. Neither path appears.
     expect(report).not.toContain('Engine')
@@ -533,9 +533,9 @@ describe('failure, what happened next, and whether it worked', () => {
     const outcomes: { id: string; ok: boolean }[] = []
     for (let i = 0; i < 2; i++) {
       lines.push(
-        call(`x${i}`, 'read_file', JSON.stringify({ path: `src/Invented${i}.cs` })),
+        call(`x${i}`, 'Read', JSON.stringify({ path: `src/Invented${i}.cs` })),
         { role: 'tool', tool_call_id: `x${i}`, content: `File not found: src/Invented${i}.cs` },
-        call(`y${i}`, 'read_file', JSON.stringify({ path: `other/Guess${i}.cs` })),
+        call(`y${i}`, 'Read', JSON.stringify({ path: `other/Guess${i}.cs` })),
         { role: 'tool', tool_call_id: `y${i}`, content: `File not found: other/Guess${i}.cs` },
       )
       outcomes.push({ id: `x${i}`, ok: false }, { id: `y${i}`, ok: false })
@@ -557,9 +557,9 @@ describe('failure, what happened next, and whether it worked', () => {
     const outcomes = [{ id: 'a1', ok: true }]
     for (let i = 0; i < 2; i++) {
       lines.push(
-        call(`b${i}`, 'read_file', JSON.stringify({ path: 'src/Real.cs' })),
+        call(`b${i}`, 'Read', JSON.stringify({ path: 'src/Real.cs' })),
         { role: 'tool', tool_call_id: `b${i}`, content: 'File not found: src/Real.cs' },
-        call(`c${i}`, 'read_file', JSON.stringify({ path: 'Real.cs' })),
+        call(`c${i}`, 'Read', JSON.stringify({ path: 'Real.cs' })),
         { role: 'tool', tool_call_id: `c${i}`, content: 'File not found: Real.cs' },
       )
       outcomes.push({ id: `b${i}`, ok: false }, { id: `c${i}`, ok: false })
@@ -567,7 +567,7 @@ describe('failure, what happened next, and whether it worked', () => {
     const d = diagnose(root, [session('s1', lines, {}, outcomes)])
 
     // It was in the listing it was given, so the fault is not that it made the name up.
-    const shown = d.patterns.find((p) => p.what === 'read_file' && p.invented === 0)
+    const shown = d.patterns.find((p) => p.what === 'Read' && p.invented === 0)
     expect(shown).toBeDefined()
   })
 
@@ -576,7 +576,7 @@ describe('failure, what happened next, and whether it worked', () => {
     const outcomes: { id: string; ok: boolean }[] = []
     for (let i = 0; i < 3; i++) {
       lines.push(
-        call(`r${i}`, 'run_command', JSON.stringify({ commands: ['dotnet build'] })),
+        call(`r${i}`, 'Bash', JSON.stringify({ commands: ['dotnet build'] })),
         { role: 'tool', tool_call_id: `r${i}`, content: 'exit 1: build failed' },
       )
       outcomes.push({ id: `r${i}`, ok: false })
@@ -592,7 +592,7 @@ describe('failure, what happened next, and whether it worked', () => {
     // A single incident is noise. The report is for what recurs; anything else fills it with
     // things nobody can act on.
     const lines: Line[] = [
-      call('c1', 'read_file', JSON.stringify({ path: 'src/Once.cs' })),
+      call('c1', 'Read', JSON.stringify({ path: 'src/Once.cs' })),
       { role: 'tool', tool_call_id: 'c1', content: 'File not found: src/Once.cs' },
     ]
     const report = renderDiagnosis(diagnose(root, [session('s1', lines, {}, [{ id: 'c1', ok: false }])]))
@@ -613,7 +613,7 @@ test('provenance is only asked where the answer means something', async () => {
         role: 'assistant',
         tool_calls: [{
           id: `k${i}`, type: 'function',
-          function: { name: 'run_command', arguments: JSON.stringify({ commands: ['dotnet build'] }) },
+          function: { name: 'Bash', arguments: JSON.stringify({ commands: ['dotnet build'] }) },
         }],
       },
       { role: 'tool', tool_call_id: `k${i}`, content: 'exit 1: build failed' },
@@ -622,10 +622,10 @@ test('provenance is only asked where the answer means something', async () => {
   }
   const d = diagnose(root, [session('s1', lines, {}, outcomes)])
 
-  // Across every run_command story, not one of them: the LAST failure has no sequel, so it
+  // Across every Bash story, not one of them: the LAST failure has no sequel, so it
   // groups as `gave-up` and is its own pattern. That split is correct and is why the
   // assertion is over all of them.
-  const commandPatterns = d.patterns.filter((p) => p.what === 'run_command')
+  const commandPatterns = d.patterns.filter((p) => p.what === 'Bash')
   expect(commandPatterns.length).toBeGreaterThan(0)
   expect(commandPatterns.every((p) => p.invented === 0)).toBe(true)
   expect(renderDiagnosis(d)).not.toContain('it was invented')
@@ -652,7 +652,7 @@ describe('run by a person', () => {
     // the way the window does, which is the half a direct `diagnose()` call never exercises.
     const meta = session('s1', [
       { role: 'user', content: 'do the thing' },
-      { role: 'assistant', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{}' } }] },
+      { role: 'assistant', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Read', arguments: '{}' } }] },
     ])
     writeFileSync(
       join(root, '.privatecode', 'state', 'sessions', 's1.meta.json'),

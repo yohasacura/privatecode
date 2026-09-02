@@ -51,7 +51,7 @@ function renderPlan(todos: readonly TodoItem[]): string {
  */
 function applyPatch(current: readonly TodoItem[], patch: TodoWriteArgs): TodoItem[] | string {
   if (current.length === 0) {
-    return 'there is no plan yet — call todo_write with `todos` to create one first'
+    return 'there is no plan yet — call TodoWrite with `todos` to create one first'
   }
   const touched = [...(patch.complete ?? []), ...(patch.start !== undefined ? [patch.start] : [])]
   const outside = touched.filter((n) => n > current.length)
@@ -98,7 +98,7 @@ function applyPatch(current: readonly TodoItem[], patch: TodoWriteArgs): TodoIte
 }
 
 export const todoWriteTool: Tool<TodoWriteArgs> = {
-  name: 'todo_write',
+  name: 'TodoWrite',
   readOnly: true,
   description:
     'Record the plan for a multi-step task, and keep it current as you work.\n' +

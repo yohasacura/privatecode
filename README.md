@@ -81,14 +81,16 @@ user-scope settings, `AGENTS.md` and skills; copy that folder if you want them e
 a plugin's README works as written — and Settings → Plugins has the same commands behind
 buttons: Installed, Discover (Anthropic's four catalogs are registered for you and fetched
 on first use), Marketplaces. A plugin's skills, slash commands, agents, hooks and MCP
-servers all arrive; `.claude/skills`, `.claude/commands`, `.claude/agents`, `.mcp.json` and
-the `hooks` in `.claude/settings.json` are read too. Details, the hook contract and what is
-not supported: [docs/PLUGINS.md](docs/PLUGINS.md).
+servers all arrive. The tools carry Claude Code's names — `Read`, `Edit`, `Write`, `Bash`,
+`Glob`, `Grep`, `WebSearch`, `WebFetch`, `Agent`, `Skill` — so a plugin's hook matchers and
+agent files mean here what they mean there. Four skills ship with the app: `/skill-creator`,
+`/grill-me`, `/mermaid` (diagrams render in the transcript) and `/pptx`. Details, the hook
+contract and what is not supported: [docs/PLUGINS.md](docs/PLUGINS.md).
 
 **Two numbers in `settings.json` shape how much the model is told up front.**
 `"prefix": { "mapChars": 20000 }` is how much of the cached prefix the project map may take
 — every folder with a file count, then the most-referenced files with their definitions and
-line numbers. Bigger means fewer `list_dir` and `find_files` steps on a large workspace, paid
+line numbers. Bigger means fewer `list_dir` and `Glob` steps on a large workspace, paid
 once when the workspace opens (the prefix is prewarmed then, while you type).
 `"compaction": { "triggerTokens": 140000 }` is where a long session folds its history.
 A configured `verify` command runs by itself right after every step that edits files, and

@@ -33,7 +33,7 @@ afterEach(() => { document.body.innerHTML = '' })
 describe('action groups in the transcript', () => {
   it('folds finished work into one sentence and opens on a click', () => {
     const host = mount({ items: [
-      user(1), tool(2, 'read_file', { path: 'a.cs' }), tool(3, 'read_file', { path: 'b.cs' }), tool(4, 'edit_file', { path: 'a.cs' }), prose(5),
+      user(1), tool(2, 'Read', { path: 'a.cs' }), tool(3, 'Read', { path: 'b.cs' }), tool(4, 'Edit', { path: 'a.cs' }), prose(5),
     ] })
     const group = host.querySelector<HTMLElement>('[data-group]')!
     expect(group.dataset['group']).toBe('done')
@@ -48,20 +48,20 @@ describe('action groups in the transcript', () => {
   })
 
   it('stays open when something in it failed, and while it is live', () => {
-    const failed = mount({ items: [user(1), tool(2, 'read_file', { path: 'a.cs' }), tool(3, 'run_command', { commands: ['dotnet build'] }, false), prose(4)] })
+    const failed = mount({ items: [user(1), tool(2, 'Read', { path: 'a.cs' }), tool(3, 'Bash', { commands: ['dotnet build'] }, false), prose(4)] })
     const group = failed.querySelector<HTMLElement>('[data-group]')!
     expect(group.dataset['group']).toBe('failed')
     expect(group.querySelector('button[aria-expanded]')!.getAttribute('aria-expanded')).toBe('true')
     document.body.innerHTML = ''
 
-    const live = mount({ turnRunning: true, items: [user(1), tool(2, 'read_file', { path: 'a.cs' }), tool(3, 'read_file', { path: 'Store.cs' })] })
+    const live = mount({ turnRunning: true, items: [user(1), tool(2, 'Read', { path: 'a.cs' }), tool(3, 'Read', { path: 'Store.cs' })] })
     const liveGroup = live.querySelector<HTMLElement>('[data-group]')!
     expect(liveGroup.dataset['group']).toBe('live')
     expect(liveGroup.querySelector('button')!.textContent).toContain('Reading Store.cs')
   })
 
   it('a lone tool call is a row of its own', () => {
-    const host = mount({ items: [user(1), tool(2, 'read_file', { path: 'a.cs' }), prose(3)] })
+    const host = mount({ items: [user(1), tool(2, 'Read', { path: 'a.cs' }), prose(3)] })
     expect(host.querySelector('[data-group]')).toBeNull()
     expect(host.querySelectorAll('.row-tool')).toHaveLength(1)
   })

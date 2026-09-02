@@ -80,7 +80,7 @@ const SERVER_FAILURE_LIMIT = 3
  * The nudge for a turn after the first.
  *
  * Built from the todo list the agent already maintains rather than from a second plan
- * format invented for this: `todo_write` exists, the model uses it, and naming its own
+ * format invented for this: `TodoWrite` exists, the model uses it, and naming its own
  * pending items back to it is both the strongest available continuation signal and the one
  * the user can read in the app while it runs.
  */

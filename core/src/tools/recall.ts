@@ -10,7 +10,7 @@ import type { Tool } from './types.js'
  * what it just recorded or tell whether it is about to record it twice. And there was no
  * answer at all to "how do I read my notes" — asked directly, the model went looking through
  * `.privatecode/`, found the file, and told the user the way to read notes is
- * `read_file('.privatecode/project-notes.md')`.
+ * `Read('.privatecode/project-notes.md')`.
  *
  * That workaround is the reason this tool exists rather than a convenience. The FILE holds
  * every note ever written, including the ones whose evidence has since changed; the loader

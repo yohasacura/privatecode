@@ -60,9 +60,9 @@ describe('a settings file with a byte-order mark', () => {
   })
 
   test('permission rules are found, and not reported as malformed', () => {
-    writeWithBom({ permissions: { allow: ['read_file'], ask: [], deny: [] } })
+    writeWithBom({ permissions: { allow: ['Read'], ask: [], deny: [] } })
     const { layers, problems } = loadLayers(root)
-    expect(layers.find((l) => l.scope === 'project')?.permissions.allow).toEqual(['read_file'])
+    expect(layers.find((l) => l.scope === 'project')?.permissions.allow).toEqual(['Read'])
     expect(problems).toEqual([])
   })
 

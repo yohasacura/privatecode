@@ -20,7 +20,7 @@ export interface UseSkillArgs {
  * their own notes, and the actions it leads to are gated already.
  */
 export const useSkillTool: Tool<UseSkillArgs> = {
-  name: 'use_skill',
+  name: 'Skill',
   readOnly: true,
   description:
     'Read one of the skills listed in your system prompt: the full procedure behind the ' +
@@ -52,7 +52,7 @@ export const useSkillTool: Tool<UseSkillArgs> = {
     return { ok: true, args }
   },
   permissionKey(args) {
-    return { tool: 'use_skill', target: args.name }
+    return { tool: 'Skill', target: args.name }
   },
   async execute(args, ctx) {
     const loaded = ctx.skills
@@ -80,11 +80,13 @@ export const useSkillTool: Tool<UseSkillArgs> = {
     // The header states what was opened and what else is in the folder, so a skill that
     // depends on a reference table does not need the model to guess that one exists.
     const extras = args.file === undefined && skill.files.length > 0
-      ? `\nFiles bundled with this skill (read with use_skill(name, file)): ${skill.files.join(', ')}`
+      ? `\nFiles bundled with this skill (read with Skill(name, file)): ${skill.files.join(', ')}`
       : ''
+    // The folder is named so a script the skill ships beside itself can be run from where
+    // it is — `python "<folder>/tool.py"` — instead of being copied into the workspace.
     const header = args.file === undefined
-      ? `Skill "${skill.name}" (${skill.scope} scope)${extras}`
-      : `${args.file}, from the skill "${skill.name}"`
+      ? `Skill "${skill.name}" (${skill.scope} scope)\nFolder: ${skill.dir}${extras}`
+      : `${args.file}, from the skill "${skill.name}" (folder ${skill.dir})`
     return { ok: true, content: `${header}\n\n${text}` }
   },
 }

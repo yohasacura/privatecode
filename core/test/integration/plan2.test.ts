@@ -18,8 +18,8 @@ import { snapshotTree } from './helpers.js'
  * `Session` (not the bare `Agent`) is what the real CLI drives, so this is the same path
  * a user's keystrokes go through, not just the loop underneath it.
  *
- * Kept to exactly the five cases the brief names: run_command through autopilot,
- * permission-deny steering, auto-edit non-consultation, todo_write in plan mode, and
+ * Kept to exactly the five cases the brief names: Bash through autopilot,
+ * permission-deny steering, auto-edit non-consultation, TodoWrite in plan mode, and
  * session-resume continuity. Nothing else belongs in this file.
  */
 
@@ -91,7 +91,7 @@ describe.runIf(enabled)('Plan 2 live acceptance suite', () => {
   }
 
   // -------------------------------------------------------------------------
-  // 1. run_command through the model, in autopilot -- no interactive port at all.
+  // 1. Bash through the model, in autopilot -- no interactive port at all.
   // -------------------------------------------------------------------------
   test('autopilot runs a shell command through the model without any approval port',
     { timeout: 120_000 }, async () => {
@@ -126,7 +126,7 @@ describe.runIf(enabled)('Plan 2 live acceptance suite', () => {
     console.log(`[autopilot] final text: ${result.finalText.slice(0, 300)}`)
 
     expect(result.stoppedBecause).toBe('done')
-    expect(calls.some((c) => c.name === 'run_command')).toBe(true)
+    expect(calls.some((c) => c.name === 'Bash')).toBe(true)
     expect(result.finalText.trim()).not.toBe('')
   })
 
@@ -171,9 +171,9 @@ describe.runIf(enabled)('Plan 2 live acceptance suite', () => {
     )
     console.log(`[deny] final text: ${result.finalText.slice(0, 300)}`)
 
-    // The deny really happened, through normal mode's real 'ask' verdict for run_command.
+    // The deny really happened, through normal mode's real 'ask' verdict for Bash.
     expect(approvalRequests.length).toBeGreaterThan(0)
-    expect(calls.some((c) => c.name === 'run_command')).toBe(true)
+    expect(calls.some((c) => c.name === 'Bash')).toBe(true)
 
     // Either proves the deny text steered it: the model tries the suggested tool, or it
     // gives up and says so in its closing prose.
@@ -247,7 +247,7 @@ describe.runIf(enabled)('Plan 2 live acceptance suite', () => {
   })
 
   // -------------------------------------------------------------------------
-  // 4. todo_write in plan mode: the plan is recorded, the tree is untouched.
+  // 4. TodoWrite in plan mode: the plan is recorded, the tree is untouched.
   // -------------------------------------------------------------------------
   test('plan mode records a todo-list plan and touches nothing on disk',
     { timeout: 120_000 }, async () => {
@@ -285,7 +285,7 @@ describe.runIf(enabled)('Plan 2 live acceptance suite', () => {
     const started = Date.now()
     const result = await session.send(
       'Plan how you would rename function foo to bar across this workspace. Record your ' +
-      'plan with todo_write, do not change anything.',
+      'plan with TodoWrite, do not change anything.',
     )
     console.log(
       `\n[plan-todo] stoppedBecause=${result.stoppedBecause}, steps=${result.steps}, ` +

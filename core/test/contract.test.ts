@@ -347,11 +347,11 @@ describe('what the distiller is actually told', () => {
 
 describe('collapseSupersededReads', () => {
   const read = (id: string, path: string, body: string): ChatMessage[] => [
-    { role: 'assistant', content: null, tool_calls: [{ id, type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path }) } }] },
+    { role: 'assistant', content: null, tool_calls: [{ id, type: 'function', function: { name: 'Read', arguments: JSON.stringify({ path }) } }] },
     { role: 'tool', tool_call_id: id, content: body },
   ]
   const edit = (id: string, path: string): ChatMessage[] => [
-    { role: 'assistant', content: null, tool_calls: [{ id, type: 'function', function: { name: 'edit_file', arguments: JSON.stringify({ path }) } }] },
+    { role: 'assistant', content: null, tool_calls: [{ id, type: 'function', function: { name: 'Edit', arguments: JSON.stringify({ path }) } }] },
     { role: 'tool', tool_call_id: id, content: '--- x\n+++ x\n@@ line 1 @@\n+y' },
   ]
   const big = 'x'.repeat(1_000)
@@ -393,7 +393,7 @@ test('the whole arc: distilled up front, gate catches a missed criterion, fix ro
   dirs.push(root)
 
   const writeTool: Tool<Record<string, unknown>> = {
-    name: 'write_file',
+    name: 'Write',
     readOnly: false,
     description: 'write',
     parameters: { type: 'object', properties: {} },
@@ -464,7 +464,7 @@ test('the whole arc: distilled up front, gate catches a missed criterion, fix ro
         choices: [{
           message: {
             role: 'assistant', content: null,
-            tool_calls: [{ id: 'w2', type: 'function', function: { name: 'write_file', arguments: '{"path":"checks.js"}' } }],
+            tool_calls: [{ id: 'w2', type: 'function', function: { name: 'Write', arguments: '{"path":"checks.js"}' } }],
           },
           finish_reason: 'tool_calls',
         }],
@@ -477,7 +477,7 @@ test('the whole arc: distilled up front, gate catches a missed criterion, fix ro
         choices: [{
           message: {
             role: 'assistant', content: null,
-            tool_calls: [{ id: 'w1', type: 'function', function: { name: 'write_file', arguments: '{"path":"math.js"}' } }],
+            tool_calls: [{ id: 'w1', type: 'function', function: { name: 'Write', arguments: '{"path":"math.js"}' } }],
           },
           finish_reason: 'tool_calls',
         }],
@@ -521,7 +521,7 @@ test('the whole arc: distilled up front, gate catches a missed criterion, fix ro
  * is skipped whenever the tail already opens on an assistant message — which is the ordinary
  * shape of a mid-turn boundary. The remap used to clamp the turn-start index to a fixed 3,
  * so in that case it pointed one message PAST the first kept message; when that message
- * carried the turn's `write_file` calls, the created file's body — the only source
+ * carried the turn's `Write` calls, the created file's body — the only source
  * `turnDiffText` has for a file that did not exist before — was silently missing from the
  * independent review, and the review passed on an empty diff.
  */
@@ -530,7 +530,7 @@ test('a mid-turn compaction leaves the diff review reading the turn it belongs t
   dirs.push(root)
 
   /** Big enough on its own to clear DIFF_REVIEW_MIN_CHARS, so the review runs iff the
-   * write_file CALL is inside the reviewed slice. */
+   * Write CALL is inside the reviewed slice. */
   const CREATED = `export function clamp() {}\n${'z'.repeat(3_000)}`
   const CONTEXT = 40_000
 
@@ -541,8 +541,8 @@ test('a mid-turn compaction leaves the diff review reading the turn it belongs t
     execute: async () => ({ ok: true, content }),
   })
   const registry = new ToolRegistry()
-  registry.register(mkTool('read_file', 'q'.repeat(20_000), true))
-  registry.register(mkTool('write_file', 'wrote', false))
+  registry.register(mkTool('Read', 'q'.repeat(20_000), true))
+  registry.register(mkTool('Write', 'wrote', false))
 
   const criteria = ['clamp exists', 'clamp is covered']
   const reviewed: string[] = []
@@ -613,9 +613,9 @@ test('a mid-turn compaction leaves the diff review reading the turn it belongs t
     }
     // Two fat reads build a middle worth summarising, then the write, and only then a
     // prompt count the pre-step check reads as "this no longer fits".
-    if (turnCall === 2) return call('read_file', { path: 'a.ts' }, 2_000)
-    if (turnCall === 3) return call('read_file', { path: 'b.ts' }, 3_000)
-    if (turnCall === 4) return call('write_file', { path: 'clamp.ts', content: CREATED }, 37_000)
+    if (turnCall === 2) return call('Read', { path: 'a.ts' }, 2_000)
+    if (turnCall === 3) return call('Read', { path: 'b.ts' }, 3_000)
+    if (turnCall === 4) return call('Write', { path: 'clamp.ts', content: CREATED }, 37_000)
     return {
       choices: [{ message: { role: 'assistant', content: 'All done, everything works.' }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 9_000, completion_tokens: 5 },
@@ -636,7 +636,7 @@ test('a mid-turn compaction leaves the diff review reading the turn it belongs t
     onCompaction: (e) => states.push(e.state),
   })
 
-  await session.send('what does read_file do?')
+  await session.send('what does Read do?')
   const result = await session.send(BIG_TASK)
 
   expect(result.stoppedBecause).toBe('done')
@@ -676,7 +676,7 @@ ${'z'.repeat(3_000)}`
     execute: async () => ({ ok: true, content }),
   })
   const registry = new ToolRegistry()
-  registry.register(mkTool('write_file', 'wrote', false))
+  registry.register(mkTool('Write', 'wrote', false))
 
   const criteria = ['clamp exists']
   let reviews = 0
@@ -713,7 +713,7 @@ ${'z'.repeat(3_000)}`
         choices: [{
           message: {
             role: 'assistant', content: null,
-            tool_calls: [{ id: 'w1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'clamp.ts', content: CREATED }) } }],
+            tool_calls: [{ id: 'w1', type: 'function', function: { name: 'Write', arguments: JSON.stringify({ path: 'clamp.ts', content: CREATED }) } }],
           },
           finish_reason: 'tool_calls',
         }],
@@ -802,7 +802,7 @@ test('a criterion the audit did not report on is not treated as an asserted gap'
 
 test('the distiller clips a write-heavy tail, where the bulk is in tool_call arguments', async () => {
   // `content` is only half of a message's size, and on a write-heavy tail it is the empty
-  // half: a write_file call carries the whole file in arguments with content: null. The clip
+  // half: a Write call carries the whole file in arguments with content: null. The clip
   // short-circuited on `typeof content !== 'string'`, so those were never clipped at all and
   // this deliberately-small context became tens of thousands of tokens.
   const huge = 'x'.repeat(50_000)
@@ -819,7 +819,7 @@ test('the distiller clips a write-heavy tail, where the bulk is in tool_call arg
       content: null,
       tool_calls: [{
         id: 'w1', type: 'function' as const,
-        function: { name: 'write_file', arguments: JSON.stringify({ path: 'a.ts', content: huge }) },
+        function: { name: 'Write', arguments: JSON.stringify({ path: 'a.ts', content: huge }) },
       }],
     },
   ]

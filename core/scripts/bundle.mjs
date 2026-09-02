@@ -30,7 +30,7 @@
  * in place of a vitest file for "the bundle script's staging manifest".
  */
 import { build } from 'esbuild'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -72,6 +72,7 @@ function verifyManifest() {
   const manifest = [
     join(sidecarDir, 'agent.cjs'),
     join(sidecarDir, 'vendor', 'ripgrep', 'rg.exe'),
+    ...readdirSync(join(coreRoot, 'skills')).map((name) => join(sidecarDir, 'skills', name, 'SKILL.md')),
     ...readdirSync(join(sidecarDir, 'vendor', 'tree-sitter')).map((f) =>
       join(sidecarDir, 'vendor', 'tree-sitter', f)),
   ]
@@ -125,6 +126,9 @@ async function main() {
 
   stageVendor('ripgrep', ['rg.exe'])
   stageVendor('tree-sitter', null)
+  // The skills PrivateCode ships (`skills/skills.ts`'s `bundledSkillsDir`): the whole
+  // folder, scripts included, beside agent.cjs — where the sidecar looks for it.
+  cpSync(join(coreRoot, 'skills'), join(sidecarDir, 'skills'), { recursive: true })
   // Optional, and staged only when it has been published — see verifyManifest. 92 MB of
   // self-contained .NET buys semantic C# navigation on a machine with no SDK installed;
   // on a machine that never touches C# it is 92 MB of nothing.

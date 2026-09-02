@@ -113,10 +113,10 @@ describe('naming which check spoke', () => {
 
 describe('what the model did about it', () => {
   test('the five answers are told apart by what was called', () => {
-    expect(answerFrom(1, ['edit_file'])).toBe('edited')
-    expect(answerFrom(1, ['read_file', 'edit_file'])).toBe('edited')
-    expect(answerFrom(1, ['run_command'])).toBe('ran')
-    expect(answerFrom(1, ['read_file', 'search_code'])).toBe('looked')
+    expect(answerFrom(1, ['Edit'])).toBe('edited')
+    expect(answerFrom(1, ['Read', 'Edit'])).toBe('edited')
+    expect(answerFrom(1, ['Bash'])).toBe('ran')
+    expect(answerFrom(1, ['Read', 'Grep'])).toBe('looked')
     expect(answerFrom(1, [])).toBe('words-only')
     expect(answerFrom(0, [])).toBe('nothing')
   })
@@ -134,11 +134,11 @@ describe('what the model did about it', () => {
     // An audit found this asserting "changed nothing" about a check answered by delegating
     // the fix to a sub-agent. Every one of these can change the workspace; none is an
     // editing tool, and under the old fall-through all four printed as `only looked`.
-    for (const tool of ['delegate', 'sql_deploy', 'background_task', 'browser']) {
+    for (const tool of ['Agent', 'sql_deploy', 'background_task', 'browser']) {
       expect(answerFrom(1, [tool])).toBe('ran')
     }
     // And one read-only tool mixed in does not launder the rest.
-    expect(answerFrom(1, ['read_file', 'delegate'])).toBe('ran')
+    expect(answerFrom(1, ['Read', 'Agent'])).toBe('ran')
   })
 
   test('replying in prose to a build log is counted, per check', () => {
@@ -146,7 +146,7 @@ describe('what the model did about it', () => {
     // provoked it — which is the part that says WHICH check the model argues with.
     const d = diagnosisOf([
       person('make it build'),
-      calls('edit_file'),
+      calls('Edit'),
       harness(`${VERIFY_FAILED_PREFIX}\nerror CS1002`),
       says('The build failure is unrelated to my change.'),
     ])
@@ -163,11 +163,11 @@ describe('whether the answer satisfied the check', () => {
   test('a check that fires again in the same person-turn was not satisfied', () => {
     const d = diagnosisOf([
       person('make it build'),
-      calls('edit_file'),
+      calls('Edit'),
       harness(`${VERIFY_FAILED_PREFIX}\nerror CS1002`),
-      calls('edit_file'),
+      calls('Edit'),
       harness(`${VERIFY_FAILED_PREFIX}\nerror CS1002`),
-      calls('edit_file'),
+      calls('Edit'),
       person('thanks'),
     ])
     const verify = d.gates.find((g) => g.kind === 'verify')
@@ -183,10 +183,10 @@ describe('whether the answer satisfied the check', () => {
     const d = diagnosisOf([
       person('make it build'),
       harness(`${VERIFY_FAILED_PREFIX}\nerror CS1002`),
-      calls('edit_file'),
+      calls('Edit'),
       harness('[dotnet build: 3.2s]'),
       harness(`${VERIFY_FAILED_PREFIX}\nerror CS1002`),
-      calls('edit_file'),
+      calls('Edit'),
       person('ok'),
     ])
     expect(d.gates.find((g) => g.kind === 'verify')?.longestRun).toBe(2)
@@ -198,10 +198,10 @@ describe('whether the answer satisfied the check', () => {
     const d = diagnosisOf([
       person('first'),
       harness(`${VERIFY_FAILED_PREFIX}\nred`),
-      calls('edit_file'),
+      calls('Edit'),
       person('second'),
       harness(`${VERIFY_FAILED_PREFIX}\nred`),
-      calls('edit_file'),
+      calls('Edit'),
     ])
     const verify = d.gates.find((g) => g.kind === 'verify')
     expect(verify?.fired).toBe(2)
@@ -220,7 +220,7 @@ describe('whether the answer satisfied the check', () => {
 red`),
       harness(`${ACCEPTANCE_FIXER_PREFIX}
 - not met`),
-      calls('edit_file'),
+      calls('Edit'),
       person('ok'),
     ])
     expect(d.gates.find((g) => g.kind === 'verify')?.answers['preempted']?.times).toBe(1)
@@ -241,9 +241,9 @@ describe('what the checking cost', () => {
   test('turns and calls spent answering are attributed to the check that caused them', () => {
     const d = diagnosisOf([
       person('do it'),
-      calls('write_file'),               // the work itself — not the gate's cost
+      calls('Write'),               // the work itself — not the gate's cost
       harness(`${REVIEW_FIXER_PREFIX}\n- a leak`),
-      calls('read_file', 'edit_file'),   // one turn, two calls
+      calls('Read', 'Edit'),   // one turn, two calls
       says('fixed'),                     // a second turn
       person('good'),
     ])
@@ -276,7 +276,7 @@ describe('the report itself', () => {
       harness(`${VERIFY_FAILED_PREFIX}\nD:/clients/zebracorp/Ledger.csproj(42): error CS1002`),
       says('AcmeBank.Ledger.PostingEngine needs the merger flag'),
       harness(`${VERIFY_FAILED_PREFIX}\nD:/clients/zebracorp/Ledger.csproj(42): error CS1002`),
-      calls('edit_file'),
+      calls('Edit'),
       harness(`${TALKED_INSTEAD_OF_ACTING}`),
       calls('mcp__acmebank_prod__query_ledger'),
       person('stop'),
@@ -335,12 +335,12 @@ describe('a compaction is the machine talking to itself', () => {
     const d = diagnosisOf([
       person('make the import work'),
       harness(`${VERIFY_FAILED_PREFIX}\nred`),
-      calls('edit_file'),
+      calls('Edit'),
       // The window filled and the earlier history was replaced, mid-request.
       harness(`${COMPACTION_BRIEFING_PREFIX}\n\nThe user asked about the ledger import.`),
       says(COMPACTION_ACK_TEXT),
       harness(`${VERIFY_FAILED_PREFIX}\nred`),
-      calls('edit_file'),
+      calls('Edit'),
       person('thanks'),
     ])
 
@@ -364,7 +364,7 @@ describe('a compaction is the machine talking to itself', () => {
       harness(`${ACCEPTANCE_FIXER_PREFIX}\n- not met`),
       harness(`${COMPACTION_BRIEFING_PREFIX}\n\nearlier history`),
       says(COMPACTION_ACK_TEXT),
-      calls('edit_file'),
+      calls('Edit'),
       person('ok'),
     ])
     // The model generated exactly one assistant message here; the ack it "said" was written
@@ -383,7 +383,7 @@ test('an answer is reported together with whether it worked', () => {
     harness(`${VERIFY_FAILED_PREFIX}\nred`),
     says('That failure is unrelated to my change.'),
     harness(`${VERIFY_FAILED_PREFIX}\nred`),
-    calls('edit_file'),
+    calls('Edit'),
     person('thanks'),
   ])
   const text = renderGates(d.gates).join('\n')
@@ -398,7 +398,7 @@ test('a percentage is not printed off a sample too small to carry one', () => {
   const one = renderDiagnosis(diagnosisOf([
     person('go'),
     harness(`${VERIFY_FAILED_PREFIX}\nred`),
-    calls('edit_file'),
+    calls('Edit'),
   ]))
   expect(one).toContain('harness turns')
   expect(one).not.toMatch(/% of what the person sent/)
@@ -406,7 +406,7 @@ test('a percentage is not printed off a sample too small to carry one', () => {
   const many = renderDiagnosis(diagnosisOf([
     ...Array.from({ length: 6 }, () => person('go')),
     harness(`${VERIFY_FAILED_PREFIX}\nred`),
-    calls('edit_file'),
+    calls('Edit'),
   ]))
   expect(many).toMatch(/% of what the person sent/)
 })
@@ -428,14 +428,14 @@ describe('the audit findings', () => {
     // transcript — which re-appends the retained tail that is already above the marker.
     const tail = [
       harness(`${VERIFY_FAILED_PREFIX}\nred`),
-      calls('edit_file'),
+      calls('Edit'),
       { role: 'tool', tool_call_id: 'c0', content: 'edited' },
       says('fixed it'),
     ]
     const d = diagnosisOf([
       { role: 'system', content: 'you are an agent' },
       person('please fix the build'),
-      calls('read_file'),
+      calls('Read'),
       { role: 'tool', tool_call_id: 'c0', content: '1\tx' },
       ...tail,
       // 8 messages so far; the tail starts at index 4, floor is 1, so droppedMessages is 3.
@@ -453,7 +453,7 @@ describe('the audit findings', () => {
     expect(verify?.steps).toBe(2)              // not 4
     expect(verify?.calls).toBe(1)              // not 2
     // And the report's own waste metric stops inventing a repeat the model never made.
-    expect(d.tools.find((t) => t.name === 'edit_file')?.repeats).toBe(0)
+    expect(d.tools.find((t) => t.name === 'Edit')?.repeats).toBe(0)
     expect(d.compactions).toBe(1)
   })
 
@@ -466,7 +466,7 @@ describe('the audit findings', () => {
       person('make it build'),
       harness(`${ACCEPTANCE_FIXER_PREFIX}\n- the tests still fail`),
       harness('[Plan focus — step 2 of 5: fix the parser]'),
-      calls('read_file', 'edit_file'),
+      calls('Read', 'Edit'),
       says('done'),
       person('thanks'),
     ])
@@ -490,7 +490,7 @@ describe('the audit findings', () => {
       '[12:34:56] build ended]'
     expect(splitUserMessage(log).harnessKind).toBe('verify-working')
 
-    const d = diagnosisOf([person('fix it'), { role: 'user', content: log }, calls('edit_file')])
+    const d = diagnosisOf([person('fix it'), { role: 'user', content: log }, calls('Edit')])
     expect(d.userMessages).toBe(1)
     expect(d.gates.find((g) => g.kind === 'verify-working')?.fired).toBe(1)
   })
@@ -515,10 +515,10 @@ describe('the audit findings', () => {
     const d = diagnosisOf([
       person('work through the list'),
       harness(`${VERIFY_FAILED_PREFIX}\nred`), says('looking'),
-      harness(withTodos), calls('edit_file'),
+      harness(withTodos), calls('Edit'),
       harness(`${VERIFY_FAILED_PREFIX}\nred`), says('looking'),
-      harness(withTodos), calls('edit_file'),
-      harness(`${VERIFY_FAILED_PREFIX}\nred`), calls('edit_file'),
+      harness(withTodos), calls('Edit'),
+      harness(`${VERIFY_FAILED_PREFIX}\nred`), calls('Edit'),
       person('stop'),
     ])
     expect(d.userMessages).toBe(2)
@@ -592,7 +592,7 @@ describe('did it get better', () => {
       for (let i = 0; i < calls; i++) {
         const cid = `${id}-c${i}`
         lines.push({ role: 'assistant', tool_calls: [{ id: cid, type: 'function',
-          function: { name: 'read_file', arguments: JSON.stringify({ path: `src/a${i}.ts` }) } }] })
+          function: { name: 'Read', arguments: JSON.stringify({ path: `src/a${i}.ts` }) } }] })
         const failed = i < failures
         lines.push({ role: 'tool', tool_call_id: cid,
           content: failed ? `File not found: src/a${i}.ts` : `1\tconst a${i} = 1` })
@@ -633,7 +633,7 @@ describe('did it get better', () => {
     // build with four hundred — and read as a catastrophic regression.
     const d = diagnosisOf([
       person('go'),
-      calls('read_file'),
+      calls('Read'),
       { role: 'tool', tool_call_id: 'c0', content: 'File not found: src/a.ts' },
     ], { appVersion: '0.2.0' })
     const buildLine = renderDiagnosis(d).split('\n').find((l) => l.includes('0.2.0'))

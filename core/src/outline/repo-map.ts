@@ -407,11 +407,11 @@ const MAX_MEMBERS = 8
  *
  * Every name carries its line number (` :41`), and that is what turns the map from a list
  * of what exists into the ARGUMENT of the next call. Measured over the recorded sessions:
- * 285 `read_file` calls against 11 `search_code` and 0 `symbol_outline`, nearly all of them
+ * 285 `Read` calls against 11 `Grep` and 0 `symbol_outline`, nearly all of them
  * whole files — a 19k-character view-model read three times in one turn for edits that
  * touched one method each. A name with no line leaves the model exactly one way to reach
- * the method: read the file. A name with a line makes `read_file(path, start_line,
- * end_line)` writable from the map alone, which `read_file`'s own large-file answer
+ * the method: read the file. A name with a line makes `Read(path, start_line,
+ * end_line)` writable from the map alone, which `Read`'s own large-file answer
  * already relies on. Two tokens a name, paid once per session in the cached prefix.
  */
 /**
@@ -493,7 +493,7 @@ const MAP_HEADER_HEAD =
   'definitions only — not what they do — and it can be out of date, including because of ' +
   'your own edits. Use it to know where to look; '
 
-const MAP_HEADER_TAIL = 'confirm with read_file or symbol_outline before relying on it.\n'
+const MAP_HEADER_TAIL = 'confirm with Read or symbol_outline before relying on it.\n'
 
 /**
  * The one place a nudge toward `csharp_nav` is worth its tokens.
@@ -509,7 +509,7 @@ const MAP_HEADER_TAIL = 'confirm with read_file or symbol_outline before relying
  * grown.
  */
 const MAP_HEADER_TAIL_CSHARP =
-  'confirm with read_file before relying on it — or, for how the C# in here connects, ask ' +
+  'confirm with Read before relying on it — or, for how the C# in here connects, ask ' +
   'csharp_nav, which answers who calls what from the compiler rather than from this list.\n'
 
 const mapHeader = (ranked: readonly FileOutline[]): string =>
@@ -537,7 +537,7 @@ function fitBlocks(
 function omissionNote(omitted: number): string {
   return omitted > 0
     ? `\n\n(${omitted} more source file${omitted === 1 ? '' : 's'} are not listed here. ` +
-      'find_files and search_code reach them.)'
+      'Glob and Grep reach them.)'
     : ''
 }
 
@@ -703,7 +703,7 @@ export async function indexRepo(workspace: string | readonly Mount[]): Promise<R
         name: mount.name,
         access: mount.access,
         // Prefixed here rather than left to the section heading: a model reads one of these
-        // lines and calls read_file with exactly the text it saw, and a bare `src/boot.ts`
+        // lines and calls Read with exactly the text it saw, and a bare `src/boot.ts`
         // would be refused by the jail for not naming a folder.
         files: files.map((file) => ({
           ...file,

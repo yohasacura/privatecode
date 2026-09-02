@@ -26,7 +26,7 @@ function completion(overrides: Record<string, unknown> = {}) {
         tool_calls: [{
           id: 'call_1',
           type: 'function',
-          function: { name: 'read_file', arguments: '{"path":"src/a.ts"}' },
+          function: { name: 'Read', arguments: '{"path":"src/a.ts"}' },
         }],
       },
     }],
@@ -48,7 +48,7 @@ test('parses reasoning_content, tool calls, finish reason and timings', async ()
 
   expect(result.finishReason).toBe('tool_calls')
   expect(result.message.reasoning_content).toBe('I should open the file.')
-  expect(result.message.tool_calls?.[0]?.function.name).toBe('read_file')
+  expect(result.message.tool_calls?.[0]?.function.name).toBe('Read')
   expect(result.timings?.predicted_per_second).toBeCloseTo(60.6)
   expect(result.usage?.completion_tokens).toBe(42)
 })

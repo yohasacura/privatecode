@@ -46,7 +46,7 @@ const write = (content: string) => ({
   choices: [{
     message: {
       role: 'assistant', content: null,
-      tool_calls: [{ id: 'w1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'notes/summary.txt', content }) } }],
+      tool_calls: [{ id: 'w1', type: 'function', function: { name: 'Write', arguments: JSON.stringify({ path: 'notes/summary.txt', content }) } }],
     },
     finish_reason: 'tool_calls',
   }],

@@ -42,7 +42,7 @@ const PRUNED_SEGMENTS = ['.git', 'node_modules', '.privatecode', 'dist', 'build'
  * The prune, minus anything the caller named on purpose.
  *
  * `bin/**` has to keep working: naming a directory is how you say you want what is in it,
- * exactly as `search_code`'s scoped search opts into dot-directories by being given one.
+ * exactly as `Grep`'s scoped search opts into dot-directories by being given one.
  * Compared against the pattern's literal segments only — a segment carrying glob syntax
  * (`*`, `?`, a brace) is not a name, so `**\/*.dll` does not count as asking for `bin`.
  */
@@ -134,7 +134,7 @@ function globJobs(pattern: string, workspace: Workspace): { mount: Mount; patter
 }
 
 export const findFilesTool: Tool<FindFilesArgs> = {
-  name: 'find_files',
+  name: 'Glob',
   readOnly: true,
   description:
     'Find files by glob pattern, for example "src/**/*.ts". Directories are not returned. ' +
@@ -171,8 +171,8 @@ export const findFilesTool: Tool<FindFilesArgs> = {
         for await (const entry of glob(job.pattern, {
           cwd: job.mount.root, withFileTypes: true, exclude: prunedFor(job.pattern),
         })) {
-          // The tool is called find_files: a bare directory name is indistinguishable from
-          // an extensionless file, and the model will call read_file on it.
+          // The tool is called Glob: a bare directory name is indistinguishable from
+          // an extensionless file, and the model will call Read on it.
           if (entry.isDirectory()) continue
           const rel = relative(job.mount.root, join(entry.parentPath, entry.name))
           const segments = rel.split(sep)

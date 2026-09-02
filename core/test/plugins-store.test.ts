@@ -14,20 +14,15 @@ const hasGit = await gitAvailable()
 let tmp: string
 let userPath: string
 let ws: string
-let savedClaudeDir: string | undefined
 const readJson = (p: string): Record<string, unknown> => JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>
 
 beforeAll(() => {
   tmp = mkdtempSync(join(tmpdir(), 'pc-plugins-'))
   userPath = join(tmp, 'user', 'settings.json')
   ws = join(tmp, 'ws')
-  mkdirSync(ws, { recursive: true })
-  savedClaudeDir = process.env['CLAUDE_CONFIG_DIR']
-  process.env['CLAUDE_CONFIG_DIR'] = join(tmp, 'claude')
+  mkdirSync(join(ws, '.privatecode'), { recursive: true })
 })
 afterAll(() => {
-  if (savedClaudeDir === undefined) delete process.env['CLAUDE_CONFIG_DIR']
-  else process.env['CLAUDE_CONFIG_DIR'] = savedClaudeDir
   try { rmSync(tmp, { recursive: true, force: true }) } catch { /* a handle still open on Windows */ }
 })
 
@@ -166,17 +161,14 @@ describe('a marketplace read from a folder', () => {
     expect(effectivePlugins(store, undefined, userPath).plugins.find((p) => p.id === 'beta@fixture-market')?.enabled).toBe(true)
   })
 
-  it("reads Claude Code's settings files too, in the same precedence order", () => {
-    mkdirSync(join(tmp, 'claude'), { recursive: true })
-    writeFileSync(join(tmp, 'claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'foo@bar': true, 'alpha@fixture-market': false } }))
-    mkdirSync(join(ws, '.claude'), { recursive: true })
-    writeFileSync(join(ws, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'gamma@fixture-market': true } }))
+  it('a plugin enabled in a settings file but not installed is listed with what to run', () => {
+    const local = join(ws, '.privatecode', 'settings.local.json')
+    writeFileSync(local, JSON.stringify({ enabledPlugins: { 'foo@bar': true, 'gamma@fixture-market': true } }))
     const eff = effectivePlugins(store, ws, userPath)
-    expect(eff.declared).toEqual([{ id: 'foo@bar', from: join(tmp, 'claude', 'settings.json') }])
-    // Our user file (true) is read after Claude Code's user file (false).
-    expect(eff.plugins.find((p) => p.id === 'alpha@fixture-market')?.enabled).toBe(true)
-    // The project's .claude/settings.json (true) outranks our user file (false).
+    expect(eff.declared).toEqual([{ id: 'foo@bar', from: local }])
+    // The local layer (true) outranks the user file (false).
     expect(eff.plugins.find((p) => p.id === 'gamma@fixture-market')?.enabled).toBe(true)
+    rmSync(local)
   })
 
   it('uninstalls one scope at a time, then the files', () => {
@@ -300,8 +292,8 @@ describe('bundled marketplaces and names', () => {
   it('adopts marketplaces a settings file declares', () => {
     const store = new PluginStore(join(tmp, 'store-adopt'))
     const ws2 = join(tmp, 'ws-adopt')
-    mkdirSync(join(ws2, '.claude'), { recursive: true })
-    writeFileSync(join(ws2, '.claude', 'settings.json'), JSON.stringify({ extraKnownMarketplaces: {
+    mkdirSync(join(ws2, '.privatecode'), { recursive: true })
+    writeFileSync(join(ws2, '.privatecode', 'settings.json'), JSON.stringify({ extraKnownMarketplaces: {
       'team-tools': { source: { source: 'github', repo: 'acme/tools' } },
       'claude-plugins-official': { source: { source: 'github', repo: 'evil/x' } },
     } }))

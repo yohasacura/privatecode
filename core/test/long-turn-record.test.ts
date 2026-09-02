@@ -74,7 +74,7 @@ test('a mid-turn compaction writes the work it is about to summarise away', asyn
             reasoning_content: 'x'.repeat(60_000),
             tool_calls: [{
               id: `c${streamed}`, type: 'function',
-              function: { name: 'write_file', arguments: JSON.stringify({ path: `f${streamed}.txt`, content: `body ${streamed}` }) },
+              function: { name: 'Write', arguments: JSON.stringify({ path: `f${streamed}.txt`, content: `body ${streamed}` }) },
             }],
           },
           finish_reason: 'tool_calls',
@@ -139,7 +139,7 @@ test('a crash between the two writes leaves the full pre-swap transcript', async
             reasoning_content: 'x'.repeat(60_000),
             tool_calls: [{
               id: `c${streamed}`, type: 'function',
-              function: { name: 'write_file', arguments: JSON.stringify({ path: `p${streamed}.txt`, content: 'x' }) },
+              function: { name: 'Write', arguments: JSON.stringify({ path: `p${streamed}.txt`, content: 'x' }) },
             }],
           },
           finish_reason: 'tool_calls',
@@ -192,7 +192,7 @@ test('the work log counts the turn\'s steps, not the verify-fixer\'s', async () 
     call++
     // Three working steps, then prose; then the fixer answers in one step.
     if (call <= 3) {
-      return tool(`c${call}`, 'write_file', JSON.stringify({ path: `f${call}.txt`, content: 'x' }))
+      return tool(`c${call}`, 'Write', JSON.stringify({ path: `f${call}.txt`, content: 'x' }))
     }
     return text('done')
   })
@@ -244,7 +244,7 @@ test('a failed marker write does not duplicate the turn in the session file', as
             reasoning_content: 'x'.repeat(60_000),
             tool_calls: [{
               id: `c${streamed}`, type: 'function',
-              function: { name: 'write_file', arguments: JSON.stringify({ path: `d${streamed}.txt`, content: 'x' }) },
+              function: { name: 'Write', arguments: JSON.stringify({ path: `d${streamed}.txt`, content: 'x' }) },
             }],
           },
           finish_reason: 'tool_calls',
@@ -324,7 +324,7 @@ test('a step\'s record is on disk before the next step is asked for', async () =
     if (sessionId !== '') {
       try {
         const raw = readFileSync(transcriptPath(sessionId), 'utf8')
-        writesVisibleAtStep[steps] = raw.split('\n').filter((l) => l.includes('write_file')).length
+        writesVisibleAtStep[steps] = raw.split('\n').filter((l) => l.includes('Write')).length
       } catch {
         writesVisibleAtStep[steps] = 0
       }
@@ -338,7 +338,7 @@ test('a step\'s record is on disk before the next step is asked for', async () =
             id: `c${steps}`,
             type: 'function',
             function: {
-              name: 'write_file',
+              name: 'Write',
               arguments: JSON.stringify({ path: `f${steps}.txt`, content: `${steps}` }),
             },
           }],

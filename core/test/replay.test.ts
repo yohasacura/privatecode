@@ -37,16 +37,16 @@ describe('rebuilding a conversation', () => {
     const entries = replayEntries([
       { role: 'system', content: 'you are an agent' },
       user('add a docstring'),
-      { role: 'assistant', content: null, reasoning_content: 'I should read it first.\n', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }] },
-      toolResult('c1', 'read_file', 'a.ts (2 lines)'),
+      { role: 'assistant', content: null, reasoning_content: 'I should read it first.\n', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Read', arguments: '{"path":"a.ts"}' } }] },
+      toolResult('c1', 'Read', 'a.ts (2 lines)'),
       { role: 'assistant', content: 'Done.' },
     ])
 
     expect(entries).toEqual([
       { kind: 'user', text: 'add a docstring' },
       { kind: 'reasoning', step: 1, text: 'I should read it first.\n' },
-      { kind: 'tool-call', name: 'read_file', args: '{"path":"a.ts"}' },
-      { kind: 'tool-result', name: 'read_file', ok: true, content: 'a.ts (2 lines)' },
+      { kind: 'tool-call', name: 'Read', args: '{"path":"a.ts"}' },
+      { kind: 'tool-result', name: 'Read', ok: true, content: 'a.ts (2 lines)' },
       { kind: 'assistant', text: 'Done.' },
     ])
   })
@@ -96,23 +96,23 @@ describe('rebuilding a conversation', () => {
       {
         role: 'assistant', content: null,
         tool_calls: [
-          { id: 'a', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } },
-          { id: 'b', type: 'function', function: { name: 'read_file', arguments: '{"path":"b.ts"}' } },
-          { id: 'c', type: 'function', function: { name: 'read_file', arguments: '{"path":"c.ts"}' } },
+          { id: 'a', type: 'function', function: { name: 'Read', arguments: '{"path":"a.ts"}' } },
+          { id: 'b', type: 'function', function: { name: 'Read', arguments: '{"path":"b.ts"}' } },
+          { id: 'c', type: 'function', function: { name: 'Read', arguments: '{"path":"c.ts"}' } },
         ],
       },
-      toolResult('a', 'read_file', 'contents of a'),
-      toolResult('b', 'read_file', 'contents of b'),
-      toolResult('c', 'read_file', 'contents of c'),
+      toolResult('a', 'Read', 'contents of a'),
+      toolResult('b', 'Read', 'contents of b'),
+      toolResult('c', 'Read', 'contents of c'),
     ])
 
     expect(entries).toEqual([
-      { kind: 'tool-call', name: 'read_file', args: '{"path":"a.ts"}' },
-      { kind: 'tool-result', name: 'read_file', ok: true, content: 'contents of a' },
-      { kind: 'tool-call', name: 'read_file', args: '{"path":"b.ts"}' },
-      { kind: 'tool-result', name: 'read_file', ok: true, content: 'contents of b' },
-      { kind: 'tool-call', name: 'read_file', args: '{"path":"c.ts"}' },
-      { kind: 'tool-result', name: 'read_file', ok: true, content: 'contents of c' },
+      { kind: 'tool-call', name: 'Read', args: '{"path":"a.ts"}' },
+      { kind: 'tool-result', name: 'Read', ok: true, content: 'contents of a' },
+      { kind: 'tool-call', name: 'Read', args: '{"path":"b.ts"}' },
+      { kind: 'tool-result', name: 'Read', ok: true, content: 'contents of b' },
+      { kind: 'tool-call', name: 'Read', args: '{"path":"c.ts"}' },
+      { kind: 'tool-result', name: 'Read', ok: true, content: 'contents of c' },
     ])
   })
 
@@ -121,21 +121,21 @@ describe('rebuilding a conversation', () => {
     // treats as a real state on disk. The call happened; hiding it would make the restored
     // conversation end one step earlier than it did.
     const entries = replayEntries([
-      call('c1', 'run_command', '{"command":"npm test"}'),
+      call('c1', 'Bash', '{"command":"npm test"}'),
       user('what happened?'),
     ])
     expect(entries).toEqual([
-      { kind: 'tool-call', name: 'run_command', args: '{"command":"npm test"}' },
+      { kind: 'tool-call', name: 'Bash', args: '{"command":"npm test"}' },
       { kind: 'user', text: 'what happened?' },
     ])
   })
 
   test('a tool result with no name of its own is identified by its call', () => {
     const entries = replayEntries([
-      call('c9', 'run_command', '{"command":"ls"}'),
+      call('c9', 'Bash', '{"command":"ls"}'),
       { role: 'tool', tool_call_id: 'c9', content: 'a.ts' },
     ])
-    expect(entries[1]).toEqual({ kind: 'tool-result', name: 'run_command', ok: true, content: 'a.ts' })
+    expect(entries[1]).toEqual({ kind: 'tool-result', name: 'Bash', ok: true, content: 'a.ts' })
   })
 })
 
@@ -146,15 +146,15 @@ describe('whether each call worked', () => {
 
     const entries = replayEntries(
       [
-        call('c1', 'read_file', '{}'), toolResult('c1', 'read_file', 'ok'),
-        call('c2', 'run_command', '{}'), toolResult('c2', 'run_command', 'exit 1'),
+        call('c1', 'Read', '{}'), toolResult('c1', 'Read', 'ok'),
+        call('c2', 'Bash', '{}'), toolResult('c2', 'Bash', 'exit 1'),
       ],
       toolOutcomes(root, 's1'),
     )
 
     expect(entries.filter((e) => e.kind === 'tool-result')).toEqual([
-      { kind: 'tool-result', name: 'read_file', ok: true, content: 'ok' },
-      { kind: 'tool-result', name: 'run_command', ok: false, content: 'exit 1' },
+      { kind: 'tool-result', name: 'Read', ok: true, content: 'ok' },
+      { kind: 'tool-result', name: 'Bash', ok: false, content: 'exit 1' },
     ])
   })
 
@@ -162,7 +162,7 @@ describe('whether each call worked', () => {
     // The honest default of the two available. A run this predates has calls that mostly
     // succeeded; painting them all red would invent failures, which is worse than failing
     // to mark the real ones.
-    const entries = replayEntries([toolResult('c1', 'run_command', 'exit 1')])
+    const entries = replayEntries([toolResult('c1', 'Bash', 'exit 1')])
     expect(entries[0]).toMatchObject({ ok: true })
   })
 
@@ -171,8 +171,8 @@ describe('whether each call worked', () => {
     // refused, deferred or cancelled, always with ok:false, and the work log already relies
     // on the same contract. It is also the most common failure in an overnight run.
     const entries = replayEntries([
-      toolResult('c1', 'run_command', 'Not run: nobody is available to approve this…'),
-      toolResult('c2', 'edit_file', 'Not run: one tool call per step'),
+      toolResult('c1', 'Bash', 'Not run: nobody is available to approve this…'),
+      toolResult('c2', 'Edit', 'Not run: one tool call per step'),
     ])
     expect(entries).toMatchObject([{ ok: false }, { ok: false }])
   })
@@ -182,7 +182,7 @@ describe('whether each call worked', () => {
     // second-guessed once the truth is on disk.
     recordToolOutcome(root, 's4', 'c1', true)
     const entries = replayEntries(
-      [toolResult('c1', 'read_file', 'Not run: is what the file says on line 1')],
+      [toolResult('c1', 'Read', 'Not run: is what the file says on line 1')],
       toolOutcomes(root, 's4'),
     )
     expect(entries[0]).toMatchObject({ ok: true })

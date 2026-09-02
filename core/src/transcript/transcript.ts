@@ -5,7 +5,7 @@ import type { ChatMessage } from '../llama/types.js'
  *
  * Exported because four places need this number and each used to compute it inline — and
  * three of them agreed while the fourth quietly did not. `tool_calls[].function.arguments`
- * is the part that gets forgotten: a `write_file` message carries `content: null` and the
+ * is the part that gets forgotten: a `Write` message carries `content: null` and the
  * whole file in its arguments, so a counter that reads only `content` scores the largest
  * append a step can make as zero. Ground truth from the server: 956 prompt tokens for a
  * 3,832-char argument, which is the usual chars/4 — those bytes are prefilled like any

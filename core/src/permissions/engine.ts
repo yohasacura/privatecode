@@ -43,10 +43,10 @@ export interface Decision {
 }
 
 /** Tools whose grantable act is writing to the workspace. */
-const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['edit_file', 'write_file', 'move_file', 'delete_file'])
+const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'move_file', 'delete_file'])
 
 /** Tools whose grantable act is running something outside the workspace jail. */
-const EXEC_TOOLS: ReadonlySet<string> = new Set(['run_command', 'background_task'])
+const EXEC_TOOLS: ReadonlySet<string> = new Set(['Bash', 'background_task'])
 
 /**
  * Tools whose grantable act changes state that is neither a workspace file nor a process:
@@ -68,9 +68,10 @@ const DEPLOY_TOOLS: ReadonlySet<string> = new Set(['sql_deploy'])
 /** The single browser tool. Named here so the engine does not import the tool module. */
 export const BROWSER_TOOL = 'browser'
 
-/** The web search/read tool, same arrangement. Its `search` action carries this fixed
- * target; reads carry the URL. */
-const WEB_TOOL = 'web'
+/** The two web tools, same arrangement, named as Claude Code names them. `WebSearch`
+ * carries this fixed target; `WebFetch` carries the URL. */
+const WEB_SEARCH_TOOL = 'WebSearch'
+const WEB_FETCH_TOOL = 'WebFetch'
 export const WEB_SEARCH_TARGET = 'search'
 
 // Re-exported so every caller has one place to import the MCP namespace from; it is
@@ -91,7 +92,7 @@ export { MCP_TOOL_PREFIX }
  * the only ungated one in it.
  */
 export function isExternalTool(name: string): boolean {
-  return name === BROWSER_TOOL || name === WEB_TOOL || name.startsWith(MCP_TOOL_PREFIX)
+  return name === BROWSER_TOOL || name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith(MCP_TOOL_PREFIX)
 }
 
 /**
@@ -103,13 +104,13 @@ function acceptsSpec(tool: string): boolean {
   // An MCP key carries none of the three: `mcp__x__y(anything)` is always a dead rule.
   if (tool.startsWith(MCP_TOOL_PREFIX)) return false
   return FILE_WRITE_TOOLS.has(tool) || EXEC_TOOLS.has(tool) || DEPLOY_TOOLS.has(tool) ||
-    tool === BROWSER_TOOL || tool === WEB_TOOL
+    tool === BROWSER_TOOL || tool === WEB_FETCH_TOOL
 }
 
 /**
  * Is this tool's spec a workspace path, as opposed to a command line or a URL? Only path
  * specs are subject to `specHasNonCanonicalSyntax`: `//` is a red flag in a path and
- * unremarkable in `run_command(git clone https://...)` or `browser(https://x)`.
+ * unremarkable in `Bash(git clone https://...)` or `browser(https://x)`.
  */
 function specIsPathShaped(tool: string): boolean {
   return !EXEC_TOOLS.has(tool) && !DEPLOY_TOOLS.has(tool) && !isExternalTool(tool)
@@ -292,7 +293,7 @@ export class PermissionEngine {
   // is a red flag for a path rule is unremarkable for a command rule.
   //
   // A rule with a spec bound to a tool that is neither `FILE_WRITE_TOOLS` nor `EXEC_TOOLS`
-  // (`read_file(docs/**)`, `git_status(x)`, ...) is a different, stronger case: those tools'
+  // (`Read(docs/**)`, `git_status(x)`, ...) is a different, stronger case: those tools'
   // `PermissionKey` never carries `command` or `paths` at all (see tools/types.ts), so
   // `ruleMatches` can never match the spec regardless of whether its syntax is canonical --
   // there is no path or command to check it against, full stop. That is reported instead
@@ -393,12 +394,11 @@ export class PermissionEngine {
 
     // Searching is free in every working mode — it reaches only the search engine, and
     // per-search approvals would train reflexive clicking, the weakest gate there is.
-    // This is the MODE default: an explicit `deny: ["web"]` (or `web(search)`) rule
-    // matched earlier in decide() and still kills it. Reads fall through to the
-    // external-tool arms below and ask per origin, exactly like the browser.
-    // (Plan mode never reaches here for `web` at all: the tool is not read-only, so a
-    // plan-mode agent is never offered it.)
-    if (key.tool === WEB_TOOL && key.target === WEB_SEARCH_TARGET && this.mode !== 'plan') {
+    // This is the MODE default: an explicit `deny: ["WebSearch"]` rule matched earlier
+    // in decide() and still kills it. Fetches fall through to the external-tool arms
+    // below and ask per origin, exactly like the browser. (Plan mode never reaches here
+    // for either web tool: neither is read-only, so a plan-mode agent is never offered them.)
+    if (key.tool === WEB_SEARCH_TOOL && this.mode !== 'plan') {
       return { verdict: 'allow', reason: 'web search reaches only the search engine', source: 'mode' }
     }
 

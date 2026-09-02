@@ -4,10 +4,34 @@ import type { SubAgentRole } from '../agent/subagent.js'
 import type { AgentMode } from '../permissions/engine.js'
 import { parseFrontmatter } from '../skills/skills.js'
 import { BOM } from '../tools/line-endings.js'
-import { toPrivateToolList } from './tool-names.js'
+import { BUILT_IN_TOOL_NAMES, CLAUDE_CODE_OLD_NAMES, MCP_TOOL_PREFIX } from '../tools/built-in-names.js'
 
 /**
- * `agents/<name>.md` — a Claude Code subagent, read as a `delegate` role
+ * A `tools:` line — `Read, Grep, Bash(git *)` or a YAML list — as tool names. The tools
+ * carry Claude Code's names, so a name is taken as written; `(pattern)` narrowing is not
+ * something an allow list here can express and is noted; a name this build has no tool
+ * for is noted and dropped.
+ */
+export function readToolList(list: string, where: string, problems: string[]): string[] {
+  const names = list.replace(/^\[|\]$/g, '').split(',').map((s) => s.trim().replace(/^["']|["']$/g, '')).filter((s) => s !== '')
+  const out = new Set<string>()
+  for (const raw of names) {
+    if (raw === '*') { out.add('*'); continue }
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)(?:\((.*)\))?$/.exec(raw)
+    if (m === null) { problems.push(`${where}: "${raw}" is not a tool name; ignored`); continue }
+    const name = CLAUDE_CODE_OLD_NAMES[m[1]!] ?? m[1]!
+    if (m[2] !== undefined) problems.push(`${where}: the pattern in "${raw}" is not applied; ${name} is allowed as a whole`)
+    if (!BUILT_IN_TOOL_NAMES.has(name) && !name.startsWith(MCP_TOOL_PREFIX)) {
+      problems.push(`${where}: "${m[1]}" is not a tool PrivateCode has; ignored`)
+      continue
+    }
+    out.add(name)
+  }
+  return [...out]
+}
+
+/**
+ * `agents/<name>.md` — a Claude Code subagent, read as a `Agent` role
  * (docs/PLUGINS-2026-09.md §4).
  *
  * The file is frontmatter and a body: `description` is what the caller sees when it picks a
@@ -39,7 +63,7 @@ function modeFor(permissionMode: string | undefined, where: string, problems: st
 
 /**
  * Reads one agent file. `prefix` namespaces the role (`plugin:agent`), as Claude Code does
- * for a plugin's agents; a standalone `.claude/agents/` file has none.
+ * for a plugin's agents.
  */
 export function parseAgentMarkdown(text: string, fileName: string, prefix: string | null, where: string, problems: string[]): SubAgentRole | null {
   const normalized = (text.startsWith(BOM) ? text.slice(1) : text).replace(/\r\n/g, '\n')
@@ -72,13 +96,13 @@ export function parseAgentMarkdown(text: string, fileName: string, prefix: strin
   const role: SubAgentRole = { name, purpose, brief, maxSteps: DEFAULT_MAX_STEPS }
   const tools = fields['tools']
   if (tools !== undefined && tools.trim() !== '') {
-    const mapped = toPrivateToolList(tools, `${where}: tools`, problems)
+    const mapped = readToolList(tools, `${where}: tools`, problems)
     if (mapped.includes('*')) { /* everything the caller has */ } else if (mapped.length > 0) role.tools = mapped
     else problems.push(`${where}: none of the tools listed exist here, so the agent gets what the caller has`)
   }
   const disallowed = fields['disallowedTools']
   if (disallowed !== undefined && disallowed.trim() !== '') {
-    const mapped = toPrivateToolList(disallowed, `${where}: disallowedTools`, problems)
+    const mapped = readToolList(disallowed, `${where}: disallowedTools`, problems)
     if (mapped.length > 0) role.disallowedTools = mapped
   }
   const mode = modeFor(fields['permissionMode'], where, problems)

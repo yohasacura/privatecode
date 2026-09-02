@@ -274,7 +274,7 @@ export function addProjectNote(
       problem:
         `none of those files could be read (${missing.join(', ')}), so there is nothing to ` +
         'tie this note to. Name each file exactly as the tools address it — the same ' +
-        'spelling read_file and search_code use, folder prefix included in a multi-folder ' +
+        'spelling Read and Grep use, folder prefix included in a multi-folder ' +
         'workspace — and only files that exist right now.',
     }
   }

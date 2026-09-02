@@ -19,19 +19,19 @@ import {
  *
  * WHY THE MODEL SEES NAMES AND NOT PATHS. Every mount is addressed as `<name>/rest/of/path`.
  * The absolute path never enters the prompt, which is shorter, keeps the layout of someone's
- * disk out of the context window, and gives permission rules a scope for free: `edit_file(api/**)`
+ * disk out of the context window, and gives permission rules a scope for free: `Edit(api/**)`
  * now means exactly what it says.
  *
  * WHY ATTACHED FOLDERS DO NOT GET A VOTE. Only the primary folder's settings, hooks,
  * formatter and verify command are ever loaded. An attached repository carrying its own
- * `.privatecode/settings.json` that grants `edit_file(**)`, or a `verify` command that runs,
+ * `.privatecode/settings.json` that grants `Edit(**)`, or a `verify` command that runs,
  * would be an escalation by reference — you pointed at a folder to read it and it reconfigured
  * the agent. Per-folder verify commands live in the primary's `workspace.json` instead.
  */
 
 /**
  * `read` folders are refused by the jail itself, above the permission engine, so no rule can
- * open them. This binds the file tools; `run_command` was never contained by the jail and
+ * open them. This binds the file tools; `Bash` was never contained by the jail and
  * still is not.
  */
 export type MountAccess = 'write' | 'read'

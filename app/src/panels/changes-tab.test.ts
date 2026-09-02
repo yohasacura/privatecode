@@ -10,9 +10,9 @@ function tool(id: number, name: string, args: string, content = 'diff body', ok 
 describe('collectChanges', () => {
   it('keeps only completed write-family calls', () => {
     const items: ChatItem[] = [
-      tool(1, 'read_file', '{"path":"a.ts"}'),
-      { kind: 'tool', id: 2, name: 'edit_file', args: '{"path":"b.ts"}', startedAtMs: 2 }, // still running
-      tool(3, 'edit_file', '{"path":"c.ts"}'),
+      tool(1, 'Read', '{"path":"a.ts"}'),
+      { kind: 'tool', id: 2, name: 'Edit', args: '{"path":"b.ts"}', startedAtMs: 2 }, // still running
+      tool(3, 'Edit', '{"path":"c.ts"}'),
       { kind: 'user', id: 4, text: 'hi' },
     ]
     expect(collectChanges(items).map((c) => c.path)).toEqual(['c.ts'])
@@ -20,9 +20,9 @@ describe('collectChanges', () => {
 
   it('collapses repeated writes to one entry, counting the revisions', () => {
     const items: ChatItem[] = [
-      tool(1, 'edit_file', '{"path":"a.ts"}', 'first'),
-      tool(2, 'edit_file', '{"path":"a.ts"}', 'second'),
-      tool(3, 'edit_file', '{"path":"a.ts"}', 'third'),
+      tool(1, 'Edit', '{"path":"a.ts"}', 'first'),
+      tool(2, 'Edit', '{"path":"a.ts"}', 'second'),
+      tool(3, 'Edit', '{"path":"a.ts"}', 'third'),
     ]
     const changes = collectChanges(items)
     expect(changes).toHaveLength(1)
@@ -33,7 +33,7 @@ describe('collectChanges', () => {
 
   it('orders newest first and keeps move_file\'s two-sided target', () => {
     const items: ChatItem[] = [
-      tool(1, 'write_file', '{"path":"old.ts"}'),
+      tool(1, 'Write', '{"path":"old.ts"}'),
       tool(2, 'move_file', '{"from":"old.ts","to":"new.ts"}'),
     ]
     const changes = collectChanges(items)
@@ -41,7 +41,7 @@ describe('collectChanges', () => {
   })
 
   it('keeps a failed write, flagged, rather than hiding it', () => {
-    const changes = collectChanges([tool(1, 'edit_file', '{"path":"a.ts"}', 'no match', false)])
+    const changes = collectChanges([tool(1, 'Edit', '{"path":"a.ts"}', 'no match', false)])
     expect(changes).toHaveLength(1)
     expect(changes[0]?.ok).toBe(false)
   })
@@ -59,7 +59,7 @@ describe('the cost of collecting them', () => {
     const items: ChatItem[] = []
     for (let i = 1; i <= 60; i++) {
       items.push({
-        kind: 'tool', id: i, name: 'write_file',
+        kind: 'tool', id: i, name: 'Write',
         args: JSON.stringify({ path: `f${i}.ts`, content: 'x'.repeat(120_000) }),
         startedAtMs: i,
         result: { ok: true, preview: 'p', content: 'wrote', display: 'wrote' },
@@ -87,12 +87,12 @@ describe('the cost of collecting them', () => {
     // transcript but a VIEWED session numbers its own from 1, and that overlap has already
     // caused one defect today. Two items sharing an id must still parse as themselves.
     const a: ChatItem = {
-      kind: 'tool', id: 7, name: 'write_file', startedAtMs: 1,
+      kind: 'tool', id: 7, name: 'Write', startedAtMs: 1,
       args: JSON.stringify({ path: 'first.ts', content: 'a' }),
       result: { ok: true, preview: 'p', content: 'wrote', display: 'wrote' },
     }
     const b: ChatItem = {
-      kind: 'tool', id: 7, name: 'write_file', startedAtMs: 2,
+      kind: 'tool', id: 7, name: 'Write', startedAtMs: 2,
       args: JSON.stringify({ path: 'second.ts', content: 'b' }),
       result: { ok: true, preview: 'p', content: 'wrote', display: 'wrote' },
     }
@@ -103,16 +103,16 @@ describe('the cost of collecting them', () => {
 
 describe('a call that never ran is not a change', () => {
   const ok = (id: number, path: string) => ({
-    kind: 'tool' as const, id, name: 'write_file', startedAtMs: id,
+    kind: 'tool' as const, id, name: 'Write', startedAtMs: id,
     args: JSON.stringify({ path, content: 'real' }),
     result: { ok: true, preview: 'p', content: 'wrote 4 lines', display: 'wrote 4 lines' },
   })
   // The exact text the loop writes for a call it stopped before executing. `Not run:` is the
   // contract; the rest of the sentence names what stopped it.
-  const NOT_RUN = 'Not run: edit_file failed earlier in this step, so the calls after it ' +
+  const NOT_RUN = 'Not run: Edit failed earlier in this step, so the calls after it ' +
                   'were left alone. Re-issue this one on a later step if it is still needed.'
   const refused = (id: number, path: string) => ({
-    kind: 'tool' as const, id, name: 'write_file', startedAtMs: id,
+    kind: 'tool' as const, id, name: 'Write', startedAtMs: id,
     args: JSON.stringify({ path, content: 'never happened' }),
     result: { ok: false, preview: 'p', content: NOT_RUN, display: NOT_RUN },
   })
@@ -135,7 +135,7 @@ describe('a call that never ran is not a change', () => {
   it('still shows a write that genuinely failed', () => {
     // "Never ran" and "ran and failed" are different, and only the first is not a change.
     const failed = {
-      kind: 'tool' as const, id: 3, name: 'write_file', startedAtMs: 3,
+      kind: 'tool' as const, id: 3, name: 'Write', startedAtMs: 3,
       args: JSON.stringify({ path: 'b.ts', content: 'x' }),
       result: { ok: false, preview: 'p', content: 'EACCES: permission denied', display: 'EACCES' },
     }
@@ -148,12 +148,12 @@ describe('a call that never ran is not a change', () => {
     // the successful state, advances its id (so a reviewed fold honestly resurfaces), and
     // carries the failure as a flag.
     const okWrite = {
-      kind: 'tool' as const, id: 1, name: 'write_file', startedAtMs: 1,
+      kind: 'tool' as const, id: 1, name: 'Write', startedAtMs: 1,
       args: JSON.stringify({ path: 'a.ts', content: 'good' }),
       result: { ok: true, preview: 'p', content: '--- a.ts\n+++ a.ts\n+good', display: 'ok' },
     }
     const failedEdit = {
-      kind: 'tool' as const, id: 4, name: 'edit_file', startedAtMs: 4,
+      kind: 'tool' as const, id: 4, name: 'Edit', startedAtMs: 4,
       args: JSON.stringify({ path: 'a.ts' }),
       result: { ok: false, preview: 'p', content: 'no match for the search text', display: 'no match' },
     }
@@ -176,7 +176,7 @@ describe('a call that never ran is not a change', () => {
 
 describe('reviewed changes fold away, honestly', () => {
   const entry = (id: number, path: string): import('./changes-tab').ChangeEntry => ({
-    id, tool: 'edit_file', path, ok: true, content: 'diff', revisions: 1, openPath: path,
+    id, tool: 'Edit', path, ok: true, content: 'diff', revisions: 1, openPath: path,
     restorePaths: [path],
   })
 
@@ -208,7 +208,7 @@ describe('grouping the change list', () => {
     // `new.ts`, and the half that says where the file came from simply gone.
     const entries: ChangeEntry[] = [
       { id: 2, tool: 'move_file', path: 'src/old.ts → src/lib/new.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/new.ts', restorePaths: ['src/old.ts', 'src/lib/new.ts'] },
-      { id: 1, tool: 'write_file', path: 'src/lib/other.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/other.ts', restorePaths: ['src/lib/other.ts'] },
+      { id: 1, tool: 'Write', path: 'src/lib/other.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/other.ts', restorePaths: ['src/lib/other.ts'] },
     ]
     const tree = buildPathTree(entries, (e) => e.openPath)
     // One compressed chain: everything lives under src/lib, one row for the whole prefix.

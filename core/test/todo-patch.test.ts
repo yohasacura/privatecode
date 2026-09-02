@@ -6,7 +6,7 @@ import type { TodoItem } from '../src/interaction.js'
 /**
  * Ticking a box should cost about as much as a tick.
  *
- * `todo_write` had one shape: send the whole list. Writing a plan that way is natural —
+ * `TodoWrite` had one shape: send the whole list. Writing a plan that way is natural —
  * you are writing all of it anyway. Updating it that way means re-emitting every step with
  * its text and its done_when, verbatim, or the plan silently mutates: a thousand-odd
  * characters of JSON, ten to twenty seconds of generation on this machine, to record one

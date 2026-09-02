@@ -624,7 +624,7 @@ test('an explicit maxTokensPerStep still wins over the default', async () => {
 // The tool context the Agent hands to tools
 // ---------------------------------------------------------------------------
 
-// search_code already wires `cancelSignal: ctx.signal`, and find_files' traversal is
+// Grep already wires `cancelSignal: ctx.signal`, and Glob' traversal is
 // unbounded, but the Agent passed `this.opts.context` through untouched — so `ctx.signal`
 // was undefined for every tool call ever made and that whole branch was dead code. A
 // 30 s ripgrep and an unbounded walk both ignored the user's cancel.
@@ -795,7 +795,7 @@ test('every tool call carried forward is answered, and every one of them ran', a
 })
 
 test('the calls of one step run in the order the model wrote them', async () => {
-  // Not incidental: a model that proposes `write_file config.ts` then `run_command "npm
+  // Not incidental: a model that proposes `Write config.ts` then `Bash "npm
   // test"` means those in that order, and the results are fed back as one block with no
   // ordering information of their own beyond their position.
   const order: string[] = []
@@ -1192,7 +1192,7 @@ test('every call of a step is announced, and never two calls at once', async () 
   // Announced: a card opens in the window on the streamed arguments and closes on
   // `tool.call`. A call that produced no `onToolCall` leaves that row pulsing for the life of
   // the session, and the next call of the same name inherits it — taking its arguments and
-  // then its result. Seen in a live run as `-> find_files -> find_files -> find_files`
+  // then its result. Seen in a live run as `-> Glob -> Glob -> Glob`
   // against one `(ok)`.
   //
   // Strictly sequential: `Session.lastToolArgs` pairs a call's arguments with its result
@@ -1231,7 +1231,7 @@ test('every call of a step is announced, and never two calls at once', async () 
 //
 // The real tools are registered here rather than stand-ins, because the whole question is
 // which field of THEIR `PermissionKey` carries the thing being acted on: `command` for
-// run_command, `paths` for edit_file, and `target` for nothing the user declines often.
+// Bash, `paths` for Edit, and `target` for nothing the user declines often.
 
 /** Declines every approval, so a turn becomes a sequence of denials. */
 const declineEverything: InteractionPort = {
@@ -1273,12 +1273,12 @@ const resultContents = (rec: ReturnType<typeof recorder>): string[] =>
 test('declining two unrelated commands is not reported to the model as declining one thing twice', async () => {
   // The escalation tells the model to stop proposing variants of a change the user does not
   // want — an instruction to abandon the work. Derived from two decisions about entirely
-  // different commands it is simply wrong, and `run_command` puts its command line in
+  // different commands it is simply wrong, and `Bash` puts its command line in
   // `command`, never in `target`, so counting on `target` alone collapsed every command in
   // the turn into one bucket.
   const fake = await startFakeServer(callsThenDone([
-    ['run_command', { command: 'npm install -g something' }],
-    ['run_command', { command: 'git clean -fdx' }],
+    ['Bash', { command: 'npm install -g something' }],
+    ['Bash', { command: 'git clean -fdx' }],
   ]))
   stop = fake.close
   const rec = recorder()
@@ -1292,10 +1292,10 @@ test('declining two unrelated commands is not reported to the model as declining
 })
 
 test('declining two edits to unrelated files is not reported as declining one thing twice', async () => {
-  // The same collapse from the file side: edit_file keys on `paths`.
+  // The same collapse from the file side: Edit keys on `paths`.
   const fake = await startFakeServer(callsThenDone([
-    ['edit_file', { path: 'src/one.ts', search_text: 'a', replace_text: 'b' }],
-    ['edit_file', { path: 'src/two.ts', search_text: 'a', replace_text: 'b' }],
+    ['Edit', { path: 'src/one.ts', search_text: 'a', replace_text: 'b' }],
+    ['Edit', { path: 'src/two.ts', search_text: 'a', replace_text: 'b' }],
   ]))
   stop = fake.close
   const rec = recorder()
@@ -1311,8 +1311,8 @@ test('declining the same file twice still escalates, however the model spelled t
   // grouping that took the spelling literally would let variant number four through on a
   // capital letter.
   const fake = await startFakeServer(callsThenDone([
-    ['edit_file', { path: 'src/App.ts', search_text: 'a', replace_text: 'b' }],
-    ['edit_file', { path: 'src\\app.ts', search_text: 'a', replace_text: 'c' }],
+    ['Edit', { path: 'src/App.ts', search_text: 'a', replace_text: 'b' }],
+    ['Edit', { path: 'src\\app.ts', search_text: 'a', replace_text: 'c' }],
   ]))
   stop = fake.close
   const rec = recorder()
@@ -1326,8 +1326,8 @@ test('declining the same file twice still escalates, however the model spelled t
 
 test('declining the same command twice still escalates, whatever whitespace it arrived in', async () => {
   const fake = await startFakeServer(callsThenDone([
-    ['run_command', { command: 'npm install -g something' }],
-    ['run_command', { command: 'npm  install   -g something' }],
+    ['Bash', { command: 'npm install -g something' }],
+    ['Bash', { command: 'npm  install   -g something' }],
   ]))
   stop = fake.close
   const rec = recorder()

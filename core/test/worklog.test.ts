@@ -147,11 +147,11 @@ describe('summarizeDiff', () => {
 })
 
 describe('commandsFrom', () => {
-  test('reads the exit code out of what run_command actually returned', () => {
+  test('reads the exit code out of what Bash actually returned', () => {
     const records = commandsFrom([
-      { name: 'run_command', args: '{"command":"npm test"}', content: 'exit 0 in 1.2 s\nok', ok: true },
-      { name: 'read_file', args: '{"path":"a.ts"}', content: 'body', ok: true },
-      { name: 'run_command', args: '{"command":"npm run build"}', content: 'exit 2 in 0.4 s\nboom', ok: false },
+      { name: 'Bash', args: '{"command":"npm test"}', content: 'exit 0 in 1.2 s\nok', ok: true },
+      { name: 'Read', args: '{"path":"a.ts"}', content: 'body', ok: true },
+      { name: 'Bash', args: '{"command":"npm run build"}', content: 'exit 2 in 0.4 s\nboom', ok: false },
     ])
     expect(records).toEqual([
       { command: 'npm test', exit: 0, ok: true, ran: true },
@@ -165,7 +165,7 @@ describe('commandsFrom', () => {
     // the one honest signal available here.
     const records = commandsFrom([
       {
-        name: 'run_command', args: '{"command":"npx tsc --noEmit"}',
+        name: 'Bash', args: '{"command":"npx tsc --noEmit"}',
         content: 'Not run: nobody is available to approve this, so it has been queued for the user.',
         ok: false,
       },
@@ -176,12 +176,12 @@ describe('commandsFrom', () => {
   })
 
   test('a call whose arguments never parsed is not reported as having run', () => {
-    expect(commandsFrom([{ name: 'run_command', args: '{oops', content: 'x', ok: false }])).toEqual([])
+    expect(commandsFrom([{ name: 'Bash', args: '{oops', content: 'x', ok: false }])).toEqual([])
   })
 
   test('a command with no exit line is reported by outcome instead of inventing one', () => {
     const records = commandsFrom([
-      { name: 'run_command', args: '{"command":"sleep"}', content: 'Command cancelled by the user', ok: false },
+      { name: 'Bash', args: '{"command":"sleep"}', content: 'Command cancelled by the user', ok: false },
     ])
     expect(records).toEqual([{ command: 'sleep', ok: false, ran: true }])
   })

@@ -186,10 +186,11 @@ export function splitUnquotedAnd(command: string): string[] {
 }
 
 export const runCommandTool: Tool<RunCommandArgs> = {
-  name: 'run_command',
+  name: 'Bash',
   readOnly: false,
   description:
-    'Run one or more commands in the workspace, in order, stopping at the first failure, and ' +
+    'Run one or more commands in the workspace — Windows PowerShell 5.1, whatever the name ' +
+    'says — in order, stopping at the first failure, and ' +
     'return their combined output and exit code. Exit code 0 is evidence, not proof — verify ' +
     'with a follow-up check when it matters (some installers return 0 while work continues ' +
     'in the background). Long-running processes (dev servers, watchers) belong in ' +
@@ -285,7 +286,7 @@ export const runCommandTool: Tool<RunCommandArgs> = {
     // `permissionKey` once per tool call and the whole approval path — the card, "always
     // allow", session rules — is built on that one answer. Changing it is a bigger change
     // than this, and doing it here would have smuggled it in behind a fix for `&&`.
-    return { tool: 'run_command', command: args.commands.join('; ') }
+    return { tool: 'Bash', command: args.commands.join('; ') }
   },
   approvalPreview(args): ApprovalPreview {
     const oneLine = args.commands.join('; ').replace(/\s+/g, ' ').trim()

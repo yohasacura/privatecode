@@ -32,12 +32,12 @@ export type TranscriptUnit =
   | { kind: 'single'; item: ChatItem }
   | { kind: 'group'; id: number; items: ChatItem[]; summary: GroupSummary; live: boolean }
 
-const READ_TOOLS = new Set(['read_file', 'list_dir', 'find_files', 'search_code', 'symbol_outline', 'csharp_nav', 'git_status', 'sql_query', 'web_fetch'])
-const EDIT_TOOLS = new Set(['edit_file', 'write_file', 'delete_file', 'move_file', 'apply_patch'])
-const COMMAND_TOOLS = new Set(['run_command', 'run_background', 'terminal'])
+const READ_TOOLS = new Set(['Read', 'list_dir', 'Glob', 'Grep', 'symbol_outline', 'csharp_nav', 'git_status', 'sql_query', 'web_fetch'])
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'delete_file', 'move_file', 'apply_patch'])
+const COMMAND_TOOLS = new Set(['Bash', 'run_background', 'terminal'])
 
 function verb(name: string): string {
-  if (READ_TOOLS.has(name)) return name === 'search_code' ? 'Searching' : name === 'list_dir' || name === 'find_files' ? 'Looking through' : 'Reading'
+  if (READ_TOOLS.has(name)) return name === 'Grep' ? 'Searching' : name === 'list_dir' || name === 'Glob' ? 'Looking through' : 'Reading'
   if (EDIT_TOOLS.has(name)) return 'Editing'
   if (COMMAND_TOOLS.has(name)) return 'Running'
   return 'Using'

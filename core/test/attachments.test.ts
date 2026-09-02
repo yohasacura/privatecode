@@ -40,7 +40,7 @@ describe('attaching files to a message', () => {
     expect(text.endsWith('rename it')).toBe(true)
   })
 
-  test('contents arrive in read_file\'s own numbered format', async () => {
+  test('contents arrive in Read\'s own numbered format', async () => {
     write('src/a.ts', 'one\ntwo')
     const { text } = await attachFiles(ws, ['src/a.ts'], 'q')
     expect(text).toContain('1\tone')
@@ -58,7 +58,7 @@ describe('attaching files to a message', () => {
     const { text, notes } = await attachFiles(ws, ['src/big.ts'], 'q')
     expect(notes).toHaveLength(1)
     expect(notes[0]).toContain('clipped')
-    expect(notes[0]).toContain('read_file')
+    expect(notes[0]).toContain('Read')
     // The model is told inside the block itself, not only in the UI.
     expect(text).toContain('clipped')
   })
@@ -107,7 +107,7 @@ describe('attaching a folder', () => {
 
     expect(r.text).toContain('src/a.ts')
     expect(r.text).toContain('src/deep/b.ts')
-    // The whole point of a listing: the bodies stay on disk until read_file asks for one.
+    // The whole point of a listing: the bodies stay on disk until Read asks for one.
     expect(r.text).not.toContain('SHOULD-NOT-APPEAR-VERBATIM')
     expect(r.text).toContain('what is in there?')
     expect(r.notes.join(' ')).toContain('2 files')

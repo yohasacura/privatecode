@@ -82,7 +82,7 @@ describe('noteFor', () => {
   function change(id: number): ChangeEntry {
     return {
       id,
-      tool: 'edit_file',
+      tool: 'Edit',
       path: 'src/a.ts',
       ok: true,
       content: '--- src/a.ts\n+++ src/a.ts\n@@ line 1 @@\n+new',

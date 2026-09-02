@@ -195,7 +195,7 @@ export interface SendParams {
   text: string
   /**
    * Workspace-relative paths the user attached with `@`. Read host-side and placed before
-   * the text, so the model does not spend a step on a `read_file` for a path the person
+   * the text, so the model does not spend a step on a `Read` for a path the person
    * already knew. Budgeted — see `attachFiles` — and every path still goes through the
    * workspace jail, because protocol params are not trusted just because a picker produced
    * them.
@@ -332,7 +332,7 @@ export interface QuestionReplyParams { requestId: string; answer: string }
 export type QuestionReplyResult = Empty
 
 /** Fuzzy file lookup for the composer's `@` picker and the command palette. Not the model's
- * `find_files`, which takes a glob: a person typing `@stat` is half-remembering a name. */
+ * `Glob`, which takes a glob: a person typing `@stat` is half-remembering a name. */
 export interface FsFindParams { query: string; limit?: number }
 export interface FsFindResult {
   /**
@@ -829,7 +829,7 @@ export interface ApprovalRequestEvent extends ApprovalRequest { requestId: strin
  * `question.reply`. */
 export interface QuestionRequestEvent extends UserQuestion { requestId: string }
 
-/** A running tool's live output chunk (run_command's stdout/stderr as it arrives).
+/** A running tool's live output chunk (Bash's stdout/stderr as it arrives).
  * Display-only: the tool.result that follows carries the complete record. */
 export interface ToolOutputEvent { name: string; text: string }
 
@@ -1060,7 +1060,7 @@ export type DecisionsResolveResult = Empty
  */
 export type PermissionsListParams = Empty
 export interface PermissionRuleView {
-  /** The rule as written, e.g. `run_command(npm test:*)` or `edit_file(src/**)`. */
+  /** The rule as written, e.g. `Bash(npm test:*)` or `Edit(src/**)`. */
   rule: string
   list: 'allow' | 'ask' | 'deny'
 }
@@ -1114,20 +1114,21 @@ export interface PermissionsAddResult { problem: string | null }
 export type SkillsListParams = Empty
 export interface SkillView {
   name: string
-  scope: 'user' | 'project' | 'plugin'
+  scope: 'user' | 'project' | 'plugin' | 'bundled'
   /** The plugin it came from, when `scope` is `plugin`. */
   plugin?: string
   description: string
   /** Its SKILL.md, shown so the edit is never to a mystery location. */
   path: string
-  /** Files bundled beside it, which `use_skill` can be asked for by name. */
+  /** Files bundled beside it, which `Skill` can be asked for by name. */
   files: string[]
 }
 export interface SkillsListResult {
   skills: SkillView[]
   problems: string[]
-  /** The two folders skills are read from, so an empty list can say where to put one. */
-  dirs: { scope: 'user' | 'project'; path: string }[]
+  /** The folders skills are read from, so an empty list can say where to put one. The
+   * bundled folder ships with the app and is listed so it can be found, not edited. */
+  dirs: { scope: 'user' | 'project' | 'bundled'; path: string }[]
 }
 
 /**

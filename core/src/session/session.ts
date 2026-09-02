@@ -163,7 +163,7 @@ export interface CompactionEvent {
  *
  *   contract   10–14 s   premises  12–13 s   lenses  15–17 s   acceptance  24–25 s
  *
- * plus two or three `todo_write` steps the plan nudges provoke — about a minute on top of a
+ * plus two or three `TodoWrite` steps the plan nudges provoke — about a minute on top of a
  * task whose actual work took fifty seconds. The two turns measured needed none of it: every
  * premise held, the lenses asked nothing worth asking, the audit affirmed everything. That is
  * the design working, and it is also a minute.
@@ -250,7 +250,7 @@ export interface SessionOptions {
   /**
    * The skills this workspace offers, ALREADY LOADED by the host — same discipline as
    * `memory` and `engine`: the Session is handed ready-made state rather than reading files
-   * itself. Its `catalogue` goes in the system message; the list itself reaches `use_skill`
+   * itself. Its `catalogue` goes in the system message; the list itself reaches `Skill`
    * through the tool context.
    */
   /** What earlier sessions learned, ALREADY LOADED and already re-checked against the code
@@ -291,12 +291,12 @@ export interface SessionOptions {
    */
   hookEngine?: HookEngine
   /**
-   * `delegate` roles besides the built-in three: the agents enabled plugins ship, and the
+   * `Agent` roles besides the built-in three: the agents enabled plugins ship, and the
    * `.claude/agents/` files, already read by the host (`plugins/agents.ts`). The tool the
    * registry offers lists them; this is what `runWorker` resolves a name against.
    */
   roles?: readonly SubAgentRole[]
-  /** Folders prepended to PATH for `run_command`: the `bin/` of every enabled plugin. */
+  /** Folders prepended to PATH for `Bash`: the `bin/` of every enabled plugin. */
   extraPath?: readonly string[]
   /**
    * The project's own check, run after any turn that wrote something. Absent means the
@@ -397,8 +397,8 @@ export interface SessionOptions {
 /** What counts as changing the workspace, for `turnFootprint`. Mirrors the permission
  * engine's own write family; restated here rather than imported so a change to the gate's
  * membership is a deliberate decision in both places. */
-const WRITE_TOOLS: ReadonlySet<string> = new Set(['edit_file', 'write_file', 'move_file', 'delete_file'])
-const COMMAND_TOOLS: ReadonlySet<string> = new Set(['run_command', 'background_task'])
+const WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'move_file', 'delete_file'])
+const COMMAND_TOOLS: ReadonlySet<string> = new Set(['Bash', 'background_task'])
 
 const PLAN_MODE_NOTE = '(mode is now plan: investigate and propose; do not edit)'
 
@@ -525,7 +525,7 @@ const SLOT_SAVE_GROWTH_TOKENS = 20_000
  * stretch of work, not a single edit — the note must stay rare enough to be read. */
 const UPKEEP_WRITES = 3
 
-/** The plan, numbered the way `todo_write` numbers it, so the indices the model is asked to
+/** The plan, numbered the way `TodoWrite` numbers it, so the indices the model is asked to
  * send back are the ones sitting in front of it. Information in the prefix is the one channel
  * this model is measured to follow; an instruction to "keep the plan current" is not. */
 function renderPlanLines(todos: readonly TodoItem[]): string {
@@ -550,12 +550,12 @@ const MAX_ACCEPTANCE_ROUNDS = 2
  * What the fresh-context reviewer may call, named once.
  *
  * Named explicitly rather than left to plan mode's default, which is the registry's WHOLE
- * read-only set -- that set includes `database` and `use_skill`, and the reviewer's context
+ * read-only set -- that set includes `database` and `Skill`, and the reviewer's context
  * deliberately carries neither, so both would answer with a confident false statement about
  * the workspace that it would then reason from. Shared with `reviewVerdict` so the verdict
  * call sends the same array the reading turn did and stays a warm append.
  */
-const REVIEWER_TOOLS = ['read_file', 'search_code', 'list_dir', 'find_files', 'symbol_outline'] as const
+const REVIEWER_TOOLS = ['Read', 'Grep', 'list_dir', 'Glob', 'symbol_outline'] as const
 
 /** How far the independent reader may look before it must deliver a verdict. Enough to open
  * the files the diff touched and follow one thread out of them; past that it is re-reading
@@ -600,7 +600,7 @@ const CONTEXT_FILL_MARKS = [0.6, 0.75, 0.85] as const
 /** The only tools the work log's "Ran" line is built from — `commandsFrom` drops everything
  * else. Kept beside the capture rather than only inside the formatter, because the point is
  * to not RETAIN what will be discarded. */
-const LOGGED_TOOLS = new Set(['run_command', 'background_task'])
+const LOGGED_TOOLS = new Set(['Bash', 'background_task'])
 
 /**
  * Prefill cost and the ceiling on a cold wait both live in `loop.ts` now.
@@ -749,7 +749,7 @@ export class Session {
   private readonly memoryText: string | undefined
   /** The skills catalogue, frozen the same way and for the same reason as `memoryText`.
    * Note the asymmetry this creates deliberately: the catalogue survives a compaction swap
-   * unchanged, while a skill's BODY is re-read from disk on every `use_skill` call. */
+   * unchanged, while a skill's BODY is re-read from disk on every `Skill` call. */
   private readonly skillsText: string | undefined
   /** Frozen like the rest of message 0: a note recorded this session lands in the next. */
   private readonly notesText: string | undefined
@@ -998,7 +998,7 @@ export class Session {
   }
 
   /**
-   * A successful `run_command` of the project's own verify command counts as the check.
+   * A successful `Bash` of the project's own verify command counts as the check.
    *
    * Watched live: the model habitually self-checks — every write cycle ended with it
    * running exactly the configured command, after which the write-boundary check ran the
@@ -1015,7 +1015,7 @@ export class Session {
    */
   private noteModelRanVerify(name: string, argsJson: string | undefined): void {
     const command = this.opts.verify?.command
-    if (name !== 'run_command' || command === undefined) return
+    if (name !== 'Bash' || command === undefined) return
     if (this.opts.verifyFolders !== undefined && Object.keys(this.opts.verifyFolders).length > 0) return
     let args: { command?: unknown; cwd?: unknown }
     try {
@@ -1028,7 +1028,7 @@ export class Session {
     const norm = (c: string): string => c.trim().replace(/\s+/g, ' ').toLowerCase()
     if (norm(args.command) !== norm(command)) return
     this.writesAtLastVerify = this.writeCount
-    // The model ran the project's own check itself, and `run_command` carries no folder — so
+    // The model ran the project's own check itself, and `Bash` carries no folder — so
     // every folder's slot is cleared rather than one guessed at. Being wrong here costs one
     // re-run of a check, which is the direction this has always erred in.
     this.lastVerifyFingerprint.clear()
@@ -1418,7 +1418,7 @@ export class Session {
   /**
    * One reviewer tool call, in the words a person would use for it.
    *
-   * The raw call is `search_code {"pattern":"applyCompactionSwap","max_results":40}`, which
+   * The raw call is `Grep {"pattern":"applyCompactionSwap","max_results":40}`, which
    * is fine in a tool row and wrong in a one-line status. What matters while waiting is
    * WHICH FILE or WHICH TERM, so that is all this keeps — and it keeps it short, because a
    * status line that wraps pushes the composer around while you are trying to type in it.
@@ -1436,12 +1436,12 @@ export class Session {
     const clip = (s: string): string => (s.length > 60 ? `${s.slice(0, 57)}...` : s)
 
     const path = of('path') ?? of('file')
-    if (name === 'read_file' && path !== undefined) return `reading ${clip(path)}`
-    if (name === 'search_code') {
+    if (name === 'Read' && path !== undefined) return `reading ${clip(path)}`
+    if (name === 'Grep') {
       const pattern = of('pattern')
       return pattern === undefined ? 'searching' : `searching for ${clip(pattern)}`
     }
-    if (name === 'find_files') {
+    if (name === 'Glob') {
       const glob = of('glob')
       return glob === undefined ? 'looking for files' : `looking for ${clip(glob)}`
     }
@@ -1480,7 +1480,7 @@ export class Session {
       transcript,
       mode: 'plan',
       // Named explicitly rather than left to plan mode's default, which is the registry's
-      // WHOLE read-only set. That set includes `database` and `use_skill`, and the context
+      // WHOLE read-only set. That set includes `database` and `Skill`, and the context
       // above deliberately carries neither — so both were offered to the reviewer and both
       // answer with a confident false statement about the workspace ("no database is
       // configured") that it then reasons from. Plan mode still narrows whatever is passed,
@@ -1548,9 +1548,9 @@ export class Session {
    * Every diff this turn's WRITES produced, in order.
    *
    * Two sources, both from the turn's slice of the transcript: edit-family tool RESULTS
-   * that begin with the diff header (`startsWith`, never `includes` — a read_file result
+   * that begin with the diff header (`startsWith`, never `includes` — a Read result
    * can EMBED a change-notice diff for edits this turn did not make, and reviewing those
-   * judged someone else's changes), and `write_file` CALL arguments — a created file's
+   * judged someone else's changes), and `Write` CALL arguments — a created file's
    * result line carries no diff at all, and a turn of pure creation is the biggest change
    * a review can look at.
    */
@@ -1562,7 +1562,7 @@ export class Session {
         continue
       }
       for (const call of m.tool_calls ?? []) {
-        if (call.function.name !== 'write_file') continue
+        if (call.function.name !== 'Write') continue
         try {
           const args = JSON.parse(call.function.arguments) as { path?: unknown; content?: unknown }
           if (typeof args.path === 'string' && typeof args.content === 'string') {
@@ -2527,7 +2527,7 @@ export class Session {
       host?.onStepDone?.(info)
     }
     // The work log's "Ran" line is built from what the tools ACTUALLY returned, tapped here
-    // rather than reconstructed from the transcript afterwards: run_command's first result
+    // rather than reconstructed from the transcript afterwards: Bash's first result
     // line carries the real exit code, and the alternative -- trusting the model's prose
     // about whether the tests passed -- is exactly what the log exists not to do.
     const captureToolResult = (name: string, result: { ok: boolean; content: string }, callId: string): void => {
@@ -2720,7 +2720,7 @@ export class Session {
           this.meta.contract = contract
           this.opts.store?.saveMeta(this.meta)
           // The plan appears WITH the contract, every time — not when the model feels
-          // like calling todo_write (measured: it almost never does unprompted).
+          // like calling TodoWrite (measured: it almost never does unprompted).
           await this.seedTodos(contract, signal)
           // Folded INTO the user message, not appended beside it: two adjacent user
           // messages deviate from the chat template (the setMode note records the same
@@ -2992,7 +2992,7 @@ export class Session {
     // command, an answer), on the argument that a multi-file change is legitimately red
     // halfway through and showing that on the second edit of six invites the model to "fix"
     // unfinished work. Measured against what the model actually does with that step
-    // (spike/speed-baseline-probe.mts, and the 137 `run_command` calls in the recorded
+    // (spike/speed-baseline-probe.mts, and the 137 `Bash` calls in the recorded
     // sessions): the step after an edit IS the model running `dotnet build` on its own work.
     // So the deferred check never arrived before the model had spent a step — five seconds of
     // generation and a build — doing it by hand, and in a copy where its own command could
@@ -3127,14 +3127,14 @@ export class Session {
         `[Context is about ${Math.round(mark * 100)}% full. When it fills, the earlier part ` +
         'of this conversation is replaced by a summary — anything not written down is lost. ' +
         'Now is the moment to record what you have worked out with `remember`, and to bring ' +
-        '`todo_write` up to date so the plan survives. Then carry on.]',
+        '`TodoWrite` up to date so the plan survives. Then carry on.]',
     })
   }
 
   /**
    * Narrows the frame to the plan item in progress, by APPEND and only on change.
    *
-   * On a long multi-item turn the plan sits in one `todo_write` result far up the
+   * On a long multi-item turn the plan sits in one `TodoWrite` result far up the
    * transcript; small models do measurably better when the current item is IN FRONT of
    * them rather than forty steps behind. The harness does the pointing — the one lesson
    * this project has measured over and over is that asking the model to keep referring
@@ -3149,7 +3149,7 @@ export class Session {
     // outlives tasks, and a new small request re-pointed at the previous task's stale
     // plan read as an instruction to resume it.
     if (this.meta.contract === undefined || this.meta.contract.satisfied === true) return
-    // No nudges in `fast`: each one the model answers costs a `todo_write` step.
+    // No nudges in `fast`: each one the model answers costs a `TodoWrite` step.
     if (this.gateProfile === 'fast') return
     const todos = this.opts.toolset.todos?.list() ?? []
     if (todos.length < 2) return // a one-item plan IS its own focus
@@ -3168,13 +3168,13 @@ export class Session {
         `[Plan focus — step ${position} of ${todos.length}: ${current.text}` +
         (current.done_when !== undefined ? ` (done when: ${current.done_when})` : '') +
         `. Open: ${open}. Finish this one before the next, and when it is done say so with ` +
-        `\`todo_write\` \`complete: [${position}]\` — that is the whole call.]`,
+        `\`TodoWrite\` \`complete: [${position}]\` — that is the whole call.]`,
     })
   }
 
   /**
    * The plan appears WITH the contract — piece one of the todo discipline. The model
-   * works measurably better with a plan in front of it, and calling todo_write on its
+   * works measurably better with a plan in front of it, and calling TodoWrite on its
    * own is exactly the kind of ask that measured 0/703 from the system prompt — so the
    * harness writes the first draft itself. For a small task the criteria ARE the plan
    * (checkable by construction, zero extra requests); a big one — many criteria, or
@@ -3332,14 +3332,14 @@ export class Session {
       content:
         `[Plan upkeep: ${writes} files written since the plan was last updated.\n` +
         `${renderPlanLines(store.list())}\n` +
-        'Bring it up to date now — `todo_write` with `complete: [n]` for the steps that are ' +
+        'Bring it up to date now — `TodoWrite` with `complete: [n]` for the steps that are ' +
         'finished, `start: n` for the one you are on, `add` for anything this work ' +
         'uncovered. Send only what changed; do not re-send the list. ' +
         'The plan is what survives compaction; a stale plan is lost work.]',
     })
   }
 
-  /** Re-arm both upkeep watermarks to "now": after seeding, and after any todo_write. */
+  /** Re-arm both upkeep watermarks to "now": after seeding, and after any TodoWrite. */
   private syncUpkeepMarkers(): void {
     this.lastTodoVersion = this.opts.toolset.todos?.version ?? 0
     this.writesAtLastUpkeep = this.writeCount
@@ -3484,7 +3484,7 @@ export class Session {
           ? { folders: this.workspace.mounts.map((m) => ({ name: m.name, access: m.access })) }
           : {}),
         // Same computation the Agent makes: the paragraph must describe a call the model
-        // can make in THIS mode, and plan mode filters `delegate` (not read-only) out.
+        // can make in THIS mode, and plan mode filters `Agent` (not read-only) out.
         delegation: this.delegationAvailable(),
       }),
     }, ...messages]
@@ -3817,7 +3817,7 @@ export class Session {
           ? { folders: this.workspace.mounts.map((m) => ({ name: m.name, access: m.access })) }
           : {}),
         // Same computation the Agent makes: the paragraph must describe a call the model
-        // can make in THIS mode, and plan mode filters `delegate` (not read-only) out.
+        // can make in THIS mode, and plan mode filters `Agent` (not read-only) out.
         delegation: this.delegationAvailable(),
       }),
     })
@@ -3965,7 +3965,7 @@ export class Session {
     // messages: the ack is skipped when the tail already opens on an assistant message,
     // which is the ordinary shape of a mid-turn boundary (see `buildSwapTranscript`). In
     // that case the first kept message sits at index 2, and clamping to 3 dropped it — so
-    // when it carried the turn's `write_file` calls, the created-file bodies (the only
+    // when it carried the turn's `Write` calls, the created-file bodies (the only
     // source `turnDiffText` has for a new file) were silently missing from the diff review.
     const tailStart = next.messages().length - keptMessages
     this.turnStartIndex = Math.min(this.turnStartIndex, tailStart)
@@ -4097,7 +4097,7 @@ export class Session {
    * characters (`RESULT_PREFIX`). An edit below that point, whether the model made it or the
    * owner made it in another editor, leaves the compared window identical, so a file that had
    * really changed read as "the same answer again" and the third read was refused. Anything
-   * that returns a large result is affected the same way; `read_file` is simply where it
+   * that returns a large result is affected the same way; `Read` is simply where it
    * shows, because re-reading is the correct move after any change.
    *
    * The narrow fix, if this is ever revisited: compare a hash of the WHOLE result rather than
@@ -4407,13 +4407,13 @@ export class Session {
    *
    * ACTIONS are relabelled, not hidden. A worker reading eight files is the most useful
    * thing on screen during a delegation, and the only problem with those rows was the name
-   * on them. They now carry the role, and the window indents them under the `delegate` call
+   * on them. They now carry the role, and the window indents them under the `Agent` call
    * that caused them.
    *
    * SPEECH is dropped. A worker's reasoning and its prose were streamed into the assistant
    * message the MAIN model is writing — not mislabelled but merged, so the two were one
    * paragraph with no seam. Nothing is lost by dropping it: a worker's conclusion is the
-   * `delegate` tool's result, which lands in the transcript a moment later and is the thing
+   * `Agent` tool's result, which lands in the transcript a moment later and is the thing
    * the main model actually reads.
    */
   private workerEvents(role: string, events: AgentEvents): AgentEvents {
@@ -4463,10 +4463,10 @@ export class Session {
     return outcome
   }
 
-  /** Whether the model in this session's mode is actually offered `delegate`. */
+  /** Whether the model in this session's mode is actually offered `Agent`. */
   private delegationAvailable(): boolean {
     if (this.meta.mode === 'plan') return false
-    return this.opts.toolset.registry.schemas().some((t) => t.function.name === 'delegate')
+    return this.opts.toolset.registry.schemas().some((t) => t.function.name === 'Agent')
   }
 
   private buildAgent(signal?: AbortSignal, sampling?: import('../llama/types.js').Sampling): Agent {
@@ -4487,12 +4487,12 @@ export class Session {
     // The connection string, not a connection: the helper opens one on first use, so a
     // workspace whose server is asleep still starts a session and only pays when asked.
     if (this.opts.database) context.database = this.opts.database
-    // The LIST, not the catalogue text: `use_skill` resolves a name to a folder and reads
+    // The LIST, not the catalogue text: `Skill` resolves a name to a folder and reads
     // the body from disk itself.
     if (this.opts.skills && this.opts.skills.skills.length > 0) context.skills = this.opts.skills
     if (this.opts.extraPath !== undefined && this.opts.extraPath.length > 0) context.extraPath = this.opts.extraPath
     // The queueing wrapper, when this is an unattended run. Both the tool context (which
-    // `ask_user` reads) and the agent's own gate get the SAME port: a question that parks in
+    // `AskUserQuestion` reads) and the agent's own gate get the SAME port: a question that parks in
     // one place and blocks in the other would stall the run on whichever path came first.
     const port = this.interactionPort()
     if (port) context.interaction = port

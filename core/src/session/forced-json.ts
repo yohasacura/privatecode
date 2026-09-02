@@ -18,8 +18,8 @@ import type { ChatMessage, ToolSchema } from '../llama/types.js'
  * Two obvious alternatives were tried against this build and both fail:
  *
  *   - a NAMED `tool_choice` (`{type:'function',function:{name}}`) is accepted and then
- *     ignored: offered read_file/search_code/report_acceptance and told to call the last, it
- *     called read_file 5 times out of 5 when the conversation invited a read
+ *     ignored: offered Read/Grep/report_acceptance and told to call the last, it
+ *     called Read 5 times out of 5 when the conversation invited a read
  *     (`spike/tool-choice-probe.mts`). Shipping that would have left every gate quietly
  *     receiving the wrong call and returning null — the gates would stop running while
  *     looking perfectly healthy.

@@ -93,9 +93,9 @@ async function shapeOf(
 
   parts.push(
     '',
-    'To read a part of it: read_file with start_line and end_line — the line numbers ' +
+    'To read a part of it: Read with start_line and end_line — the line numbers ' +
     (outlined ? 'above are where each declaration starts. ' : 'in the head above are a start. ') +
-    'To find something by name: search_code with path=' + path + '. ' +
+    'To find something by name: Grep with path=' + path + '. ' +
     'For C#, csharp_nav answers where a symbol is defined and what references it without ' +
     'reading the file at all.',
   )
@@ -173,7 +173,7 @@ function splitLines(text: string): string[] {
 }
 
 export const readFileTool: Tool<ReadFileArgs> = {
-  name: 'read_file',
+  name: 'Read',
   readOnly: true,
   description:
     'Read a text file from the workspace. Returns lines numbered from 1, at most ' +
@@ -291,8 +291,8 @@ export const readFileTool: Tool<ReadFileArgs> = {
       return {
         ok: false,
         content:
-          `${args.path} is ${describeBytes(size)}; read_file refuses files larger than ` +
-          `${describeBytes(MAX_FILE_BYTES)}. Use find_files to locate a smaller file, or ` +
+          `${args.path} is ${describeBytes(size)}; Read refuses files larger than ` +
+          `${describeBytes(MAX_FILE_BYTES)}. Use Glob to locate a smaller file, or ` +
           'work on this one with tools that do not put its bytes in context.',
       }
     }
@@ -320,17 +320,17 @@ export const readFileTool: Tool<ReadFileArgs> = {
         ok: false,
         content:
           `Cannot read ${args.path} (${describeBytes(size)}): ${reason}. ` +
-          'read_file returns UTF-8 text only.',
+          'Read returns UTF-8 text only.',
       }
     }
 
     // The BOM is the file's encoding marker, not its content, and it must not reach the
     // model: it made line 1 arrive with an invisible U+FEFF glued to its front, so an
     // anchor the model copied back from line 1 could never match exactly. Two bugs were
-    // cancelling — edit_file holds the file's own BOM aside, and its whitespace-tolerant
+    // cancelling — Edit holds the file's own BOM aside, and its whitespace-tolerant
     // fallback then matched the BOM-carrying anchor anyway, reporting "matched only after
-    // ignoring whitespace" for an anchor that was in fact verbatim. edit_file and
-    // write_file put the BOM back on the way out, so dropping it here loses nothing.
+    // ignoring whitespace" for an anchor that was in fact verbatim. Edit and
+    // Write put the BOM back on the way out, so dropping it here loses nothing.
     const decoded = buffer.toString('utf8')
     const text = decoded.startsWith(BOM) ? decoded.slice(1) : decoded
     const lines = splitLines(text)
@@ -389,7 +389,7 @@ export const readFileTool: Tool<ReadFileArgs> = {
             ok: true,
             content:
               `${args.path} is unchanged since you read it earlier in this session — the ` +
-              'text you already have is current. Use read_file with full: true if you need ' +
+              'text you already have is current. Use Read with full: true if you need ' +
               'it in front of you again.',
           }
         }
@@ -402,7 +402,7 @@ export const readFileTool: Tool<ReadFileArgs> = {
             content:
               `${args.path} changed since you read it (${total} lines now). What changed:\n` +
               `${renderDiff(before, text, args.path)}\n\n` +
-              'Use read_file with full: true for the whole file.',
+              'Use Read with full: true for the whole file.',
           }
         }
         // Unchanged and nothing wrote it: fall through and hand over the file again.
@@ -475,12 +475,12 @@ export const readFileTool: Tool<ReadFileArgs> = {
     if (stop === 'mid-line') {
       notice =
         `\n... stopped at the ${MAX_CHARS}-character cap partway through line ${cutLine}, ` +
-        `which is ${cutLength} characters long; read_file cannot resume inside a line`
+        `which is ${cutLength} characters long; Read cannot resume inside a line`
     } else if (stop !== null) {
       const cap = stop === 'lines' ? `${MAX_LINES}-line cap` : `${MAX_CHARS}-character cap`
       notice =
         `\n... ${total - next} more lines (stopped at the ${cap}); ` +
-        `call read_file again with start_line=${next + 1}`
+        `call Read again with start_line=${next + 1}`
     }
 
     const content = `${header}\n${rows.join('\n')}${notice}`

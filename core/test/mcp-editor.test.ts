@@ -97,7 +97,7 @@ describe('mcp.rawSave', () => {
     const { host: h, transport } = await host()
     writeFileSync(projectSettingsPath(root), JSON.stringify({
       verify: 'npm test',
-      permissions: { deny: ['run_command(npm publish:*)'] },
+      permissions: { deny: ['Bash(npm publish:*)'] },
       mcpServers: { old: { command: 'node' } },
     }, null, 2), 'utf8')
     await h.handle({
@@ -110,7 +110,7 @@ describe('mcp.rawSave', () => {
     // A replacement, not a merge: `old` is gone because the saved document does not name it.
     expect(doc.mcpServers).toEqual({ docs: { url: 'https://mcp.example.com/sse', headers: { 'X-Key': 'k' } } })
     expect(doc.verify).toBe('npm test')
-    expect(doc.permissions).toEqual({ deny: ['run_command(npm publish:*)'] })
+    expect(doc.permissions).toEqual({ deny: ['Bash(npm publish:*)'] })
     await h.shutdown()
   })
 
@@ -168,11 +168,11 @@ describe('mcp.rawSave', () => {
     const { host: h, transport } = await host()
     await h.handle({
       id: 2, method: 'permissions.add',
-      params: { scope: 'project', list: 'deny', rule: 'run_command(npm publish:*)' },
+      params: { scope: 'project', list: 'deny', rule: 'Bash(npm publish:*)' },
     })
     expect(replyOf(transport, 2)).toEqual({ problem: null })
     const doc = JSON.parse(readFileSync(projectSettingsPath(root), 'utf8'))
-    expect(doc.permissions.deny).toEqual(['run_command(npm publish:*)'])
+    expect(doc.permissions.deny).toEqual(['Bash(npm publish:*)'])
 
     await h.handle({
       id: 3, method: 'permissions.add',
@@ -180,7 +180,7 @@ describe('mcp.rawSave', () => {
     })
     expect(replyOf(transport, 3).problem).toMatch(/not a valid rule/)
     const after = JSON.parse(readFileSync(projectSettingsPath(root), 'utf8'))
-    expect(after.permissions.deny).toEqual(['run_command(npm publish:*)'])
+    expect(after.permissions.deny).toEqual(['Bash(npm publish:*)'])
     await h.shutdown()
   })
 })

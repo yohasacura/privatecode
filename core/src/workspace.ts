@@ -67,7 +67,7 @@ const TRAILING_DOTS_AND_SPACES = /[. ]+$/
  *
  * The permission engine denies those writes already, but it matches the path the model
  * SPELLED after a purely lexical canonicalize. On NTFS the same directory also answers to
- * its 8.3 alias: measured, `write_file({path:'PRIVAT~1/settings.json'})` was decided
+ * its 8.3 alias: measured, `Write({path:'PRIVAT~1/settings.json'})` was decided
  * `allow (mode)` in auto-edit and replaced the real `.privatecode/settings.json`, whose
  * planted `format` command then ran through powershell with no engine in the path.
  *
@@ -85,8 +85,8 @@ const ANY_PRIVATE_DIR_SEGMENT = /(^|[\\/])\.privatecode([\\/]|$)/i
  *
  * `abs === root` is a string comparison, and Windows strips trailing dots and spaces
  * before it opens a path (see TRAILING_DOTS_AND_SPACES above), so `<root>\. ` opens the
- * root. Measured: `write_file` with `path: ". "` passed a raw-equality guard and created a
- * root-level entry literally named `. `; `edit_file` had the same hole.
+ * root. Measured: `Write` with `path: ". "` passed a raw-equality guard and created a
+ * root-level entry literally named `. `; `Edit` had the same hole.
  *
  * Compared with `pathRelative(...) === ''` rather than `===` because a string comparison is
  * also case-SENSITIVE, and Windows is not: an absolute `D:\ENGINE\. ` for a folder recorded
@@ -280,7 +280,7 @@ export class Workspace {
   /**
    * How a path is written back to the model: `api/src/server.ts` in a multi-folder workspace,
    * `src/server.ts` in a single-folder one. Forward slashes throughout, matching what
-   * `find_files` has always emitted.
+   * `Glob` has always emitted.
    */
   display(absolutePath: string): string {
     const found = this.locate(absolutePath)
@@ -342,12 +342,12 @@ export class Workspace {
    *
    * This sits in the jail rather than in the permission engine on purpose: a rule can be
    * written, remembered and granted, and a reference folder that a rule could open is not a
-   * reference folder. Binds the file tools only — `run_command` was never contained here.
+   * reference folder. Binds the file tools only — `Bash` was never contained here.
    *
    * The folder-root refusal is here rather than in each tool for the same reason it is not a
    * rule: every write tool had its own copy of the check, every copy compared against the
    * PRIMARY root, and an attached folder equals that root only in a single-folder workspace.
-   * One check at the chokepoint every write goes through (`edit_file`, `write_file`,
+   * One check at the chokepoint every write goes through (`Edit`, `Write`,
    * `delete_file`, `move_file` both endpoints, and `writeFileAtomic`'s re-resolve) covers
    * every folder, including for callers that never thought about mounts at all.
    */

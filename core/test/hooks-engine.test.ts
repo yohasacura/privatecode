@@ -38,7 +38,7 @@ const make = (cfg: Record<string, unknown>, extra: Partial<HookEngineOptions> = 
   sources: [source(cfg)], workspace: new Workspace(root), shell, sessionId: () => 'sess-1', permissionMode: () => 'normal', ...extra,
 })
 
-const edit = { name: 'edit_file', args: { path: 'secrets.env', search_text: 'a', replace_text: 'b' }, raw: '{}', key: { tool: 'edit_file', paths: ['secrets.env'] } }
+const edit = { name: 'Edit', args: { path: 'secrets.env', search_text: 'a', replace_text: 'b' }, raw: '{}', key: { tool: 'Edit', paths: ['secrets.env'] } }
 
 describe('parsing hooks.json', () => {
   it('reads command hooks and names what it cannot run', () => {
@@ -60,10 +60,10 @@ describe('parsing hooks.json', () => {
   })
 
   it('translates tool_input both ways', () => {
-    expect(claudeToolInput('edit_file', edit.args)).toEqual({ path: 'secrets.env', search_text: 'a', replace_text: 'b', file_path: 'secrets.env', old_string: 'a', new_string: 'b' })
-    expect(claudeToolInput('run_command', { commands: ['npm test', 'npm run build'] })).toMatchObject({ command: 'npm test && npm run build' })
-    expect(fromClaudeToolInput('edit_file', { file_path: 'other.ts', new_string: 'c' }, edit.args)).toEqual({ path: 'other.ts', search_text: 'a', replace_text: 'c' })
-    expect(fromClaudeToolInput('run_command', { command: 'npm test' }, { commands: ['x'] })).toEqual({ commands: ['npm test'] })
+    expect(claudeToolInput('Edit', edit.args)).toEqual({ path: 'secrets.env', search_text: 'a', replace_text: 'b', file_path: 'secrets.env', old_string: 'a', new_string: 'b' })
+    expect(claudeToolInput('Bash', { commands: ['npm test', 'npm run build'] })).toMatchObject({ command: 'npm test && npm run build' })
+    expect(fromClaudeToolInput('Edit', { file_path: 'other.ts', new_string: 'c' }, edit.args)).toEqual({ path: 'other.ts', search_text: 'a', replace_text: 'c' })
+    expect(fromClaudeToolInput('Bash', { command: 'npm test' }, { commands: ['x'] })).toEqual({ commands: ['npm test'] })
     expect(fromClaudeToolInput('web', 'junk', { url: 'u' })).toEqual({ url: 'u' })
   })
 })
@@ -73,7 +73,7 @@ describe.skipIf(bash === null)('under Git Bash', () => {
     const engine = make(config('PreToolUse', 'Edit|Write', { command: 'echo "no edits to secrets" >&2; exit 2' }))
     const denied = await engine.beforeTool!(edit)
     expect(denied).toMatchObject({ verdict: 'deny', reason: 'no edits to secrets', by: 'plugin:alpha' })
-    const other = await engine.beforeTool!({ ...edit, name: 'read_file', key: { tool: 'read_file' } })
+    const other = await engine.beforeTool!({ ...edit, name: 'Read', key: { tool: 'Read' } })
     expect(other.verdict).toBeUndefined()
   })
 
@@ -109,16 +109,16 @@ describe.skipIf(bash === null)('under Git Bash', () => {
       ...config('PostToolUse', 'Write', { command: 'echo LINT-OK' }),
       ...config('PostToolUseFailure', '*', { command: 'echo FAILED-HOOK' }),
     })
-    const call = { name: 'write_file', args: { path: 'a.ts', content: 'x' }, raw: '{}' }
-    const ok = await engine.afterTool({ tool: 'write_file', paths: ['a.ts'] }, { ok: true, content: 'wrote', display: 'wrote (display)' }, undefined, call)
+    const call = { name: 'Write', args: { path: 'a.ts', content: 'x' }, raw: '{}' }
+    const ok = await engine.afterTool({ tool: 'Write', paths: ['a.ts'] }, { ok: true, content: 'wrote', display: 'wrote (display)' }, undefined, call)
     expect(ok.content).toBe('wrote\n\n[hook plugin:alpha] LINT-OK')
     expect(ok.display).toBe('wrote (display)\n\n[hook plugin:alpha] LINT-OK')
-    const failed = await engine.afterTool({ tool: 'write_file', paths: ['a.ts'] }, { ok: false, content: 'denied' }, undefined, call)
+    const failed = await engine.afterTool({ tool: 'Write', paths: ['a.ts'] }, { ok: false, content: 'denied' }, undefined, call)
     expect(failed.content).toContain('FAILED-HOOK')
     expect(failed.content).not.toContain('LINT-OK')
     // Nothing to say about the call: the result is returned as it was.
     const untouched = { ok: true, content: 'read' }
-    expect(await engine.afterTool({ tool: 'read_file' }, untouched, undefined, { name: 'read_file', args: {}, raw: '{}' })).toBe(untouched)
+    expect(await engine.afterTool({ tool: 'Read' }, untouched, undefined, { name: 'Read', args: {}, raw: '{}' })).toBe(untouched)
   })
 
   it('PostToolUse JSON: block reasons, additional context, exit 2 feedback', async () => {
@@ -126,7 +126,7 @@ describe.skipIf(bash === null)('under Git Bash', () => {
       { type: 'command', command: `echo '{"decision":"block","reason":"tests are red","hookSpecificOutput":{"additionalContext":"see CI"},"systemMessage":"note to self"}'` },
       { type: 'command', command: 'echo "formatter complained" >&2; exit 2' },
     ] }] })
-    const out = await engine.afterTool({ tool: 'edit_file' }, { ok: true, content: 'edited' }, undefined, { name: 'edit_file', args: edit.args, raw: '{}' })
+    const out = await engine.afterTool({ tool: 'Edit' }, { ok: true, content: 'edited' }, undefined, { name: 'Edit', args: edit.args, raw: '{}' })
     expect(out.content.split('\n\n')[1]?.split('\n')).toEqual([
       '[hook plugin:alpha] tests are red', '[hook plugin:alpha] see CI', '[hook plugin:alpha] note to self', '[hook plugin:alpha] formatter complained',
     ])
@@ -134,10 +134,10 @@ describe.skipIf(bash === null)('under Git Bash', () => {
 
   it("PrivateCode's own after hooks keep running beside the new ones", async () => {
     const engine = make(config('PostToolUse', '*', { command: 'echo NEW' }), {
-      legacy: [{ raw: 'edit_file', rule: parseRule('edit_file')!, command: 'echo OLD', source: 's', failures: 0 }],
+      legacy: [{ raw: 'Edit', rule: parseRule('Edit')!, command: 'echo OLD', source: 's', failures: 0 }],
     })
-    const out = await engine.afterTool({ tool: 'edit_file' }, { ok: true, content: 'edited' }, undefined, { name: 'edit_file', args: edit.args, raw: '{}' })
-    expect(out.content).toContain('[hook edit_file] echo OLD exited 0:\nOLD')
+    const out = await engine.afterTool({ tool: 'Edit' }, { ok: true, content: 'edited' }, undefined, { name: 'Edit', args: edit.args, raw: '{}' })
+    expect(out.content).toContain('[hook Edit] echo OLD exited 0:\nOLD')
     expect(out.content).toContain('[hook plugin:alpha] NEW')
   })
 
@@ -189,7 +189,7 @@ describe.skipIf(bash === null)('under Git Bash', () => {
   it('an async PostToolUse hook does not hold the result', async () => {
     const engine = make(config('PostToolUse', '*', { command: 'sleep 2; echo late', async: true }))
     const started = Date.now()
-    const out = await engine.afterTool({ tool: 'edit_file' }, { ok: true, content: 'edited' }, undefined, { name: 'edit_file', args: edit.args, raw: '{}' })
+    const out = await engine.afterTool({ tool: 'Edit' }, { ok: true, content: 'edited' }, undefined, { name: 'Edit', args: edit.args, raw: '{}' })
     expect(Date.now() - started).toBeLessThan(1_500)
     expect(out.content).toBe('edited')
   })
@@ -220,7 +220,7 @@ describe.skipIf(process.platform !== 'win32')('under PowerShell', () => {
     const two = make(config('PreToolUse', '*', { command: "[Console]::Error.WriteLine('nope'); exit 2" }), {}, shell)
     expect(await two.beforeTool!(edit)).toMatchObject({ verdict: 'deny', reason: 'nope' })
     const post = make(config('PostToolUse', '*', { command: 'Write-Output "PS-OK"' }), {}, shell)
-    const out = await post.afterTool({ tool: 'edit_file' }, { ok: true, content: 'edited' }, undefined, { name: 'edit_file', args: edit.args, raw: '{}' })
+    const out = await post.afterTool({ tool: 'Edit' }, { ok: true, content: 'edited' }, undefined, { name: 'Edit', args: edit.args, raw: '{}' })
     expect(out.content).toBe('edited\n\n[hook plugin:alpha] PS-OK')
   })
 })

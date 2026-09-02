@@ -33,7 +33,7 @@ export interface DelegateArgs {
 export function createDelegateTool(roles: readonly SubAgentRole[]): Tool<DelegateArgs> {
   const names = roles.map((r) => r.name)
   return {
-    name: 'delegate',
+    name: 'Agent',
     // Read-only in effect for the built-in roles, but declared false so the permission gate
     // is asked. That is deliberate: a delegate call spends a generation and several tool
     // calls, and a mode that asks before spending should get to — and a plugin's agent may
@@ -82,7 +82,7 @@ export function createDelegateTool(roles: readonly SubAgentRole[]): Tool<Delegat
       return { ok: true, args: { role: r.role, task: r.task.trim() } }
     },
     permissionKey(args): PermissionKey {
-      return { tool: 'delegate', command: `${args.role}: ${args.task.slice(0, 120)}` }
+      return { tool: 'Agent', command: `${args.role}: ${args.task.slice(0, 120)}` }
     },
     approvalPreview(args): ApprovalPreview {
       const oneLine = args.task.replace(/\s+/g, ' ').trim()
