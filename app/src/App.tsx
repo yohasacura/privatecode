@@ -210,7 +210,15 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateAvailable | null>(null)
   const [updating, setUpdating] = useState(false)
   const [updateError, setUpdateError] = useState<string | null>(null)
-  useEffect(() => scheduleUpdateCheck(setUpdate), [])
+  /** "Not now" means this version, for this run of the window: the automatic check comes
+   * back twice a day and must not re-offer what was just declined. A newer release than the
+   * declined one is still offered, and a check asked for by name always is. */
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(null)
+  const dismissedRef = useRef<string | null>(null)
+  dismissedRef.current = dismissedVersion
+  useEffect(() => scheduleUpdateCheck((u) => {
+    if (u.newVersion !== dismissedRef.current) setUpdate(u)
+  }), [])
   /** Where a running update has got to — the shell's last word on it. Null until the button
    * is pressed. The banner reads this instead of saying "Downloading…" for two minutes. */
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
@@ -826,13 +834,18 @@ export default function App() {
                 {Icon.check()}
               </button>
             )}
-            <button
-              class="icon-button"
-              onClick={() => { setUpdate(null); setUpdateError(null) }}
-              title="Not now"
-            >
-              {Icon.x()}
-            </button>
+            {/* Not while it runs: closing the strip would not stop the update, and a window
+                that then vanishes with no strip on screen is the "out of nowhere" this whole
+                feature was rebuilt to remove. */}
+            {!updating && (
+              <button
+                class="icon-button"
+                onClick={() => { setDismissedVersion(update.newVersion); setUpdate(null); setUpdateError(null) }}
+                title="Not now"
+              >
+                {Icon.x()}
+              </button>
+            )}
           </div>
         )
       })()}
@@ -937,6 +950,10 @@ export default function App() {
                   // stops its own Escape as well; this is the guard the composer documents.
                   modalOpen={modalOpen}
                   onAdoptViewed={adoptViewed}
+                  // A send during an update would start a turn the restart then kills.
+                  // Spread, not `locked={... : undefined}`: an explicit undefined is not the
+                  // same as absent under exactOptionalPropertyTypes.
+                  {...(updating ? { locked: 'An update is in progress — the app restarts when it is done' } : {})}
                 />
               </div>
               {tabs.map((t) => (activeTab === t.path

@@ -65,6 +65,8 @@ function fakeResult(method: string): unknown {
 // test here is WHERE the notice renders, not when it is found.
 /** The shell's progress events, as the test feeds them: whatever App subscribed with. */
 let progressCallback: ((p: import('./lib/update').UpdateProgress) => void) | null = null
+/** The automatic check's callback, so a test can play a later re-check. */
+let offerCallback: ((u: import('./lib/update').UpdateAvailable) => void) | null = null
 /** What the shell answers when asked whether the previous process updated into this one. */
 let updatedFromAnswer: { currentVersion: string; updatedFrom: string | null } | null = null
 /** How `applyUpdate` behaves: by default it never resolves, like a download in flight. */
@@ -75,6 +77,7 @@ vi.mock('./lib/update', async () => {
   return {
     ...actual,
     scheduleUpdateCheck: (onAvailable: (u: import('./lib/update').UpdateAvailable) => void) => {
+      offerCallback = onAvailable
       if (updateToOffer !== null) onAvailable(updateToOffer)
       return () => {}
     },
@@ -122,6 +125,7 @@ beforeEach(async () => {
   savedRecents = ['D:\\proj']
   updateToOffer = null
   progressCallback = null
+  offerCallback = null
   updatedFromAnswer = null
   applyBehaviour = () => new Promise(() => {})
   savedSessions = []
@@ -399,6 +403,58 @@ test('a running update shows each phase as the shell reports it, with a bar for 
   await settle()
   expect(host.querySelector('.update-strip')?.textContent).toContain('Restarting')
   expect((host.querySelector('.update-progress-bar') as HTMLElement).style.width).toBe('100%')
+})
+
+test('while an update runs, nothing can be sent and the strip cannot be closed', async () => {
+  // A send during an update starts a turn the restart then kills; and closing the strip
+  // would not stop the update, so the window would vanish with nothing on screen to say why.
+  render(null, host)
+  updateToOffer = {
+    currentVersion: '0.3.0',
+    newVersion: '0.3.1',
+    downloadBytes: 4_567_499,
+    notesUrl: 'https://example.invalid/releases/tag/v0.3.1',
+  }
+  render(<App />, host)
+  await settle()
+
+  // Before: the offer's two buttons, and a composer that sends.
+  expect(host.querySelectorAll('.update-strip .icon-button')).toHaveLength(2)
+  ;(host.querySelector('.update-strip .icon-button') as HTMLElement).click()
+  await settle()
+
+  // During: no "Not now", a grey send button, and the reason on the status line.
+  expect(host.querySelectorAll('.update-strip .icon-button')).toHaveLength(0)
+  const send = host.querySelector('.composer-send') as HTMLButtonElement
+  expect(send.disabled).toBe(true)
+  expect(send.title).toContain('update is in progress')
+  expect(host.querySelector('.composer-meta')?.textContent).toContain('update is in progress')
+})
+
+test('a declined version is not offered again by the next automatic check, a newer one is', async () => {
+  render(null, host)
+  updateToOffer = {
+    currentVersion: '0.3.0',
+    newVersion: '0.3.1',
+    downloadBytes: 4_567_499,
+    notesUrl: 'https://example.invalid/releases/tag/v0.3.1',
+  }
+  render(<App />, host)
+  await settle()
+  const buttons = host.querySelectorAll('.update-strip .icon-button')
+  ;(buttons[buttons.length - 1] as HTMLElement).click() // "Not now"
+  await settle()
+  expect(host.querySelector('.update-strip')).toBeNull()
+
+  // Twelve hours later, the same release again: silence.
+  offerCallback?.(updateToOffer!)
+  await settle()
+  expect(host.querySelector('.update-strip')).toBeNull()
+
+  // A newer one: offered.
+  offerCallback?.({ ...updateToOffer!, newVersion: '0.3.2' })
+  await settle()
+  expect(host.querySelector('.update-strip')?.textContent).toContain('0.3.2')
 })
 
 test('a failed update says what failed and offers the button again', async () => {

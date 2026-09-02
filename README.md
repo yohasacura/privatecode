@@ -46,8 +46,11 @@ looks at the latest release; when there is a newer one a green strip says so, wi
 what would actually be downloaded (usually a few MB — the 120 MB of pinned binaries only move
 when they change). Press the tick and the strip follows the update step by step — the download
 by bytes, then verifying, unpacking, installing, restarting — and the new version opens with a
-line saying what it replaced. The tick waits while a turn is running. "Check for updates" in
-the command palette asks right away and says what it found, including "this is the latest".
+line saying what it replaced. The tick waits while a turn is running, and sending waits while
+an update runs. A stalled download ends in an error and a "try again" rather than a frozen
+bar; a failure after the swap puts the old version and the old sidecar back; "Not now" is
+remembered for that version. "Check for updates" in the command palette asks right away and
+says what it found, including "this is the latest".
 
 ## Using it
 

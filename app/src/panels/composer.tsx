@@ -80,7 +80,7 @@ const GATES_OFF = '/gates off'
 const GATES_ON = '/gates on'
 
 export function Composer({
-  client, state, dispatch, modalOpen, onAdoptViewed,
+  client, state, dispatch, modalOpen, onAdoptViewed, locked,
 }: {
   client: ProtocolClient
   state: ChatState
@@ -90,6 +90,13 @@ export function Composer({
   /** Become the session currently being read. Called by `send()` and nowhere else: the
    * message is what commits to the switch. */
   onAdoptViewed: () => Promise<void>
+  /**
+   * Why nothing may be sent right now, when something may not be — shown on the status line
+   * in place of the usual readout. An update in progress is the one caller: a turn started
+   * under it would be killed by the restart, mid-generation, with nothing to show for it.
+   * Typing stays possible; only sending and queueing wait.
+   */
+  locked?: string
 }): VNode {
   const [input, setInput] = useState('')
   /**
@@ -728,6 +735,8 @@ export function Composer({
   }
 
   function send(): void {
+    // See `locked`: the button is disabled, and Enter lands here too.
+    if (locked !== undefined) return
     // Accepted suggestions travel glued BELOW the draft; the draft itself goes as typed.
     // Glued before the length guard and before the optimistic row, so what the user sees
     // in the transcript is exactly what the model received. NOT glued onto a slash
@@ -1230,6 +1239,8 @@ export function Composer({
   const measured = step?.progress !== undefined ? formatProgress(step.progress) : null
 
   function statusLine(): VNode | null {
+    // Outranks everything: it is the reason the send button is grey.
+    if (locked !== undefined) return <span class="status-live">{locked}</span>
     if (waitingOnYou) return <span class="status-live">waiting on you · nothing generating</span>
     // A gate outranks everything below it, and it is checked BEFORE `turnRunning` rather
     // than inside it. Two reasons, and the second was found by running the built app: a gate
@@ -1800,7 +1811,7 @@ ${q}`}
 
           {/* While a turn runs the button is Stop -- but typed text still has somewhere to
               go, so it queues rather than being swallowed. Enter does the same. */}
-          {state.turnRunning && input.trim() !== '' && (
+          {state.turnRunning && input.trim() !== '' && locked === undefined && (
             <button class="composer-queue" onClick={send} title="Queue this for when the turn ends">
               {Icon.plus()}
             </button>
@@ -1808,8 +1819,10 @@ ${q}`}
           <button
             class={`composer-send ${state.turnRunning ? 'composer-send-stop' : ''}`}
             onClick={state.turnRunning ? abort : send}
-            disabled={(!state.turnRunning && input.trim() === '') || blockedByRun}
-            title={state.turnRunning
+            disabled={(!state.turnRunning && input.trim() === '') || blockedByRun || (locked !== undefined && !state.turnRunning)}
+            title={locked !== undefined && !state.turnRunning
+              ? locked
+              : state.turnRunning
               ? 'Stop this turn (Esc)'
               : state.viewing !== null
                 ? `Send here and continue "${state.viewing.title || 'this session'}" from now on`

@@ -143,12 +143,85 @@ fn sidecar_identity(dir: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// How long a connection may take to open, and how long a transfer may go SILENT.
+///
+/// A read timeout rather than a whole-request one: the sidecar is 120 MB and a slow link is
+/// allowed to take its time, but a link that has stopped delivering must end in an error the
+/// strip can show with its "try again" — not in a bar frozen at 61% until the socket dies of
+/// natural causes, which is what an un-timed `reqwest::get` gave.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+        .map_err(|e| format!("could not set up the download: {e}"))
+}
+
 async fn get(url: &str) -> Result<Vec<u8>, String> {
-    let res = reqwest::get(url).await.map_err(|e| format!("{url}: {e}"))?;
+    let res = client()?.get(url).send().await.map_err(|e| format!("{url}: {e}"))?;
     if !res.status().is_success() {
         return Err(format!("{url}: HTTP {}", res.status()));
     }
     Ok(res.bytes().await.map_err(|e| e.to_string())?.to_vec())
+}
+
+/// Free bytes on the volume that holds `dir`, or `None` where the question cannot be asked.
+#[cfg(windows)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide: Vec<u16> = dir.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut free_to_caller: u64 = 0;
+    let mut total: u64 = 0;
+    let mut free: u64 = 0;
+    // SAFETY: a NUL-terminated wide string and three out-pointers to locals, exactly what
+    // the call documents; nothing is retained past the call.
+    let ok = unsafe {
+        windisk::GetDiskFreeSpaceExW(wide.as_ptr(), &mut free_to_caller, &mut total, &mut free)
+    };
+    (ok != 0).then_some(free_to_caller)
+}
+
+#[cfg(not(windows))]
+fn free_space(_dir: &Path) -> Option<u64> {
+    None
+}
+
+#[cfg(windows)]
+mod windisk {
+    // Declared rather than pulled in with the `windows` crate — see `winexit` below.
+    extern "system" {
+        pub fn GetDiskFreeSpaceExW(
+            directory: *const u16,
+            free_bytes_available_to_caller: *mut u64,
+            total_number_of_bytes: *mut u64,
+            total_number_of_free_bytes: *mut u64,
+        ) -> i32;
+    }
+}
+
+/// What an update of `download` bytes needs on disk: the archives, their unpacked contents
+/// (about three times the archive for the sidecar's self-contained binaries, so three is used
+/// for everything) and room to breathe. Generous on purpose — the failure this prevents is an
+/// IO error halfway through an unpack, which reads as corruption, not as a full disk.
+pub fn space_needed(download: u64) -> u64 {
+    download.saturating_mul(4).saturating_add(64 * 1024 * 1024)
+}
+
+/// The refusal, worded for the person who has to free the space.
+pub fn space_shortfall(free: u64, needed: u64) -> Option<String> {
+    if free >= needed {
+        return None;
+    }
+    let mb = |b: u64| b / (1024 * 1024);
+    Some(format!(
+        "not enough free space for the update: {} MB free, about {} MB needed",
+        mb(free),
+        mb(needed),
+    ))
 }
 
 async fn manifest() -> Result<Manifest, String> {
@@ -278,7 +351,7 @@ impl ProgressGate {
 async fn download_to(
     app: &AppHandle, url: &str, into: &Path, part: &Part,
 ) -> Result<(), String> {
-    let mut res = reqwest::get(url).await.map_err(|e| format!("{url}: {e}"))?;
+    let mut res = client()?.get(url).send().await.map_err(|e| format!("{url}: {e}"))?;
     if !res.status().is_success() {
         return Err(format!("{url}: HTTP {}", res.status()));
     }
@@ -340,6 +413,16 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
     let sidecar_dir = dir.join("sidecar");
     let need_sidecar = sidecar_identity(&sidecar_dir).as_deref() != Some(m.sidecar.tree.as_str());
 
+    // Room first. An unpack that runs out of disk halfway fails with an IO error that reads
+    // as corruption; the same fact asked up front reads as what it is.
+    let download = m.app.bytes.saturating_add(if need_sidecar { m.sidecar.bytes } else { 0 });
+    if let Some(free) = free_space(&dir) {
+        if let Some(shortfall) = space_shortfall(free, space_needed(download)) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(shortfall);
+        }
+    }
+
     for part in std::iter::once(&m.app).chain(need_sidecar.then_some(&m.sidecar)) {
         let url = format!("{}/{}", base_url(), part.file);
         let path = staging.join(&part.file);
@@ -354,37 +437,7 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
     // already succeeded by the time this line runs.
     report(&app, "installing", None, 0, 0);
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let old = exe.with_extension("old.exe");
-    let _ = fs::remove_file(&old);
-    fs::rename(&exe, &old).map_err(|e| format!("could not move the running app aside: {e}"))?;
-
-    let staged_exe = staging.join(
-        exe.file_name()
-            .ok_or("executable has no file name")?,
-    );
-    if let Err(e) = fs::rename(&staged_exe, &exe) {
-        // Put it back rather than leaving a folder with no executable in it.
-        let _ = fs::rename(&old, &exe);
-        return Err(format!("could not move the new app into place: {e}"));
-    }
-
-    if need_sidecar {
-        let staged_sidecar = staging.join("sidecar");
-        if staged_sidecar.exists() {
-            let retired = dir.join(".sidecar.old");
-            let _ = fs::remove_dir_all(&retired);
-            let _ = fs::rename(&sidecar_dir, &retired);
-            fs::rename(&staged_sidecar, &sidecar_dir)
-                .map_err(|e| format!("could not move the new sidecar into place: {e}"))?;
-            let _ = fs::remove_dir_all(&retired);
-        }
-    } else {
-        // The app archive carries agent.cjs, which belongs inside the existing sidecar tree.
-        let staged_agent = staging.join("sidecar").join("agent.cjs");
-        if staged_agent.exists() {
-            fs::copy(&staged_agent, sidecar_dir.join("agent.cjs")).map_err(|e| e.to_string())?;
-        }
-    }
+    install(&dir, &exe, &staging, need_sidecar)?;
 
     let _ = fs::remove_dir_all(&staging);
     // The note the next process announces itself with. Best effort: a launch with no note is
@@ -395,6 +448,79 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
     // `.privatecode/` at once.
     crate::shutdown_sidecar(&app.state::<crate::SidecarState>());
     relaunch_and_leave(&exe)
+}
+
+/// The swap itself, as one step with one undo.
+///
+/// The running exe is renamed aside and the staged one moved in; then either the whole
+/// sidecar tree is replaced (when the pinned binaries moved) or only `agent.cjs` inside it.
+/// Any failure after the first rename puts EVERYTHING back — the old sidecar under its own
+/// name, the old exe under its — because the first version undid only the exe step: a
+/// sidecar move that failed after the old tree had been renamed away returned an error and
+/// left the folder with a new exe and no sidecar at all, so the next launch had no agent.
+/// Pure over paths, so it can be exercised on a scratch folder where nothing is running.
+fn install(dir: &Path, exe: &Path, staging: &Path, need_sidecar: bool) -> Result<(), String> {
+    install_with(dir, exe, staging, need_sidecar, &|from, to| fs::rename(from, to))
+}
+
+/// `install` over an injectable move, so the undo can be exercised: a rename that fails on
+/// demand is the only honest way to reach the rollback on a machine where every real rename
+/// succeeds. Production passes `fs::rename`.
+fn install_with(
+    dir: &Path,
+    exe: &Path,
+    staging: &Path,
+    need_sidecar: bool,
+    mv: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    let old = exe.with_extension("old.exe");
+    let _ = fs::remove_file(&old);
+    mv(exe, &old).map_err(|e| format!("could not move the running app aside: {e}"))?;
+
+    let staged_exe = staging.join(exe.file_name().ok_or("executable has no file name")?);
+    if let Err(e) = mv(&staged_exe, exe) {
+        // Put it back rather than leaving a folder with no executable in it.
+        let _ = mv(&old, exe);
+        return Err(format!("could not move the new app into place: {e}"));
+    }
+    let undo_exe = || {
+        let _ = fs::remove_file(exe);
+        let _ = mv(&old, exe);
+    };
+
+    let sidecar_dir = dir.join("sidecar");
+    if need_sidecar {
+        let staged_sidecar = staging.join("sidecar");
+        if staged_sidecar.exists() {
+            let retired = dir.join(".sidecar.old");
+            let _ = fs::remove_dir_all(&retired);
+            let had_sidecar = sidecar_dir.exists();
+            if had_sidecar {
+                if let Err(e) = mv(&sidecar_dir, &retired) {
+                    undo_exe();
+                    return Err(format!("could not move the old sidecar aside: {e}"));
+                }
+            }
+            if let Err(e) = mv(&staged_sidecar, &sidecar_dir) {
+                if had_sidecar {
+                    let _ = mv(&retired, &sidecar_dir);
+                }
+                undo_exe();
+                return Err(format!("could not move the new sidecar into place: {e}"));
+            }
+            let _ = fs::remove_dir_all(&retired);
+        }
+    } else {
+        // The app archive carries agent.cjs, which belongs inside the existing sidecar tree.
+        let staged_agent = staging.join("sidecar").join("agent.cjs");
+        if staged_agent.exists() {
+            if let Err(e) = fs::copy(&staged_agent, sidecar_dir.join("agent.cjs")) {
+                undo_exe();
+                return Err(format!("could not install the new agent: {e}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The outgoing version leaves its number beside the new binary, so the process that starts
@@ -492,8 +618,111 @@ pub fn clean_previous_update() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newer, notes_url_for, take_updated_from, write_updated_from, ProgressGate};
+    use super::{
+        install, install_with, is_newer, notes_url_for, space_needed, space_shortfall,
+        take_updated_from, write_updated_from, ProgressGate,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
+
+    /// A scratch portable folder: an "exe", a sidecar with an agent and a binary, and a
+    /// staging area holding the new exe and whatever else the test wants in it.
+    fn scratch(name: &str, staged_sidecar: bool) -> (PathBuf, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("pc-install-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sidecar")).unwrap();
+        fs::write(dir.join("PrivateCode.exe"), "old exe").unwrap();
+        fs::write(dir.join("sidecar").join("agent.cjs"), "old agent").unwrap();
+        fs::write(dir.join("sidecar").join("node.exe"), "old node").unwrap();
+        let staging = dir.join(".update-staging");
+        fs::create_dir_all(staging.join("sidecar")).unwrap();
+        fs::write(staging.join("PrivateCode.exe"), "new exe").unwrap();
+        fs::write(staging.join("sidecar").join("agent.cjs"), "new agent").unwrap();
+        if staged_sidecar {
+            fs::write(staging.join("sidecar").join("node.exe"), "new node").unwrap();
+            fs::write(staging.join("sidecar").join(".identity"), "abc").unwrap();
+        }
+        (dir.clone(), dir.join("PrivateCode.exe"), staging)
+    }
+
+    fn read(p: &Path) -> String {
+        fs::read_to_string(p).unwrap_or_default()
+    }
+
+    #[test]
+    fn an_app_only_update_swaps_the_exe_and_the_agent_and_nothing_else() {
+        let (dir, exe, staging) = scratch("app-only", false);
+        install(&dir, &exe, &staging, false).unwrap();
+        assert_eq!(read(&exe), "new exe");
+        assert_eq!(read(&dir.join("PrivateCode.old.exe")), "old exe");
+        assert_eq!(read(&dir.join("sidecar").join("agent.cjs")), "new agent");
+        assert_eq!(read(&dir.join("sidecar").join("node.exe")), "old node");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_update_replaces_the_whole_tree() {
+        let (dir, exe, staging) = scratch("sidecar", true);
+        install(&dir, &exe, &staging, true).unwrap();
+        assert_eq!(read(&exe), "new exe");
+        assert_eq!(read(&dir.join("sidecar").join("node.exe")), "new node");
+        assert_eq!(read(&dir.join("sidecar").join("agent.cjs")), "new agent");
+        assert_eq!(read(&dir.join("sidecar").join(".identity")), "abc");
+        assert!(!dir.join(".sidecar.old").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sidecar_move_that_fails_puts_the_exe_and_the_old_sidecar_back() {
+        let (dir, exe, staging) = scratch("rollback", true);
+        // The move of the NEW sidecar into place fails — the old tree has already been moved
+        // aside by then, and the exe has already been swapped. The install must leave the
+        // folder as it found it, not exe-new/sidecar-gone, which is what the first version
+        // did here: it undid only the exe step.
+        let staged_sidecar = staging.join("sidecar");
+        let failing = |from: &Path, to: &Path| -> std::io::Result<()> {
+            if from == staged_sidecar {
+                return Err(std::io::Error::other("simulated: the new sidecar could not be moved"));
+            }
+            fs::rename(from, to)
+        };
+        let err = install_with(&dir, &exe, &staging, true, &failing).unwrap_err();
+        assert!(err.contains("new sidecar"), "{err}");
+        assert_eq!(read(&exe), "old exe");
+        assert_eq!(read(&dir.join("sidecar").join("node.exe")), "old node");
+        assert_eq!(read(&dir.join("sidecar").join("agent.cjs")), "old agent");
+        assert!(!dir.join("PrivateCode.old.exe").exists());
+        assert!(!dir.join(".sidecar.old").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_sidecar_that_cannot_be_moved_aside_stops_the_install_with_the_exe_put_back() {
+        let (dir, exe, staging) = scratch("rollback-aside", true);
+        let sidecar_dir = dir.join("sidecar");
+        let failing = |from: &Path, to: &Path| -> std::io::Result<()> {
+            if from == sidecar_dir {
+                return Err(std::io::Error::other("simulated: the old sidecar is held open"));
+            }
+            fs::rename(from, to)
+        };
+        let err = install_with(&dir, &exe, &staging, true, &failing).unwrap_err();
+        assert!(err.contains("old sidecar"), "{err}");
+        assert_eq!(read(&exe), "old exe");
+        assert_eq!(read(&dir.join("sidecar").join("node.exe")), "old node");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_space_check_is_generous_and_says_the_numbers() {
+        let mb = 1024 * 1024;
+        assert_eq!(space_needed(100 * mb), 464 * mb);
+        assert_eq!(space_shortfall(500 * mb, 464 * mb), None);
+        let msg = space_shortfall(120 * mb, 464 * mb).unwrap();
+        assert!(msg.contains("120 MB free"), "{msg}");
+        assert!(msg.contains("464 MB needed"), "{msg}");
+    }
 
     #[test]
     fn only_a_later_release_counts_as_available() {
