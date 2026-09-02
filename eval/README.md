@@ -56,6 +56,13 @@ reference solution to a copy (`--reference`: every hidden test passes) and then 
 tests against the untouched original with the bugfix tasks' bugs planted (`--untouched`:
 every hidden test fails, except the two that pin behaviour a fix must not change).
 
+## First results (2026-09-02)
+
+All fifteen under `fast`: **14 of 15** (the miss: `logger-rotation`, timed out at 12 min).
+Five under `thorough`: **5 of 5**, including that one. The tables and what they say are in
+`docs/SPEED-2026-09-02.md` §7; the files are `results/fast-2026-09-02T13-27-50.*` and
+`results/thorough-5-2026-09-02T14-18-52.*`.
+
 ## Adding a task
 
 Add an entry to `tasks.ts` and a test class under `hidden/<task-id>/` — namespace

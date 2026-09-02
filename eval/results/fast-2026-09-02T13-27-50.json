@@ -1,0 +1,577 @@
+{
+ "label": "fast",
+ "gates": "fast",
+ "at": "2026-09-02T14:18:51.182Z",
+ "results": [
+  {
+   "id": "snapshot-savedat",
+   "workspace": "winopt",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.291
+    },
+    {
+     "name": "hidden-tests",
+     "ok": true,
+     "detail": "failed 0, passed 32",
+     "seconds": 3.098
+    },
+    {
+     "name": "grep:Snapshot.cs:SavedAt",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 10,
+   "totalSeconds": 121.6,
+   "modelSeconds": 82.7,
+   "gateSeconds": 64.3,
+   "generatedTokens": 2048,
+   "finalPromptTokens": 16252,
+   "readCalls": 8,
+   "writeCalls": 4,
+   "selfChecks": 0,
+   "verifyRuns": 2,
+   "compilerChecks": 3,
+   "finalText": "All 31 tests pass (30 existing + 1 new). The new test `SaveSnapshot_Then_Load_Returns_SavedAt` in `SnapshotStoreTests.cs` asserts both that `SavedAt` is populated on save and that the loaded snapshot returns the identical value. All four criteria are now fully met: 1. ✅ `Snapshot` declares `SavedAt` of type `DateTimeOffset` 2. ✅ `SnapshotStore.SaveSnapshot` assigns `SavedAt = DateTimeOffset.Now` before serialisation 3. ✅ Loading a saved snapshot returns the same `SavedAt` value — verified by the",
+   "timedOut": false
+  },
+  {
+   "id": "appstate-lasterror",
+   "workspace": "winopt",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.354
+    },
+    {
+     "name": "hidden-tests",
+     "ok": true,
+     "detail": "failed 0, passed 32",
+     "seconds": 3.455
+    },
+    {
+     "name": "grep:Snapshot.cs:LastError",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 3,
+   "totalSeconds": 47,
+   "modelSeconds": 25.2,
+   "gateSeconds": 20.7,
+   "generatedTokens": 541,
+   "finalPromptTokens": 10906,
+   "readCalls": 2,
+   "writeCalls": 1,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 1,
+   "finalText": "All four conditions are met: 1. **AppState** in `Snapshot.cs` now has `public string? LastError { get; set; } = null;` 2. **SaveState** serializes the entire `AppState` via `JsonSerializer.Serialize(state, JsonOpts)` — `LastError` is included automatically. 3. **LoadState** deserializes via `JsonSerializer.Deserialize<AppState>(...)` — `LastError` is restored automatically. 4. **Build** passed: `[C# compiler check: ok, 1.1s]`",
+   "timedOut": false
+  },
+  {
+   "id": "bug-second-save-fails",
+   "workspace": "winopt",
+   "kind": "bugfix",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.56
+    },
+    {
+     "name": "hidden-tests",
+     "ok": true,
+     "detail": "failed 0, passed 31",
+     "seconds": 3.771
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 6,
+   "totalSeconds": 107.4,
+   "modelSeconds": 63.1,
+   "gateSeconds": 22.6,
+   "generatedTokens": 1431,
+   "finalPromptTokens": 14492,
+   "readCalls": 2,
+   "writeCalls": 2,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 3,
+   "finalText": "Done. Here's the summary: **Root cause:** In `SnapshotStore.WriteAtomic` (`src/WinOptimizer/Services/SnapshotStore.cs:77`), `File.Move(tmp, path)` was used without `overwrite: true`. On Windows, `File.Move` throws an `IOException` when the destination file already exists. The first `SaveSnapshot` call succeeds (file doesn't exist yet), but the second call fails — the exception is swallowed by the `try/catch` in `SaveSnapshot`, which returns `false`. **Fix:** Changed `File.Move(tmp, path)` to `Fi",
+   "timedOut": false
+  },
+  {
+   "id": "bug-risky-services-prechecked",
+   "workspace": "winopt",
+   "kind": "bugfix",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.334
+    },
+    {
+     "name": "hidden-tests",
+     "ok": true,
+     "detail": "failed 0, passed 31",
+     "seconds": 2.951
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 4,
+   "totalSeconds": 81.8,
+   "modelSeconds": 50.3,
+   "gateSeconds": 17.4,
+   "generatedTokens": 900,
+   "finalPromptTokens": 14472,
+   "readCalls": 3,
+   "writeCalls": 1,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 1,
+   "finalText": "Fixed. The one-line change in `src/WinOptimizer/Core/OptimizationPlanner.cs` line 105: ```csharp // Before (bug): IsChecked = true, // After (fix): IsChecked = risk != RiskLevel.Risky, ``` **Verification:** - **Before fix:** `Risky_Services_Are_Shown_But_Unchecked` **FAILED** — risky services were incorrectly pre-checked. - **After fix:** same test **PASSES** — Tailscale (and other risky services) appear in the plan but unchecked, while safe services like SysMain remain checked. - **Build:** `do",
+   "timedOut": false
+  },
+  {
+   "id": "planner-max-processes",
+   "workspace": "winopt",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.518
+    },
+    {
+     "name": "hidden-tests",
+     "ok": true,
+     "detail": "failed 0, passed 36",
+     "seconds": 2.934
+    },
+    {
+     "name": "grep:Config.cs:MaxProcessesInPlan",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 7,
+   "totalSeconds": 181.1,
+   "modelSeconds": 141.7,
+   "gateSeconds": 21.2,
+   "generatedTokens": 3267,
+   "finalPromptTokens": 20797,
+   "readCalls": 4,
+   "writeCalls": 4,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 3,
+   "finalText": "All 33 tests pass and the build succeeds. Here's a summary of the changes: **`src/WinOptimizer/Core/Config.cs`** — Added `MaxProcessesInPlan` property to `AppConfig` with default value `0` (unlimited): ```csharp /// <summary>Maximum number of process items to include in the plan. 0 means unlimited.</summary> public int MaxProcessesInPlan { get; set; } ``` **`src/WinOptimizer/Core/OptimizationPlanner.cs`** — After adding service/power/brightness/visual-effects items, truncates only process items ",
+   "timedOut": false
+  },
+  {
+   "id": "fallback-brightness-config",
+   "workspace": "winopt",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.384
+    },
+    {
+     "name": "hidden-tests",
+     "ok": true,
+     "detail": "failed 0, passed 32",
+     "seconds": 3.013
+    },
+    {
+     "name": "grep:OptimizationPlanner.cs:FallbackBrightnessPercen",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 4,
+   "totalSeconds": 134.1,
+   "modelSeconds": 104.2,
+   "gateSeconds": 19.1,
+   "generatedTokens": 752,
+   "finalPromptTokens": 15033,
+   "readCalls": 3,
+   "writeCalls": 2,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 1,
+   "finalText": "All four criteria are satisfied: 1. **Config.cs** — Added `public int FallbackBrightnessPercent { get; set; } = 70;` to `AppConfig`. 2. **OptimizationPlanner.cs** — Changed `BrightnessPercent = 70` to `BrightnessPercent = config.FallbackBrightnessPercent` in `FallbackRestoreSnapshot`. 3. **Build** — `dotnet build` succeeded with 0 errors. 4. **Tests** — All 30 tests passed, including all existing `PlannerTests`.",
+   "timedOut": false
+  },
+  {
+   "id": "logger-rotation",
+   "workspace": "winopt",
+   "kind": "feature",
+   "pass": false,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.743
+    },
+    {
+     "name": "hidden-tests",
+     "ok": false,
+     "detail": "failed 2, passed 31: Failed!  - Failed:     2, Passed:    31, Skipped:     0, Total:    33, Duration: 134 ms - WinOptimizer.Tests.dll (net10.0)",
+     "seconds": 3.344
+    },
+    {
+     "name": "grep:FileLogger.cs:log\\.1\\.txt",
+     "ok": false,
+     "detail": "absent"
+    }
+   ],
+   "stoppedBecause": "aborted",
+   "steps": 16,
+   "totalSeconds": 720,
+   "modelSeconds": 665.6,
+   "gateSeconds": 646.1,
+   "generatedTokens": 8984,
+   "finalPromptTokens": 71423,
+   "readCalls": 12,
+   "writeCalls": 8,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 8,
+   "finalText": "",
+   "timedOut": true
+  },
+  {
+   "id": "bug-relaycommand-disabled",
+   "workspace": "winopt",
+   "kind": "bugfix",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.68
+    },
+    {
+     "name": "hidden-tests",
+     "ok": true,
+     "detail": "failed 0, passed 38",
+     "seconds": 5.167
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 5,
+   "totalSeconds": 93,
+   "modelSeconds": 59.2,
+   "gateSeconds": 17.8,
+   "generatedTokens": 1537,
+   "finalPromptTokens": 13445,
+   "readCalls": 2,
+   "writeCalls": 2,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 2,
+   "finalText": "All done. Here's the summary: **Bug:** `RelayCommand.CanExecute` and `RelayCommand<T>.CanExecute` returned `false` when no `canExecute` predicate was provided (`?? false`), disabling every bound button. **Fix:** Changed `?? false` to `?? true` on both classes in `src/WinOptimizer/ViewModels/RelayCommand.cs` (lines 14 and 28). **Verification:** - Reproduction test `RelayCommandTests.cs` **failed** before the fix (2 of 12 tests failed) and **passes** after (12/12). - `dotnet build src/WinOptimizer",
+   "timedOut": false
+  },
+  {
+   "id": "converter-bool-visibility",
+   "workspace": "winopt",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.403
+    },
+    {
+     "name": "hidden-tests",
+     "ok": true,
+     "detail": "failed 0, passed 39",
+     "seconds": 3.265
+    },
+    {
+     "name": "grep:BoolToVisibilityConverter.cs:class BoolToVisibilityCo",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 8,
+   "totalSeconds": 99.8,
+   "modelSeconds": 63.4,
+   "gateSeconds": 78.3,
+   "generatedTokens": 1458,
+   "finalPromptTokens": 13718,
+   "readCalls": 5,
+   "writeCalls": 2,
+   "selfChecks": 0,
+   "verifyRuns": 2,
+   "compilerChecks": 2,
+   "finalText": "Task complete. The converter is implemented and all behaviors are verified at runtime with 7 passing tests.",
+   "timedOut": false
+  },
+  {
+   "id": "snapshot-servicecount",
+   "workspace": "winopt",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.449
+    },
+    {
+     "name": "hidden-tests",
+     "ok": true,
+     "detail": "failed 0, passed 32",
+     "seconds": 3.091
+    },
+    {
+     "name": "grep:Snapshot.cs:ServiceCount",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 5,
+   "totalSeconds": 74.3,
+   "modelSeconds": 45.1,
+   "gateSeconds": 19.4,
+   "generatedTokens": 751,
+   "finalPromptTokens": 13761,
+   "readCalls": 4,
+   "writeCalls": 1,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 1,
+   "finalText": "All four requirements are satisfied: 1. **`ServiceCount` property added** — `public int ServiceCount => Services.Count;` is on the `Snapshot` class in `src/WinOptimizer/Core/Snapshot.cs`. 2. **Ignored by serialization** — Annotated with `[System.Text.Json.Serialization.JsonIgnore]`, so `JsonSerializer.Serialize` will not write it to JSON. 3. **Backwards-compatible deserialization** — Because it's a getter-only computed property with no setter, deserializing older JSON files that lack a `ServiceC",
+   "timedOut": false
+  },
+  {
+   "id": "bp-count-by-status",
+   "workspace": "blackport",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:backend",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 2.225
+    },
+    {
+     "name": "grep:LeadsController.cs:count-by-status",
+     "ok": true,
+     "detail": "ok"
+    },
+    {
+     "name": "grep:LeadDtos.cs:record LeadStatusCountDt",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 21,
+   "totalSeconds": 425.8,
+   "modelSeconds": 212.2,
+   "gateSeconds": 213.2,
+   "generatedTokens": 4942,
+   "finalPromptTokens": 30571,
+   "readCalls": 42,
+   "writeCalls": 2,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 1,
+   "finalText": "PostgreSQL is not running on `localhost:5432`, so the server cannot start and the endpoint cannot be exercised via HTTP. There are also no test projects in this workspace. I cannot perform an actual request to verify the behavior. The code logic is correct based on direct source inspection: - **Merged leads excluded:** `ScopeToCaller` (line 651) applies `l.MergedIntoLeadId == null`, and the endpoint calls it at line 135. - **Assigned-user scoping:** `ScopeToCaller` line 652–653 applies `l.Assign",
+   "timedOut": false
+  },
+  {
+   "id": "bp-quote-cost-total",
+   "workspace": "blackport",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:backend",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 2.228
+    },
+    {
+     "name": "grep:Quote.cs:CostTotal",
+     "ok": true,
+     "detail": "ok"
+    },
+    {
+     "name": "grep:Quote.cs:NotMapped",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 6,
+   "totalSeconds": 86.4,
+   "modelSeconds": 50.4,
+   "gateSeconds": 17.8,
+   "generatedTokens": 969,
+   "finalPromptTokens": 19834,
+   "readCalls": 4,
+   "writeCalls": 3,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 2,
+   "finalText": "Done. The changes to `backend/BlackPort.Domain/Entities/Quote.cs`: - Added `using System.ComponentModel.DataAnnotations.Schema;` and `using System.Linq;` - Added the read-only computed property at line 61–62: ```csharp [NotMapped] public decimal CostTotal => Lines.Sum(l => l.Amount); ``` Build succeeded with 0 errors. No database column or Fluent API configuration was added.",
+   "timedOut": false
+  },
+  {
+   "id": "bp-quote-is-expired",
+   "workspace": "blackport",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:backend",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 2.063
+    },
+    {
+     "name": "grep:Quote.cs:IsExpired",
+     "ok": true,
+     "detail": "ok"
+    },
+    {
+     "name": "grep:Quote.cs:ValidUntilUtc",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 19,
+   "totalSeconds": 208,
+   "modelSeconds": 136.4,
+   "gateSeconds": 136.2,
+   "generatedTokens": 3096,
+   "finalPromptTokens": 25697,
+   "readCalls": 19,
+   "writeCalls": 4,
+   "selfChecks": 0,
+   "verifyRuns": 5,
+   "compilerChecks": 1,
+   "finalText": "All four criteria are now fully met and verified: 1. **`public bool IsExpired`** — getter-only property at line 59 of `Quote.cs`. 2. **Correct logic** — exercised by 3 unit tests: `null` → `false`, future → `false`, past → `true`. All passed. 3. **`[NotMapped]`** — applied at line 58, EF ignores it. 4. **Build passes** — `dotnet build BlackPort.Api/BlackPort.Api.csproj --no-restore --nologo -v q` succeeded with 0 errors. The temporary test project (`QuoteDomainTests/`) was removed after verifica",
+   "timedOut": false
+  },
+  {
+   "id": "bp-dashboard-lead-sources",
+   "workspace": "blackport",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:backend",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 2.42
+    },
+    {
+     "name": "grep:DashboardController.cs:lead-sources",
+     "ok": true,
+     "detail": "ok"
+    },
+    {
+     "name": "grep:DashboardDtos.cs:record LeadSourceCountDt",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 4,
+   "totalSeconds": 90.9,
+   "modelSeconds": 57.6,
+   "gateSeconds": 29.7,
+   "generatedTokens": 1270,
+   "finalPromptTokens": 19543,
+   "readCalls": 6,
+   "writeCalls": 2,
+   "selfChecks": 0,
+   "verifyRuns": 1,
+   "compilerChecks": 1,
+   "finalText": "All four acceptance criteria are met: 1. **New endpoint** — `DashboardController.GetLeadSources` with `[HttpGet(\"lead-sources\")]` → `GET api/crm/dashboard/lead-sources`, returning `IReadOnlyList<LeadSourceCountDto>`. 2. **DTO** — `LeadSourceCountDto` record added to `DashboardDtos.cs` with `Source` (string) and `Count` (int). 3. **Visibility + merge filter** — Uses the same `CrmAccess.HasAnyLeadView` guard and `CanViewAll` scoping rule as the existing dashboard endpoint; merged leads excluded vi",
+   "timedOut": false
+  },
+  {
+   "id": "bp-frontend-privacy-hint",
+   "workspace": "blackport",
+   "kind": "feature",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:backend",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 13.107
+    },
+    {
+     "name": "grep:en.json:privacyHint",
+     "ok": true,
+     "detail": "ok"
+    },
+    {
+     "name": "grep:uk.json:privacyHint",
+     "ok": true,
+     "detail": "ok"
+    },
+    {
+     "name": "grep:page.tsx:privacyHint",
+     "ok": true,
+     "detail": "ok"
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 9,
+   "totalSeconds": 161.1,
+   "modelSeconds": 144.2,
+   "gateSeconds": 16.5,
+   "generatedTokens": 2899,
+   "finalPromptTokens": 29908,
+   "readCalls": 16,
+   "writeCalls": 4,
+   "selfChecks": 0,
+   "verifyRuns": 0,
+   "compilerChecks": 0,
+   "finalText": "All four conditions are satisfied: 1. **en.json** — `contactForm.privacyHint` added with `\"We never share your details with anyone.\"` 2. **uk.json** — `contactForm.privacyHint` added with `\"Ми ніколи не передаємо ваші дані третім особам.\"` 3. **contact/page.tsx** — renders the hint as a small centered caption line below the existing privacy paragraph, using `formT('privacyHint')` (the page's existing `getTranslations` mechanism, now also pulling the `contactForm` namespace) 4. **No backend files",
+   "timedOut": false
+  }
+ ]
+}
