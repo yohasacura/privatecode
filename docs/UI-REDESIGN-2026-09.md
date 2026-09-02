@@ -5,6 +5,14 @@ without him: every branch of the design walked to the end, the failure paths bes
 happy ones, and a decision written down for each. This is that document. It is the spec the
 rebuild is built from, and the thing to argue with when a screen does not match it.
 
+> **Status, 2026-09-02.** Phases 0–9 have landed (commits 01f5a1d … 930fe79). `App.css` is
+> gone; the styles are `styles/tokens.css` plus four layered files (base, shell, composer,
+> transcript) and Tailwind utilities on the components; the primitives live in `app/src/ui/`.
+> Still open against this document: the bridge's `--scenario` flag and the `docs/ui/`
+> screenshot script (§10); compact density (§8, shown disabled); the JS budget — the bundle
+> is 347 KB raw / 107 KB gzip against 239 KB raw before the redesign, over the 60 KB
+> allowance (the icon set and the primitives); CSS is 52 KB against the 80 KB budget.
+
 ## 0. Decided with the owner
 
 | question | decision |
