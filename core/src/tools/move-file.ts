@@ -166,8 +166,8 @@ export const moveFileTool: Tool<MoveFileArgs> = {
         try {
           await cp(fromAbs, toAbs, { recursive: true, force: true, errorOnExist: false })
           await rm(fromAbs, { recursive: true, force: true })
-          noteWorkspaceWrite(args.from)
-          noteWorkspaceWrite(args.to)
+          noteWorkspaceWrite(fromAbs)
+          noteWorkspaceWrite(toAbs)
           return { ok: true, content: `Moved ${args.from} -> ${args.to}` }
         } catch (copyError) {
           await undoCreatedDirs(created)
@@ -184,8 +184,8 @@ export const moveFileTool: Tool<MoveFileArgs> = {
       }
     }
 
-    noteWorkspaceWrite(args.from)
-    noteWorkspaceWrite(args.to)
+    noteWorkspaceWrite(fromAbs)
+    noteWorkspaceWrite(toAbs)
     return { ok: true, content: `Moved ${args.from} -> ${args.to}` }
   },
 }

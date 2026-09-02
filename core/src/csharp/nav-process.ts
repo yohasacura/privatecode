@@ -1,6 +1,6 @@
 import { execa } from 'execa'
-import { existsSync } from 'node:fs'
-import { dirname, join, relative, sep } from 'node:path'
+import { existsSync, readdirSync } from 'node:fs'
+import { dirname, join, relative, resolve as pathResolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /**
@@ -58,6 +58,8 @@ export class NavProcess {
   /** The root this helper has loaded, so a second workspace is a reload and not a lie. */
   private loadedRoot: string | null = null
   private loading: Promise<Record<string, unknown>> | null = null
+  /** Files written since the helper last saw them, by absolute path. See `markDirty`. */
+  private readonly dirty = new Set<string>()
   /** Set by `stop()` and never cleared: a stopped helper must stay stopped. Without it, a
    * caller that kept its own reference across a workspace switch — the background edge
    * harvest is exactly that caller — would have its next question respawn the exe AFTER
@@ -123,8 +125,13 @@ export class NavProcess {
   /** Builds the index for `root` if it is not the one already loaded. Concurrent callers
    * share one load rather than starting several against a single-threaded helper. */
   async ensureLoaded(root: string): Promise<Record<string, unknown>> {
-    if (this.loadedRoot === root) return { ok: true, cached: true }
+    if (this.loadedRoot === root) {
+      await this.flushDirty()
+      // The flush may have found a helper too old to sync and dropped the index.
+      if (this.loadedRoot === root) return { ok: true, cached: true }
+    }
     if (this.loading !== null) return this.loading
+    this.dirty.clear()
     this.loading = this.send('load', { root }, LOAD_TIMEOUT_MS)
       .then((r) => {
         if (r['ok'] === true) this.loadedRoot = root
@@ -141,6 +148,75 @@ export class NavProcess {
   /** The loaded compilation no longer describes the code. See `noteWorkspaceWrite`. */
   invalidate(): void {
     this.loadedRoot = null
+    this.dirty.clear()
+  }
+
+  /**
+   * One file changed on disk. Remembered rather than acted on: the next question re-reads
+   * exactly these files into the index (`sync`), which is a parse of one file where the old
+   * rule was a reload of the tree — 0.5–12 s, paid after every edit that a question followed.
+   * A file outside the loaded root is not in the index and is not remembered.
+   */
+  markDirty(absolutePath: string): void {
+    if (this.loadedRoot === null) return
+    if (!isUnder(absolutePath, this.loadedRoot)) return
+    this.dirty.add(absolutePath)
+  }
+
+  private async flushDirty(): Promise<void> {
+    if (this.dirty.size === 0) return
+    const files = [...this.dirty]
+    this.dirty.clear()
+    let reply: Record<string, unknown>
+    try {
+      reply = await this.send('sync', { files }, ASK_TIMEOUT_MS)
+    } catch {
+      this.loadedRoot = null
+      return
+    }
+    // A helper from before `sync` existed answers "unknown op"; the reload it always did
+    // is still the right answer there.
+    if (reply['ok'] !== true) this.loadedRoot = null
+  }
+
+  /**
+   * The compile errors the code has now, from the helper's own compilation, or `null` when
+   * the helper cannot say — an older build without the op, an index that failed to load. The
+   * caller falls back to the project's real build; a null here is "not available", never
+   * "no errors".
+   */
+  async diagnostics(root: string, files: string[]): Promise<CsharpDiagnostics | null> {
+    let loaded: Record<string, unknown>
+    try {
+      loaded = await this.ensureLoaded(root)
+    } catch {
+      return null
+    }
+    if (loaded['ok'] !== true) return null
+    for (const f of files) this.dirty.delete(f)
+    let reply: Record<string, unknown>
+    try {
+      reply = await this.send('diagnostics', { files }, ASK_TIMEOUT_MS)
+    } catch {
+      return null
+    }
+    if (reply['ok'] !== true) return null
+    const rows = Array.isArray(reply['errors']) ? reply['errors'] as Record<string, unknown>[] : []
+    return {
+      errors: rows.map((r) => ({
+        file: typeof r['file'] === 'string' ? r['file'] : '',
+        line: typeof r['line'] === 'number' ? r['line'] : 0,
+        column: typeof r['column'] === 'number' ? r['column'] : 0,
+        code: typeof r['code'] === 'string' ? r['code'] : '',
+        message: typeof r['message'] === 'string' ? r['message'] : '',
+      })),
+      reported: typeof reply['reported'] === 'number' ? reply['reported'] : rows.length,
+      suppressed: typeof reply['suppressed'] === 'number' ? reply['suppressed'] : 0,
+      baseline: typeof reply['baseline'] === 'number' ? reply['baseline'] : 0,
+      bound: typeof reply['bound'] === 'number' ? reply['bound'] : 0,
+      trees: typeof reply['trees'] === 'number' ? reply['trees'] : 0,
+      ms: typeof reply['ms'] === 'number' ? reply['ms'] : 0,
+    }
   }
 
   async stop(): Promise<void> {
@@ -150,6 +226,72 @@ export class NavProcess {
     try { child.stdin?.end() } catch { /* already gone */ }
     try { await child } catch { /* it exits non-zero when killed; not a failure here */ }
   }
+}
+
+export interface CsharpError {
+  /** Absolute, as the helper reports it; `toWorkspacePath` makes it addressable. */
+  file: string
+  line: number
+  column: number
+  code: string
+  message: string
+}
+
+export interface CsharpDiagnostics {
+  /** At most thirty; `reported` says how many there were. */
+  errors: CsharpError[]
+  reported: number
+  /** Errors the tree already had at load and which are not this edit's to answer for. */
+  suppressed: number
+  baseline: number
+  /** Files whose bodies were bound to answer; the tree has `trees` in all. */
+  bound: number
+  trees: number
+  ms: number
+}
+
+/** `abs` is `root` or inside it, ignoring case and separator spelling. */
+function isUnder(abs: string, root: string): boolean {
+  const a = pathResolve(abs).toLowerCase()
+  const r = pathResolve(root).toLowerCase()
+  return a === r || a.startsWith(r.endsWith(sep) ? r : r + sep)
+}
+
+/**
+ * Which folder the C# index is built over.
+ *
+ * The helper takes ONE root, so a multi-folder workspace has to choose. The solution file is
+ * the honest signal — a `.sln` or `.csproj` is what makes a folder a C# project — and the
+ * primary folder is only the fallback for when nothing says otherwise, which is also the
+ * single-folder case. Checked shallowly on purpose: a solution lives at the top of its
+ * project, and walking every mount deeply on each call would cost more than the answer.
+ */
+export function csharpRoot(workspace: { mounts: readonly { root: string }[]; root: string }): string {
+  for (const mount of workspace.mounts) {
+    let entries: string[]
+    try {
+      entries = readdirSync(mount.root)
+    } catch {
+      continue
+    }
+    if (entries.some((e) => e.toLowerCase().endsWith('.sln') || e.toLowerCase().endsWith('.csproj'))) {
+      return mount.root
+    }
+  }
+  return workspace.root
+}
+
+/**
+ * The instant C# check: the errors `files` (absolute paths, all `.cs`) left the compilation
+ * with, or `null` when there is no helper to ask. The session runs this after an edit where
+ * it used to run the build, and still runs the build when the turn ends — this compilation
+ * is faithful enough to say "you broke X" in 300 ms, not faithful enough to replace the
+ * command the owner wrote into the settings.
+ */
+export async function csharpCheck(root: string, files: string[]): Promise<CsharpDiagnostics | null> {
+  const nav = navProcess()
+  if (nav === null) return null
+  return nav.diagnostics(root, files)
 }
 
 /**
@@ -223,13 +365,16 @@ export function resolveHelper(fromEnv: string | undefined, from: string | null):
  * It went unnoticed because the seven sessions that certified the tool ran in PLAN mode, where
  * no write is possible. It bites in exactly the sessions this is for.
  *
- * Dropping the flag rather than reloading here: a reload costs 0.5-12 s depending on the
+ * Remembering the file rather than reloading here: a reload costs 0.5-12 s depending on the
  * project, and most writes are never followed by another navigation question. The next `ask`
- * pays for it, and only if there is one.
+ * re-reads exactly the files that changed (`NavProcess.markDirty`), and only if there is one.
+ *
+ * Takes the ABSOLUTE path: the model's own workspace-relative spelling is relative to the
+ * workspace, and in a multi-folder workspace the index is rooted at one folder of it.
  */
-export function noteWorkspaceWrite(path: string): void {
-  if (!path.toLowerCase().endsWith('.cs')) return
-  current?.invalidate()
+export function noteWorkspaceWrite(absolutePath: string): void {
+  if (!absolutePath.toLowerCase().endsWith('.cs')) return
+  current?.markDirty(absolutePath)
 }
 
 export async function stopNavProcess(): Promise<void> {

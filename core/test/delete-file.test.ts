@@ -53,14 +53,19 @@ afterEach(async () => {
 })
 
 describe('the C# index after a delete', () => {
-  test('deleting a .cs file drops the cached compilation', async () => {
+  test('deleting a .cs file is remembered, so the next question re-reads it — and finds it gone', async () => {
     writeFileSync(join(root, 'Legacy.cs'), 'class Legacy {}\n', 'utf8')
     // Pretend a load succeeded, the way one does.
     ;(navProcess() as unknown as { loadedRoot: string | null }).loadedRoot = root
 
     const r = await deleteFileTool.execute({ path: 'Legacy.cs' }, { workspace: ws })
     expect(r.ok).toBe(true)
-    expect(loadedRoot()).toBeNull()
+    // Not dropped: a reload is 0.5–12 s, and a `sync` of one path is what the next question
+    // pays instead. The path is the ABSOLUTE one, because the index may be rooted at one
+    // folder of a multi-folder workspace and the model's spelling is relative to all of it.
+    expect(loadedRoot()).toBe(root)
+    const dirty = (navProcess() as unknown as { dirty: Set<string> }).dirty
+    expect([...dirty].map((p) => p.replace(/\\/g, '/'))).toEqual([join(root, 'Legacy.cs').replace(/\\/g, '/')])
   })
 
   test('a recursive directory delete drops it too, whatever the directory was called', async () => {

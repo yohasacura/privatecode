@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "agent": "tsx src/cli.ts",
     "bundle": "node scripts/bundle.mjs",
-    "host:dev": "tsx src/host/ws-bridge.ts"
+    "host:dev": "tsx src/host/ws-bridge.ts",
+    "eval": "tsx ../eval/run.mts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

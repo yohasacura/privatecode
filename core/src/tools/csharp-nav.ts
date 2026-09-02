@@ -1,30 +1,5 @@
-import { readdirSync } from 'node:fs'
-import { navProcess, toWorkspacePath } from '../csharp/nav-process.js'
+import { csharpRoot, navProcess, toWorkspacePath } from '../csharp/nav-process.js'
 import type { Tool } from './types.js'
-
-/**
- * Which folder the C# index is built over.
- *
- * The helper takes ONE root, so a multi-folder workspace has to choose. The solution file is
- * the honest signal — a `.sln` or `.csproj` is what makes a folder a C# project — and the
- * primary folder is only the fallback for when nothing says otherwise, which is also the
- * single-folder case. Checked shallowly on purpose: a solution lives at the top of its
- * project, and walking every mount deeply on each call would cost more than the answer.
- */
-function csharpRoot(workspace: { mounts: readonly { root: string }[]; root: string }): string {
-  for (const mount of workspace.mounts) {
-    let entries: string[]
-    try {
-      entries = readdirSync(mount.root)
-    } catch {
-      continue
-    }
-    if (entries.some((e) => e.toLowerCase().endsWith('.sln') || e.toLowerCase().endsWith('.csproj'))) {
-      return mount.root
-    }
-  }
-  return workspace.root
-}
 
 export interface CsharpNavArgs {
   action: 'definition' | 'references' | 'implementations' | 'members'

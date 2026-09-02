@@ -337,7 +337,7 @@ export const editFileTool: Tool<EditFileArgs> = {
     ctx.reads?.markWritten(args.path)
     // And the C# index, which is built once per workspace and otherwise answers every
     // later question about the code as it was BEFORE this edit — with ok:true.
-    noteWorkspaceWrite(args.path)
+    noteWorkspaceWrite(abs)
 
     return { ok: true, content: `${renderDiff(lfBody, finalText, args.path)}${note}` }
   },

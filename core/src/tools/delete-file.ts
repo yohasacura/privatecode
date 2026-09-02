@@ -105,7 +105,7 @@ export const deleteFileTool: Tool<DeleteFileArgs> = {
       // only if a navigation question actually follows.
       navProcess()?.invalidate()
     } else {
-      noteWorkspaceWrite(args.path)
+      noteWorkspaceWrite(abs)
     }
 
     return {

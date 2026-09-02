@@ -96,6 +96,8 @@ test('names the automatic check and tells the model not to run it, only when one
   expect(p).toMatch(/do not run that\s+command yourself/i)
   // The example line is the exact shape the session appends, so the model recognises it.
   expect(p).toContain(`[${cmd}: ok, 2.1s]`)
-  // Still small: the paragraph is four lines, not a manual.
-  expect(p.length - without.length).toBeLessThan(400)
+  // The instant C# check is named too, with the exact line it reports as.
+  expect(p).toContain('[C# compiler check: ok, 0.3s]')
+  // Still small: the paragraph is six lines, not a manual.
+  expect(p.length - without.length).toBeLessThan(650)
 })

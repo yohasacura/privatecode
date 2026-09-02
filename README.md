@@ -85,6 +85,18 @@ once when the workspace opens (the prefix is prewarmed then, while you type).
 A configured `verify` command runs by itself right after every step that edits files, and
 the model is told so; it should not be running the build itself.
 
+**C# edits are checked by the compiler before the build gets a turn.** After a step that
+edited only `.cs` files, the Roslyn helper re-reads those files into its compilation and
+reports the errors they introduced — with file, line and code — in a few hundred
+milliseconds on a small project and two or three seconds on a three-hundred-file backend,
+where `dotnet build` is two and ten seconds respectively. The verify command still runs
+once when the turn ends; the compiler's answer is faithful enough to say "you broke X"
+right after the edit, not faithful enough to replace the build. It needs nothing configured:
+the helper takes the base library and the shared frameworks (ASP.NET Core, WPF, Windows
+Forms) from the .NET installation on the machine, the project's packages from its last
+build, and the sources the SDK generated into `obj/`. Errors the tree already had when the
+session opened are never blamed on an edit.
+
 **Resuming a session is instant when the server can save its state.** Start llama.cpp with
 `--slot-save-path <a directory>` and PrivateCode writes the model's state for the session you
 are in to that directory every few minutes (one file per workspace, ~23 MB per thousand
@@ -128,7 +140,12 @@ source and the SHA-256 the script verifies before staging anything.
 ```bash
 npm test --prefix core     # the agent, its gates and its tools
 npm test --prefix app      # the window
+npm run eval --prefix core # fifteen tasks on two real projects, against the live server
 ```
+
+The eval (`eval/README.md`) is the number that says whether a change made the agent better:
+each task runs in a throwaway copy of a real project and is checked by the project's build,
+by hidden xunit tests dropped in afterwards, and by grep — none of which the model sees.
 
 ## Licence
 

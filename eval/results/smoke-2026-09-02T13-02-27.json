@@ -1,0 +1,40 @@
+{
+ "label": "smoke",
+ "gates": "fast",
+ "at": "2026-09-02T13:02:27.328Z",
+ "results": [
+  {
+   "id": "bug-relaycommand-disabled",
+   "workspace": "winopt",
+   "kind": "bugfix",
+   "pass": true,
+   "checks": [
+    {
+     "name": "build:WindowsOptimizer",
+     "ok": true,
+     "detail": "ok",
+     "seconds": 1.21
+    },
+    {
+     "name": "hidden-tests",
+     "ok": true,
+     "detail": "failed 0, passed 36",
+     "seconds": 2.891
+    }
+   ],
+   "stoppedBecause": "done",
+   "steps": 6,
+   "totalSeconds": 89.1,
+   "modelSeconds": 54.2,
+   "gateSeconds": 15.7,
+   "generatedTokens": 1406,
+   "finalPromptTokens": 13536,
+   "readCalls": 2,
+   "writeCalls": 2,
+   "selfChecks": 0,
+   "verifyRuns": 3,
+   "finalText": "All 34 tests pass. The fix is complete. **Bug:** `RelayCommand` and `RelayCommand<T>` both used `_canExecute?.Invoke() ?? false`, which returned `false` when no `canExecute` predicate was supplied — disabling every bound button. **Fix:** Changed `?? false` to `?? true` on both classes (`src/WinOptimizer/ViewModels/RelayCommand.cs`, lines 14 and 28). A command with no predicate is now always executable, while commands with a predicate continue to evaluate it exactly as before. **Reproduction:** `",
+   "timedOut": false
+  }
+ ]
+}

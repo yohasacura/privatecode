@@ -188,7 +188,10 @@ export function buildSystemPrompt(opts: PromptOptions): string {
         `After any step in which you edited files, the project's own check runs by itself:`,
         `\`${opts.autoCheck}\`. Its result reaches you as a line like`,
         `\`[${opts.autoCheck}: ok, 2.1s]\`, or as the errors it printed. Do not run that`,
-        'command yourself — the line arrives before your next step.',
+        'command yourself — the line arrives before your next step. When the edited files',
+        'are C#, an instant compiler check runs in its place and reports as',
+        '`[C# compiler check: ok, 0.3s]` or as a list of errors; the command itself then runs',
+        'once when your turn ends.',
         '',
       ]
       : []),

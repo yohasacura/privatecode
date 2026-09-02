@@ -423,6 +423,56 @@ Measured and rebuilt in `docs/SPEED-2026-09-02.md`. The decisions it records:
   line — and `"gates": "thorough" | "fast" | "off"` in settings.json chooses how much of the
   harness a person's time buys (`GateProfile` in session.ts). `thorough` ships as default.
 
+## 8b. The instant C# check (2026-09-02)
+
+The build after every edit (§8a) was the right check at the wrong price: two seconds on a
+small project, nine on a real backend, paid on every writing step. The Roslyn helper already
+held a compilation of the tree for navigation; a compilation can say what an edit broke.
+
+**What runs.** After a step whose edits were all `.cs`, the session hands the helper the
+absolute paths it wrote (`sync`: the files are re-read into the existing solution — one
+parse each, where the old rule reloaded the tree) and asks for `diagnostics`. The answer is
+the compile errors with file, line, column and code, rendered to the model in the same
+shape the build's line has; "ok" is one line, said once, and an unchanged failure is
+"still failing". The build still runs once at the end of the turn: the check records a
+fingerprint the end-of-turn dedup does not accept, on purpose.
+
+**What it costs**, measured on copies of the two projects (`spike/roslyn-diagnostics-probe.mts`):
+
+| project | files | load | check after one edit | `dotnet build` |
+|---|---:|---:|---:|---:|
+| WindowsOptimizer (WPF) | 32 | 1.2 s | 0.2 s (3 of 37 files bound) | 1.7–3.7 s |
+| black-port backend (ASP.NET) | 276 | 1.5 s | 2.4 s (137 of 281 files bound) | 9.3 s passing, 1.5 s failing |
+
+Binding every method body is what a full `GetDiagnostics` does, and on the backend it is
+four seconds. An edit can only have broken a file that names something the edit declared,
+so the helper binds the touched files plus every file whose identifier tokens include a
+name declared in them — a text match over already-parsed trees — and nothing else. The
+cross-file consequences are still found: renaming `Amount` on an entity reported the two
+callers that stopped compiling, in other projects of the same tree.
+
+**What made it faithful**, in the order each was found. The first run reported 291 errors
+on a tree that builds clean. WPF's assemblies are not in the base library the helper
+embeds; the SDK generates the implicit usings and the XAML partials into `obj/` and the
+helper skipped `obj/`; WPF's throwaway `_wpftmp` project leaves one pair of generated files
+behind per build, each declaring the assembly attributes again; the runtime folder holds
+native DLLs and a version-4.0 `WindowsBase` facade beside the real one; and the projects'
+own compiled outputs sat in `bin/`, so every extension method existed twice. Now the base
+library and the shared frameworks come from the .NET installation on the machine at the
+project's major version (the embedded copy is the fallback for a machine with none), the
+generated sources of the newest build are documents the compiler sees and navigation never
+lists, duplicates resolve to the higher assembly version, own outputs are dropped — and the
+WPF app loads with zero pre-existing errors. The backend keeps seven the compiler cannot
+avoid (`[GeneratedRegex]` partials whose generator this compilation does not run, top-level
+statements in a library-shaped compilation), which is why there is a **baseline**: the
+errors the tree had at load, keyed by file, code and message so an edit that moves one does
+not resurrect it, are never reported as an edit's. A tree that loaded clean is trusted
+further — an error in a touched file is then always the edit's.
+
+`core/test/roslyn-nav.test.ts` pins the helper against a real tree (sync, add, delete, the
+cross-file break, the baseline); `core/test/roslyn-check.test.ts` pins the session's half
+with the helper injected.
+
 ## 8. Open items
 
 - ~~Finish the edit-reliability probe and settle whether SEARCH/REPLACE anchors need

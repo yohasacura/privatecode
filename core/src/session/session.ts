@@ -24,6 +24,7 @@ import type { VerifySpec } from '../verify/config.js'
 import {
   MIDTURN_VERIFY_PREFIX, STILL_FAILING_SUFFIX, runVerify, verifyFailureMessage,
 } from '../verify/runner.js'
+import { csharpCheck as defaultCsharpCheck, csharpRoot, type CsharpDiagnostics } from '../csharp/nav-process.js'
 import type { InteractionPort, TodoItem } from '../interaction.js'
 import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
 import type { ChatMessage, StreamProgress } from '../llama/types.js'
@@ -302,6 +303,13 @@ export interface SessionOptions {
     command: string; ok: boolean; attempt: number; folder?: string
     exitCode?: number; problem?: string
   }): void
+  /**
+   * The instant C# check run after an edit instead of the build (`Session.compilerCheck`).
+   * Absent means the vendored Roslyn helper; `null` switches the check off, which is what a
+   * test of the build path wants. Takes the C# root and the absolute paths just written,
+   * and answers `null` when it cannot say — the build then runs as it always did.
+   */
+  csharpCheck?: ((root: string, files: string[]) => Promise<CsharpDiagnostics | null>) | null
   /** Fired once per acceptance-gate check on a contract-bearing turn, so a front end can
    * show that the seconds it costs bought something — the same visibility rule onVerify
    * follows. `unmet > 0` means a fix round follows. `kind: 'review'` is the fresh-context
@@ -1831,6 +1839,7 @@ export class Session {
       // "are there writes nobody has checked" answer yes forever once a mid-turn check was
       // skipped. Re-captured each round because the fixer turn below writes too.
       this.writesAtLastVerify = this.writeCount
+      this.writtenSinceCheck.clear()
       const outcome = await runVerify(job.spec, job.root, signal)
       verdict = outcome.problem !== undefined
         ? `could not run — ${outcome.problem}` : outcome.ok ? 'passed' : 'failed'
@@ -1922,8 +1931,10 @@ export class Session {
       : typeof parsed.to === 'string' ? parsed.to : undefined
     if (target === undefined) return
     try {
-      const mount = this.workspace.mountFor(this.workspace.resolve(target))
+      const abs = this.workspace.resolve(target)
+      const mount = this.workspace.mountFor(abs)
       if (mount) this.writtenMounts.add(mount.name)
+      this.writtenSinceCheck.add(abs)
     } catch {
       // A path the jail refuses cannot have been written; nothing to record.
     }
@@ -2861,6 +2872,68 @@ export class Session {
    *
    * Never throws — a check that cannot run must not take the turn down.
    */
+  /**
+   * The compiler's answer to "did these edits break anything", when every edit was C# and
+   * the Roslyn helper can say. True when a verdict reached the model — clean or not — and
+   * false when the build has to be run instead.
+   *
+   * The verdict is written the way the build's is (one "ok" line only when the state
+   * changed, the errors once and "still failing" after that), because it lands in the same
+   * place and the model has learned one shape. What it never does is stand in for the build
+   * at the end of the turn: `verifyAndFix` deduplicates against a fingerprint of `'ok'`,
+   * and this one records `'compiler-ok'`, so the owner's command still runs once when the
+   * turn ends. The helper's compilation is faithful enough to say "you broke X" and not
+   * faithful enough to say "everything the build checks is fine".
+   */
+  private async compilerCheck(written: string[], signal?: AbortSignal): Promise<boolean> {
+    const check = this.opts.csharpCheck === undefined ? defaultCsharpCheck : this.opts.csharpCheck
+    if (check === null) return false
+    if (written.length === 0 || !written.every((f) => f.toLowerCase().endsWith('.cs'))) return false
+    const root = csharpRoot(this.workspace)
+    const startedAt = Date.now()
+    let result: CsharpDiagnostics | null
+    try {
+      result = await check(root, written)
+    } catch {
+      return false
+    }
+    if (result === null || signal?.aborted) return false
+    const seconds = (Date.now() - startedAt) / 1000
+    const mount = this.workspace.mountFor(root)
+    const key = mount?.name ?? ''
+    const ok = result.errors.length === 0
+    this.opts.onVerify?.({
+      command: 'C# compiler check', ok, attempt: 1,
+      ...(this.workspace.multi && mount ? { folder: mount.name } : {}),
+    })
+    if (ok) {
+      if (this.lastVerifyFingerprint.get(key) !== 'compiler-ok') {
+        this.lastVerifyFingerprint.set(key, 'compiler-ok')
+        this.transcript.append({ role: 'user', content: `[C# compiler check: ok, ${seconds.toFixed(1)}s]` })
+      }
+      return true
+    }
+    const lines = result.errors.map((e) =>
+      `${e.file === '' ? '(no file)' : this.workspace.display(e.file)}:${e.line}:${e.column}: ${e.code} ${e.message}`)
+    const fingerprint = `compiler-fail:${lines.join('\n').slice(0, 800)}`
+    if (fingerprint === this.lastVerifyFingerprint.get(key)) {
+      this.transcript.append({ role: 'user', content: `[C# compiler check${STILL_FAILING_SUFFIX}]` })
+      return true
+    }
+    this.lastVerifyFingerprint.set(key, fingerprint)
+    const more = result.reported > result.errors.length ? `\n… and ${result.reported - result.errors.length} more` : ''
+    const count = result.reported === 1 ? '1 error' : `${result.reported} errors`
+    this.transcript.append({
+      role: 'user',
+      content:
+        `[${MIDTURN_VERIFY_PREFIX}C# compiler check after your edits found ${count}:\n${lines.join('\n')}${more}\n\n` +
+        'This ran automatically after your recent edits, so the cause is probably in them ' +
+        'and is still fresh. Fix it now if it is yours. If this is the middle of a change ' +
+        'that is not finished yet, carry on — it is checked again after your next edit.]',
+    })
+    return true
+  }
+
   private async verifyMidTurn(signal?: AbortSignal): Promise<void> {
     if (this.writeCount === this.writesAtLastVerify) return
     // "Checks off" means this one too: the chip says nothing builds until asked, and the
@@ -2888,6 +2961,18 @@ export class Session {
     // The back-off is the only remaining time gate. A project whose check takes half a
     // minute cannot afford one per write, and the honest way to discover that is to have
     // measured it rather than to have guessed a constant.
+    // The instant check comes before the back-off and before the "is a command configured"
+    // test: it costs hundreds of milliseconds where the build costs seconds, and a C# tree
+    // gets it whether or not the owner wrote a verify command. Only when it cannot answer
+    // — no helper in this build, an edit that was not all C#, an index that failed — does
+    // the build below take over.
+    const written = [...this.writtenSinceCheck]
+    this.writtenSinceCheck.clear()
+    if (await this.compilerCheck(written, signal)) {
+      this.writesAtLastVerify = this.writeCount
+      return
+    }
+
     if (this.verifySlow && Date.now() - this.lastVerifyAtMs < MID_TURN_VERIFY_MS) return
     const jobs = this.verifyJobs()
     if (jobs.length === 0) return
@@ -3983,6 +4068,8 @@ export class Session {
    * "is there anything new to snapshot, and is it time". See `checkpointLongTurn`. */
   private writesAtLastCheckpoint = 0
   private writesAtLastVerify = 0
+  /** Absolute paths written since the last check of any kind; what the compiler check reads. */
+  private readonly writtenSinceCheck = new Set<string>()
   /** What the last mid-turn check said, so an unchanged answer is reported as unchanged
    * rather than repeated in full. 'ok' or a clipped failure fingerprint. */
   /**

@@ -195,4 +195,138 @@ describe.skipIf(!vendored)('the vendored C# navigator', () => {
     expect(r['ok']).toBe(true)
     expect(String(r['note'])).toContain('NoSuchTypeAnywhere')
   })
+
+  test('the tree as written compiles clean, and diagnostics says so in milliseconds', async () => {
+    const d = await helper.ask('diagnostics')
+    expect(d['ok']).toBe(true)
+    expect(d['errors']).toEqual([])
+    expect(d['baseline']).toBe(0)
+    expect(d['ms']).toBeLessThan(5000)
+  })
+
+  test('an edit that breaks a call is reported with file, line and code — after a sync, not a reload', async () => {
+    const file = join(root, 'src', 'MainViewModel.cs')
+    writeFileSync(file, [
+      'namespace App;',
+      'public sealed class MainViewModel : ViewModelBase',
+      '{',
+      '    private readonly IPlanner _planner;',
+      '    public MainViewModel(IPlanner planner) { _planner = planner; }',
+      '    public void Run() => _planner.Buld();',
+      '}',
+    ].join('\n'), 'utf8')
+    const d = await helper.ask('diagnostics', { files: [file] })
+    expect(d['ok']).toBe(true)
+    const errors = d['errors'] as { file: string; line: number; code: string; message: string }[]
+    expect(errors).toHaveLength(1)
+    expect(errors[0]!.code).toBe('CS1061')
+    expect(errors[0]!.line).toBe(6)
+    expect(errors[0]!.file.replace(/\\/g, '/')).toBe(file.replace(/\\/g, '/'))
+    expect(errors[0]!.message).toContain('Buld')
+  })
+
+  test('a caller in ANOTHER file breaks when a method is renamed, and that is reported too', async () => {
+    // The whole reason this is a compilation and not a per-file parse.
+    writeFileSync(join(root, 'src', 'IPlanner.cs'), [
+      'namespace App;',
+      'public interface IPlanner { void Build2(); }',
+    ].join('\n'), 'utf8')
+    const d = await helper.ask('diagnostics', { files: [join(root, 'src', 'IPlanner.cs')] })
+    const files = (d['errors'] as { file: string }[]).map((e) => e.file.replace(/\\/g, '/').split('/').pop())
+    expect(files).toContain('Planner.cs')
+    expect(files).toContain('MainViewModel.cs')
+  })
+
+  test('putting it back leaves nothing to report, and a new file is picked up by sync', async () => {
+    writeFileSync(join(root, 'src', 'IPlanner.cs'), [
+      'namespace App;',
+      'public interface IPlanner { void Build(); }',
+    ].join('\n'), 'utf8')
+    writeFileSync(join(root, 'src', 'MainViewModel.cs'), [
+      'namespace App;',
+      'public sealed class MainViewModel : ViewModelBase',
+      '{',
+      '    private readonly IPlanner _planner;',
+      '    public MainViewModel(IPlanner planner) { _planner = planner; }',
+      '    public void Run() => _planner.Build();',
+      '    public void Extra() => Helper.Twice(2);',
+      '}',
+    ].join('\n'), 'utf8')
+    writeFileSync(join(root, 'src', 'Helper.cs'), [
+      'namespace App;',
+      'public static class Helper { public static int Twice(int n) => n * 2; }',
+    ].join('\n'), 'utf8')
+    const s = await helper.ask('sync', {
+      files: [join(root, 'src', 'IPlanner.cs'), join(root, 'src', 'MainViewModel.cs'), join(root, 'src', 'Helper.cs')],
+    })
+    expect(s['ok']).toBe(true)
+    expect(s['added']).toBe(1)
+    expect(s['updated']).toBe(2)
+    const d = await helper.ask('diagnostics')
+    expect(d['errors']).toEqual([])
+    // And navigation sees the new file without a reload.
+    const def = await helper.ask('definition', { symbol: 'Twice' })
+    expect((def['results'] as unknown[]).length).toBe(1)
+  })
+
+  test('a file that is deleted leaves the index on the next sync', async () => {
+    rmSync(join(root, 'src', 'Helper.cs'))
+    const s = await helper.ask('sync', { files: [join(root, 'src', 'Helper.cs')] })
+    expect(s['removed']).toBe(1)
+    const d = await helper.ask('diagnostics')
+    // `Extra()` now calls a class that is gone: an error in a file nobody touched this time.
+    expect((d['errors'] as { code: string }[]).map((e) => e.code)).toEqual(['CS0103'])
+  })
+})
+
+describe.skipIf(!vendored)('errors a tree already had', () => {
+  let brokenRoot: string
+  let own: Helper
+
+  beforeAll(async () => {
+    brokenRoot = mkdtempSync(join(tmpdir(), 'pc-roslyn-broken-'))
+    const write = (rel: string, body: string): void => {
+      mkdirSync(dirname(join(brokenRoot, rel)), { recursive: true })
+      writeFileSync(join(brokenRoot, rel), body, 'utf8')
+    }
+    write('src/Old.cs', 'namespace App;\npublic class Old { public void M() => Missing.Call(); }\n')
+    write('src/Fine.cs', 'namespace App;\npublic class Fine { public int N => 1; }\n')
+    own = start()
+    await own.ask('status')
+    await own.ask('load', { root: brokenRoot })
+  })
+
+  afterAll(() => {
+    own?.stop()
+    rmSync(brokenRoot, { recursive: true, force: true })
+  })
+
+  test('are not blamed on an edit that did not touch them', async () => {
+    writeFileSync(join(brokenRoot, 'src', 'Fine.cs'), 'namespace App;\npublic class Fine { public int N => 2; }\n', 'utf8')
+    const d = await own.ask('diagnostics', { files: [join(brokenRoot, 'src', 'Fine.cs')] })
+    expect(d['errors']).toEqual([])
+    expect(d['baseline']).toBe(1)
+    // Only the edited file and the files that name something it declares are bound — one
+    // here, not the tree — which is what makes this cheap on a real project.
+    expect(d['bound']).toBe(1)
+  })
+
+  test('nor on an edit to the file they live in, because a tree with old errors is not trusted that far', async () => {
+    // On a tree that loaded CLEAN an error in an edited file is always the edit's. On one
+    // that did not, an old error in the edited file may be a generator this compilation
+    // cannot run — measured: `[GeneratedRegex]` partials on a real backend — and reporting it
+    // as the model's own would send it fixing what is not broken. The build says the rest.
+    writeFileSync(join(brokenRoot, 'src', 'Old.cs'),
+      'namespace App;\npublic class Old { public void M() => Missing.Call(); public int X => 1; }\n', 'utf8')
+    const d = await own.ask('diagnostics', { files: [join(brokenRoot, 'src', 'Old.cs')] })
+    expect(d['errors']).toEqual([])
+    expect(d['faithful']).toBe(false)
+    // A NEW error in that same file is still the edit's, and is reported.
+    writeFileSync(join(brokenRoot, 'src', 'Old.cs'),
+      'namespace App;\npublic class Old { public void M() => Missing.Call(); public int X => Nope; }\n', 'utf8')
+    const again = await own.ask('diagnostics', { files: [join(brokenRoot, 'src', 'Old.cs')] })
+    const errors = again['errors'] as { code: string; message: string }[]
+    expect(errors).toHaveLength(1)
+    expect(errors[0]!.message).toContain('Nope')
+  })
 })
