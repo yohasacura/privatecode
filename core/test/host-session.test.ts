@@ -496,6 +496,8 @@ test('config.get/config.set round-trip through SessionHost.handle, available bef
     expect((getReply as { result: unknown }).result).toEqual({
       serverUrl: 'http://127.0.0.1:8080',
       recentWorkspaces: ['C:/proj'],
+      // C:/proj was never created: the window is told so, and offers to drop it.
+      missingWorkspaces: ['C:/proj'],
     })
   } finally {
     process.env['APPDATA'] = previousAppData
