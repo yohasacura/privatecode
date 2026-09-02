@@ -4,6 +4,11 @@ import type { ComponentChildren, VNode } from 'preact'
 import type { StoppedBecause } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { pendingTool, type ChatAction, type ChatItem, type ChatState } from '../lib/state'
+import { groupItems, summaryText, type TranscriptUnit } from '../lib/action-groups'
+import { ChevronDown, ChevronRight, PencilLine, Play, RotateCcw, ShieldCheck } from 'lucide-preact'
+import { Button } from '../ui/button'
+import { StageStrip } from './stage-strip'
+import { cn } from '../ui/cn'
 import { Markdown } from '../lib/markdown'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
 import { presentTool, screenshotPathOf, type ToolKind } from '../lib/tools'
@@ -198,6 +203,12 @@ export function Transcript({
   // `state.items` behind this view, so going back shows everything that happened meanwhile.
   const viewing = state.viewing
   const all = viewing === null ? state.items : viewing.items
+  // The last row of the live conversation is the one that may offer "Continue" or
+  // "Resume", and the one still being written while the turn runs.
+  const lastShownId = all.length > 0 ? all[all.length - 1]!.id : 0
+  const tailOf = (item: ChatItem): RowTail => (
+    viewing !== null || item.id !== lastShownId ? null : state.turnRunning ? 'streaming' : 'last')
+  const checksOff = state.session?.gateMode === 'manual'
 
   // Only the tail is mounted, unless you ask for the rest.
   //
@@ -218,9 +229,11 @@ export function Transcript({
   // session and coming back — so a decision made about a forty-row conversation silently
   // governed a twenty-thousand-row one.
   const [showAll, setShowAll] = useState(false)
+  /** Alt+click on a group header opens every group in the transcript; a new session resets it. */
+  const [expandAll, setExpandAll] = useState(false)
   const shownSessionId = viewing === null ? (state.session?.sessionId ?? '') : viewing.sessionId
   const frozenStartRef = useRef<number | undefined>(undefined)
-  useEffect(() => { setShowAll(false); frozenStartRef.current = undefined }, [shownSessionId])
+  useEffect(() => { setShowAll(false); setExpandAll(false); frozenStartRef.current = undefined }, [shownSessionId])
   // Pinned to the bottom → the window slides as it always did. Scrolled up → freeze the
   // start where the reader left the bottom, so nothing is evicted from under them.
   if (stuck) frozenStartRef.current = undefined
@@ -262,11 +275,25 @@ export function Transcript({
 
         {shown.length === 0 && !state.turnRunning
           ? <EmptyState />
-          : shown.map((item) => (
-            item.id === suppressedId
-              ? null
-              : <TranscriptRow key={item.id} item={item} onOpenFile={onOpenFile} client={client} />
+          : groupItems(shown.filter((item) => item.id !== suppressedId), state.turnRunning).map((unit) => (
+            unit.kind === 'single'
+              ? <TranscriptRow key={unit.item.id} item={unit.item} onOpenFile={onOpenFile} client={client} tail={tailOf(unit.item)} />
+              : (
+                <ActionGroup key={`g${unit.id}`} unit={unit} expandAll={expandAll} onExpandAll={() => setExpandAll(true)}>
+                  {unit.items.map((item) => (
+                    <TranscriptRow key={item.id} item={item} onOpenFile={onOpenFile} client={client} tail={tailOf(item)} />
+                  ))}
+                </ActionGroup>
+                )
           ))}
+
+        {/* The checks of this turn, under the answer (§5). Live session only: a viewed
+            session's gates ran in its own time and are in its rows. */}
+        {viewing === null && (state.stages.length > 0 || (checksOff && state.items.length > 0)) && (
+          <Row kind="stages" marker={<ShieldCheck size={13} />}>
+            <StageStrip stages={state.stages} checksOff={checksOff} />
+          </Row>
+        )}
 
         {waiting && (
           <div class="row row-waiting">
@@ -455,12 +482,81 @@ function isQuiet(last: ChatItem | undefined): boolean {
   return last.kind !== 'assistant'
 }
 
+/**
+ * The model's work between two answers, as one row with a sentence and the calls beneath
+ * it (docs/UI-REDESIGN-2026-09.md §5). Open while it runs and when something in it failed;
+ * folded otherwise. A click toggles; Alt+click opens every group in the transcript.
+ */
+function ActionGroup({ unit, expandAll, onExpandAll, children }: {
+  unit: Extract<TranscriptUnit, { kind: 'group' }>
+  expandAll: boolean
+  onExpandAll: () => void
+  children: ComponentChildren
+}): VNode {
+  const { summary, live } = unit
+  const failed = summary.failed > 0 || summary.checksFailed > 0
+  const [choice, setChoice] = useState<boolean | null>(null)
+  const open = choice ?? (live || failed || expandAll)
+  const label = live ? (summary.latest ?? 'Working…') : summaryText(summary)
+  return (
+    <div class={cn('row row-group', live && 'row-group-live')} data-group={live ? 'live' : failed ? 'failed' : 'done'}>
+      <div class="row-gutter" aria-hidden="true">
+        {live
+          ? <span class="pulse-dot" />
+          : failed ? <span class="text-red">{Icon.alert()}</span> : <span class="text-green">{Icon.check()}</span>}
+      </div>
+      <div class="row-body">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={(e) => { if (e.altKey) { onExpandAll(); setChoice(true) } else setChoice(!open) }}
+          title={open ? 'Fold this work away' : 'Show each step (Alt+click: every group)'}
+          class={cn(
+            'flex w-full items-center gap-2 rounded-sm border-0 bg-transparent px-1 py-1 text-left font-ui text-[13px] cursor-pointer',
+            'transition-colors duration-(--duration-fast) hover:bg-hover',
+            'focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent',
+            live ? 'text-fg' : failed ? 'text-red' : 'text-dim',
+          )}
+        >
+          <span class="inline-flex shrink-0 text-faint [&>svg]:size-3.5">{open ? <ChevronDown /> : <ChevronRight />}</span>
+          <span class="min-w-0 flex-1 truncate">{label}</span>
+          <span class="shrink-0 text-[11px] text-faint tabular-nums">{unit.items.length} {unit.items.length === 1 ? 'step' : 'steps'}</span>
+        </button>
+        {open && (
+          <div class="mt-1 border-l border-border-soft pl-2 [&>.row]:mx-0 [&>.row]:mb-2 [&>.row]:max-w-none">
+            {children}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Three things to try, as chips that fill the composer (the composer listens for `pc:compose`). */
+const STARTERS = [
+  'Explain how this project starts up and where the main pieces live',
+  'Find where the settings are read and list every key that is used',
+  'Add a test for the most important class in this project',
+]
+
 function EmptyState(): VNode {
   return (
     <div class="empty-state">
       <div class="empty-mark" aria-hidden="true">{Icon.shield()}</div>
       <h2>Ask for a change, a review, or an explanation.</h2>
       <p>Everything stays on this machine. The agent reads and edits only this workspace.</p>
+      <div class="mt-4 flex flex-wrap justify-center gap-1.5">
+        {STARTERS.map((text) => (
+          <button
+            key={text}
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('pc:compose', { detail: text }))}
+            class="rounded-full border border-border bg-panel px-3 py-1 font-ui text-[12px] text-dim cursor-pointer transition-colors duration-(--duration-fast) hover:border-border-strong hover:text-fg"
+          >
+            {text}
+          </button>
+        ))}
+      </div>
       <div class="empty-keys">
         <span><kbd>Enter</kbd> send</span>
         <span><kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
@@ -481,6 +577,9 @@ function EmptyState(): VNode {
  * column. Everything lines up on one text edge, and the left rail carries the status —
  * who spoke, whether a call succeeded — so the content itself does not have to repeat it.
  */
+/** Where a row stands in the live conversation: the last one, still being written, or neither. */
+type RowTail = 'streaming' | 'last' | null
+
 function Row({
   kind, marker, children,
 }: {
@@ -500,12 +599,14 @@ function Row({
  * from re-rendering (and re-parsing) the entire transcript. `onOpenFile` is stable — it is
  * created once in `App.tsx` — so the default shallow comparison is enough. */
 const TranscriptRow = memo(function TranscriptRow({
-  item, onOpenFile, client,
+  item, onOpenFile, client, tail = null,
 }: {
   item: ChatItem
   onOpenFile: (path: string) => void
   /** Stable for the app's lifetime, like `onOpenFile` -- so `memo` below still holds. */
   client: ProtocolClient
+  /** Changes only for the last row and the one it replaces, so `memo` still holds. */
+  tail?: RowTail
 }): VNode {
   switch (item.kind) {
     case 'user':
@@ -521,7 +622,23 @@ const TranscriptRow = memo(function TranscriptRow({
           kind={item.harness === true ? 'user user-note' : 'user'}
           marker={<span class="marker-caret">{item.harness === true ? '·' : '›'}</span>}
         >
-          <div class="user-text">{item.text}</div>
+          {item.harness === true
+            ? <div class="user-text">{item.text}</div>
+            : (
+              <div class="copy-holder">
+                <div class="user-text">{item.text}</div>
+                <CopyButton text={item.text} title="Copy message" />
+                <button
+                  type="button"
+                  class="copy-button right-7!"
+                  title="Edit and resend"
+                  aria-label="Edit and resend"
+                  onClick={() => window.dispatchEvent(new CustomEvent('pc:compose', { detail: item.text }))}
+                >
+                  <PencilLine size={13} />
+                </button>
+              </div>
+              )}
         </Row>
       )
 
@@ -530,7 +647,7 @@ const TranscriptRow = memo(function TranscriptRow({
       // is no HTML sink anywhere in that path, so model output gained formatting, never
       // markup execution.
       return (
-        <Row kind="assistant">
+        <Row kind="assistant" marker={tail === 'streaming' ? <span class="pulse-dot" /> : null}>
           <div class="copy-holder">
             <Markdown text={item.text} />
             <CopyButton text={item.text} />
@@ -545,15 +662,35 @@ const TranscriptRow = memo(function TranscriptRow({
     case 'tool':
       return <ToolCard item={item} onOpenFile={onOpenFile} client={client} />
 
-    case 'error':
+    case 'error': {
+      const dropped = item.tone !== 'info' && DROPPED_STREAM.test(item.message)
       return (
         <Row
           kind={item.tone === 'info' ? 'note' : 'error'}
           marker={item.tone === 'info' ? Icon.check() : Icon.alert()}
         >
-          <div class="notice-title">{item.message}</div>
+          <div class="notice-title" title={dropped ? item.message : undefined}>
+            {dropped ? 'The connection dropped mid-generation.' : item.message}
+          </div>
+          {dropped && (
+            <div class="notice-detail">
+              Whatever arrived before it is kept above. Continue asks the model to pick up from there.
+            </div>
+          )}
+          {dropped && tail === 'last' && (
+            <Button
+              size="sm"
+              class="mt-2"
+              icon={<RotateCcw />}
+              data-action="continue"
+              onClick={() => window.dispatchEvent(new CustomEvent('pc:send', { detail: 'continue' }))}
+            >
+              Continue
+            </Button>
+          )}
         </Row>
       )
+    }
 
     case 'approval-record': {
       const allowed = item.decision.verdict === 'allow'
@@ -620,6 +757,17 @@ const TranscriptRow = memo(function TranscriptRow({
         <Row kind="stopped" marker={Icon.stop()}>
           <div class="notice-title">{explain.title}</div>
           <div class="notice-detail">{explain.detail}</div>
+          {tail === 'last' && item.reason !== 'truncated' && (
+            <Button
+              size="sm"
+              class="mt-2"
+              icon={<Play />}
+              data-action="resume"
+              onClick={() => window.dispatchEvent(new CustomEvent('pc:send', { detail: 'continue' }))}
+            >
+              Resume
+            </Button>
+          )}
         </Row>
       )
     }
@@ -634,6 +782,9 @@ const TranscriptRow = memo(function TranscriptRow({
  * find out was to ask the model — which costs another turn and can only guess, since the
  * loop stops it from the outside.
  */
+/** The shapes a stream that died mid-generation takes by the time it reaches the transcript. */
+const DROPPED_STREAM = /connection dropped|stream ended before completion|socket hang up|ECONNRESET|fetch failed|terminated/i
+
 const STOP_REASONS: Record<Exclude<StoppedBecause, 'done'>, { title: string; detail: string }> = {
   max_steps: {
     title: 'Stopped at the step limit for one turn.',

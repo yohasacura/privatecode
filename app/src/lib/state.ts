@@ -348,6 +348,22 @@ export interface RunningStage {
   startedAtMs: number
 }
 
+/** One gate of the current turn, as the strip under the answer shows it. Kept after the
+ * gate ends — the strip is the record of what ran — and until the next turn starts. */
+export interface StageRecord {
+  stage: StageName
+  state: 'running' | 'passed' | 'failed' | 'handed-back' | 'skipped'
+  detail: string | undefined
+  at: { index: number; total: number } | undefined
+  /** The window's clock, like `RunningStage.startedAtMs`. */
+  startedAtMs: number
+  ms: number | undefined
+  /** The core's word for how it ended, shown on the chip and in its tooltip. */
+  outcome: string | undefined
+  /** How many times the stage started this turn: a fixer round re-enters `build`. */
+  attempt: number
+}
+
 export interface ChatState {
   items: ChatItem[]
   turnRunning: boolean
@@ -362,6 +378,9 @@ export interface ChatState {
    * because that pairing can only mean events arrived out of order.
    */
   runningStage: RunningStage | null
+  /** Every gate of the current turn in the order it first ran, running or finished.
+   * Reset when the next turn starts, not when this one ends. */
+  stages: StageRecord[]
   /** The text of a message the host reported as never delivered (turn.done with
    * delivered:false — Esc during contract distillation). The composer drains it back
    * into the input box and dispatches `draft-restored`; null the rest of the time. */
@@ -435,7 +454,7 @@ const LIVE_OUTPUT_TAIL_CHARS = 16_000
 
 export function initialChatState(): ChatState {
   return {
-    items: [], turnRunning: false, currentStep: null, runningStage: null, restoreDraft: null, lastStepDone: null, viewing: null, nextId: 1,
+    items: [], turnRunning: false, currentStep: null, runningStage: null, stages: [], restoreDraft: null, lastStepDone: null, viewing: null, nextId: 1,
     pendingApproval: null, pendingQuestion: null, todos: [], session: null, lastCompaction: null,
     problems: [], pendingDecisions: 0, run: null, lastRun: null,
   }
@@ -768,6 +787,42 @@ function restoreAction(entry: TranscriptEntry): ChatAction {
   }
 }
 
+/** How a gate's `outcome` word reads on the strip. The core's words are few and stable;
+ * anything unknown is shown as it came, as a pass, because the gate itself did not fail. */
+function stageState(outcome: string | undefined): StageRecord['state'] {
+  const o = (outcome ?? '').toLowerCase()
+  if (o === '' || o === 'ok' || o === 'passed' || o === 'pass' || o === 'accepted' || o === 'clean') return 'passed'
+  if (/^no (findings?|issues?)$/.test(o)) return 'passed'
+  if (/could not|fail|error|timed? ?out|crash|refus/.test(o)) return 'failed'
+  if (/skip|manual|no command|no contract|not run|stopped|disabled/.test(o)) return 'skipped'
+  if (/hand|unmet|back|reject|fix|retr|revis|redo|issue|finding/.test(o)) return 'handed-back'
+  return 'passed'
+}
+
+function withStage(stages: readonly StageRecord[], action: Extract<ChatAction, { type: 'stage' }>): StageRecord[] {
+  const i = stages.findIndex((s) => s.stage === action.stage)
+  const prev = i === -1 ? undefined : stages[i]
+  const fresh = (): StageRecord => ({
+    stage: action.stage, state: 'running', detail: action.detail, at: action.at,
+    startedAtMs: Date.now(), ms: undefined, outcome: undefined, attempt: (prev?.attempt ?? 0) + 1,
+  })
+  let next: StageRecord
+  if (action.state === 'started') {
+    next = fresh()
+  } else if (action.state === 'progress') {
+    next = prev !== undefined && prev.state === 'running'
+      ? { ...prev, detail: action.detail ?? prev.detail, at: action.at ?? prev.at }
+      : fresh()
+  } else {
+    const base = prev ?? fresh()
+    next = {
+      ...base, state: stageState(action.outcome), outcome: action.outcome, ms: action.ms,
+      detail: action.detail ?? base.detail,
+    }
+  }
+  return i === -1 ? [...stages, next] : stages.map((s, j) => (j === i ? next : s))
+}
+
 export function reduceChat(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case 'user-message': {
@@ -798,7 +853,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       // those would pulse until the session ended, and the next call of the same name would
       // complete it — one call's arguments, then one call's result, against another call's
       // card. A new turn starting is proof the last one is over, whatever the last one did.
-      return { ...state, items: closeWritingCalls(state.items), turnRunning: true, currentStep: null }
+      return { ...state, items: closeWritingCalls(state.items), turnRunning: true, currentStep: null, stages: [] }
 
     case 'step.start':
       return {
@@ -820,16 +875,18 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       }
 
     case 'stage': {
+      const stages = withStage(state.stages, action)
       if (action.state === 'done') {
         // Only the stage that is actually showing. An out-of-order `done` — or the second
         // `done` of a gate that legitimately re-entered — must not blank a stage that has
         // since started, which would leave a running gate invisible for its whole length.
-        if (state.runningStage?.stage !== action.stage) return state
-        return { ...state, runningStage: null }
+        if (state.runningStage?.stage !== action.stage) return { ...state, stages }
+        return { ...state, runningStage: null, stages }
       }
       if (action.state === 'started') {
         return {
           ...state,
+          stages,
           runningStage: {
             stage: action.stage,
             detail: action.detail,
@@ -844,7 +901,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       const base = state.runningStage?.stage === action.stage
         ? state.runningStage
         : { stage: action.stage, startedAtMs: Date.now(), detail: undefined, at: undefined }
-      return { ...state, runningStage: { ...base, detail: action.detail, at: action.at } }
+      return { ...state, stages, runningStage: { ...base, detail: action.detail, at: action.at } }
     }
 
     case 'generation.progress': {
@@ -1196,7 +1253,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
         return {
           ...state,
           items: lastUser === -1 ? state.items : state.items.filter((_, i) => i !== lastUser),
-          turnRunning: false, currentStep: null, runningStage: null,
+          turnRunning: false, currentStep: null, runningStage: null, stages: [],
           restoreDraft: row !== null && 'text' in row ? (row as { text: string }).text : null,
           pendingApproval: null, pendingQuestion: null,
         }

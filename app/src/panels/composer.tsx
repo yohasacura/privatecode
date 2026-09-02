@@ -176,6 +176,19 @@ export function Composer({
   const [commandsDismissed, setCommandsDismissed] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // The empty state's starter chips, and anything else that wants to put words in the
+  // box without owning it: a window event with the text.
+  useEffect(() => {
+    const onCompose = (e: Event): void => {
+      const text = (e as CustomEvent<string>).detail
+      if (typeof text !== 'string') return
+      setInput(text)
+      requestAnimationFrame(() => textareaRef.current?.focus())
+    }
+    window.addEventListener('pc:compose', onCompose)
+    return () => window.removeEventListener('pc:compose', onCompose)
+  }, [])
   /** An unknown-command check in flight; see `send()`'s slash guard. */
   const slashCheckRef = useRef(false)
   const mode: AgentMode = state.session?.mode ?? 'normal'
@@ -1314,6 +1327,25 @@ export function Composer({
     }
     return <span class="status-idle"><kbd>↵</kbd> send · <kbd>⇧↵</kbd> newline</span>
   }
+
+  // "Continue" under a dropped stream and "Resume" under a stopped turn send a message
+  // without going through the box (a window event, like `pc:compose`). Same rules as
+  // Enter: nothing goes while the composer is locked or the view is another session, and
+  // behind a running turn it queues, as typed text does.
+  const sendByEvent = useRef<(text: string) => void>(() => {})
+  sendByEvent.current = (text) => {
+    if (locked !== undefined || blockedByRun) return
+    if (busy) { setQueued((q) => [...q, { text, attach: [] }]); return }
+    submit(text)
+  }
+  useEffect(() => {
+    const onSend = (e: Event): void => {
+      const text = (e as CustomEvent<string>).detail
+      if (typeof text === 'string' && text.trim() !== '') sendByEvent.current(text.trim())
+    }
+    window.addEventListener('pc:send', onSend)
+    return () => window.removeEventListener('pc:send', onSend)
+  }, [])
 
   return (
     <div
