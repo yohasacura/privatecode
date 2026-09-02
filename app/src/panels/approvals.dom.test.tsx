@@ -41,7 +41,7 @@ test('a path in a plan step is a chip that opens the file', () => {
   const chips = [...host.querySelectorAll('button.file-ref')]
   expect(chips.map((c) => c.textContent)).toEqual(['core/src/db/invoice.ts'])
   // The prose around it is untouched — the chip replaces the path, not the sentence.
-  expect(host.querySelector('.todo-text')?.textContent).toContain('rewrite the insert in')
+  expect(host.querySelector('[data-todo-text]')?.textContent).toContain('rewrite the insert in')
 
   ;(chips[0] as HTMLButtonElement).click()
   expect(opened).toEqual(['core/src/db/invoice.ts'])
@@ -58,5 +58,5 @@ test('without a handler the path is still marked, and is not a button', () => {
 test('a step with nothing to open renders as plain text', () => {
   render(<TodosCard todos={[todo('tune the plan so it gets marked')]} onOpenFile={() => {}} />, host)
   expect(host.querySelectorAll('.file-ref')).toHaveLength(0)
-  expect(host.querySelector('.todo-text')?.textContent?.trim()).toBe('tune the plan so it gets marked')
+  expect(host.querySelector('[data-todo-text]')?.textContent?.trim()).toBe('tune the plan so it gets marked')
 })

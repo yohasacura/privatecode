@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { Check, TriangleAlert, X } from 'lucide-preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatAction, ChatState } from '../lib/state'
 import { formatDuration } from '../lib/format'
-import { Icon } from '../components/icons'
+import { Button, IconButton } from '../ui/button'
+import { Chip } from '../ui/chip'
+import { cn } from '../ui/cn'
 
 /**
  * The unattended run, as a thing you can see.
@@ -25,6 +28,8 @@ import { Icon } from '../components/icons'
 /** The run banner's clock ticks at 1s: an elapsed readout for something measured in hours
  * does not need the composer's 250ms cadence, and this card is mounted for whole nights. */
 const TICK_MS = 1_000
+
+const CARD = 'flex items-start gap-2.5 rounded-md border px-3 py-2.5 font-ui text-[12.5px] leading-[1.45]'
 
 export function RunBanner({
   client, state, dispatch,
@@ -49,34 +54,35 @@ export function RunBanner({
     const elapsed = run.startedAtMs > 0 ? formatDuration(Math.max(0, now - run.startedAtMs)) : null
     const budget: string[] = []
     if (run.maxTurns !== undefined) budget.push(`of ${run.maxTurns}`)
-    if (run.maxHours !== undefined) {
-      budget.push(`· ${run.maxHours} h budget`)
-    }
+    if (run.maxHours !== undefined) budget.push(`· ${run.maxHours} h budget`)
     return (
-      <div class="run-banner" role="status">
-        <span class="run-banner-pulse" aria-hidden="true" />
-        <div class="run-banner-body">
-          <div class="run-banner-head">
-            <span class="run-banner-state">
+      <div data-run="running" role="status" class={cn(CARD, 'border-accent-line bg-panel')}>
+        <span class="pulse-dot mt-1.5" aria-hidden="true" />
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-baseline gap-2.5">
+            <span class="font-semibold text-fg tabular-nums">
               running unattended
               {run.turn > 0 && ` — turn ${run.turn}${budget.length > 0 ? ` ${budget.join(' ')}` : ''}`}
               {elapsed !== null && ` · ${elapsed}`}
             </span>
             {state.pendingDecisions > 0 && (
-              <span class="run-banner-parked">
+              <Chip tone="accent">
                 {state.pendingDecisions} decision{state.pendingDecisions === 1 ? '' : 's'} parked
-              </span>
+              </Chip>
             )}
           </div>
-          {run.task !== '' && <div class="run-banner-task" title={run.task}>{run.task}</div>}
+          {/* The task verbatim, clamped: it distinguishes "it is working" from "it is
+              working on the wrong thing", and three lines is enough to tell. */}
+          {run.task !== '' && <div class="mt-1 line-clamp-3 text-[12px] text-dim" title={run.task}>{run.task}</div>}
         </div>
-        <button
-          class="btn btn-small"
+        <Button
+          size="sm"
           onClick={() => client.call('run.stop', {}).catch(() => { /* it ends on its own signal */ })}
           title="Finish the current turn, then stop"
+          data-action="stop-run"
         >
           Stop
-        </button>
+        </Button>
       </div>
     )
   }
@@ -84,26 +90,24 @@ export function RunBanner({
   if (state.lastRun !== null) {
     const r = state.lastRun
     const clean = r.stoppedBecause === 'done'
+    // Anything but a clean "done" keeps the accent frame: "stopped: error" must not present
+    // itself with the same calm as a finished job.
     return (
-      <div class={`run-banner run-banner-ended ${clean ? '' : 'run-banner-attention'}`} role="status">
-        <span class="run-banner-endmark" aria-hidden="true">
-          {clean ? Icon.check() : Icon.alert()}
+      <div
+        data-run={clean ? 'done' : 'attention'}
+        role="status"
+        class={cn(CARD, clean ? 'border-border bg-raised' : 'border-accent-line bg-accent-soft')}
+      >
+        <span class={cn('mt-px inline-flex shrink-0 [&>svg]:size-4', clean ? 'text-dim' : 'text-accent')} aria-hidden="true">
+          {clean ? <Check /> : <TriangleAlert />}
         </span>
-        <div class="run-banner-body">
-          <div class="run-banner-head">
-            <span class="run-banner-state">
-              run ended: {r.stoppedBecause} after {r.turns} turn{r.turns === 1 ? '' : 's'}
-            </span>
+        <div class="min-w-0 flex-1">
+          <div class="font-semibold text-fg tabular-nums">
+            run ended: {r.stoppedBecause} after {r.turns} turn{r.turns === 1 ? '' : 's'}
           </div>
-          {r.detail !== '' && <div class="run-banner-task">{r.detail}</div>}
+          {r.detail !== '' && <div class="mt-1 line-clamp-3 text-[12px] text-dim">{r.detail}</div>}
         </div>
-        <button
-          class="icon-button"
-          onClick={() => dispatch({ type: 'run-dismissed' })}
-          title="Dismiss"
-        >
-          {Icon.x()}
-        </button>
+        <IconButton size="sm" label="Dismiss" onClick={() => dispatch({ type: 'run-dismissed' })}><X /></IconButton>
       </div>
     )
   }

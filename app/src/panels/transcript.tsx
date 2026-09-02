@@ -5,8 +5,12 @@ import type { StoppedBecause } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { pendingTool, type ChatAction, type ChatItem, type ChatState } from '../lib/state'
 import { groupItems, summaryText, type TranscriptUnit } from '../lib/action-groups'
-import { ChevronDown, ChevronRight, PencilLine, Play, RotateCcw, ShieldCheck } from 'lucide-preact'
-import { Button } from '../ui/button'
+import {
+  ArrowDown, Brain, ChevronDown, ChevronRight, ExternalLink, FileDiff, FileText, MessageSquare, PencilLine, Play,
+  RotateCcw, Search, ShieldCheck, Terminal,
+} from 'lucide-preact'
+import { Button, IconButton } from '../ui/button'
+import { Chip } from '../ui/chip'
 import { StageStrip } from './stage-strip'
 import { cn } from '../ui/cn'
 import { Markdown } from '../lib/markdown'
@@ -15,7 +19,7 @@ import { presentTool, screenshotPathOf, type ToolKind } from '../lib/tools'
 import { formatDuration, formatProgress } from '../lib/format'
 import { useStickToBottom } from '../lib/sticky-scroll'
 import { Icon } from '../components/icons'
-import { CopyButton } from '../components/copy'
+import { CopyButton, HOLDER, HOVER_ACTION } from '../components/copy'
 import { ApprovalCard, QuestionCard, TodosCard } from './approvals'
 import { DecisionsCard } from './decisions'
 import { RunBanner } from './run-banner'
@@ -243,14 +247,14 @@ export function Transcript({
   return (
     <div class="transcript-wrap">
       {viewing !== null && (
-        <div class="viewing-bar">
-          <span class="viewing-icon" aria-hidden="true">{Icon.chat()}</span>
-          <span class="viewing-text">
-            Reading <b>{viewing.title || '(untitled)'}</b>. The active session is still
+        <div data-viewing="" class="flex shrink-0 items-center gap-2.5 border-b border-border bg-panel px-3.5 py-2 font-ui text-[12.5px] leading-[1.45] text-dim">
+          <span class="inline-flex shrink-0 text-accent [&>svg]:size-4" aria-hidden="true"><MessageSquare /></span>
+          <span class="min-w-0 flex-1">
+            Reading <b class="font-semibold text-fg">{viewing.title || '(untitled)'}</b>. The active session is still
             {state.turnRunning ? ' working' : ' where your messages go'} — write below to
             continue this one instead.
           </span>
-          <button class="btn btn-small" onClick={onBackToLive}>Back to the active session</button>
+          <Button size="sm" onClick={onBackToLive}>Back to the active session</Button>
         </div>
       )}
 
@@ -264,12 +268,12 @@ export function Transcript({
 
       <div class="transcript" ref={scrollRef}>
         {hidden > 0 && (
-          <div class="earlier-bar">
-            <span class="earlier-text">
+          <div data-earlier="" class="mx-auto mb-1.5 flex max-w-(--read) items-center gap-2.5 rounded-md border border-border bg-raised px-3 py-2 font-ui">
+            <span class="min-w-0 flex-1 text-[11.5px] text-dim">
               {hidden} earlier {hidden === 1 ? 'message is' : 'messages are'} not shown, to keep
               a long conversation responsive. Nothing was lost.
             </span>
-            <button class="btn btn-small" onClick={() => setShowAll(true)}>Show everything</button>
+            <Button size="sm" onClick={() => setShowAll(true)}>Show everything</Button>
           </div>
         )}
 
@@ -359,9 +363,15 @@ export function Transcript({
       </div>
 
       {!stuck && (
-        <button class="jump-latest" onClick={scrollToBottom}>
-          {Icon.arrowDown()} latest
-        </button>
+        <Button
+          size="sm"
+          icon={<ArrowDown />}
+          class="absolute bottom-3.5 left-1/2 -translate-x-1/2 rounded-full shadow-(--shadow-pop)"
+          onClick={scrollToBottom}
+          data-action="jump-latest"
+        >
+          latest
+        </Button>
       )}
     </div>
   )
@@ -446,7 +456,12 @@ function CompactionRecord({ item }: { item: Extract<ChatItem, { kind: 'compactio
     : null
   return (
     <Row kind="record record-compaction" marker={Icon.check()}>
-      <button class="compaction-head" onClick={() => setOpen((o) => !o)}>
+      <button
+        type="button"
+        aria-expanded={open}
+        class="flex w-full cursor-pointer items-baseline gap-2.5 border-0 bg-transparent p-0 text-left font-ui text-[11.5px] text-faint"
+        onClick={() => setOpen((o) => !o)}
+      >
         <span class="record-text">
           compacted{sizes}
           {dropped !== undefined && (
@@ -454,14 +469,14 @@ function CompactionRecord({ item }: { item: Extract<ChatItem, { kind: 'compactio
           )}
           {item.keptMessages !== undefined && <>, {item.keptMessages} kept as they were</>}
         </span>
-        <span class="compaction-toggle">{open ? 'hide the briefing' : 'what it kept'}</span>
+        <span class="shrink-0 whitespace-nowrap text-accent hover:underline">{open ? 'hide the briefing' : 'what it kept'}</span>
       </button>
       {open && (
-        <div class="compaction-body">
-          <div class="compaction-note">
+        <div class="mt-2 border-l-2 border-border pl-2.5">
+          <div class="mb-1.5 text-[11.5px] text-faint">
             From here on the model reads this briefing instead of the conversation it replaced.
           </div>
-          <pre class="compaction-summary">{item.summary ?? '(the briefing was not recorded)'}</pre>
+          <pre class="m-0 max-h-[420px] overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-[1.5] text-dim">{item.summary ?? '(the briefing was not recorded)'}</pre>
         </div>
       )}
     </Row>
@@ -541,10 +556,10 @@ const STARTERS = [
 
 function EmptyState(): VNode {
   return (
-    <div class="empty-state">
-      <div class="empty-mark" aria-hidden="true">{Icon.shield()}</div>
-      <h2>Ask for a change, a review, or an explanation.</h2>
-      <p>Everything stays on this machine. The agent reads and edits only this workspace.</p>
+    <div class="empty-state mx-auto mt-[12vh] max-w-(--read) text-center font-ui text-dim">
+      <div class="mb-6 flex justify-center text-accent [&>svg]:size-[34px] [&>.icon]:size-[34px]" aria-hidden="true">{Icon.shield()}</div>
+      <h2 class="m-0 mb-1.5 text-[17px] font-semibold tracking-[-0.01em] text-fg">Ask for a change, a review, or an explanation.</h2>
+      <p class="m-0 text-[12.5px]">Everything stays on this machine. The agent reads and edits only this workspace.</p>
       <div class="mt-4 flex flex-wrap justify-center gap-1.5">
         {STARTERS.map((text) => (
           <button
@@ -557,7 +572,7 @@ function EmptyState(): VNode {
           </button>
         ))}
       </div>
-      <div class="empty-keys">
+      <div class="mt-5 flex justify-center gap-4 text-[12px] text-faint">
         <span><kbd>Enter</kbd> send</span>
         <span><kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
         <span><kbd>Esc</kbd> stop</span>
@@ -625,12 +640,12 @@ const TranscriptRow = memo(function TranscriptRow({
           {item.harness === true
             ? <div class="user-text">{item.text}</div>
             : (
-              <div class="copy-holder">
+              <div class={HOLDER}>
                 <div class="user-text">{item.text}</div>
                 <CopyButton text={item.text} title="Copy message" />
                 <button
                   type="button"
-                  class="copy-button right-7!"
+                  class={cn(HOVER_ACTION, 'right-7')}
                   title="Edit and resend"
                   aria-label="Edit and resend"
                   onClick={() => window.dispatchEvent(new CustomEvent('pc:compose', { detail: item.text }))}
@@ -648,7 +663,7 @@ const TranscriptRow = memo(function TranscriptRow({
       // markup execution.
       return (
         <Row kind="assistant" marker={tail === 'streaming' ? <span class="pulse-dot" /> : null}>
-          <div class="copy-holder">
+          <div class={HOLDER}>
             <Markdown text={item.text} />
             <CopyButton text={item.text} />
           </div>
@@ -846,18 +861,27 @@ function ReasoningBlock({ item }: { item: ChatItem & { kind: 'thinking' } }): VN
   return (
     <Row
       kind={`reasoning ${item.done ? 'reasoning-done' : 'reasoning-live'}`}
-      marker={<span class="marker-brain">{Icon.brain()}</span>}
+      marker={<span class={cn('inline-flex [&>svg]:size-3.5', !item.done && 'text-accent motion-safe:animate-pulse')}><Brain /></span>}
     >
-      <button class="reasoning-head" onClick={() => setOpen((o) => !o)}>
-        <span class="reasoning-label">{item.done ? 'Reasoned' : 'Reasoning'}</span>
+      <button
+        type="button"
+        aria-expanded={open}
+        class="group/reason flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent p-0 pb-1 text-left font-ui"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span class={cn('text-[10.5px] font-semibold uppercase tracking-[0.1em] group-hover/reason:text-fg', item.done ? 'text-faint' : 'text-accent')}>
+          {item.done ? 'Reasoned' : 'Reasoning'}
+        </span>
         {elapsed !== null && elapsed >= 0 && (
-          <span class="reasoning-meta">{formatDuration(elapsed)}</span>
+          <span class="font-mono text-[10.5px] text-faint tabular-nums">{formatDuration(elapsed)}</span>
         )}
-        <span class="reasoning-meta">~{estimateTokens(item.text.length)} tok</span>
-        <span class="reasoning-chevron">{open ? Icon.chevronDown() : Icon.chevronRight()}</span>
+        <span class="font-mono text-[10.5px] text-faint tabular-nums">~{estimateTokens(item.text.length)} tok</span>
+        <span class="inline-flex text-faint opacity-0 transition-opacity duration-(--duration-fast) group-hover/reason:opacity-100 [&>svg]:size-3.5">
+          {open ? <ChevronDown /> : <ChevronRight />}
+        </span>
       </button>
       {open && (
-        <div class="reasoning-body" ref={bodyRef}>
+        <div class="max-h-[440px] overflow-y-auto whitespace-pre-wrap break-words font-ui text-[12.5px] leading-[1.65] text-dim" ref={bodyRef}>
           {item.text}
           {!item.done && <span class="caret" aria-hidden="true" />}
         </div>
@@ -870,14 +894,23 @@ function ReasoningBlock({ item }: { item: ChatItem & { kind: 'thinking' } }): VN
 // Tool calls
 // ---------------------------------------------------------------------------------------
 
-const KIND_ICON: Record<ToolKind, () => VNode> = {
-  diff: Icon.diff,
-  fileop: Icon.file,
-  read: Icon.search,
-  command: Icon.terminal,
-  meta: Icon.chat,
-  other: Icon.chat,
+const KIND_ICON: Record<ToolKind, VNode> = {
+  diff: <FileDiff />,
+  fileop: <FileText />,
+  read: <Search />,
+  command: <Terminal />,
+  meta: <MessageSquare />,
+  other: <MessageSquare />,
 }
+
+/** The card: a hairline that shows on hover, so a run of calls reads as a list and not a
+ * stack of boxes; the whole header is the expand control — a 6px chevron is not a target
+ * anyone aims at. */
+const TOOL_CARD = 'group/tool relative overflow-hidden rounded-sm border border-transparent transition-colors duration-(--duration-fast) hover:border-border-soft focus-within:border-border-soft'
+const TOOL_HEAD = 'flex w-full items-center gap-2 border-0 bg-transparent py-1.5 pl-2 pr-[34px] text-left font-ui text-[13px] text-fg'
+const TOOL_TARGET = 'min-w-0 flex-1 truncate font-mono text-[12px] text-dim'
+const OUTPUT = 'm-0 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-[1.5] text-dim'
+
 
 /** Whether a completed call's body is worth showing without asking. A diff and a command
  * are the point of their card; a 400-line directory listing is not. */
@@ -920,13 +953,24 @@ function OutputBlock({ text }: { text: string }): VNode {
   }
 
   return (
-    <div class="cmd-output-wrap">
-      <button class="cmd-copy" onClick={copy} title="Copy the whole output">
+    <div class="group/output relative">
+      <button
+        type="button"
+        class="absolute right-2 top-1.5 cursor-pointer rounded-sm border-0 bg-transparent px-1.5 py-0.5 font-ui text-[11px] text-faint opacity-0 transition-opacity duration-(--duration-fast) hover:bg-hover hover:text-fg group-hover/output:opacity-100 focus-visible:opacity-100"
+        onClick={copy}
+        title="Copy the whole output"
+      >
         {copied ? 'copied' : 'copy'}
       </button>
-      <pre class="cmd-output">{shown}</pre>
+      {/* No inner scroller on purpose: a nested scroll area inside a scrolling transcript is
+          the worst way to read a log. Length is bounded by line count instead. */}
+      <pre class={cn(OUTPUT, 'px-3 py-2.5')}>{shown}</pre>
       {overflows && (
-        <button class="cmd-more" onClick={() => setExpanded((e) => !e)}>
+        <button
+          type="button"
+          class="block w-full cursor-pointer border-0 border-t border-border-soft bg-transparent px-3 py-1.5 text-left font-ui text-[11.5px] text-accent hover:bg-hover"
+          onClick={() => setExpanded((e) => !e)}
+        >
           {expanded
             ? 'show less'
             : `show ${(lines.length - OUTPUT_HEAD_LINES).toLocaleString()} more lines`}
@@ -961,8 +1005,8 @@ function Screenshot({ path, client }: { path: string; client: ProtocolClient }):
     return () => { cancelled = true }
   }, [client, path])
 
-  if (state.kind === 'loading') return <div class="tool-preview loading-quiet">loading {path}…</div>
-  if (state.kind === 'error') return <div class="tool-preview">could not show {path}: {state.why}</div>
+  if (state.kind === 'loading') return <div class="loading-quiet px-2.5 py-1.5 font-ui text-[11.5px] text-faint">loading {path}…</div>
+  if (state.kind === 'error') return <div class="px-2.5 py-1.5 font-ui text-[11.5px] text-red">could not show {path}: {state.why}</div>
   return (
     <figure class="shot">
       <img src={state.url} alt={`Browser screenshot, ${path}`} />
@@ -1002,11 +1046,13 @@ function WritingCall({ item }: { item: ChatItem & { kind: 'tool' } }): VNode {
   const target = targetInPartialArgs(item.args)
   return (
     <Row kind="tool tool-pending" marker={<span class="pulse-dot" />}>
-      <div class="tool-card">
-        <div class="tool-head tool-head-writing">
-          <span class="tool-verb">{item.name}</span>
-          {target !== null ? <span class="tool-target">{target}</span> : <span class="tool-spacer" />}
-          <span class="tool-writing-note">
+      <div class={TOOL_CARD} data-tool="writing">
+        {/* Not a button: there is nothing to expand yet, and a header that looks pressable
+            but is not is worse than one that plainly is not. */}
+        <div class={TOOL_HEAD}>
+          <span class="whitespace-nowrap font-medium">{item.name}</span>
+          {target !== null ? <span class={TOOL_TARGET}>{target}</span> : <span class="flex-1" />}
+          <span class="shrink-0 whitespace-nowrap text-[11.5px] text-faint">
             writing{item.args.length > 0 && <> · {formatBytes(item.args.length)}</>}
           </span>
         </div>
@@ -1034,7 +1080,7 @@ function LiveOutput({ text }: { text: string }): VNode {
   }, [text])
   return (
     <pre
-      class="tool-live"
+      class="mx-2.5 mb-2 mt-1 max-h-[180px] overflow-y-auto whitespace-pre-wrap break-all rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-[11.5px] leading-[1.4] text-dim"
       ref={ref}
       onScroll={(e) => {
         const el = e.currentTarget
@@ -1087,9 +1133,11 @@ function ToolCard({
         ? <span class="pulse-dot" />
         : result.ok ? Icon.check() : Icon.x()}
     >
-      <div class="tool-card">
+      <div class={cn(TOOL_CARD, !pending && !result.ok && 'hover:border-red-line')} data-tool={pending ? 'pending' : result.ok ? 'ok' : 'fail'}>
         <button
-          class="tool-head"
+          type="button"
+          class={cn(TOOL_HEAD, pending ? 'cursor-default' : 'cursor-pointer hover:bg-raised', 'focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent')}
+          aria-expanded={pending ? undefined : isOpen}
           onClick={() => { if (!pending) setOpen(!isOpen) }}
           disabled={pending}
         >
@@ -1097,37 +1145,42 @@ function ToolCard({
               unchanged and the badge means something when it appears: a worker reading
               eight files used to be indistinguishable from the model reading them itself. */}
           {item.agent !== undefined && (
-            <span class="tool-agent" title={`Done by the ${item.agent} worker, not the main model`}>
+            <Chip tone="accent" class="h-4 px-1 text-[10px] tracking-[0.02em]" title={`Done by the ${item.agent} worker, not the main model`}>
               {item.agent}
-            </span>
+            </Chip>
           )}
-          <span class="tool-icon">{KIND_ICON[p.kind]()}</span>
-          <span class="tool-verb">{p.verb}</span>
+          <span class="inline-flex shrink-0 text-faint [&>svg]:size-[13px]">{KIND_ICON[p.kind]}</span>
+          <span class={cn('whitespace-nowrap font-medium', !pending && !result.ok && 'text-red')}>{p.verb}</span>
           {/* A command is NOT summarised in the header -- it goes in the body below, whole
               and wrapped. Squeezing a real shell line into one ellipsised row is how you
               end up unable to tell what was actually executed. */}
-          {!isCommand && <span class="tool-target" title={p.target}>{p.target}</span>}
-          {isCommand && <span class="tool-spacer" />}
+          {!isCommand && <span class={TOOL_TARGET} title={p.target}>{p.target}</span>}
+          {isCommand && <span class="flex-1" />}
           {stat && <DiffStatBadge stat={stat} />}
           {!pending && (
-            <span class="tool-toggle">{isOpen ? Icon.chevronDown() : Icon.chevronRight()}</span>
+            <span class="inline-flex shrink-0 text-faint [&>svg]:size-3.5">{isOpen ? <ChevronDown /> : <ChevronRight />}</span>
           )}
         </button>
 
         {/* Opening the file is its own control rather than the whole header, so clicking
             the row to expand a diff can never navigate somewhere unexpected instead. */}
         {p.path !== null && (
-          <button class="tool-open" onClick={() => onOpenFile(p.path as string)} title={`Open ${p.path}`}>
-            {Icon.file()}
-          </button>
+          <IconButton
+            size="sm"
+            class="absolute right-1.5 top-1 opacity-0 transition-opacity duration-(--duration-fast) group-hover/tool:opacity-100 focus-visible:opacity-100"
+            label={`Open ${p.path}`}
+            onClick={() => onOpenFile(p.path as string)}
+          >
+            <ExternalLink />
+          </IconButton>
         )}
 
         {/* The command itself is always visible, whole, wrapped -- even while it is still
             running, which is exactly when you most want to know what was launched. */}
         {isCommand && (
-          <div class="cmd-line">
-            <span class="cmd-prompt">$</span>
-            <code class="cmd-text">{p.target}</code>
+          <div class="flex items-start gap-2 pb-2 pl-2.5 pr-3 font-mono text-[11.5px] leading-[1.55]">
+            <span class="shrink-0 text-accent">$</span>
+            <code class="min-w-0 select-text whitespace-pre-wrap break-words text-fg">{p.target}</code>
           </div>
         )}
 
@@ -1139,23 +1192,15 @@ function ToolCard({
         )}
 
         {!pending && isOpen && (
-          <div class="tool-body">
+          <div class="mb-1 ml-2 mt-0.5 overflow-hidden rounded-sm border border-border-soft bg-panel">
             {clipped && (
-              <div class="copy-switch">
-                <button
-                  class={showModelCopy ? '' : 'copy-switch-active'}
-                  onClick={() => setShowModelCopy(false)}
-                  title="Everything the tool produced"
-                >
+              <div class="flex gap-0.5 border-b border-border-soft bg-bg px-2 py-1" role="group" aria-label="Which copy of the output">
+                <Button size="sm" variant={showModelCopy ? 'ghost' : 'secondary'} aria-pressed={!showModelCopy} onClick={() => setShowModelCopy(false)} title="Everything the tool produced">
                   Full
-                </button>
-                <button
-                  class={showModelCopy ? 'copy-switch-active' : ''}
-                  onClick={() => setShowModelCopy(true)}
-                  title="Exactly what went into the model's context — the rest never reached it"
-                >
+                </Button>
+                <Button size="sm" variant={showModelCopy ? 'secondary' : 'ghost'} aria-pressed={showModelCopy} onClick={() => setShowModelCopy(true)} title="Exactly what went into the model's context — the rest never reached it">
                   What the model got
-                </button>
+                </Button>
               </div>
             )}
             {/* `!showModelCopy` is the point, not a detail: the switch exists to answer
@@ -1168,13 +1213,13 @@ function ToolCard({
                 ? <DiffView content={shownText} />
                 : isCommand
                   ? <OutputBlock text={shownText} />
-                  : <pre class="tool-output">{shownText}</pre>}
+                  : <pre class={cn(OUTPUT, 'max-h-[380px] overflow-auto px-3 py-2')}>{shownText}</pre>}
           </div>
         )}
         {/* A preview that merely repeats the target ("src/app.ts (32 lines)" under a header
             already reading "Read src/app.ts") is a second line that says nothing. */}
         {!pending && !isOpen && result.preview !== '' && !result.preview.includes(p.target) && (
-          <div class="tool-preview">{result.preview}</div>
+          <div class="truncate pb-1.5 pl-[29px] pr-2.5 font-ui text-[11.5px] text-faint">{result.preview}</div>
         )}
       </div>
     </Row>

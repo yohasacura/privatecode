@@ -14,6 +14,10 @@
 
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
+/* Tailwind's reset, so every element starts from the same nothing: no UA margins, no UA
+   borders, no UA font sizes. base.css (loaded after this file, same layer) says what the
+   ground IS; the prose rules in transcript.css give Markdown its margins and bullets back. */
+@import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);
 
 /* --- fonts, bundled --------------------------------------------------------------------

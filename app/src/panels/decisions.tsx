@@ -1,9 +1,13 @@
-import { PanelError } from '../components/panel'
 import { useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { Check, ChevronDown, ChevronRight, MessageSquare } from 'lucide-preact'
 import type { DecisionInfo } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
-import { Icon } from '../components/icons'
+import { PanelError } from '../components/panel'
+import { Button } from '../ui/button'
+import { Chip } from '../ui/chip'
+import { Input } from '../ui/input'
+import { Select } from '../ui/select'
 
 /**
  * The questions the agent parked while nobody was watching.
@@ -52,6 +56,14 @@ function OneDecision({
   const [answer, setAnswer] = useState('')
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
 
+  const head = (title: string, tag?: string): VNode => (
+    <div class="mb-1.5 flex items-baseline gap-2">
+      <span class="shrink-0 text-[11.5px] tabular-nums text-dim">{whenOf(decision.at)}</span>
+      <span class="min-w-0 flex-1 text-[12.5px] font-semibold text-fg">{title}</span>
+      {tag !== undefined && <Chip mono>{tag}</Chip>}
+    </div>
+  )
+
   if (decision.kind === 'question') {
     const multi = decision.multiSelect === true
     const options = decision.options ?? []
@@ -63,17 +75,16 @@ function OneDecision({
       return parts.join('; ')
     }
     return (
-      <div class="decision">
-        <div class="decision-head">
-          <span class="decision-when">{whenOf(decision.at)}</span>
-          <span class="decision-title">{decision.question}</span>
-        </div>
-        <div class="decision-actions">
+      <div data-decision="question" class="rounded-sm border border-border-soft bg-bg p-2.5 font-ui">
+        {head(decision.question ?? '')}
+        <div class="flex flex-wrap items-center gap-1.5">
           {options.map((option) => (
-            <button
+            <Button
               key={option}
-              class={multi && picked.has(option) ? 'btn btn-toggled' : 'btn'}
+              size="sm"
+              variant={multi && picked.has(option) ? 'primary' : 'secondary'}
               aria-pressed={multi ? picked.has(option) : undefined}
+              {...(multi && picked.has(option) ? { icon: <Check /> } : {})}
               onClick={() => {
                 if (!multi) { onResolve({ id: decision.id, answer: option }); return }
                 setPicked((prev) => {
@@ -84,12 +95,13 @@ function OneDecision({
                 })
               }}
             >
-              {multi ? `${picked.has(option) ? '☑' : '☐'} ${option}` : option}
-            </button>
+              {option}
+            </Button>
           ))}
-          <input
-            class="input"
+          <Input
+            class="min-w-[140px] flex-1"
             value={answer}
+            aria-label="Your own answer"
             onInput={(e) => setAnswer(e.currentTarget.value)}
             placeholder={multi ? 'add your own answer (optional)' : 'or type an answer'}
             onKeyDown={(e) => {
@@ -99,13 +111,9 @@ function OneDecision({
             }}
           />
           {multi && (
-            <button
-              class="btn btn-primary"
-              disabled={combined() === ''}
-              onClick={() => onResolve({ id: decision.id, answer: combined() })}
-            >
+            <Button size="sm" variant="primary" disabled={combined() === ''} onClick={() => onResolve({ id: decision.id, answer: combined() })}>
               Answer
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -113,37 +121,26 @@ function OneDecision({
   }
 
   return (
-    <div class="decision">
-      <div class="decision-head">
-        <span class="decision-when">{whenOf(decision.at)}</span>
-        <span class="decision-title">{decision.summary}</span>
-        <span class="card-tag">{decision.tool}</span>
-      </div>
-      <pre class="decision-detail">{decision.detail}</pre>
-      <div class="decision-actions">
+    <div data-decision="approval" class="rounded-sm border border-border-soft bg-bg p-2.5 font-ui">
+      {head(decision.summary ?? '', decision.tool)}
+      <pre class="m-0 mb-2 max-h-[120px] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-raised px-2 py-1.5 font-mono text-[11.5px] leading-[1.4] text-dim">{decision.detail}</pre>
+      <div class="flex flex-wrap items-center gap-1.5">
         {/* "Allow" here means "allow it NEXT time", and the note below says so. The call it
             came from is long gone. */}
         {rules.length > 0 && (
           <>
-            <select class="select" value={rule} onChange={(e) => setRule(e.currentTarget.value)}>
+            <Select class="max-w-[260px] font-mono text-[12px]" value={rule} aria-label="The rule to remember" onChange={(e) => setRule(e.currentTarget.value)}>
               {rules.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-            <select
-              class="select"
-              value={layer}
-              onChange={(e) => setLayer(e.currentTarget.value as typeof layer)}
-            >
+            </Select>
+            <Select value={layer} aria-label="Where the rule applies" onChange={(e) => setLayer(e.currentTarget.value as typeof layer)}>
               {LAYERS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
-            </select>
-            <button
-              class="btn btn-primary"
-              onClick={() => onResolve({ id: decision.id, verdict: 'allow', rule: { rule, layer } })}
-            >
+            </Select>
+            <Button size="sm" variant="primary" onClick={() => onResolve({ id: decision.id, verdict: 'allow', rule: { rule, layer } })}>
               Allow from now on
-            </button>
+            </Button>
           </>
         )}
-        <button class="btn" onClick={() => onResolve({ id: decision.id, verdict: 'deny' })}>Dismiss</button>
+        <Button size="sm" onClick={() => onResolve({ id: decision.id, verdict: 'deny' })}>Dismiss</Button>
       </div>
     </div>
   )
@@ -180,26 +177,30 @@ export function DecisionsCard({
   }
 
   return (
-    <div class="card card-decisions">
-      <button class="card-head decisions-head" onClick={() => setOpen(!open)}>
-        <span class="card-icon card-icon-warn">{Icon.chat()}</span>
-        <span class="card-title">
+    <div data-card="decisions" class="overflow-hidden rounded-md border border-accent bg-panel font-ui">
+      <button
+        type="button"
+        aria-expanded={open}
+        class="flex w-full cursor-pointer items-center gap-2.5 border-0 bg-transparent px-3 py-2.5 text-left font-ui text-[13px] text-fg transition-colors duration-(--duration-fast) hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+        onClick={() => setOpen(!open)}
+      >
+        <span class="inline-flex shrink-0 text-accent [&>svg]:size-4"><MessageSquare /></span>
+        <span class="min-w-0 flex-1 font-medium">
           {pending} question{pending === 1 ? '' : 's'} {pending === 1 ? 'was' : 'were'} parked while you were away
         </span>
-        <span class="tool-toggle">{open ? Icon.chevronDown() : Icon.chevronRight()}</span>
+        <span class="inline-flex shrink-0 text-faint [&>svg]:size-4">{open ? <ChevronDown /> : <ChevronRight />}</span>
       </button>
       {!open && (
-        <div class="card-note">
-          Answering them writes permission rules, so the next run does not stop on the same
-          thing.
+        <div class="px-3 pb-2.5 pl-[38px] text-[12px] text-faint">
+          Answering them writes permission rules, so the next run does not stop on the same thing.
         </div>
       )}
 
       {open && (
-        <div class="decisions-body">
+        <div class="flex flex-col gap-2 px-3 pb-3">
           {error !== null && <PanelError message={error} />}
           {decisions.map((d) => <OneDecision key={d.id} decision={d} onResolve={resolve} />)}
-          <div class="card-note">
+          <div class="text-[12px] text-faint">
             These calls already came and went — the agent was told to do something else. What
             you choose here applies from now on.
           </div>

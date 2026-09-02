@@ -1,0 +1,450 @@
+/* The transcript's grid of rows, the person's row and its bar, the records and notices,
+   and the prose: Markdown, diffs, highlighted code, file references, screenshots (§5).
+   Rows and prose are CSS because they are element-shaped — a rendered Markdown tree has no
+   place to put a class on every paragraph. */
+
+@layer components {
+
+/* --------------------------------------------------------------------- transcript ---- */
+.transcript-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 26px 28px 24px;
+}
+
+/* Every row is a marker gutter plus a content column. One text edge for the whole
+   transcript is what makes a mixed feed of prose, diffs and command output read as a
+   single instrument rather than a stack of unrelated widgets. */
+.row {
+  display: grid;
+  grid-template-columns: var(--gutter) minmax(0, 1fr);
+  gap: 10px;
+  max-width: var(--read);
+  margin: 0 auto 15px;
+}
+
+.row-gutter {
+  display: flex;
+  justify-content: center;
+  padding-top: 2px;
+  color: var(--text-faint);
+}
+
+.row-gutter .icon { width: 13px; height: 13px; }
+
+/* One content edge for EVERY row, prose and cards alike. The rule is always there and
+   only its colour changes, so nothing shifts sideways between a user message, an answer
+   and a tool card -- that 11px wobble was the thing that still read as "assembled from
+   parts" once the gutter was in.
+
+   ONE EXCEPTION, made deliberately and worth stating here rather than contradicting this
+   paragraph quietly further down: the user's own row replaces its hairline with a 3px bar
+   (see .row-user below). The text edge does not move -- the bar is out of flow and grows
+   LEFTWARDS into the grid gap -- so the promise this paragraph actually makes still holds.
+   What it gives up is that the user row is now the one row whose rule is not a hairline,
+   which is the price of being findable. */
+.row-body {
+  min-width: 0;
+  padding-left: 11px;
+  border-left: 1px solid transparent;
+}
+
+.row-reasoning .row-body { border-left-color: var(--border); }
+
+/* Consecutive tool calls are one action, not several: tighten them into a group. */
+.row-tool + .row-tool { margin-top: -9px; }
+
+/* AIR, asymmetric on purpose: a wide gap ABOVE cuts the new instruction away from the
+   work that just finished, a tight one BELOW glues it to the work it causes. The message
+   becomes the heading of the block under it rather than one more row in a stack — and a
+   gap no other row produces is legible at any scroll speed.
+   No `:first-child` rule of its own: the existing one below already wins on specificity,
+   and adding a second would be a rule that silently never applies. */
+.row-user { margin-top: 42px; margin-bottom: 9px; }
+
+.transcript > .row:first-child { margin-top: 0; }
+
+/* A harness note rides the user ROLE — the model has to read it as an instruction — and
+   gets none of the marking, because the whole point of the marking is "you wrote this".
+   It keeps the old hairline and steps back to dim: present, readable, and never mistaken
+   for one of your own messages while you scroll looking for one. */
+.row-user.user-note { margin-top: 15px; margin-bottom: 15px; }
+
+.row-user.user-note .row-body {
+  border-left-color: var(--border);
+  background: none;
+}
+
+.row-user.user-note .row-body::before { content: none; }
+
+.row-user.user-note .user-text { color: var(--text-dim); }
+
+.row-user.user-note .marker-caret { background: none; color: var(--text-faint); width: auto; }
+
+.row-user .row-body {
+  position: relative;
+  /* The hairline is handed over to the bar below, which stands at the same x. */
+  border-left-color: transparent;
+  /* A warm ground that dies out before the column does. No right edge to align to
+     anything, so it cannot read as a card and cannot overflow a narrow window. */
+  background: linear-gradient(90deg, var(--user-wash), transparent 62%);
+}
+
+/* THE BAR. Absolutely positioned, so it is out of flow and cannot move a single glyph:
+   an abspos child is laid out against the padding box, so `left: calc(-1 * var(--user-bar))`
+   ends the bar exactly where the 1px border used to sit and grows the rest of the way
+   LEFTWARDS into the 10px grid gap. The text edge is untouched; the gap reads 3px tighter.
+
+   Bright head, quiet tail: what you are hunting for is where your message STARTS, so a
+   sixty-line paste marks its first ~28px and then fades rather than painting a sixty-line
+   orange stripe down the page. */
+.row-user .row-body::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--user-bar));
+  width: var(--user-bar);
+  /* Overhangs both ends, so even a one-word question gets a mark tall enough to aim at. */
+  top: -6px;
+  bottom: -3px;
+  border-radius: 1.5px;
+  background: linear-gradient(180deg, var(--accent) 0 28px, var(--accent-line) 76px);
+}
+
+/* THE MARKER, given a field to sit on: at speed a 13px glyph dissolves and a filled 18px
+   block does not, and this is the only filled block in the gutter column. Exactly
+   --gutter wide (18px), so it sits flush in the track and spills into nothing. */
+.row-user .row-gutter { padding-top: 1px; }
+
+.row-user .marker-caret {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  justify-content: center;
+  width: var(--gutter);
+  height: 18px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  font-size: 12px;
+}
+
+.marker-caret {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.user-text {
+  color: var(--text-strong);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.interrupted {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--yellow);
+}
+
+.row-error .row-gutter { color: var(--red); }
+
+.row-error .notice-title { color: var(--red); }
+
+/* The same row shape, without the alarm. `/check` reporting a build that PASSED came
+   through the error channel and was drawn in alert red under the green row that had just
+   said the same thing — the note was right and its colour was a lie. */
+.row-note .row-gutter { color: var(--green); }
+
+.row-note .notice-title { color: var(--text-dim); }
+
+.row-stopped .row-gutter { color: var(--yellow); }
+
+/* word-break like every other text surface in the transcript: these rows carry raw error
+   messages and approval rules — an ENOENT with an unbroken node_modules path, an
+   `always: Bash(npm run …:*)` rule — and one such token wider than the read column gave
+   the WHOLE conversation a horizontal scrollbar. */
+.notice-title { font-size: 12.5px; color: var(--text); word-break: break-word; }
+
+.notice-detail { margin-top: 2px; font-size: 11.5px; color: var(--text-faint); word-break: break-word; }
+
+.row-record {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  align-items: center;
+}
+
+.row-record .row-gutter { padding-top: 1px; }
+
+.record-allow .row-gutter { color: var(--green); }
+
+.record-deny .row-gutter { color: var(--red); }
+
+.record-text { word-break: break-word; }
+
+/* The report, whole and unreflowed: its columns line up, and a renderer that wrapped or
+   collapsed the whitespace would take the table apart. Scrolls sideways on its own rather
+   than widening the transcript. */
+.diagnosis-report {
+  margin: 0;
+  white-space: pre;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.record-text .row-note {
+  margin-top: 6px;
+  color: var(--text-dim);
+  white-space: normal;
+}
+
+.record-text em { font-style: normal; opacity: 0.8; }
+
+/* A live measurement sitting inside a sentence: same faint weight the status line gives its
+   own readings, and tabular figures so a count ticking four times a second does not shuffle
+   the words after it sideways. */
+.record-quiet {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.row-waiting {
+  color: var(--text-faint);
+  font-size: 12.5px;
+  align-items: center;
+}
+
+.row-waiting .row-gutter { padding-top: 0; }
+
+.empty-state {
+  max-width: var(--read);
+  margin: 12vh auto 0;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.empty-state h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; color: var(--text); }
+
+.empty-state p { margin: 0; font-size: 12.5px; }
+
+/* --------------------------------------------------------------------- tool cards ---- */
+.row-tool .row-gutter { color: var(--text-faint); }
+
+.row-tool.tool-ok .row-gutter { color: var(--green); }
+
+.row-tool.tool-fail .row-gutter { color: var(--red); }
+
+/* --------------------------------------------------------------------------- diff ---- */
+.diff {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow-x: auto;
+  padding: 6px 0;
+}
+
+.diff-dense { font-size: 11px; }
+
+.diff-row { display: flex; white-space: pre; }
+
+.diff-no {
+  flex: none;
+  width: 38px;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--text-ghost);
+  user-select: none;
+}
+
+.diff-sign { flex: none; width: 16px; text-align: center; user-select: none; }
+
+.diff-text { flex: 1; padding-right: 12px; }
+
+.diff-add { background: var(--green-soft); color: var(--diff-add-text); }
+
+.diff-add .diff-sign { color: var(--green); }
+
+.diff-del { background: var(--red-soft); color: var(--diff-del-text); }
+
+.diff-del .diff-sign { color: var(--red); }
+
+.diff-ctx { color: var(--text-faint); }
+
+.diff-meta { color: var(--text-ghost); padding-left: 12px; }
+
+.diff-more {
+  margin: 4px 0 0 92px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.diff-more:hover { background: var(--bg-hover); color: var(--text); }
+
+.diff-stat { display: flex; gap: 6px; font-family: var(--mono); font-size: 10.5px; }
+
+.diff-stat-add { color: var(--green); }
+
+.diff-stat-del { color: var(--red); }
+
+.row-card-row .row-gutter { color: var(--accent); }
+
+/* A path the model wrote inside a plan step (see lib/file-refs.tsx). Same treatment as an
+ * inline code span in the chat, so a path reads as a path wherever it appears, plus the
+ * affordance the chat's spans do not have: this one opens the file. */
+.file-ref {
+  padding: 1px 4px;
+  border: none;
+  border-radius: 3px;
+  /* One step brighter than the chat's inline code, which uses --bg-raised: that span sits
+   * on --bg, this one sits on the plan card's --bg-panel, and the same wash there is a
+   * five-point difference nobody can see — so the padding reads as a stray gap before the
+   * next comma instead of as the edge of a chip. */
+  background: var(--bg-hover);
+  color: var(--code-text);
+  font-family: var(--mono);
+  font-size: 0.9em;
+  line-height: inherit;
+  vertical-align: baseline;
+}
+
+button.file-ref { cursor: pointer; }
+
+button.file-ref:hover { background: var(--bg-active); color: var(--text); }
+
+/* ----------------------------------------------------------------------- markdown ---- */
+.md { word-break: break-word; }
+
+.md > *:first-child { margin-top: 0; }
+
+.md > *:last-child { margin-bottom: 0; }
+
+.md p { margin: 0 0 10px; }
+
+.md h1, .md h2, .md h3, .md h4 { margin: 18px 0 8px; line-height: 1.3; font-weight: 600; }
+
+.md h1 { font-size: 18px; }
+
+.md h2 { font-size: 16px; }
+
+.md h3 { font-size: 14.5px; }
+
+.md h4 { font-size: 13.5px; color: var(--text-dim); }
+
+.md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
+/* The bullets and numbers the reset took away. */
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+
+.md li { margin: 3px 0; }
+
+/* GFM task items: the tokenizer strips [x]/[ ] into item.task/checked, so the glyph is
+   re-added at render — and the marker dot is dropped, since the box IS the marker. The
+   item's text arrives wrapped in a block <p>, so the glyph FLOATS: inline, it sat alone on
+   its own line above the text; floated, the paragraph's first line wraps beside it. */
+.md li.md-task { list-style: none; margin-left: -18px; }
+
+.md .md-check { float: left; margin-right: 6px; color: var(--text-dim); }
+
+.md blockquote {
+  margin: 0 0 10px;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--border);
+  color: var(--text-dim);
+}
+
+.md hr { border: none; border-top: 1px solid var(--border-soft); margin: 16px 0; }
+
+.md code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-raised);
+  color: var(--code-text);
+}
+
+.md-href { color: var(--text-faint); font-size: 11.5px; }
+
+.md table { border-collapse: collapse; margin: 0 0 12px; font-size: 12.5px; display: block; overflow-x: auto; }
+
+.md th, .md td { border: 1px solid var(--border-soft); padding: 5px 9px; text-align: left; }
+
+.md th { background: var(--bg-raised); font-weight: 550; }
+
+.md-code {
+  margin: 0 0 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+.md-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 6px 3px 11px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-tint);
+}
+
+.md-lang { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
+
+.md-copy {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.md-copy:hover { background: var(--bg-hover); color: var(--text); }
+
+.md-code pre { margin: 0; padding: 10px 12px; overflow-x: auto; }
+
+.md-code code { background: none; padding: 0; color: var(--text); font-size: 11.5px; line-height: 1.55; }
+
+/* code highlighting (see lib/highlight.tsx: VNodes, never HTML) */
+.hl-comment { color: var(--hl-comment); font-style: italic; }
+
+.hl-string { color: var(--hl-string); }
+
+.hl-number { color: var(--hl-number); }
+
+.hl-keyword { color: var(--hl-keyword); }
+
+/* A screenshot is the one tool result the MODEL cannot read: it exists entirely for the
+   person watching, so it gets shown at a size worth looking at rather than as a filename. */
+.shot {
+  margin: 0;
+  padding: 8px;
+}
+
+.shot img {
+  display: block;
+  max-width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+
+.shot figcaption {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+}

@@ -18,7 +18,7 @@ import { collectChanges } from './panels/changes-tab'
 import { Composer } from './panels/composer'
 import { ContextPanel } from './panels/context-panel'
 import { FileView } from './panels/file-view'
-import type { SessionSwitch } from './panels/sessions-rail'
+import type { SessionSwitch } from './lib/session-switch'
 import { Sidebar } from './shell/sidebar'
 import { SettingsModal, type SettingsTab } from './panels/status'
 import { StatusBar } from './shell/statusbar'
@@ -33,7 +33,6 @@ import { IconButton } from './ui/button'
 import { WorkspaceSwitch } from './panels/workspace-switch'
 import { Palette, type PaletteAction } from './panels/palette'
 import { Transcript } from './panels/transcript'
-import './App.css'
 
 /** One opened file, as a TAB beside the chat. The face — content or diff — is tab state,
  * so switching away and back lands where you were. */

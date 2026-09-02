@@ -2,6 +2,10 @@
 import "./dev-hooks";
 import { render } from "preact";
 import "./styles/tokens.css";
+import "./styles/base.css";
+import "./styles/shell.css";
+import "./styles/composer.css";
+import "./styles/transcript.css";
 import App from "./App";
 import { applyTheme, resolveTheme, systemPrefersDark } from "./lib/theme";
 

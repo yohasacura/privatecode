@@ -1,14 +1,20 @@
 import { useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { Check, ChevronDown, ChevronRight, MessageSquare, Play, ShieldCheck, X } from 'lucide-preact'
 import type { ApprovalDecision, RememberLayer, TodoItem } from '@core/interaction'
 import type { ProtocolClient } from '../lib/client'
 import type { PendingApproval, PendingQuestion } from '../lib/state'
 import { DiffView } from '../lib/diff'
 import { FileRefText } from '../lib/file-refs'
-import { Icon } from '../components/icons'
+import { Button, IconButton } from '../ui/button'
+import { Chip } from '../ui/chip'
+import { cn } from '../ui/cn'
+import { Input } from '../ui/input'
+import { Select } from '../ui/select'
 
 /**
- * The two cards that pause a turn, plus the task-list card.
+ * The two cards that pause a turn, plus the task-list card (docs/UI-REDESIGN-2026-09.md §5
+ * "Cards").
  *
  * They render INLINE in the transcript, at the point in the conversation where the agent
  * asked — not pinned to the bottom of the window as a separate strip. An approval is part
@@ -23,12 +29,19 @@ import { Icon } from '../components/icons'
  * defence in depth against a confusing double-click, not what makes a replay harmless.
  */
 
-const LAYERS: readonly { value: RememberLayer; label: string }[] = [
-  { value: 'session', label: 'this session' },
-  { value: 'local', label: 'this project (just me)' },
-  { value: 'project', label: 'this project (shared)' },
-  { value: 'user', label: 'all my projects' },
+const LAYERS: readonly { value: RememberLayer; label: string; where: string }[] = [
+  { value: 'session', label: 'this session', where: 'kept in memory, gone when the session ends' },
+  { value: 'local', label: 'this project (just me)', where: 'written to .privatecode/settings.local.json, not shared' },
+  { value: 'project', label: 'this project (shared)', where: 'written to .privatecode/settings.json, checked in with the project' },
+  { value: 'user', label: 'all my projects', where: 'written to your user settings, applies everywhere on this machine' },
 ]
+
+/** The card's frame: the approval reads louder than the conversation around it — it is the
+ * security surface — a question sits at the conversation's own weight. */
+const CARD = 'overflow-hidden rounded-md border bg-panel font-ui text-[13px] text-fg'
+const HEAD = 'flex items-center gap-2.5 px-3 pt-2.5'
+const NOTE = 'px-3 pb-2 pl-[38px] text-[12px] text-faint'
+const ACTIONS = 'flex flex-wrap items-center gap-2 px-3 py-2.5'
 
 /**
  * `edit_file`'s approval detail is a SEARCH/REPLACE block (see its `approvalPreview`).
@@ -76,63 +89,73 @@ export function ApprovalCard({
   if (answered) return null
 
   const diff = searchReplaceToDiff(approval.detail)
+  const deny = (): void => reply({ verdict: 'deny', ...(denyComment.trim() !== '' ? { comment: denyComment.trim() } : {}) })
+  const chosen = LAYERS.find((l) => l.value === layer)
 
   return (
-    <div class="card card-approval">
-      <div class="card-head">
-        <span class="card-icon card-icon-warn">{Icon.shield()}</span>
-        <span class="card-title">{approval.summary}</span>
-        <span class="card-tag">{approval.tool}</span>
+    <div
+      data-card="approval"
+      class={cn(CARD, 'border-accent-line shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_7%,transparent)]')}
+      onKeyDown={(e) => {
+        // Enter allows, but only from the card's own surface — not from the reason box,
+        // where Enter denies with what was typed.
+        if (e.key === 'Enter' && e.target === e.currentTarget) { e.preventDefault(); reply({ verdict: 'allow' }) }
+      }}
+    >
+      <div class={HEAD}>
+        <span class="inline-flex shrink-0 text-accent [&>svg]:size-4" aria-hidden="true"><ShieldCheck /></span>
+        <span class="min-w-0 flex-1 font-medium">{approval.summary}</span>
+        <Chip mono>{approval.tool}</Chip>
       </div>
-      <div class="card-note">Paused, waiting for you. Nothing is generating while this is open.</div>
+      <div class={NOTE}>Paused, waiting for you. Nothing is generating while this is open.</div>
 
-      <div class="card-detail">
-        {diff !== null ? <DiffView content={diff} dense /> : <pre class="card-detail-pre">{approval.detail}</pre>}
+      <div class="mx-3 max-h-80 overflow-auto rounded-sm border border-border-soft bg-bg">
+        {diff !== null
+          ? <DiffView content={diff} dense />
+          : <pre class="m-0 whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-[12px] leading-[1.5] text-fg">{approval.detail}</pre>}
       </div>
 
-      <div class="card-actions">
-        <button class="btn btn-primary" onClick={() => reply({ verdict: 'allow' })}>Allow</button>
+      <div class={ACTIONS}>
+        <Button variant="primary" icon={<Check />} onClick={() => reply({ verdict: 'allow' })} data-action="allow" title="Allow this once (Enter)">
+          Allow
+        </Button>
         {/* Hidden entirely, not disabled, when there is nothing to remember: an "Always"
             button opening onto an empty list would promise a capability the permission
             engine cannot offer for this call. */}
         {approval.suggestedRules.length > 0 && (
-          <button class="btn" onClick={() => setShowAlways((s) => !s)}>
-            Always… {showAlways ? Icon.chevronDown() : Icon.chevronRight()}
-          </button>
+          <Button onClick={() => setShowAlways((s) => !s)} aria-expanded={showAlways} data-action="always">
+            Always…
+            <span class="ml-1 inline-flex [&>svg]:size-3.5">{showAlways ? <ChevronDown /> : <ChevronRight />}</span>
+          </Button>
         )}
-        <span class="card-actions-gap" />
-        <input
-          class="input deny-comment"
+        <span class="flex-1" />
+        <Input
+          class="min-w-[180px] flex-1"
           value={denyComment}
+          aria-label="What to do instead"
           onInput={(e) => setDenyComment(e.currentTarget.value)}
           placeholder="do what instead? (optional)"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              reply({ verdict: 'deny', ...(denyComment.trim() !== '' ? { comment: denyComment.trim() } : {}) })
-            }
-          }}
+          onKeyDown={(e) => { if (e.key === 'Enter') deny() }}
         />
-        <button
-          class="btn btn-danger"
-          onClick={() => reply({ verdict: 'deny', ...(denyComment.trim() !== '' ? { comment: denyComment.trim() } : {}) })}
-        >
-          Deny
-        </button>
+        <Button variant="danger" icon={<X />} onClick={deny} data-action="deny">Deny</Button>
       </div>
 
       {showAlways && approval.suggestedRules.length > 0 && (
-        <div class="always-panel">
-          <label>Remember</label>
-          <select class="select" value={selectedRule} onChange={(e) => setSelectedRule(e.currentTarget.value)}>
-            {approval.suggestedRules.map((rule) => <option key={rule} value={rule}>{rule}</option>)}
-          </select>
-          <label>for</label>
-          <select class="select" value={layer} onChange={(e) => setLayer(e.currentTarget.value as RememberLayer)}>
-            {LAYERS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
-          </select>
-          <button class="btn btn-primary" onClick={() => reply({ verdict: 'allow', remember: { rule: selectedRule, layer } })}>
-            Allow always
-          </button>
+        <div data-always="" class="mx-3 mb-3 flex flex-col gap-2 rounded-sm border border-border-soft bg-raised px-2.5 py-2 text-[12.5px]">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-dim">Remember</span>
+            <Select class="max-w-[280px] font-mono text-[12px]" value={selectedRule} aria-label="The rule to remember" onChange={(e) => setSelectedRule(e.currentTarget.value)}>
+              {approval.suggestedRules.map((rule) => <option key={rule} value={rule}>{rule}</option>)}
+            </Select>
+            <span class="text-dim">for</span>
+            <Select value={layer} aria-label="Where the rule applies" onChange={(e) => setLayer(e.currentTarget.value as RememberLayer)}>
+              {LAYERS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+            </Select>
+            <Button variant="primary" onClick={() => reply({ verdict: 'allow', remember: { rule: selectedRule, layer } })} data-action="allow-always">
+              Allow always
+            </Button>
+          </div>
+          {chosen !== undefined && <div class="text-[11.5px] text-faint">{chosen.where}.</div>}
         </div>
       )}
     </div>
@@ -176,51 +199,80 @@ export function QuestionCard({
     })
   }
 
+  function pick(option: string): void {
+    if (multi) toggle(option)
+    else reply(option)
+  }
+
   if (answered) return null
 
   return (
-    <div class="card card-question">
-      <div class="card-head">
-        <span class="card-icon">{Icon.chat()}</span>
-        <span class="card-title">{question.question}</span>
+    <div
+      data-card="question"
+      class={cn(CARD, 'border-border')}
+      onKeyDown={(e) => {
+        // The digits pick options, from anywhere in the card but the text box.
+        if (e.target instanceof HTMLInputElement) return
+        const n = Number.parseInt(e.key, 10)
+        if (Number.isNaN(n) || n < 1 || n > 9) return
+        const option = question.options[n - 1]
+        if (option !== undefined) { e.preventDefault(); pick(option) }
+      }}
+    >
+      <div class={HEAD}>
+        <span class="inline-flex shrink-0 text-faint [&>svg]:size-4" aria-hidden="true"><MessageSquare /></span>
+        <span class="min-w-0 flex-1 font-medium">{question.question}</span>
       </div>
-      <div class="card-note">{multi ? 'Paused, waiting for you. Pick any that apply.' : 'Paused, waiting for you.'}</div>
+      <div class={NOTE}>
+        {multi ? 'Paused, waiting for you. Pick any that apply.' : 'Paused, waiting for you.'}
+        {question.options.length > 0 && question.options.length <= 9 && ' Keys 1–9 pick an option.'}
+      </div>
       {question.options.length > 0 && (
-        <div class="question-options">
+        <div class="flex flex-wrap gap-2 px-3 pt-1" data-options="">
           {/* The host always accepts free text too (interaction.ts's `UserQuestion`) --
               these are shortcuts for the likely answers, not the only way to reply.
               Single-select answers on click; multi-select toggles and answers via the
               one button below, because "which several" is not known until they say so. */}
-          {question.options.map((option) => (
-            <button
+          {question.options.map((option, i) => (
+            <Button
               key={option}
-              class={multi && picked.has(option) ? 'btn btn-toggled' : 'btn'}
+              variant={multi && picked.has(option) ? 'primary' : 'secondary'}
               aria-pressed={multi ? picked.has(option) : undefined}
-              onClick={() => { if (multi) toggle(option); else reply(option) }}
+              {...(multi && picked.has(option) ? { icon: <Check /> } : {})}
+              onClick={() => pick(option)}
+              title={i < 9 ? `${i + 1}` : undefined}
             >
-              {multi ? `${picked.has(option) ? '☑' : '☐'} ${option}` : option}
-            </button>
+              {option}
+            </Button>
           ))}
         </div>
       )}
-      <div class="card-actions">
-        <input
-          class="input"
+      <div class={ACTIONS}>
+        <Input
+          class="min-w-[180px] flex-1"
           value={freeText}
+          aria-label={multi ? 'Your own answer' : 'Your answer'}
           onInput={(e) => setFreeText(e.currentTarget.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') reply(multi ? combined() : freeText) }}
           placeholder={multi ? 'add your own answer (optional)' : 'or answer in your own words'}
         />
-        <button
-          class="btn btn-primary"
+        <Button
+          variant="primary"
           onClick={() => reply(multi ? combined() : freeText)}
           disabled={multi ? combined() === '' : freeText.trim() === ''}
+          data-action="answer"
         >
           Answer
-        </button>
+        </Button>
       </div>
     </div>
   )
+}
+
+const TODO_TONE: Record<TodoItem['status'], string> = {
+  pending: 'text-dim',
+  in_progress: 'text-fg',
+  completed: 'text-faint line-through',
 }
 
 /**
@@ -241,34 +293,42 @@ export function TodosCard(
   const current = todos.find((t) => t.status === 'in_progress')
 
   return (
-    <div class="todos">
-      <button class="todos-head" onClick={() => setOpen((o) => !o)}>
-        <span class="todos-chevron">{open ? Icon.chevronDown() : Icon.chevronRight()}</span>
-        <span class="todos-title">Plan</span>
-        <span class="todos-count">{done}/{todos.length}</span>
+    <div data-todos="" class="relative shrink-0 border-b border-border-soft bg-panel font-ui">
+      <button
+        type="button"
+        aria-expanded={open}
+        class="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent py-1.5 pl-3.5 pr-9 text-left font-ui text-[12.5px] text-fg transition-colors duration-(--duration-fast) hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span class="inline-flex shrink-0 text-faint [&>svg]:size-3.5">{open ? <ChevronDown /> : <ChevronRight />}</span>
+        <span class="font-medium">Plan</span>
+        <span class="font-mono text-[10.5px] tabular-nums text-faint">{done}/{todos.length}</span>
         {/* Inert here on purpose: this line lives inside the head's own `<button>`. */}
-        {!open && current && <span class="todos-current"><FileRefText text={current.text} /></span>}
-        <span class="todos-bar"><span class="todos-bar-fill" style={{ width: `${(done / todos.length) * 100}%` }} /></span>
+        {!open && current && <span class="min-w-0 truncate text-dim"><FileRefText text={current.text} /></span>}
+        <span class="ml-auto h-[3px] w-[90px] shrink-0 overflow-hidden rounded-[2px] bg-active" aria-hidden="true">
+          <span class="block h-full bg-accent transition-[width] duration-(--duration-slow)" style={{ width: `${(done / todos.length) * 100}%` }} />
+        </span>
       </button>
       {/* The dismiss the finished-but-ungated task was missing: the harness retires the
           plan when the gate passes, this is the user's hand for every other ending. */}
       {onClear !== undefined && (
-        <button
-          class="todos-clear"
-          title="Close the plan — the list is cleared"
+        <IconButton
+          size="sm"
+          class="absolute right-2 top-1"
+          label="Close the plan — the list is cleared"
           onClick={(e) => { e.stopPropagation(); onClear() }}
         >
-          {Icon.x()}
-        </button>
+          <X />
+        </IconButton>
       )}
       {open && (
-        <ul class="todos-list">
+        <ul class="m-0 list-none py-0 pb-2.5 pl-[30px] pr-3.5">
           {todos.map((t, i) => (
-            <li key={i} class={`todo todo-${t.status}`}>
-              <span class="todo-mark">
-                {t.status === 'completed' ? Icon.check() : t.status === 'in_progress' ? Icon.play() : null}
+            <li key={i} data-todo={t.status} class={cn('flex items-center gap-2 py-px text-[12.5px]', TODO_TONE[t.status])}>
+              <span class={cn('inline-flex w-3.5 shrink-0 [&>svg]:size-3.5', t.status === 'completed' ? 'text-green' : t.status === 'in_progress' ? 'text-accent' : 'text-faint')}>
+                {t.status === 'completed' ? <Check /> : t.status === 'in_progress' ? <Play /> : null}
               </span>
-              <span class="todo-text">
+              <span data-todo-text="" class="min-w-0">
                 {onOpenFile === undefined
                   ? <FileRefText text={t.text} />
                   : <FileRefText text={t.text} onOpenFile={onOpenFile} />}

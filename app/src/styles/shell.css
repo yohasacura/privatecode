@@ -1,0 +1,58 @@
+/* The frame: the grid the title bar, the three columns and the status bar sit in, and the
+   splitters between them (docs/UI-REDESIGN-2026-09.md §2). */
+
+@layer components {
+
+/* --------------------------------------------------------------------- the shell ----- */
+.shell {
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr) 26px;
+  /* Explicit, and `minmax(0, 1fr)` rather than the implicit `auto`: an auto-sized grid
+     column takes the max-content width of its widest row, so one long session title in the
+     title bar widened the whole window past the viewport. */
+  grid-template-columns: minmax(0, 1fr);
+  height: 100%;
+  /* Nothing in a window this size may ever produce a horizontal scrollbar. Measured before
+     this line existed: scrollWidth 1481 against a 1440 viewport, so the left rail sat
+     partly off-screen and the whole application slid when a control near the right edge
+     took focus. */
+  overflow: hidden;
+}
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.body { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+
+.column { display: flex; flex-direction: column; min-height: 0; }
+
+.column-chat { flex: 1; min-width: 0; background: var(--bg); }
+
+/* The chat is the first tab: hidden, not unmounted, so the stream keeps folding in. */
+.chat-face { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+
+.chat-face-hidden { display: none; }
+
+.column-rail { flex: none; background: var(--bg-panel); border-right: 1px solid var(--border-soft); }
+
+.column-context { flex: none; background: var(--bg-panel); border-left: 1px solid var(--border-soft); }
+
+.splitter {
+  flex: none;
+  width: 5px;
+  margin: 0 -2px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 5;
+  transition: background 120ms ease;
+}
+
+.splitter:hover { background: var(--accent-line); }
+
+.splitter:active { background: var(--accent); }
+
+}

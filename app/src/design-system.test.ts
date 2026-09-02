@@ -21,7 +21,9 @@ import { describe, expect, test } from 'vitest'
 const SRC = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
 /** The tokens (styles/tokens.css) are declared first, then the stylesheet that uses them. */
 const tokensCss = readFileSync(join(SRC, 'styles', 'tokens.css'), 'utf8')
-const appCss = readFileSync(join(SRC, 'App.css'), 'utf8')
+/** Everything that is not a token, in the order main.tsx loads it. */
+const STYLE_FILES = ['base.css', 'shell.css', 'composer.css', 'transcript.css']
+const appCss = STYLE_FILES.map((f) => readFileSync(join(SRC, 'styles', f), 'utf8')).join('\n')
 const css = `${tokensCss}\n${appCss}`
 
 /** Every `--token: value` declaration. */
@@ -86,7 +88,7 @@ describe('CSS custom properties', () => {
     const declared = declaredTokens(css)
     const undeclared = usedTokens(css)
       .filter((u) => !declared.has(u.token))
-      .map((u) => `App.css:${u.line} uses ${u.token}, which is never declared`)
+      .map((u) => `styles:${u.line} uses ${u.token}, which is never declared`)
     expect(undeclared).toEqual([])
   })
 
@@ -105,7 +107,7 @@ describe('CSS custom properties', () => {
 })
 
 describe('colours', () => {
-  test('App.css names no colour that is not a token', () => {
+  test('the stylesheets name no colour that is not a token', () => {
     // A colour written where it is used is a colour the other theme never gets. The
     // tokens file is the one place a hex or an rgb() may appear.
     const withoutComments = appCss.replace(/\/\*[\s\S]*?\*\//g, '')
@@ -113,7 +115,7 @@ describe('colours', () => {
       .split('\n')
       .map((line, i) => ({ line: i + 1, text: line }))
       .filter(({ text }) => /#[0-9a-f]{3,8}\b|rgba?\(/i.test(text))
-      .map(({ line, text }) => `App.css:${line}: ${text.trim()}`)
+      .map(({ line, text }) => `styles:${line}: ${text.trim()}`)
     expect(raw).toEqual([])
   })
 })

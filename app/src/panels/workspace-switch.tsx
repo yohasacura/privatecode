@@ -9,7 +9,7 @@ import { Chip } from '../ui/chip'
 import { cn } from '../ui/cn'
 import { Dialog } from '../ui/dialog'
 import { Input } from '../ui/input'
-import type { SessionSwitch } from './sessions-rail'
+import type { SessionSwitch } from '../lib/session-switch'
 
 /**
  * The workspace switcher — a switcher, not a form (docs/UI-REDESIGN-2026-09.md §8).

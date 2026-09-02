@@ -1,0 +1,117 @@
+/* The composer's surface: the bordered shell around the box, the activity sweep while a
+   turn runs, the drop targets and the chip that follows a dragged path (§6). The bar and
+   the pickers inside it are Tailwind in composer.tsx. */
+
+@layer components {
+
+/* ----------------------------------------------------------------------- composer ---- */
+.composer {
+  flex: none;
+  padding: 10px 28px 14px;
+  background: linear-gradient(to bottom, transparent, var(--bg) 22px);
+}
+
+.composer > * { max-width: var(--read); margin-left: auto; margin-right: auto; }
+
+/* Dropping a file or folder onto the window.
+
+   The composer is what lights up, not the window, because the composer is where the thing
+   will land: a full-screen tint says "we caught it" and leaves you looking for what it did.
+   Set from two independent places — Tauri's OS-level drag event for a drop from Explorer,
+   and ordinary HTML5 dragover for a row dragged out of the tree — which is why it is a
+   state flag rather than a `:has()` selector on a drag that only one of the two produces. */
+.composer-dropping .composer-shell {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.composer-dropping .composer-input::placeholder { color: var(--accent); }
+
+/* Something is being carried somewhere on screen. A dashed edge rather than the full
+   accent glow: the target has to be findable before the pointer reaches it, and a box
+   that already looks armed from across the window leaves nothing for arrival to say. */
+.composer-carrying .composer-shell { border-style: dashed; }
+
+/* The thing under the cursor during a pointer drag. `fixed`, because it is positioned in
+   viewport coordinates straight from the pointer event, and `pointer-events: none` so it
+   cannot become the element the drop lands on. */
+.drag-chip {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  padding: 3px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
+}
+
+/* Positioned wrapper the run-config popover anchors to — OUTSIDE the shell's clip box.
+   Anchored inside the shell it was cut to the sliver poking above the composer bar. */
+.composer-anchor { position: relative; }
+
+/* One surface: the field and every control that acts on it live inside the same border. */
+.composer-shell {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  overflow: hidden;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.composer-shell:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.composer-shell-live { border-color: var(--accent-line-soft); }
+
+/* A hairline that sweeps only while a turn is actually running. */
+.composer-activity { height: 1px; background: var(--border-soft); }
+
+.composer-shell-live .composer-activity {
+  background:
+    linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat,
+    var(--border-soft);
+  background-size: 38% 100%, 100% 100%;
+  animation: sweep 1.7s linear infinite;
+}
+
+@keyframes sweep {
+  from { background-position: -40% 0, 0 0; }
+  to { background-position: 140% 0, 0 0; }
+}
+
+.composer-input {
+  resize: none;
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.55;
+  resize: none;
+  outline: none;
+  max-height: 260px;
+  padding: 11px 14px 3px;
+}
+
+.composer-input::placeholder { color: var(--text-faint); }
+
+/* A suggested reply riding in the placeholder. Slightly brighter than the ordinary
+   placeholder, because this one is an OFFER rather than a label — it is there to be read
+   and taken, not to sit quietly until you start typing over it. It lives in the placeholder
+   at all because a suggestion only ever shows in an EMPTY box, which is exactly where the
+   placeholder already sits: no overlay, and no alignment to keep true as the font changes. */
+.composer-input.has-ghost::placeholder { color: var(--text-dim); }
+
+}
