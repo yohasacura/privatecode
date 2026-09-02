@@ -90,7 +90,7 @@ const CONTEXT_DEFAULT = 420
  */
 const ESCAPE_OWNERS =
   '.modal-overlay, .chat-face:not(.chat-face-hidden) .command-picker,' +
-  ' .chat-face:not(.chat-face-hidden) .run-config'
+  ' [data-run-config]'
 
 /**
  * Inline edit boxes elsewhere in the window that cancel THEMSELVES on Escape: the workspace

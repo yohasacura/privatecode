@@ -7,6 +7,14 @@ import { formatDuration, formatProgress } from '../lib/format'
 import { applyMention, mentionAtCaret, type Mention } from '../lib/mentions'
 import { pathDrag, subscribePathDrag, within, type PathDrag } from '../lib/drag'
 import { Icon } from '../components/icons'
+import { FileText, FolderOpen, Paperclip, Play, Plus, SendHorizontal, Square, X } from 'lucide-preact'
+import { Button, IconButton } from '../ui/button'
+import { Chip } from '../ui/chip'
+import { cn } from '../ui/cn'
+import { Input } from '../ui/input'
+import { Popover } from '../ui/popover'
+import { Segmented } from '../ui/segmented'
+import { Switch } from '../ui/switch'
 import { carryAcceptance, commandShaped, glueSuggestions, lintPrompt, lintShaped, taskShaped, type DraftSuggestions } from '../lib/prompt-lint'
 
 /**
@@ -24,6 +32,34 @@ const MODES: readonly { value: AgentMode; label: string; hint: string }[] = [
   { value: 'auto-edit', label: 'Auto-edit', hint: 'Edits freely. Still asks before running commands.' },
   { value: 'autopilot', label: 'Autopilot', hint: 'Acts unattended. Built-in protections still apply.' },
 ]
+
+/** The colour a mode wears when it is the one selected: the more it may do, the warmer. */
+const MODE_TONE: Partial<Record<AgentMode, 'blue' | 'yellow' | 'red'>> = {
+  plan: 'blue',
+  'auto-edit': 'yellow',
+  autopilot: 'red',
+}
+
+const CHECKS_ON_HINT =
+  'After a turn that changed code: the build and tests run, the work is audited against ' +
+  'what you asked for, and a reader with a fresh context goes over the diff. Turn them off ' +
+  'to run them by hand with /check and /review.'
+/** The pickers under the box and the hint chips inside it, as one vocabulary. */
+const PICKER = 'mx-auto mb-1.5 w-full max-w-(--read) overflow-hidden rounded-md border border-border bg-panel font-ui'
+const PICKER_ITEM = 'flex w-full cursor-pointer items-baseline gap-2.5 border-0 bg-transparent px-3 py-1.5 text-left text-[12.5px] text-dim hover:bg-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent'
+const PICKER_ITEM_ON = 'bg-hover text-fg'
+const PICKER_HINT = 'border-t border-border-soft px-3 py-1 text-[11px] text-faint'
+const PICKER_EMPTY = 'px-3 py-2 text-[12px] text-faint'
+const HINTS = 'flex flex-wrap items-center gap-1.5 px-2.5 pt-1 font-ui'
+const HINT = 'rounded-full border border-border px-2 py-px text-[11.5px] text-dim'
+const HINT_ACTION = 'ml-auto cursor-pointer border-0 bg-transparent px-1 py-px font-ui text-[11.5px] text-accent hover:enabled:underline disabled:cursor-default disabled:opacity-40'
+const SUGGEST = 'max-w-full cursor-pointer truncate rounded-full border border-border bg-transparent px-2 py-px font-ui text-[11.5px] text-dim hover:bg-hover hover:text-fg'
+const SUGGEST_ON = 'border-accent text-fg'
+
+const CHECKS_OFF_HINT =
+  'Checks are OFF for this session. Nothing runs the build, audits the work against what ' +
+  'you asked for, or reviews the diff until you ask: /check runs the build and tests, ' +
+  '/review runs the independent read.'
 
 /** Well under `protocol.ts`'s 1 MB line cap: one oversized request line makes the sidecar
  * treat the stream as compromised and exit, and the shell has no respawn path. Refusing
@@ -58,6 +94,9 @@ const COMPACT_COMMAND = '/compact'
  * account of a review that never happened — the same failure `/compact` produced when it
  * was typed twice.
  */
+/** Handled in the window, so never "no such command" even though the host does not list them. */
+const WINDOW_COMMANDS = new Set<string>()
+
 const GATE_COMMANDS: Record<string, 'build' | 'review'> = {
   '/check': 'build',
   '/review': 'review',
@@ -78,6 +117,8 @@ const DOCTOR_COMMANDS: readonly string[] = ['/doctor', '/доктор']
 
 const GATES_OFF = '/gates off'
 const GATES_ON = '/gates on'
+
+for (const c of [COMPACT_COMMAND, ...DOCTOR_COMMANDS, ...Object.keys(GATE_COMMANDS)]) WINDOW_COMMANDS.add(c)
 
 export function Composer({
   client, state, dispatch, modalOpen, onAdoptViewed, locked,
@@ -176,6 +217,8 @@ export function Composer({
   const [commandsDismissed, setCommandsDismissed] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  /** What the run-budget popover hangs from. */
+  const runAnchorRef = useRef<HTMLSpanElement>(null)
 
   // The empty state's starter chips, and anything else that wants to put words in the
   // box without owning it: a window event with the text.
@@ -1253,8 +1296,8 @@ export function Composer({
 
   function statusLine(): VNode | null {
     // Outranks everything: it is the reason the send button is grey.
-    if (locked !== undefined) return <span class="status-live">{locked}</span>
-    if (waitingOnYou) return <span class="status-live">waiting on you · nothing generating</span>
+    if (locked !== undefined) return <span class="text-accent">{locked}</span>
+    if (waitingOnYou) return <span class="text-accent">waiting on you · nothing generating</span>
     // A gate outranks everything below it, and it is checked BEFORE `turnRunning` rather
     // than inside it. Two reasons, and the second was found by running the built app: a gate
     // is the truest thing on screen during a turn — the premise and understanding gates run
@@ -1265,12 +1308,12 @@ export function Composer({
     // six seconds of a build running and nothing on screen saying so.
     if (stage !== null) {
       return (
-        <span class="status-live">
+        <span class="text-accent">
           {STAGE_LABEL[stage.stage]} · {formatDuration(now - stage.startedAtMs)}
           {stage.at !== undefined && (
-            <span class="status-quiet"> · {stage.at.index}/{stage.at.total}</span>
+            <span class="text-faint tabular-nums"> · {stage.at.index}/{stage.at.total}</span>
           )}
-          {stage.detail !== undefined && <span class="status-quiet"> · {stage.detail}</span>}
+          {stage.detail !== undefined && <span class="text-faint tabular-nums"> · {stage.detail}</span>}
         </span>
       )
     }
@@ -1284,9 +1327,9 @@ export function Composer({
       // by `lastCompaction` (the last EVENT seen, not a live flag) is what left "compacting…"
       // on screen next to a running step, and next to a queued message, with no way to tell
       // whether anything was happening at all.
-      if (!step) return <span class="status-live">{runningTool ? `running ${runningTool}` : 'working'}</span>
+      if (!step) return <span class="text-accent">{runningTool ? `running ${runningTool}` : 'working'}</span>
       return (
-        <span class="status-live">
+        <span class="text-accent">
           step {step.step} · {formatDuration(now - step.startedAtMs)}
           {/* The gap that reads as a freeze. llama.cpp matches its cache by longest common
               prefix, so the tokens a step APPENDS -- a file the last tool returned -- have to
@@ -1299,18 +1342,18 @@ export function Composer({
               figure says why this one is long. The inferences stay as the fallback for a
               server built without `return_progress` — they were right about the state and
               could only ever guess at its size. */}
-          {composingCall && <span class="status-quiet"> · writing the change</span>}
+          {composingCall && <span class="text-faint tabular-nums"> · writing the change</span>}
           {measured !== null
-            ? <span class="status-quiet"> · {measured}</span>
+            ? <span class="text-faint tabular-nums"> · {measured}</span>
             : composingCall
-              ? <span class="status-quiet"> — the tool call is generated a token at a time, like the reasoning above it</span>
-              : !streaming && <span class="status-quiet"> · reading what the last step returned</span>}
+              ? <span class="text-faint tabular-nums"> — the tool call is generated a token at a time, like the reasoning above it</span>
+              : !streaming && <span class="text-faint tabular-nums"> · reading what the last step returned</span>}
           {remainingMs !== null && remainingMs < 20_000 && (
             // At zero the honest statement is what happens next, not a number that has
             // stopped moving: the core abandons the step within moments of its own clock
             // expiring, so a "0s" that persists longer than that would be this countdown
             // being wrong, never the step being fine.
-            <span class="warn"> · {remainingMs > 0
+            <span class="text-yellow"> · {remainingMs > 0
               ? `${Math.ceil(remainingMs / 1000)}s to timeout`
               : 'out of time — abandoning this step'}</span>
           )}
@@ -1319,13 +1362,13 @@ export function Composer({
     }
     if (last) {
       return (
-        <span class="status-idle">
+        <span class="text-faint">
           {last.seconds.toFixed(1)}s
           {last.tokensPerSecond !== undefined && ` · ${last.tokensPerSecond.toFixed(1)} tok/s`}
         </span>
       )
     }
-    return <span class="status-idle"><kbd>↵</kbd> send · <kbd>⇧↵</kbd> newline</span>
+    return <span class="text-faint"><kbd>↵</kbd> send · <kbd>⇧↵</kbd> newline</span>
   }
 
   // "Continue" under a dropped stream and "Resume" under a stopped turn send a message
@@ -1346,6 +1389,20 @@ export function Composer({
     window.addEventListener('pc:send', onSend)
     return () => window.removeEventListener('pc:send', onSend)
   }, [])
+
+  // The paperclip: an `@` at the caret, which is what opens the file picker. One gesture
+  // for people who do not know the key, and the same picker for those who do.
+  function insertMention(): void {
+    const el = textareaRef.current
+    const at = el?.selectionStart ?? input.length
+    const before = input.slice(0, at)
+    const glue = before === '' || /\s$/.test(before) ? '' : ' '
+    const next = `${before}${glue}@${input.slice(at)}`
+    const caret = at + glue.length + 1
+    setInput(next)
+    setMention(mentionAtCaret(next, caret))
+    requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(caret, caret) })
+  }
 
   return (
     <div
@@ -1372,89 +1429,116 @@ export function Composer({
         </div>
       )}
       {pendingAutopilot && (
-        <div class="autopilot-confirm">
-          <span>Autopilot edits files and runs commands with no further prompts.</span>
-          <button class="btn btn-danger" onClick={() => { setPendingAutopilot(false); applyMode('autopilot') }}>
+        <div
+          data-confirm="autopilot"
+          role="alertdialog"
+          aria-label="Turn Autopilot on?"
+          class="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-red-line bg-red-soft px-3 py-2 font-ui text-[12.5px] text-fg motion-safe:animate-[pop-in_var(--duration-normal)_var(--ease-enter)]"
+        >
+          <span class="flex-1">Autopilot edits files and runs commands with no further prompts.</span>
+          <Button size="sm" variant="danger" data-autofocus onClick={() => { setPendingAutopilot(false); applyMode('autopilot') }}>
             Turn it on
-          </button>
-          <button class="btn" onClick={() => setPendingAutopilot(false)}>Cancel</button>
+          </Button>
+          <Button size="sm" onClick={() => setPendingAutopilot(false)}>Cancel</Button>
         </div>
       )}
 
       {matching.length > 0 && (
-        <div class="command-picker">
+        <div class={PICKER} role="listbox" aria-label="Commands" data-picker="commands">
           {matching.map((c, i) => (
             <button
               key={c.name}
-              class={`command-item ${c === pickedCommand ? 'command-item-on' : ''}`}
+              type="button"
+              role="option"
+              aria-selected={c === pickedCommand}
+              class={cn(PICKER_ITEM, c === pickedCommand && PICKER_ITEM_ON)}
               onMouseEnter={() => setCommandPick(i)}
               onClick={() => chooseCommand(c.name)}
             >
-              <span class="command-name">/{c.name}</span>
-              <span class="command-desc">{c.description}</span>
+              <span class="shrink-0 font-mono text-accent">/{c.name}</span>
+              <span class="min-w-0 flex-1 truncate">{c.description}</span>
             </button>
           ))}
-          <div class="picker-hint">
+          <div class={PICKER_HINT}>
             <kbd>↑↓</kbd> pick · <kbd>↵</kbd> complete · <kbd>Esc</kbd> dismiss
+          </div>
+        </div>
+      )}
+      {/* A slash that matches nothing, said before Enter sends it to a model with no such
+          tool. The window's own commands are not in `commands` and are not "no such". */}
+      {slashPrefix !== null && !commandsDismissed && matching.length === 0 &&
+        !/\s/.test(input.trim()) && !WINDOW_COMMANDS.has(input.trim().toLowerCase()) && (
+        <div class={PICKER} role="status" data-picker="commands-empty">
+          <div class={PICKER_EMPTY}>
+            No such command as <span class="font-mono text-fg">{input.trim()}</span>. Enter does nothing; <kbd>Esc</kbd> dismisses this.
           </div>
         </div>
       )}
 
       {mention !== null && mentionHits.length > 0 && (
-        <div class="command-picker">
+        <div class={PICKER} role="listbox" aria-label="Files to attach" data-picker="files">
           {mentionHits.map((hit, i) => (
             <button
               key={hit.path}
-              class={`command-item ${i === mentionPick ? 'command-item-on' : ''}`}
+              type="button"
+              role="option"
+              aria-selected={i === mentionPick}
+              class={cn(PICKER_ITEM, 'items-center', i === mentionPick && PICKER_ITEM_ON)}
               onMouseEnter={() => setMentionPick(i)}
               onClick={() => choose(hit.path)}
             >
-              <span class="command-icon">{hit.dir ? Icon.folder() : Icon.file()}</span>
-              <span class="command-desc" title={hit.path}>
+              <span class="inline-flex shrink-0 text-faint [&>svg]:size-3.5">{hit.dir ? <FolderOpen /> : <FileText />}</span>
+              <span class="min-w-0 flex-1 truncate font-mono text-[12px]" title={hit.path}>
                 {hit.path}
-                {hit.dir && <span class="command-hint"> — the files in it</span>}
+                {hit.dir && <span class="font-ui text-faint"> — the files in it</span>}
               </span>
             </button>
           ))}
-          <div class="picker-hint">
+          <div class={PICKER_HINT}>
             <kbd>↑↓</kbd> pick · <kbd>↵</kbd> attach · a file sends its contents, a folder sends its file list
           </div>
         </div>
       )}
+      {mention !== null && mentionHits.length === 0 && mention.query.length > 0 && (
+        <div class={PICKER} role="status" data-picker="files-empty">
+          <div class={PICKER_EMPTY}>No files match <span class="font-mono text-fg">@{mention.query}</span>.</div>
+        </div>
+      )}
 
       {liveAttachments.length > 0 && (
-        <div class="attach-row">
+        <div class="mb-1.5 flex flex-wrap gap-1" data-attachments="">
           {liveAttachments.map((path) => (
-            <span key={path} class="attach-chip" title={`${path} is sent with this message`}>
-              {Icon.file()}
-              <span class="attach-name">{path}</span>
-            </span>
+            <Chip key={path} tone="accent" mono icon={path.endsWith('/') ? <FolderOpen /> : <FileText />} title={`${path} is sent with this message`}>
+              <span class="max-w-[42ch] truncate">{path}</span>
+            </Chip>
           ))}
         </div>
       )}
 
       {queued.map((q, qi) => (
-        <div class="queued-note" key={qi}>
-          <span class="queued-label">Queued</span>
-          <span class="queued-text" title={q.text}>{q.text}</span>
-          <button
-            class="queued-edit"
+        <div
+          key={qi}
+          data-queued=""
+          class="mb-1.5 flex items-center gap-2 rounded-md border border-border bg-raised px-2.5 py-1.5 font-ui text-[12px]"
+        >
+          <Chip tone="accent">Queued</Chip>
+          <span class="min-w-0 flex-1 truncate text-dim" title={q.text}>{q.text}</span>
+          <span class="shrink-0 text-[11px] text-faint">sent when this turn ends</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            title="Put it back in the box"
             onClick={() => {
               setInput((i) => (i === '' ? q.text : `${q.text}\n${i}`))
               setAttached((a) => [...new Set([...a, ...q.attach])])
               setQueued((qs) => qs.filter((_, j) => j !== qi))
             }}
-            title="Put it back in the box"
           >
-            edit
-          </button>
-          <button
-            class="icon-button"
-            onClick={() => setQueued((qs) => qs.filter((_, j) => j !== qi))}
-            title="Discard it"
-          >
-            {Icon.x()}
-          </button>
+            Edit
+          </Button>
+          <IconButton size="sm" label="Discard it" onClick={() => setQueued((qs) => qs.filter((_, j) => j !== qi))}>
+            <X />
+          </IconButton>
         </div>
       ))}
 
@@ -1468,50 +1552,45 @@ export function Composer({
           the clip box, which showed only its bottom ~28px sliver over a one-line textarea.
           Anchored to this wrapper it sits above the shell, unclipped. */}
       <div class="composer-anchor">
-        {runConfigOpen && (
+        <Popover
+          open={runConfigOpen}
+          onOpenChange={setRunConfigOpen}
+          anchor={runAnchorRef}
+          side="top"
+          align="start"
+          label="Start an unattended run"
+          class="w-80 p-3"
+        >
           <div
-            class="run-config"
-            role="dialog"
-            aria-label="Start an unattended run"
+            class="flex flex-col gap-2.5 font-ui"
+            data-run-config=""
             onKeyDown={(e) => {
               // Escape dismisses the card and STOPS: the window listener would abort the
               // turn that startRun's own guard documents can already be running.
               if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setRunConfigOpen(false) }
             }}
           >
-            <div class="run-config-task" title={runTask}>{runTask}</div>
-            <div class="run-config-fields">
-              <label class="run-config-field">
-                <span>Turn budget</span>
-                <input
-                  class="input input-small"
-                  inputMode="numeric"
-                  placeholder="none"
-                  value={maxTurnsText}
-                  onInput={(e) => setMaxTurnsText(e.currentTarget.value)}
-                />
+            <div class="truncate text-[12.5px] text-fg" title={runTask}>{runTask}</div>
+            <div class="grid grid-cols-2 gap-2">
+              <label class="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.05em] text-dim">
+                Turn budget
+                <Input inputMode="numeric" placeholder="none" value={maxTurnsText} onInput={(e) => setMaxTurnsText(e.currentTarget.value)} />
               </label>
-              <label class="run-config-field">
-                <span>Hour budget</span>
-                <input
-                  class="input input-small"
-                  inputMode="numeric"
-                  placeholder="none"
-                  value={maxHoursText}
-                  onInput={(e) => setMaxHoursText(e.currentTarget.value)}
-                />
+              <label class="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-[0.05em] text-dim">
+                Hour budget
+                <Input inputMode="numeric" placeholder="none" value={maxHoursText} onInput={(e) => setMaxHoursText(e.currentTarget.value)} />
               </label>
             </div>
-            <div class="run-config-hint">
+            <div class="text-[11.5px] leading-[1.5] text-faint">
               Empty means no limit. The hour budget cuts a running turn; questions park in
               the decision queue instead of blocking.
             </div>
-            <div class="run-config-actions">
-              <button class="btn" onClick={() => setRunConfigOpen(false)}>Cancel</button>
-              <button class="btn btn-primary" onClick={startRun}>Start run</button>
+            <div class="flex justify-end gap-1.5">
+              <Button size="sm" onClick={() => setRunConfigOpen(false)}>Cancel</Button>
+              <Button size="sm" variant="primary" data-autofocus onClick={startRun}>Start run</Button>
             </div>
           </div>
-        )}
+        </Popover>
 
       <div class={`composer-shell ${state.turnRunning ? 'composer-shell-live' : ''}`}>
         <div class="composer-activity" aria-hidden="true" />
@@ -1639,7 +1718,10 @@ export function Composer({
               send()
             }
           }}
-          placeholder={ghost !== null && !state.turnRunning && !blockedByRun
+          readOnly={locked !== undefined && !state.turnRunning}
+          placeholder={locked !== undefined && !state.turnRunning
+            ? locked
+            : ghost !== null && !state.turnRunning && !blockedByRun
             ? `${ghost}    (Tab)`
             : blockedByRun
             ? 'Reading an earlier session. Wait for the running turn, or go back to it, then write here to continue this one.'
@@ -1651,14 +1733,14 @@ export function Composer({
         />
 
         {!state.turnRunning && suggested !== null && (
-          <div class="prompt-hints" aria-live="polite">
+          <div class={HINTS} aria-live="polite">
             {/* The model's suggestions as toggle chips: on = travels with the send,
                 appended BELOW the draft — the draft itself is never rewritten. Questions
                 travel only once answered; clicking one opens its answer box. */}
             {suggested.criteria.map((c) => (
               <button
                 key={`c:${c}`}
-                class={accepted.has(`c:${c}`) ? 'prompt-suggest prompt-suggest-on' : 'prompt-suggest'}
+                class={cn(SUGGEST, accepted.has(`c:${c}`) && SUGGEST_ON)}
                 aria-pressed={accepted.has(`c:${c}`)}
                 title={`Done criterion — travels with the message:
 ${c}`}
@@ -1678,7 +1760,7 @@ ${c}`}
             {suggested.constraints.map((c) => (
               <button
                 key={`k:${c}`}
-                class={accepted.has(`k:${c}`) ? 'prompt-suggest prompt-suggest-on' : 'prompt-suggest'}
+                class={cn(SUGGEST, accepted.has(`k:${c}`) && SUGGEST_ON)}
                 aria-pressed={accepted.has(`k:${c}`)}
                 title={`Constraint — travels with the message:
 ${c}`}
@@ -1696,9 +1778,9 @@ ${c}`}
               </button>
             ))}
             {suggested.questions.map((q) => (
-              <span key={`q:${q}`} class="prompt-question-wrap">
+              <span key={`q:${q}`} class="inline-flex max-w-full items-center gap-1">
                 <button
-                  class={answers.get(q)?.trim() ? 'prompt-suggest prompt-suggest-on' : 'prompt-suggest prompt-question'}
+                  class={cn(SUGGEST, answers.get(q)?.trim() ? SUGGEST_ON : 'border-dashed')}
                   title={answers.get(q)?.trim()
                     ? `Travels as a clarification:
 ${q} — ${answers.get(q)}`
@@ -1709,8 +1791,8 @@ ${q}`}
                   {answers.get(q)?.trim() ? '☑' : '?'} {q}
                 </button>
                 {openQuestion === q && (
-                  <input
-                    class="input input-small prompt-question-input"
+                  <Input
+                    class="h-6 w-44 text-[12px]"
                     value={answers.get(q) ?? ''}
                     placeholder="answer…"
                     // eslint-disable-next-line jsx-a11y/no-autofocus
@@ -1725,7 +1807,7 @@ ${q}`}
               </span>
             ))}
             <button
-              class="prompt-hint-improve"
+              class={HINT_ACTION}
               title="Dismiss the suggestions — the draft goes as typed"
               onClick={() => { setSuggested(null); setOpenQuestion(null); textareaRef.current?.focus() }}
             >
@@ -1734,13 +1816,13 @@ ${q}`}
           </div>
         )}
         {!state.turnRunning && expandPreview !== null && (
-          <div class="prompt-expand" aria-live="polite">
+          <div class="mx-2.5 mt-1 rounded-sm border border-border px-2 py-1.5 font-ui" aria-live="polite">
             {/* The expanded brief as a PREVIEW: accepting replaces the draft (it stays
                 editable), dismissing sends the draft as typed. Never applied silently. */}
-            <pre class="prompt-expand-text">{expandPreview}</pre>
-            <div class="prompt-expand-actions">
+            <pre class="mb-1 max-h-44 overflow-y-auto whitespace-pre-wrap break-words font-ui text-[12.5px] text-fg">{expandPreview}</pre>
+            <div class="flex items-center gap-2">
               <button
-                class="prompt-hint-improve"
+                class={HINT_ACTION}
                 onClick={() => {
                   setInput(expandPreview)
                   // The accepted text is "already processed": no auto re-run until edited.
@@ -1757,7 +1839,7 @@ ${q}`}
                 Accept — replace the draft
               </button>
               <button
-                class="prompt-hint-improve"
+                class={HINT_ACTION}
                 title="Dismiss — the draft goes as typed"
                 onClick={() => { setExpandPreview(null); textareaRef.current?.focus() }}
               >
@@ -1768,11 +1850,11 @@ ${q}`}
         )}
         {!state.turnRunning && suggested === null && expandPreview === null &&
           (lintShaped(input) && lintPrompt(input).length > 0 || commandShaped(input) || improveNote !== null) && (
-          <div class="prompt-hints" aria-live="polite">
-            {lintShaped(input) && lintPrompt(input).map((hint) => <span key={hint} class="prompt-hint">{hint}</span>)}
-            {improveNote !== null && <span class="prompt-hint">{improveNote}</span>}
+          <div class={HINTS} aria-live="polite">
+            {lintShaped(input) && lintPrompt(input).map((hint) => <span key={hint} class={HINT}>{hint}</span>)}
+            {improveNote !== null && <span class={HINT}>{improveNote}</span>}
             <button
-              class="prompt-hint-improve"
+              class={HINT_ACTION}
               onClick={() => improveOrExpand()}
               disabled={improving}
               title={taskShaped(input)
@@ -1783,73 +1865,86 @@ ${q}`}
             </button>
           </div>
         )}
-        <div class="composer-bar">
-          <div class="mode-group" role="group" aria-label="How much the agent may do without asking">
-            {MODES.map((m) => (
-              <button
-                key={m.value}
-                class={`mode-chip ${mode === m.value ? 'mode-chip-active' : ''} mode-${m.value}`}
-                title={m.hint}
-                disabled={!state.session}
-                onClick={() => requestMode(m.value)}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-
-          {/* A mode in every sense that matters, so it sits with the modes. Disabled while
-              anything is running: an unattended run and a manual turn are the same single
-              slot, and offering a button that would be refused is worse than not offering
-              it. */}
-          <button
-            class={`mode-chip run-chip ${state.run ? 'run-chip-active' : ''}`}
-            title={state.run
-              ? 'Stop after the current turn'
-              : 'Keep taking turns until the work is done or a budget stops it. ' +
-                'Questions are queued instead of blocking.'}
-            disabled={!state.session || (state.turnRunning && state.run === null)}
-            onClick={state.run ? stopRun : requestRun}
-          >
-            {state.run ? `Stop · turn ${state.run.turn}` : 'Run unattended'}
-          </button>
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1.5 font-ui">
+          <Segmented
+            size="sm"
+            label="How much the agent may do without asking"
+            options={MODES.map((m) => ({
+              value: m.value, label: m.label, hint: m.hint,
+              ...(MODE_TONE[m.value] !== undefined ? { tone: MODE_TONE[m.value] } : {}),
+            }))}
+            value={mode}
+            onChange={(next) => requestMode(next)}
+            disabled={!state.session}
+          />
 
           {/* What happens AFTER a turn, on the row that says what happens during one.
 
               Here rather than buried in Settings because of how it failed: the owner turned
               the checks off, worked for a couple of hours, and then had no way anywhere in
               the window to find out whether they were still off. A setting whose state is
-              invisible is a setting you stop trusting. The title lists what the three gates
+              invisible is a setting you stop trusting. The hint lists what the three gates
               actually are — the second half of the same complaint was not knowing which
               checks existed at all. */}
-          <button
-            class={`mode-chip gate-chip ${gateMode === 'manual' ? 'gate-chip-off' : ''}`}
-            title={gateMode === 'manual'
-              ? 'Checks are OFF for this session. Nothing runs the build, audits the work '
-                + 'against what you asked for, or reviews the diff until you ask: /check runs '
-                + 'the build and tests, /review runs the independent read. Click to turn them '
-                + 'back on.'
-              : 'After a turn that changed code: the build and tests run, the work is audited '
-                + 'against what you asked for, and a reader with a fresh context goes over the '
-                + 'diff. Click to turn all three off and run them by hand with /check and '
-                + '/review.'}
+          <Switch
+            size="sm"
+            label={gateMode === 'manual' ? 'Checks off' : 'Checks on'}
+            hint={gateMode === 'manual' ? CHECKS_OFF_HINT : CHECKS_ON_HINT}
+            checked={gateMode !== 'manual'}
+            onChange={(on) => setGateMode(on ? 'auto' : 'manual')}
             disabled={!state.session}
-            onClick={() => setGateMode(gateMode === 'manual' ? 'auto' : 'manual')}
-          >
-            {gateMode === 'manual' ? 'Checks off' : 'Checks on'}
-          </button>
+          />
 
-          <div class="composer-meta">{statusLine()}</div>
+          {/* A mode in every sense that matters, so it sits with the modes. Disabled while
+              anything is running: an unattended run and a manual turn are the same single
+              slot, and offering a button that would be refused is worse than not offering
+              it. */}
+          <span ref={runAnchorRef} class="inline-flex min-w-0">
+            <Button
+              size="sm"
+              variant={state.run ? 'danger' : 'ghost'}
+              icon={state.run ? <Square /> : <Play />}
+              data-action="run"
+              title={state.run
+                ? 'Stop after the current turn'
+                : 'Keep taking turns until the work is done or a budget stops it. ' +
+                  'Questions are queued instead of blocking.'}
+              disabled={!state.session || (state.turnRunning && state.run === null)}
+              onClick={state.run ? stopRun : requestRun}
+            >
+              {state.run ? `Stop · turn ${state.run.turn}` : 'Run unattended'}
+            </Button>
+          </span>
+
+          {/* Right-aligned and cut from the LEFT when it does not fit: the newest words of
+              a status line are the ones that matter. */}
+          <div data-status-line="" class="ml-auto min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-right text-[12px]" dir="rtl">
+            <span dir="ltr" class="inline">{statusLine()}</span>
+          </div>
+
+          <IconButton size="sm" label="Attach a file or folder (@)" onClick={insertMention} disabled={locked !== undefined}>
+            <Paperclip />
+          </IconButton>
 
           {/* While a turn runs the button is Stop -- but typed text still has somewhere to
               go, so it queues rather than being swallowed. Enter does the same. */}
           {state.turnRunning && input.trim() !== '' && locked === undefined && (
-            <button class="composer-queue" onClick={send} title="Queue this for when the turn ends">
-              {Icon.plus()}
-            </button>
+            <IconButton size="sm" label="Queue this for when the turn ends" onClick={send}>
+              <Plus />
+            </IconButton>
           )}
           <button
-            class={`composer-send ${state.turnRunning ? 'composer-send-stop' : ''}`}
+            type="button"
+            data-action="send"
+            class={cn(
+              'inline-flex size-7 shrink-0 items-center justify-center rounded-md border cursor-pointer',
+              'transition-colors duration-(--duration-fast) [&>svg]:size-4',
+              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+              'disabled:cursor-default disabled:opacity-30',
+              state.turnRunning
+                ? 'border-red-line bg-red-soft text-red hover:enabled:bg-red hover:enabled:text-on-accent'
+                : 'border-accent bg-accent text-on-accent hover:enabled:bg-accent-hover hover:enabled:border-accent-hover',
+            )}
             onClick={state.turnRunning ? abort : send}
             disabled={(!state.turnRunning && input.trim() === '') || blockedByRun || (locked !== undefined && !state.turnRunning)}
             title={locked !== undefined && !state.turnRunning
@@ -1860,7 +1955,7 @@ ${q}`}
                 ? `Send here and continue "${state.viewing.title || 'this session'}" from now on`
                 : 'Send (Enter)'}
           >
-            {state.turnRunning ? Icon.stop() : Icon.send()}
+            {state.turnRunning ? <Square /> : <SendHorizontal />}
           </button>
         </div>
       </div>

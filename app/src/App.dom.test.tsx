@@ -425,10 +425,10 @@ test('while an update runs, nothing can be sent and the strip cannot be closed',
 
   // During: no "Not now", a grey send button, and the reason on the status line.
   expect(host.querySelectorAll('.update-strip .icon-button')).toHaveLength(0)
-  const send = host.querySelector('.composer-send') as HTMLButtonElement
+  const send = host.querySelector('[data-action="send"]') as HTMLButtonElement
   expect(send.disabled).toBe(true)
   expect(send.title).toContain('update is in progress')
-  expect(host.querySelector('.composer-meta')?.textContent).toContain('update is in progress')
+  expect(host.querySelector('[data-status-line]')?.textContent).toContain('update is in progress')
 })
 
 test('a declined version is not offered again by the next automatic check, a newer one is', async () => {

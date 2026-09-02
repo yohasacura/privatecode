@@ -19,35 +19,35 @@
    imported before this file. Nothing here may name a colour that is not one of them. */
 
 * { box-sizing: border-box; }
-
-/* One speed — 120ms — for state changes on interactive things, everywhere. Instant flips
+/* One speed — 120ms — for state changes on interactive things,
+everywhere. Instant flips
    beside eased ones read as two different applications. Transform and layout properties
-   are deliberately absent: nothing here moves, it only changes shade. */
-button, .btn, .icon-button, .mode-chip, .tab, .prow-label-button, .recent-item {
+   are deliberately absent: nothing here moves,
+it only changes shade. */
+button,
+.btn,
+.icon-button,
+.tab,
+.prow-label-button,
+.recent-item {
   transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
-
 /* Pressed: one shade deeper than hover. */
 .btn:active:not(:disabled),
 .icon-button:active:not(:disabled),
-.mode-chip:active:not(:disabled),
 .rail-workspace:active,
 .rail-item:active,
 .rail-settings:active,
 .tool-head:active:not(:disabled),
 .todos-head:active,
-.command-item:active,
 .jump-latest:active,
 .cmd-more:active,
-.composer-queue:active,
 .recent-item:active,
 .tree-row:active {
   background: var(--bg-active);
 }
 /* Primary: hover lightens to --accent-hover, press drops back to base = depress. */
 .btn-primary:active:not(:disabled) { background: var(--accent); border-color: var(--accent); }
-.composer-send:active:not(:disabled) { background: var(--accent); }
-.composer-send-stop:active { background: var(--red); }
 
 html, body, #root {
   height: 100%;
@@ -101,13 +101,17 @@ kbd {
   outline-offset: 2px;
 }
 .input:focus-visible, .composer-input:focus-visible, .terminal-input:focus-visible { outline: none; }
-
 /* Rows that fill a scroller: the ring must live inside the row or the clip box eats it. */
-.rail-item:focus-visible, .rail-workspace:focus-visible, .rail-settings:focus-visible,
-.tree-row:focus-visible, .tree-error:focus-visible,
-.command-item:focus-visible, .palette-item:focus-visible,
-.tool-head:focus-visible, .todos-head:focus-visible, .cmd-more:focus-visible,
-.tab:focus-visible, .mode-chip:focus-visible {
+.rail-item:focus-visible,
+.rail-workspace:focus-visible,
+.rail-settings:focus-visible,
+.tree-row:focus-visible,
+.tree-error:focus-visible,
+.palette-item:focus-visible,
+.tool-head:focus-visible,
+.todos-head:focus-visible,
+.cmd-more:focus-visible,
+.tab:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -177,16 +181,6 @@ kbd {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
   padding: 4px 10px 0;
 }
-.prompt-hint {
-  color: var(--text-dim); font-size: 11.5px;
-  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
-}
-.prompt-hint-improve {
-  margin-left: auto; font-size: 11.5px; color: var(--accent);
-  background: none; border: none; cursor: pointer; padding: 1px 4px;
-}
-.prompt-hint-improve:hover:not(:disabled) { text-decoration: underline; }
-.prompt-hint-improve:disabled { opacity: 0.4; cursor: default; }
 
 /* A running command's live output: a small terminal viewport pinned to the tail. Fixed
  * height on purpose — the card must not grow with the log, the log scrolls inside it. */
@@ -309,24 +303,6 @@ kbd {
   margin: 4px 10px 0; padding: 6px 8px;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
-.prompt-expand-text {
-  margin: 0 0 4px; white-space: pre-wrap; word-break: break-word;
-  max-height: 180px; overflow-y: auto;
-  font: inherit; font-size: 12.5px; color: var(--text);
-}
-.prompt-expand-actions { display: flex; gap: 8px; align-items: center; }
-.prompt-expand-actions .prompt-hint-improve { margin-left: 0; }
-
-.prompt-suggest {
-  font-size: 11.5px; border-radius: 999px; padding: 1px 8px; cursor: pointer;
-  background: none; border: 1px solid var(--border); color: var(--text-dim);
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.prompt-suggest:hover:not(.prompt-suggest-on) { color: var(--text); background: var(--bg-hover); }
-.prompt-suggest-on { border-color: var(--accent); color: var(--text); }
-.prompt-question { border-style: dashed; }
-.prompt-question-wrap { display: inline-flex; gap: 4px; align-items: center; max-width: 100%; }
-.prompt-question-input { width: 180px; }
 
 .icon-button {
   display: inline-flex;
@@ -1605,16 +1581,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   from { background-position: -40% 0, 0 0; }
   to { background-position: 140% 0, 0 0; }
 }
-
-.composer-bar {
-  position: relative; /* anchors the run-config popover */
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  padding: 6px 7px 7px 9px;
-}
-
 /* Shrinkable, and scrolling once it cannot shrink further. Measured before: 397px of
    controls in a 300px bar, which pushed Send off the edge of a 820px window -- the one
    control in the row that must always be reachable. The chips give way; Send does not. */
@@ -1630,22 +1596,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   overflow-x: auto;
   scrollbar-width: none;
 }
-.mode-group::-webkit-scrollbar { height: 0; }
-
-.composer-meta {
-  font-variant-numeric: tabular-nums;
-  flex: 1;
-  min-width: 0;
-  text-align: right;
-  font-size: 12px;
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.composer-meta kbd { padding: 0 4px; }
-.status-live { color: var(--accent); }
-.status-idle { color: var(--text-faint); }
 
 /* Discovery only: expansion happens host-side. Without it a feature the user configured
    in a directory would be invisible in the window. */
@@ -1657,27 +1607,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   background: var(--bg-panel);
   overflow: hidden;
 }
-.command-item {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  width: 100%;
-  padding: 6px 11px;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-}
-.command-item:hover { background: var(--bg-hover); color: var(--text); }
-.command-name { font-family: var(--mono); color: var(--accent); flex: none; }
-.command-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* What attaching this row will actually do, said on the row that would do it. A folder and
-   a file look the same in a path, and they are not the same attachment: one sends contents,
-   the other sends a listing of what is inside. */
-.command-hint { color: var(--text-faint); }
 
 /* The gates chip. Reads as ordinary when the checks are on — that is the state you want to
    stop noticing — and wears the warning colour when they are off, because "off" is the state
@@ -1700,22 +1629,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   font-size: 11px;
   letter-spacing: 0.02em;
 }
-.gate-chip-off {
-  color: var(--yellow);
-  border-color: color-mix(in srgb, var(--yellow) 45%, transparent);
-}
-.command-icon { display: flex; flex: none; color: var(--text-faint); align-self: center; }
-.command-icon .icon { width: 13px; height: 13px; }
-/* Keyboard selection, which is the way this picker is actually used -- the mouse is a
-   fallback, so hover and the arrow keys drive the same highlight. */
-.command-item-on { background: var(--bg-hover); color: var(--text); }
-.picker-hint {
-  padding: 5px 11px 6px;
-  border-top: 1px solid var(--border-soft);
-  font-size: 11.5px;
-  color: var(--text-faint);
-}
-.picker-hint kbd { padding: 0 4px; }
 
 /* Files going with the next message. Present only while their `@mention` is still written
    in the box, so deleting the mention is how you take one back. */
@@ -1726,87 +1639,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   max-width: var(--read);
   margin: 0 auto 7px;
 }
-.attach-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-panel);
-  color: var(--text-dim);
-  font-family: var(--mono);
-  font-size: 11.5px;
-}
-.attach-chip .icon { width: 12px; height: 12px; color: var(--accent); }
-.attach-name { max-width: 42ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.queued-note {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 7px;
-  padding: 5px 6px 5px 11px;
-  border: 1px solid var(--border);
-  border-left: 2px solid var(--accent-line);
-  border-radius: var(--radius-sm);
-  background: var(--bg-panel);
-  font-size: 12.5px;
-  color: var(--text-dim);
-}
-.queued-label {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-.queued-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.queued-edit {
-  border: none;
-  background: transparent;
-  color: var(--text-faint);
-  font: inherit;
-  font-size: 11.5px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.queued-edit:hover { background: var(--bg-hover); color: var(--text); }
-
-.composer-queue {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-raised);
-  color: var(--text-dim);
-  cursor: pointer;
-}
-.composer-queue:hover { background: var(--bg-hover); color: var(--text); }
-
-.autopilot-confirm {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-  padding: 8px 11px;
-  border: 1px solid var(--red);
-  border-radius: var(--radius-sm);
-  background: var(--red-soft);
-  font-size: 12.5px;
-}
-.autopilot-confirm span { flex: 1; }
 
 .composer-input {
   display: block;
@@ -1829,52 +1661,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
    at all because a suggestion only ever shows in an EMPTY box, which is exactly where the
    placeholder already sits: no overlay, and no alignment to keep true as the font changes. */
 .composer-input.has-ghost::placeholder { color: var(--text-dim); }
-
-.composer-send {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  flex: none;
-  border: none;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--on-accent);
-  cursor: pointer;
-  transition: background-color 120ms ease, opacity 120ms ease;
-}
-.composer-send:hover:not(:disabled) { background: var(--accent-hover); }
-.composer-send:disabled { opacity: 0.26; cursor: default; } /* deliberately dimmer than the 0.4 standard: this is the RESTING state whenever the box is empty, and a 0.4-strength accent square would spend the accent on nothing */
-.composer-send-stop { background: var(--red); color: var(--on-red); }
-.composer-send-stop:hover { background: var(--red-hover); }
-
-.mode-chip {
-  padding: 3px 10px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.5;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.mode-chip:hover:not(:disabled):not(.mode-chip-active) { background: var(--bg-hover); color: var(--text); }
-.mode-chip-active { background: var(--bg-active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
-/* The two toggles beside the modes are switches, not segments: an edge of their own. */
-.run-chip, .gate-chip {
-  border: 1px solid var(--border-soft);
-  border-radius: 6px;
-  padding: 2px 9px;
-}
-.run-chip:hover:not(:disabled), .gate-chip:hover:not(:disabled) { border-color: var(--border); }
-.mode-chip.mode-plan.mode-chip-active { color: var(--blue); }
-.mode-chip.mode-auto-edit.mode-chip-active { color: var(--yellow); }
-.mode-chip.mode-autopilot.mode-chip-active { background: var(--red-soft); color: var(--red); }
-.mode-chip:disabled { opacity: 0.4; cursor: default; }
 
 /* ----------------------------------------------------------------- context panel ----- */
 
@@ -2623,10 +2409,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 /* Sits with the mode chips because it is a mode: it changes what the agent may do without
    you, which is the only thing the other chips change either. */
 .run-chip { flex: 0 1 auto; min-width: 0; margin-left: 6px; overflow: hidden; text-overflow: ellipsis; }
-.run-chip-active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
 .run-detail {
   color: var(--text-dim);
   max-width: 40ch;
@@ -3114,23 +2896,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   box-shadow: var(--shadow-pop);
   z-index: 30;
 }
-.run-config-task {
-  font-size: 11.5px;
-  color: var(--text-dim);
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border-soft);
-  margin-bottom: 8px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.run-config-fields { display: flex; gap: 8px; }
-.run-config-field { flex: 1; display: flex; flex-direction: column; gap: 4px; }
-.run-config-field span { font-size: 10.5px; font-weight: 600; color: var(--text-dim); }
 .input-small { height: 26px; padding: 2px 8px; font-size: 12.5px; }
-.run-config-hint { font-size: 11.5px; line-height: 1.5; color: var(--text-faint); margin-top: 8px; }
-.run-config-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 
 /* ---------------------------------------------------------------------------------------
    Copying an answer out.
