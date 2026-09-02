@@ -758,7 +758,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
 }
 .rail-item-mode { text-transform: capitalize; }
@@ -1392,7 +1392,10 @@ kbd {
 .card-question { border-color: var(--border); }
 /* The approval card is the security surface: it is the one card that should read as
    louder than the conversation around it, not the same weight as a tool result. */
-.card-approval { border-color: var(--accent); }
+.card-approval {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 7%, transparent);
+}
 
 .card-head {
   display: flex;
@@ -1406,13 +1409,13 @@ kbd {
 .card-title { flex: 1; font-weight: 550; }
 .card-tag {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
   padding: 1px 6px;
   border-radius: 4px;
   background: var(--bg-hover);
 }
-.card-note { padding: 3px 12px 8px 34px; font-size: 11.5px; color: var(--text-faint); }
+.card-note { padding: 3px 12px 8px 34px; font-size: 12px; color: var(--text-faint); }
 
 .card-detail {
   margin: 0 12px;
@@ -2139,7 +2142,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 
 /* files */
 .files-tree { flex: 1; min-height: 0; overflow: auto; padding: 6px 0; }
-.tree-panel { font-size: 12.5px; }
+.tree-panel { font-size: 13px; }
 /* Buttons now (keyboard reachability), so the button chrome is reset explicitly and the
    focus ring is the visible kind the rest of the app uses. */
 .tree-row {

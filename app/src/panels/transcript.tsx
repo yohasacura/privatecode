@@ -730,9 +730,15 @@ const KIND_ICON: Record<ToolKind, () => VNode> = {
 
 /** Whether a completed call's body is worth showing without asking. A diff and a command
  * are the point of their card; a 400-line directory listing is not. */
+/**
+ * What is worth reading unasked: a failure, always; a diff, because the change IS the
+ * result. A command that succeeded is one line — `exit 0 in 5.7 s` on the collapsed row —
+ * and its log a click away; opened by default it was a wall of build warnings between the
+ * edit and the answer, which is where the eye was going.
+ */
 function defaultOpen(kind: ToolKind, ok: boolean): boolean {
   if (!ok) return true
-  return kind === 'diff' || kind === 'command'
+  return kind === 'diff'
 }
 
 /** Lines shown before the "show the rest" control appears. Generous: the point of this
