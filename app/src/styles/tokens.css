@@ -103,12 +103,35 @@
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 }
 
+/* Reduced motion: the OS preference unless the person chose otherwise in Appearance
+   (`data-motion` on the root: `reduce` always, `full` never). The tokens go to zero, and
+   the built-in animations that do not read them (a spinner, a pulse) are cut short too. */
 @media (prefers-reduced-motion: reduce) {
-  :root {
+  :root:not([data-motion="full"]) {
     --duration-fast: 0ms;
     --duration-normal: 0ms;
     --duration-slow: 0ms;
   }
+}
+:root[data-motion="reduce"] {
+  --duration-fast: 0ms;
+  --duration-normal: 0ms;
+  --duration-slow: 0ms;
+}
+:root[data-motion="reduce"] *,
+:root[data-motion="reduce"] *::before,
+:root[data-motion="reduce"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
+/* The code font's ligatures, off by choice (`data-ligatures="off"` on the root). */
+:root[data-ligatures="off"] code,
+:root[data-ligatures="off"] pre,
+:root[data-ligatures="off"] textarea,
+:root[data-ligatures="off"] .font-mono {
+  font-variant-ligatures: none;
 }
 
 /* The entrances the primitives use (ui/): a fade for overlays, a small rise for tooltips,

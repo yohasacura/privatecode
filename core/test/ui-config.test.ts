@@ -123,3 +123,18 @@ test('the theme setting round-trips, and a value that is not one of the three is
   expect(loaded.config.theme).toBeUndefined()
   expect(loaded.problems.join(' ')).toContain('"theme"')
 })
+
+test('motion and ligatures round-trip, and a wrong value is reported and dropped', () => {
+  const path = join(dir, 'ui.json')
+  saveUiConfig({ motion: 'reduce', ligatures: false }, path)
+  expect(loadUiConfig(path).config).toMatchObject({ motion: 'reduce', ligatures: false })
+  // Saving something else leaves them alone.
+  saveUiConfig({ theme: 'dark' }, path)
+  expect(loadUiConfig(path).config).toMatchObject({ motion: 'reduce', ligatures: false, theme: 'dark' })
+  writeFileSync(path, JSON.stringify({ motion: 'sometimes', ligatures: 'yes', recentWorkspaces: [] }), 'utf8')
+  const loaded = loadUiConfig(path)
+  expect(loaded.config.motion).toBeUndefined()
+  expect(loaded.config.ligatures).toBeUndefined()
+  expect(loaded.problems.join(' ')).toContain('"motion"')
+  expect(loaded.problems.join(' ')).toContain('"ligatures"')
+})

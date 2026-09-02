@@ -90,15 +90,19 @@ export function useOutsidePointerDown(
   }, [active, insides, onOutside])
 }
 
-/** Escape closes, while `active`; the handler is on the document so focus need not be inside. */
+/**
+ * Escape closes, while `active`. On the WINDOW, capture phase: focus need not be inside,
+ * and the key is stopped before the composer's own window listener — which aborts the
+ * running turn — can hear it. Dismissing an overlay is not a request to stop the agent.
+ */
 export function useEscape(active: boolean, onEscape: () => void): void {
   useEffect(() => {
     if (!active) return
     const handler = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') { e.stopPropagation(); onEscape() }
     }
-    document.addEventListener('keydown', handler, true)
-    return () => document.removeEventListener('keydown', handler, true)
+    window.addEventListener('keydown', handler, true)
+    return () => window.removeEventListener('keydown', handler, true)
   }, [active, onEscape])
 }
 

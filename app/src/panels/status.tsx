@@ -1,16 +1,45 @@
-import { PanelError } from '../components/panel'
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { Brain, Check, Database, Info, Palette, Plug, RefreshCw, Server, ShieldCheck } from 'lucide-preact'
 import type { ProtocolClient } from '../lib/client'
 import type { McpServerInfo } from '@core/host/protocol'
 import type { AgentMode } from '@core/permissions/engine'
-import { Icon } from '../components/icons'
-import type { ThemeSetting } from '../lib/theme'
+import type { MotionSetting, ThemeSetting } from '../lib/theme'
 import type { SessionSwitch } from './sessions-rail'
+import { PanelError, PanelNote } from '../components/panel'
+import { SettingHint, SettingLabel, SettingSection } from '../components/settings-bits'
+import { Button } from '../ui/button'
+import { Chip } from '../ui/chip'
+import { Dialog } from '../ui/dialog'
+import { Input } from '../ui/input'
+import { Segmented } from '../ui/segmented'
+import { Switch } from '../ui/switch'
+import { Tabs, tabPanelId, type TabItem } from '../ui/tabs'
 import { Permissions } from './permissions'
 import { McpEditor } from './mcp-editor'
 import { EraseEverything } from './erase-data'
 import { Skills } from './skills'
+
+/**
+ * Settings (docs/UI-REDESIGN-2026-09.md §8): a dialog with a tab list on the left and one
+ * pane on the right. Tabs, because burial was measured: the permissions section existed at
+ * the bottom of one long scroll, and the person it was built for reported not seeing it.
+ * A section you have to already know about to find is not a section.
+ */
+
+export type SettingsTab = 'server' | 'appearance' | 'permissions' | 'skills' | 'mcp' | 'data' | 'about'
+
+export const SETTINGS_TABS: readonly TabItem<SettingsTab>[] = [
+  { id: 'server', label: 'Server', icon: <Server /> },
+  { id: 'appearance', label: 'Appearance', icon: <Palette /> },
+  { id: 'permissions', label: 'Permissions', icon: <ShieldCheck /> },
+  { id: 'skills', label: 'Skills', icon: <Brain /> },
+  { id: 'mcp', label: 'MCP servers', icon: <Plug /> },
+  { id: 'data', label: 'Data', icon: <Database /> },
+  { id: 'about', label: 'About', icon: <Info /> },
+]
+
+const GROUP = 'settings'
 
 /**
  * The MCP servers this workspace configured, and what became of each.
@@ -29,37 +58,57 @@ function McpServers({ client }: { client: ProtocolClient }): VNode | null {
     let cancelled = false
     client.call('status', {})
       .then((r) => { if (!cancelled) setServers(r.mcpServers ?? null) })
-      .catch(() => { /* the modal's job is the workspace; this is extra */ })
+      .catch(() => { /* the dialog's job is the workspace; this is extra */ })
     return () => { cancelled = true }
   }, [client])
 
   if (servers === null || servers.length === 0) return null // the editor below covers the empty case
   return (
-    <>
-      <div class="field-label">MCP servers</div>
-      <div class="mcp-list">
+    <div data-mcp-servers="">
+      <SettingLabel>MCP servers</SettingLabel>
+      <div class="flex flex-col gap-1.5">
         {servers.map((s) => (
-          <div key={s.name} class={`mcp-item mcp-${s.state}`}>
-            <div class="mcp-head">
-              <span class="mcp-name">{s.name}</span>
-              <span class="mcp-state">
+          <div key={s.name} class="rounded-md border border-border-soft bg-raised px-2.5 py-2 font-ui text-[12.5px]">
+            <div class="flex items-center gap-2">
+              <span class="min-w-0 flex-1 truncate font-mono text-fg">{s.name}</span>
+              <Chip tone={s.state === 'connected' ? 'green' : 'red'}>
                 {s.state === 'connected' ? `${s.toolCount} tool${s.toolCount === 1 ? '' : 's'}` : 'failed'}
-              </span>
+              </Chip>
             </div>
-            {s.problem !== undefined && <pre class="mcp-problem">{s.problem}</pre>}
+            {s.problem !== undefined && (
+              <pre class="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-sm border border-red-line bg-red-soft px-2 py-1.5 font-mono text-[11.5px] text-red">{s.problem}</pre>
+            )}
           </div>
         ))}
       </div>
-      <div class="field-hint">
+      <SettingHint>
         Configured under "mcpServers" in .privatecode/settings.json. Their tools ask for
         approval like everything else.
-      </div>
-    </>
+      </SettingHint>
+    </div>
   )
 }
 
+type Probe =
+  | { kind: 'idle' }
+  | { kind: 'probing' }
+  | { kind: 'ok'; model: string | undefined; contextLength: number | undefined }
+  | { kind: 'bad'; reason: string }
+
+/** What is inside, for the About tab: the things a person may want to know they are running. */
+const CREDITS: readonly { name: string; what: string; licence: string }[] = [
+  { name: 'llama.cpp', what: 'runs the model, on this machine', licence: 'MIT' },
+  { name: 'Preact', what: 'the window', licence: 'MIT' },
+  { name: 'Tailwind CSS', what: 'the styles', licence: 'MIT' },
+  { name: 'Tauri', what: 'the shell', licence: 'MIT / Apache-2.0' },
+  { name: 'Lucide', what: 'the icons', licence: 'ISC' },
+  { name: 'marked', what: 'Markdown in the transcript', licence: 'MIT' },
+  { name: 'Inter and JetBrains Mono', what: 'the two faces', licence: 'OFL-1.1' },
+]
+
 export function SettingsModal({
   client, onClose, onSessionSwitched, liveMode, themeSetting, onThemeChange,
+  motionSetting, onMotionChange, ligatures, onLigaturesChange, initialTab = 'server', version, onCheckForUpdates,
 }: {
   client: ProtocolClient
   /** See Permissions.liveMode. */
@@ -67,6 +116,15 @@ export function SettingsModal({
   /** The window's theme setting and the way to change it; App owns the state. */
   themeSetting: ThemeSetting
   onThemeChange: (setting: ThemeSetting) => void
+  motionSetting: MotionSetting
+  onMotionChange: (setting: MotionSetting) => void
+  ligatures: boolean
+  onLigaturesChange: (on: boolean) => void
+  /** Which tab to open on; the palette can ask for one by name. */
+  initialTab?: SettingsTab
+  /** The running version, or null when the shell has not said yet. */
+  version: string | null
+  onCheckForUpdates: () => void
   onClose: () => void
   /** Opening a workspace is the one moment its name and folder count can change, so they
    * ride this callback rather than every session switch. */
@@ -80,7 +138,8 @@ export function SettingsModal({
   const [workspace, setWorkspace] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
-  const [tab, setTab] = useState<'server' | 'appearance' | 'permissions' | 'skills' | 'mcp' | 'data'>('server')
+  const [tab, setTab] = useState<SettingsTab>(initialTab)
+  const [probe, setProbe] = useState<Probe>({ kind: 'idle' })
 
   useEffect(() => {
     client.call('config.get', {})
@@ -91,41 +150,24 @@ export function SettingsModal({
       .catch(() => { /* host-side defaults already cover this */ })
   }, [client])
 
+  // The live probe: what is at that URL, asked a moment after the typing stops.
   useEffect(() => {
-    function onKey(e: KeyboardEvent): void { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
-  // Dialog behaviour, not just dialog looks. Without these, focus stayed BEHIND the
-  // overlay: a keyboard user tabbed through the invisible composer and rail before ever
-  // reaching the dialog, and Enter pressed "blind" in the covered composer sent a real
-  // message to the agent while Settings was on screen. Focus moves in on mount, Tab wraps
-  // at the edges, and the opener gets focus back on close.
-  const modalRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    modalRef.current?.focus()
-    return () => opener?.focus()
-  }, [])
-  function trapTab(e: KeyboardEvent): void {
-    if (e.key !== 'Tab') return
-    const focusables = modalRef.current?.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
-    )
-    if (!focusables || focusables.length === 0) return
-    const first = focusables[0]!
-    const last = focusables[focusables.length - 1]!
-    // Focus starts on the CONTAINER (tabindex=-1), which is neither first nor last — an
-    // immediate Shift+Tab from there escaped behind the overlay into the covered composer.
-    if (document.activeElement === modalRef.current) {
-      e.preventDefault()
-      ;(e.shiftKey ? last : first).focus()
-      return
-    }
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
-  }
+    const url = serverUrl.trim()
+    if (url === '') { setProbe({ kind: 'idle' }); return }
+    let cancelled = false
+    setProbe({ kind: 'probing' })
+    const id = setTimeout(() => {
+      client.call('server.probe', { serverUrl: url })
+        .then((r) => {
+          if (cancelled) return
+          setProbe(r.reachable
+            ? { kind: 'ok', model: r.model, contextLength: r.contextLength }
+            : { kind: 'bad', reason: r.reason ?? 'nothing answered at that address' })
+        })
+        .catch((e: unknown) => { if (!cancelled) setProbe({ kind: 'bad', reason: e instanceof Error ? e.message : String(e) }) })
+    }, 400)
+    return () => { cancelled = true; clearTimeout(id) }
+  }, [client, serverUrl])
 
   function connect(): void {
     const root = workspace.trim()
@@ -141,12 +183,8 @@ export function SettingsModal({
           problems: r.problems, items: r.items, workspaceRoot: root,
           workspaceName: r.workspaceName, folderCount: r.folderCount,
           contextUsed: r.contextUsed,
-          // The five other constructions of this object carry it and these two did
-          // not. `session-switched` writes compactAt unguarded, so an undefined here
-          // replaces a real trigger with the 80%-of-window fallback: on a 262k window
-          // the bar then warns at 188k instead of at the 140k trigger, and stays calm
-          // and grey for exactly the stretch you would consult it. The next step.done
-          // merges it back, i.e. it is wrong until the next turn answers.
+          // `session-switched` writes compactAt unguarded, so an undefined here would
+          // replace a real trigger with the 80%-of-window fallback until the next step.done.
           ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
         })
       })
@@ -155,116 +193,179 @@ export function SettingsModal({
   }
 
   return (
-    <div class="modal-overlay" onClick={onClose}>
-      <div
-        class="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Settings"
-        tabindex={-1}
-        ref={modalRef}
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={trapTab}
-      >
-        <div class="modal-head">
-          <b>Settings</b>
-          <button class="icon-button" onClick={onClose} title="Close">{Icon.x()}</button>
-        </div>
+    <Dialog open onClose={onClose} title="Settings" size="lg" class="h-[600px]">
+      <div class="flex h-full min-h-0 gap-5">
+        <Tabs
+          group={GROUP}
+          orientation="vertical"
+          tabs={SETTINGS_TABS}
+          active={tab}
+          onChange={setTab}
+          label="Settings sections"
+          class="w-40 shrink-0"
+        />
+        <div
+          role="tabpanel"
+          id={tabPanelId(GROUP, tab)}
+          aria-labelledby={`${GROUP}-tab-${tab}`}
+          class="min-w-0 flex-1 overflow-auto pb-2 pr-1"
+          data-settings-pane={tab}
+        >
+          {tab === 'server' && (
+            <>
+              <SettingLabel htmlFor="set-url">Model server</SettingLabel>
+              <Input
+                id="set-url"
+                class="font-mono"
+                value={serverUrl}
+                onInput={(e) => setServerUrl(e.currentTarget.value)}
+                placeholder="http://127.0.0.1:8080"
+              />
+              <div class="mt-1.5 flex items-center gap-2 font-ui text-[12px]" data-probe={probe.kind} aria-live="polite">
+                {probe.kind === 'probing' && <span class="text-faint motion-safe:animate-pulse">asking…</span>}
+                {probe.kind === 'ok' && (
+                  <>
+                    <Chip tone="green" icon={<Check />}>reachable</Chip>
+                    <span class="min-w-0 truncate text-dim">
+                      {probe.model ?? 'a model'}{probe.contextLength !== undefined ? ` · ${probe.contextLength.toLocaleString()} tokens of context` : ''}
+                    </span>
+                  </>
+                )}
+                {probe.kind === 'bad' && (
+                  <>
+                    <Chip tone="red">not reachable</Chip>
+                    <span class="min-w-0 truncate text-dim" title={probe.reason}>{probe.reason}</span>
+                  </>
+                )}
+              </div>
+              <SettingHint>Your llama.cpp server. Nothing is ever sent anywhere else.</SettingHint>
 
-        {/* Tabs, because burial was measured: the permissions section existed, at the
-            bottom of one long scroll, and the person it was built for reported not seeing
-            it. A section you have to already know about to find is not a section. */}
-        <div class="modal-tabs" role="tablist">
-          {([
-            ['server', 'Server'],
-            ['appearance', 'Appearance'],
-            ['permissions', 'Permissions'],
-            ['skills', 'Skills'],
-            ['mcp', 'MCP servers'],
-            ['data', 'Data'],
-          ] as const).map(([id, label]) => (
-            <button
-              key={id}
-              role="tab"
-              aria-selected={tab === id}
-              class={`modal-tab ${tab === id ? 'modal-tab-active' : ''}`}
-              onClick={() => setTab(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+              {error !== null && <PanelError message={error} />}
 
-        {/* Only the SERVER lives here now. Everything about the workspace — its folders,
-            its name, switching to another one — moved to the Workspace tab, which is
-            where the owner went looking for all of it. */}
-        {tab === 'server' && (
-          <>
-            <label class="field-label" for="set-url">Model server</label>
-            <input
-              id="set-url"
-              class="input"
-              value={serverUrl}
-              onInput={(e) => setServerUrl(e.currentTarget.value)}
-              placeholder="http://127.0.0.1:8080"
-            />
-            <div class="field-hint">Your llama.cpp server. Nothing is ever sent anywhere else.</div>
-
-            {error && <PanelError message={error} />}
-
-            <button
-              class="btn btn-primary modal-primary"
-              disabled={connecting || workspace.trim() === '' || serverUrl.trim() === ''}
-              onClick={connect}
-            >
-              {connecting ? 'Applying…' : 'Apply — re-open the workspace'}
-            </button>
-            <div class="field-hint">
-              Changing the server means re-opening the workspace against it; the current
-              session is picked back up.
-            </div>
-          </>
-        )}
-
-        {tab === 'appearance' && (
-          <div class="appearance">
-            <label class="field-label">Theme</label>
-            <div class="choice-group" role="radiogroup" aria-label="Theme">
-              {([['system', 'System'], ['dark', 'Dark'], ['light', 'Light']] as const).map(([value, label]) => (
-                <button
-                  key={value}
-                  role="radio"
-                  aria-checked={themeSetting === value}
-                  class={`choice ${themeSetting === value ? 'choice-on' : ''}`}
-                  onClick={() => onThemeChange(value)}
+              <div class="mt-4">
+                <Button
+                  variant="primary"
+                  disabled={connecting || workspace.trim() === '' || serverUrl.trim() === ''}
+                  loading={connecting}
+                  onClick={connect}
+                  data-action="apply-server"
                 >
-                  {label}
-                </button>
-              ))}
+                  Apply — re-open the workspace
+                </Button>
+                <SettingHint>
+                  Changing the server means re-opening the workspace against it; the current
+                  session is picked back up.
+                </SettingHint>
+              </div>
+            </>
+          )}
+
+          {tab === 'appearance' && (
+            <div data-appearance="">
+              <SettingSection title="Theme" description="Dark and light, following Windows or your own choice.">
+                <Segmented
+                  label="Theme"
+                  options={[
+                    { value: 'system', label: 'System', hint: 'Follows Windows, and changes when Windows does' },
+                    { value: 'dark', label: 'Dark' },
+                    { value: 'light', label: 'Light' },
+                  ]}
+                  value={themeSetting}
+                  onChange={onThemeChange}
+                />
+                <SettingHint class="mt-0">
+                  {themeSetting === 'system'
+                    ? 'Follows Windows, and changes when Windows does.'
+                    : 'Stays this way whatever Windows is set to.'}
+                </SettingHint>
+              </SettingSection>
+
+              <SettingSection title="Density" description="How much air the rows and the transcript get.">
+                <Segmented
+                  label="Density"
+                  options={[
+                    { value: 'comfortable', label: 'Comfortable' },
+                    { value: 'compact', label: 'Compact', disabled: true, hint: 'Coming in a later release' },
+                  ]}
+                  value="comfortable"
+                  onChange={() => {}}
+                />
+                <SettingHint class="mt-0">Compact comes later; comfortable is the one every screen was drawn in.</SettingHint>
+              </SettingSection>
+
+              <SettingSection title="Motion" description="Transitions and the small entrances overlays make.">
+                <Segmented
+                  label="Motion"
+                  options={[
+                    { value: 'system', label: 'Follow system', hint: 'Windows’ “show animations” setting decides' },
+                    { value: 'reduce', label: 'Reduce', hint: 'No transitions, no entrances' },
+                    { value: 'full', label: 'Full', hint: 'Animate even when Windows asks not to' },
+                  ]}
+                  value={motionSetting}
+                  onChange={onMotionChange}
+                />
+                <SettingHint class="mt-0">
+                  {motionSetting === 'system'
+                    ? 'Follows the “show animations in Windows” setting.'
+                    : motionSetting === 'reduce' ? 'Nothing moves; state changes are instant.' : 'Everything animates, whatever Windows asks.'}
+                </SettingHint>
+              </SettingSection>
+
+              <SettingSection title="Code font" description="JetBrains Mono, in the transcript, the file tabs and the terminal.">
+                <Switch
+                  label={ligatures ? 'Ligatures on' : 'Ligatures off'}
+                  hint="Joins => and != and the like into single glyphs"
+                  checked={ligatures}
+                  onChange={onLigaturesChange}
+                />
+              </SettingSection>
             </div>
-            <div class="field-hint">
-              {themeSetting === 'system'
-                ? 'Follows Windows, and changes when Windows does.'
-                : 'Stays this way whatever Windows is set to.'}
+          )}
+
+          {tab === 'permissions' && (
+            <Permissions client={client} {...(liveMode !== undefined ? { liveMode } : {})} />
+          )}
+
+          {tab === 'skills' && <Skills client={client} />}
+
+          {tab === 'mcp' && (
+            <>
+              <McpServers client={client} />
+              <McpEditor client={client} onApply={() => connect()} />
+            </>
+          )}
+
+          {tab === 'data' && <EraseEverything />}
+
+          {tab === 'about' && (
+            <div data-about="" class="font-ui">
+              <div class="flex items-center gap-3">
+                <div>
+                  <div class="text-[15px] font-semibold text-fg-strong">PrivateCode</div>
+                  <div class="text-[12.5px] text-dim">{version !== null ? `Version ${version}` : 'Version not reported by the shell'}</div>
+                </div>
+                <Button size="sm" class="ml-auto" icon={<RefreshCw />} onClick={onCheckForUpdates} data-action="check-updates">
+                  Check for updates
+                </Button>
+              </div>
+              <PanelNote inset class="mt-4">
+                A coding agent that runs on this machine, against a model on this machine. Nothing it
+                reads or writes leaves the computer unless a tool you allowed sends it.
+              </PanelNote>
+              <SettingLabel>What is inside</SettingLabel>
+              <ul class="m-0 list-none p-0">
+                {CREDITS.map((c) => (
+                  <li key={c.name} class="flex items-baseline gap-2 border-b border-border-soft py-1.5 text-[12.5px] last:border-b-0">
+                    <span class="w-48 shrink-0 font-medium text-fg">{c.name}</span>
+                    <span class="min-w-0 flex-1 text-dim">{c.what}</span>
+                    <span class="shrink-0 font-mono text-[11px] text-faint">{c.licence}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
-          </div>
-        )}
-
-        {tab === 'permissions' && (
-          <Permissions client={client} {...(liveMode !== undefined ? { liveMode } : {})} />
-        )}
-
-        {tab === 'skills' && <Skills client={client} />}
-
-        {tab === 'mcp' && (
-          <>
-            <McpServers client={client} />
-            <McpEditor client={client} onApply={() => connect()} />
-          </>
-        )}
-
-        {tab === 'data' && <EraseEverything />}
+          )}
+        </div>
       </div>
-    </div>
+    </Dialog>
   )
 }

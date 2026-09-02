@@ -234,12 +234,12 @@ test('Escape in the Switch-workspace dialog closes it without aborting the turn'
   expect(swap, 'the workspace header should carry the switch button').toBeTruthy()
   swap!.click()
   await settle()
-  expect(document.querySelector('.modal-overlay')).not.toBeNull()
+  expect(document.querySelector('[role="dialog"][aria-modal="true"]')).not.toBeNull()
 
   pressEscape()
   await settle()
 
-  expect(document.querySelector('.modal-overlay')).toBeNull()
+  expect(document.querySelector('[role="dialog"][aria-modal="true"]')).toBeNull()
   expect(abortsSeen).toBe(0)
 })
 
@@ -252,7 +252,7 @@ test('Ctrl+K over the Switch-workspace dialog does not open the palette under it
   const swap = document.querySelector<HTMLElement>('[title^="Switch workspace"]')!
   swap.click()
   await settle()
-  const before = document.querySelectorAll('.modal-overlay').length
+  const before = document.querySelectorAll('[role="dialog"][aria-modal="true"]').length
   expect(before).toBe(1)
 
   window.dispatchEvent(new KeyboardEvent('keydown', {
@@ -260,12 +260,12 @@ test('Ctrl+K over the Switch-workspace dialog does not open the palette under it
   }))
   await settle()
 
-  expect(document.querySelectorAll('.modal-overlay').length).toBe(before)
-  expect(document.querySelector('.palette')).toBeNull()
+  expect(document.querySelectorAll('[role="dialog"][aria-modal="true"]').length).toBe(before)
+  expect(document.querySelector('[data-palette]')).toBeNull()
 
   pressEscape()
   await settle()
-  expect(document.querySelector('.modal-overlay')).toBeNull()
+  expect(document.querySelector('[role="dialog"][aria-modal="true"]')).toBeNull()
 })
 
 test('a reopen after a folder edit uses the server URL the HOST has, not the one from launch', async () => {
@@ -351,7 +351,7 @@ test('the update notice is shown before any folder is open, not only inside a wo
   expect(host.querySelector('.body')).toBeNull()
   expect(host.querySelector('[data-screen="welcome"]')).not.toBeNull()
 
-  const strip = host.querySelector('.update-strip')
+  const strip = host.querySelector('[data-update]')
   expect(strip).not.toBeNull()
   expect(strip?.textContent).toContain('0.1.1')
   // The size of the UPDATE, not of the release -- the number that decides whether a person
@@ -372,7 +372,7 @@ test('and it stays put once a workspace is open', async () => {
   await settle()
 
   expect(host.querySelector('.body')).not.toBeNull()
-  expect(host.querySelector('.update-strip')).not.toBeNull()
+  expect(host.querySelector('[data-update]')).not.toBeNull()
 })
 
 test('a running update shows each phase as the shell reports it, with a bar for the download', async () => {
@@ -388,21 +388,21 @@ test('a running update shows each phase as the shell reports it, with a bar for 
   render(<App />, host)
   await settle()
 
-  const go = host.querySelector('.update-strip .icon-button') as HTMLButtonElement
+  const go = host.querySelector('[data-update] button') as HTMLButtonElement
   expect(go.disabled).toBe(false)
   go.click()
   await settle()
-  expect(host.querySelector('.update-strip')?.textContent).toContain('starting')
+  expect(host.querySelector('[data-update]')?.textContent).toContain('starting')
 
   progressCallback?.({ phase: 'downloading', part: 'PrivateCode-app-0.3.1.zip', received: 2_200_000, total: 4_567_499 })
   await settle()
-  expect(host.querySelector('.update-strip')?.textContent).toContain('2.1 MB of 4.4 MB')
-  expect((host.querySelector('.update-progress-bar') as HTMLElement).style.width).toBe('48%')
+  expect(host.querySelector('[data-update]')?.textContent).toContain('2.1 MB of 4.4 MB')
+  expect((host.querySelector('[data-update-bar]') as HTMLElement).style.width).toBe('48%')
 
   progressCallback?.({ phase: 'restarting', part: null, received: 0, total: 0 })
   await settle()
-  expect(host.querySelector('.update-strip')?.textContent).toContain('Restarting')
-  expect((host.querySelector('.update-progress-bar') as HTMLElement).style.width).toBe('100%')
+  expect(host.querySelector('[data-update]')?.textContent).toContain('Restarting')
+  expect((host.querySelector('[data-update-bar]') as HTMLElement).style.width).toBe('100%')
 })
 
 test('while an update runs, nothing can be sent and the strip cannot be closed', async () => {
@@ -419,12 +419,12 @@ test('while an update runs, nothing can be sent and the strip cannot be closed',
   await settle()
 
   // Before: the offer's two buttons, and a composer that sends.
-  expect(host.querySelectorAll('.update-strip .icon-button')).toHaveLength(2)
-  ;(host.querySelector('.update-strip .icon-button') as HTMLElement).click()
+  expect(host.querySelectorAll('[data-update] button')).toHaveLength(2)
+  ;(host.querySelector('[data-update] button') as HTMLElement).click()
   await settle()
 
   // During: no "Not now", a grey send button, and the reason on the status line.
-  expect(host.querySelectorAll('.update-strip .icon-button')).toHaveLength(0)
+  expect(host.querySelectorAll('[data-update] button')).toHaveLength(0)
   const send = host.querySelector('[data-action="send"]') as HTMLButtonElement
   expect(send.disabled).toBe(true)
   expect(send.title).toContain('update is in progress')
@@ -441,20 +441,20 @@ test('a declined version is not offered again by the next automatic check, a new
   }
   render(<App />, host)
   await settle()
-  const buttons = host.querySelectorAll('.update-strip .icon-button')
+  const buttons = host.querySelectorAll('[data-update] button')
   ;(buttons[buttons.length - 1] as HTMLElement).click() // "Not now"
   await settle()
-  expect(host.querySelector('.update-strip')).toBeNull()
+  expect(host.querySelector('[data-update]')).toBeNull()
 
   // Twelve hours later, the same release again: silence.
   offerCallback?.(updateToOffer!)
   await settle()
-  expect(host.querySelector('.update-strip')).toBeNull()
+  expect(host.querySelector('[data-update]')).toBeNull()
 
   // A newer one: offered.
   offerCallback?.({ ...updateToOffer!, newVersion: '0.3.2' })
   await settle()
-  expect(host.querySelector('.update-strip')?.textContent).toContain('0.3.2')
+  expect(host.querySelector('[data-update]')?.textContent).toContain('0.3.2')
 })
 
 test('a failed update says what failed and offers the button again', async () => {
@@ -469,12 +469,12 @@ test('a failed update says what failed and offers the button again', async () =>
   render(<App />, host)
   await settle()
 
-  ;(host.querySelector('.update-strip .icon-button') as HTMLElement).click()
+  ;(host.querySelector('[data-update] button') as HTMLElement).click()
   await settle()
-  const strip = host.querySelector('.update-strip')!
+  const strip = host.querySelector('[data-update]')!
   expect(strip.textContent).toContain('Update failed')
   expect(strip.textContent).toContain('ended early')
-  const again = strip.querySelector('.icon-button') as HTMLButtonElement
+  const again = strip.querySelector('button') as HTMLButtonElement
   expect(again.title).toBe('Try again')
   expect(again.disabled).toBe(false)
 })
@@ -489,11 +489,12 @@ test('after an update, the new version says where it came from — before any fo
   await settle()
 
   expect(host.querySelector('[data-screen="welcome"]')).not.toBeNull()
-  const strip = host.querySelector('.updated-strip')
-  expect(strip?.textContent).toContain('Updated to PrivateCode 0.3.1 from 0.3.0')
-  ;(strip!.querySelector('.icon-button') as HTMLElement).click()
+  // A toast now, not a strip: it is said once and it is not part of the transcript.
+  const note = [...document.querySelectorAll('[role="status"]')].find((n) => n.textContent?.includes('Updated to PrivateCode'))
+  expect(note?.textContent).toContain('Updated to PrivateCode 0.3.1 from 0.3.0')
+  ;(note!.querySelector('[aria-label="Dismiss"]') as HTMLElement).click()
   await settle()
-  expect(host.querySelector('.updated-strip')).toBeNull()
+  expect([...document.querySelectorAll('[role="status"]')].some((n) => n.textContent?.includes('Updated to PrivateCode'))).toBe(false)
 })
 
 /** The delete lives in the row's "…" menu now: open it, pick the item. */

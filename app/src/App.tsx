@@ -3,14 +3,16 @@ import { createClient, sidecarStderr, withTimeout, wsUrlFromSearch, type Connect
 import { useChatSession } from './lib/use-chat-session'
 import { notify } from './lib/notify'
 import {
-  applyUpdate, checkForUpdate, describeProgress, formatBytes, onUpdateProgress, scheduleUpdateCheck,
+  applyUpdate, checkForUpdate, onUpdateProgress, scheduleUpdateCheck,
   updatedFrom, type UpdateAvailable, type UpdateProgress,
 } from './lib/update'
 import { baseName } from './lib/format'
 import { conversationAsMarkdown } from './lib/export'
 import { MIN_CONTEXT, MIN_RAIL, fitColumns } from './lib/layout'
-import { Icon } from './components/icons'
-import { applyTheme, isThemeSetting, resolveTheme, systemPrefersDark, watchSystemTheme, type ThemeSetting } from './lib/theme'
+import {
+  applyLigatures, applyMotion, applyTheme, isMotionSetting, isThemeSetting, resolveTheme, systemPrefersDark,
+  watchSystemTheme, type MotionSetting, type ThemeSetting,
+} from './lib/theme'
 import { Splitter } from './components/split'
 import { collectChanges } from './panels/changes-tab'
 import { Composer } from './panels/composer'
@@ -18,14 +20,16 @@ import { ContextPanel } from './panels/context-panel'
 import { FileView } from './panels/file-view'
 import type { SessionSwitch } from './panels/sessions-rail'
 import { Sidebar } from './shell/sidebar'
-import { SettingsModal } from './panels/status'
+import { SettingsModal, type SettingsTab } from './panels/status'
 import { StatusBar } from './shell/statusbar'
 import { TitleBar } from './shell/titlebar'
 import { Welcome } from './shell/welcome'
 import { AgentDown } from './shell/agent-down'
-import { Toaster } from './ui/toast'
+import { Toaster, toast } from './ui/toast'
 import { EditorTab } from './shell/editor-tabs'
-import { FileDiff, FileText, MessageSquare } from 'lucide-preact'
+import { FileDiff, FileText, MessageSquare, TriangleAlert, X } from 'lucide-preact'
+import { UpdateCard } from './shell/update-card'
+import { IconButton } from './ui/button'
 import { WorkspaceSwitch } from './panels/workspace-switch'
 import { Palette, type PaletteAction } from './panels/palette'
 import { Transcript } from './panels/transcript'
@@ -91,8 +95,8 @@ const CONTEXT_DEFAULT = 420
  * travelled on to the composer's window listener, which aborts the running turn.
  */
 const ESCAPE_OWNERS =
-  '.modal-overlay, .chat-face:not(.chat-face-hidden) .command-picker,' +
-  ' [data-run-config]'
+  '[role="dialog"][aria-modal="true"], [data-palette],' +
+  ' .chat-face:not(.chat-face-hidden) [data-picker], [data-run-config]'
 
 /**
  * Inline edit boxes elsewhere in the window that cancel THEMSELVES on Escape: the workspace
@@ -183,6 +187,11 @@ export default function App() {
    * a workspace is open and the relaunch may well land on the welcome screen. */
   const [updatedNote, setUpdatedNote] = useState<{ current: string; from: string } | null>(null)
   useEffect(() => {
+    if (updatedNote === null) return
+    toast.push({ title: `Updated to PrivateCode ${updatedNote.current} from ${updatedNote.from}`, tone: 'success', duration: 8000 })
+    setUpdatedNote(null)
+  }, [updatedNote])
+  useEffect(() => {
     void updatedFrom().then((info) => {
       if (info?.updatedFrom) setUpdatedNote({ current: info.currentVersion, from: info.updatedFrom })
     })
@@ -207,6 +216,12 @@ export default function App() {
     if (themeSetting !== 'system') return
     return watchSystemTheme((dark) => applyTheme(resolveTheme('system', dark)))
   }, [themeSetting])
+  const [motionSetting, setMotionSetting] = useState<MotionSetting>('system')
+  useEffect(() => { applyMotion(motionSetting) }, [motionSetting])
+  const [ligatures, setLigatures] = useState(true)
+  useEffect(() => { applyLigatures(ligatures) }, [ligatures])
+  /** Which Settings tab opens next: the last one used, or the one the palette asked for. */
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('server')
   const [switchOpen, setSwitchOpen] = useState(false)
   /** What this workspace is called and how many folders it spans. Kept beside `phase`
    * rather than inside it because it survives a session switch unchanged. */
@@ -498,6 +513,8 @@ export default function App() {
         setRecents(cfg.recentWorkspaces)
         setMissingRecents(cfg.missingWorkspaces ?? [])
         if (isThemeSetting(cfg.theme)) setThemeSetting(cfg.theme)
+        if (isMotionSetting(cfg.motion)) setMotionSetting(cfg.motion)
+        if (typeof cfg.ligatures === 'boolean') setLigatures(cfg.ligatures)
         const last = cfg.recentWorkspaces[0]
         if (last) {
           setWorkspaceInput(last)
@@ -557,6 +574,28 @@ export default function App() {
   // palette behind. Tracked as one "is a dialog up" fact rather than two flags, so the next
   // modal added does not have to remember to come here.
   const modalOpen = settingsOpen || switchOpen
+
+  /** A setting that applies at once and is saved behind the scenes; a failed save is a toast
+   * and the value stays — the window keeps what the person chose either way. */
+  function saveSetting(patch: { theme?: ThemeSetting; motion?: MotionSetting; ligatures?: boolean }): void {
+    client?.call('config.set', patch).catch((e: unknown) => {
+      toast.push({ title: 'The setting could not be saved', description: e instanceof Error ? e.message : String(e), tone: 'error' })
+    })
+  }
+
+  const updateCard = update !== null
+    ? (
+      <UpdateCard
+        update={update}
+        updating={updating}
+        progress={updateProgress}
+        error={updateError}
+        busy={chatState.turnRunning}
+        onStart={startUpdate}
+        onDismiss={() => { setDismissedVersion(update.newVersion); setUpdate(null); setUpdateError(null) }}
+      />
+      )
+    : null
   const anyModalOpenRef = useRef(modalOpen)
   anyModalOpenRef.current = modalOpen
   useEffect(() => {
@@ -655,6 +694,10 @@ export default function App() {
         c.call('setMode', { mode: action.mode })
           .catch((e: Error) => dispatch({ type: 'error-note', message: e.message }))
         return
+      case 'settings':
+        setSettingsTab(action.tab)
+        setSettingsOpen(true)
+        return
       case 'command':
         if (action.id === 'settings') { setSettingsOpen(true); return }
         if (action.id === 'check-updates') { void checkForUpdatesByHand(); return }
@@ -663,7 +706,9 @@ export default function App() {
           // you are reading is what "copy" means.
           const source = chatState.viewing ?? { items: chatState.items, title: chatState.session?.title ?? '' }
           const text = conversationAsMarkdown(source.items, source.title)
-          navigator.clipboard.writeText(text).catch(() => { /* platform surface */ })
+          navigator.clipboard.writeText(text)
+            .then(() => toast.push({ title: 'Conversation copied as Markdown', tone: 'success' }))
+            .catch(() => { /* platform surface */ })
           return
         }
         c.call('sessions.new', {})
@@ -710,79 +755,13 @@ export default function App() {
           by running the real 0.1.0 → 0.1.1 update and looking for the banner that was not
           there. It also belongs on the `unreachable` screen, where a newer build may be the
           fix for whatever is broken. */}
-      {updatedNote !== null && update === null && (
-        <div class="problem-strip update-strip updated-strip">
-          <span class="problem-icon">{Icon.check()}</span>
-          <div class="problem-list">
-            <div>Updated to PrivateCode {updatedNote.current} from {updatedNote.from}.</div>
-          </div>
-          <button class="icon-button" onClick={() => setUpdatedNote(null)} title="Dismiss">
-            {Icon.x()}
-          </button>
-        </div>
+      {/* Before a workspace is open — the start screen, or the agent-down screen where a
+          newer build may be the fix — the card sits at the top, because before starting
+          work is exactly when taking an update costs nothing. Once the chat is up it sits
+          above the composer instead. */}
+      {updateCard !== null && phase.kind !== 'ready' && (
+        <div class="mx-auto w-full max-w-(--read) px-4 pt-3">{updateCard}</div>
       )}
-      {update !== null && (() => {
-        // What the strip says, in the order a person meets it: the offer, then the running
-        // update phase by phase, then a failure with the button back so it can be tried again.
-        const progress = updating && updateProgress !== null ? describeProgress(updateProgress) : null
-        const busy = chatState.turnRunning
-        return (
-          <div class="problem-strip update-strip">
-            <span class="problem-icon">{Icon.check()}</span>
-            <div class="problem-list">
-              {updateError !== null
-                ? <div>Update failed: {updateError}</div>
-                : updating
-                  ? <div>
-                      <div>
-                        Updating to PrivateCode {update.newVersion} — {progress?.text ?? 'starting…'}
-                      </div>
-                      {progress?.fraction !== null && progress?.fraction !== undefined && (
-                        <div
-                          class="update-progress"
-                          role="progressbar"
-                          aria-valuemin={0}
-                          aria-valuemax={100}
-                          aria-valuenow={Math.round(progress.fraction * 100)}
-                        >
-                          <div class="update-progress-bar" style={{ width: `${Math.round(progress.fraction * 100)}%` }} />
-                        </div>
-                      )}
-                    </div>
-                  : <div>
-                      PrivateCode {update.newVersion} is available — {formatBytes(update.downloadBytes)} to download.{' '}
-                      {busy ? 'It can restart once this turn is over.' : 'The app restarts when it is done.'}
-                    </div>}
-            </div>
-            {!updating && (
-              <button
-                class="icon-button"
-                disabled={busy}
-                onClick={startUpdate}
-                title={busy
-                  ? 'A turn is running — the update can start once it is over'
-                  : updateError !== null
-                    ? 'Try again'
-                    : `Download ${formatBytes(update.downloadBytes)} and restart on ${update.newVersion}`}
-              >
-                {Icon.check()}
-              </button>
-            )}
-            {/* Not while it runs: closing the strip would not stop the update, and a window
-                that then vanishes with no strip on screen is the "out of nowhere" this whole
-                feature was rebuilt to remove. */}
-            {!updating && (
-              <button
-                class="icon-button"
-                onClick={() => { setDismissedVersion(update.newVersion); setUpdate(null); setUpdateError(null) }}
-                title="Not now"
-              >
-                {Icon.x()}
-              </button>
-            )}
-          </div>
-        )
-      })()}
 
       {phase.kind === 'unreachable'
         ? <AgentDown reason={phase.reason} stderr={phase.stderr} isDevBridge={isDevBridge} />
@@ -850,19 +829,18 @@ export default function App() {
                   // to lose one so it can put it back.
                   offscreen={activeTab !== null}
                 />
+                {updateCard !== null && <div class="px-7 pt-2">{updateCard}</div>}
                 {chatState.problems.length > 0 && (
-                  <div class="problem-strip">
-                    <span class="problem-icon">{Icon.alert()}</span>
-                    <div class="problem-list">
+                  <div
+                    role="alert"
+                    data-problems=""
+                    class="mx-7 mt-2 flex items-start gap-2.5 rounded-md border border-yellow-line bg-yellow-soft px-3 py-2 font-ui text-[12.5px] leading-[1.45] text-fg"
+                  >
+                    <span class="mt-0.5 inline-flex shrink-0 text-yellow [&>svg]:size-4"><TriangleAlert /></span>
+                    <div class="min-w-0 flex-1">
                       {chatState.problems.map((p) => <div key={p}>{p}</div>)}
                     </div>
-                    <button
-                      class="icon-button"
-                      onClick={() => dispatch({ type: 'problems-dismissed' })}
-                      title="Dismiss"
-                    >
-                      {Icon.x()}
-                    </button>
+                    <IconButton size="sm" label="Dismiss" onClick={() => dispatch({ type: 'problems-dismissed' })}><X /></IconButton>
                   </div>
                 )}
                 <Composer
@@ -970,6 +948,10 @@ export default function App() {
       {paletteOpen && client && ready && (
         <Palette
           client={client}
+          context={{
+            turnRunning: chatState.turnRunning,
+            hasConversation: (chatState.viewing?.items.length ?? chatState.items.length) > 0,
+          }}
           onClose={() => setPaletteOpen(false)}
           onPick={(action) => runPaletteAction(client, action)}
         />
@@ -989,10 +971,14 @@ export default function App() {
         <SettingsModal
           client={client}
           themeSetting={themeSetting}
-          onThemeChange={(setting) => {
-            setThemeSetting(setting)
-            client.call('config.set', { theme: setting }).catch(() => { /* applied for this run anyway */ })
-          }}
+          onThemeChange={(setting) => { setThemeSetting(setting); saveSetting({ theme: setting }) }}
+          motionSetting={motionSetting}
+          onMotionChange={(setting) => { setMotionSetting(setting); saveSetting({ motion: setting }) }}
+          ligatures={ligatures}
+          onLigaturesChange={(on) => { setLigatures(on); saveSetting({ ligatures: on }) }}
+          initialTab={settingsTab}
+          version={appVersionShown}
+          onCheckForUpdates={() => void checkForUpdatesByHand()}
           {...(chatState.session !== null ? { liveMode: chatState.session.mode } : {})}
           onClose={() => setSettingsOpen(false)}
           onSessionSwitched={(info) => { onWorkspaceOpened(info); setSettingsOpen(false) }}

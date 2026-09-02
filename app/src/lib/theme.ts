@@ -42,6 +42,31 @@ export function applyTheme(theme: Theme, root: HTMLElement | null = globalThis.d
   root.style.setProperty('color-scheme', theme)
 }
 
+/** Animation: follow the OS's reduced-motion preference, always reduce, or always animate. */
+export type MotionSetting = 'system' | 'reduce' | 'full'
+export const MOTION_SETTINGS: readonly MotionSetting[] = ['system', 'reduce', 'full']
+
+export function isMotionSetting(value: unknown): value is MotionSetting {
+  return typeof value === 'string' && (MOTION_SETTINGS as readonly string[]).includes(value)
+}
+
+/**
+ * Stamps the motion choice on the root; `system` removes the stamp so the stylesheet's
+ * media query decides. See tokens.css for what `reduce` and `full` do.
+ */
+export function applyMotion(setting: MotionSetting, root: HTMLElement | null = globalThis.document?.documentElement ?? null): void {
+  if (root === null) return
+  if (setting === 'system') root.removeAttribute('data-motion')
+  else root.setAttribute('data-motion', setting)
+}
+
+/** Ligatures in the code font: on is the stylesheet's default, off is a stamp on the root. */
+export function applyLigatures(on: boolean, root: HTMLElement | null = globalThis.document?.documentElement ?? null): void {
+  if (root === null) return
+  if (on) root.removeAttribute('data-ligatures')
+  else root.setAttribute('data-ligatures', 'off')
+}
+
 /**
  * Follows the OS while the setting is `system`. Returns the unsubscribe. A window without
  * `matchMedia` gets a no-op, not an exception: the theme stays at whatever was applied.

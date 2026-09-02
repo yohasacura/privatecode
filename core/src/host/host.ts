@@ -2360,6 +2360,8 @@ export class SessionHost {
       ...(missing.length > 0 ? { missingWorkspaces: missing } : {}),
       ...(config.serverUrl !== undefined ? { serverUrl: config.serverUrl } : {}),
       ...(config.theme !== undefined ? { theme: config.theme } : {}),
+      ...(config.motion !== undefined ? { motion: config.motion } : {}),
+      ...(config.ligatures !== undefined ? { ligatures: config.ligatures } : {}),
     }
   }
 
@@ -2368,6 +2370,8 @@ export class SessionHost {
       ...(params.serverUrl !== undefined ? { serverUrl: params.serverUrl } : {}),
       ...(params.recentWorkspace !== undefined ? { recentWorkspace: params.recentWorkspace } : {}),
       ...(params.theme !== undefined ? { theme: params.theme } : {}),
+      ...(params.motion !== undefined ? { motion: params.motion } : {}),
+      ...(params.ligatures !== undefined ? { ligatures: params.ligatures } : {}),
       ...(params.forgetWorkspace !== undefined ? { forgetWorkspace: params.forgetWorkspace } : {}),
     })
     return {}

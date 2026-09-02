@@ -1,12 +1,18 @@
-import { PanelError } from '../components/panel'
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { Folder, FolderOpen } from 'lucide-preact'
 import type { ProtocolClient } from '../lib/client'
-import { Icon } from '../components/icons'
+import { PanelError } from '../components/panel'
+import { SettingHint, SettingLabel } from '../components/settings-bits'
+import { Button } from '../ui/button'
+import { Chip } from '../ui/chip'
+import { cn } from '../ui/cn'
+import { Dialog } from '../ui/dialog'
+import { Input } from '../ui/input'
 import type { SessionSwitch } from './sessions-rail'
 
 /**
- * The workspace switcher — a switcher, not a form.
+ * The workspace switcher — a switcher, not a form (docs/UI-REDESIGN-2026-09.md §8).
  *
  * It used to be a detour through Settings: pick a recent, then find and press «Open
  * workspace» further down a page that also offered the server URL and a folder editor.
@@ -27,6 +33,7 @@ export function WorkspaceSwitch({
   ) => void
 }): VNode {
   const [recents, setRecents] = useState<string[]>([])
+  const [missing, setMissing] = useState<string[]>([])
   const [serverUrl, setServerUrl] = useState('http://127.0.0.1:8080')
   const [typed, setTyped] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -36,51 +43,11 @@ export function WorkspaceSwitch({
     client.call('config.get', {})
       .then((r) => {
         setRecents(r.recentWorkspaces)
+        setMissing(r.missingWorkspaces ?? [])
         if (r.serverUrl !== undefined) setServerUrl(r.serverUrl)
       })
       .catch(() => { /* recents are a convenience; Browse still works */ })
   }, [client])
-
-  // Capture phase AND stopped, the same shape the palette uses. This listener and the
-  // composer's Escape-to-abort are both on `window`, so a plain bubble-phase close let the
-  // one keypress travel on and call `abort`: dismissing this dialog killed a running turn —
-  // and this dialog is reachable, and never disabled, WHILE a turn or an unattended run is
-  // streaming. Settings escapes that only because App passes `modalOpen` to the composer for
-  // it; owning the key here means this dialog does not depend on being remembered there.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key !== 'Escape') return
-      e.stopPropagation()
-      onClose()
-    }
-    window.addEventListener('keydown', onKey, { capture: true })
-    return () => window.removeEventListener('keydown', onKey, { capture: true })
-  }, [onClose])
-
-  // Same dialog behaviour Settings earned the hard way: focus moves in, Tab wraps,
-  // the opener gets focus back on close.
-  const modalRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    modalRef.current?.focus()
-    return () => opener?.focus()
-  }, [])
-  function trapTab(e: KeyboardEvent): void {
-    if (e.key !== 'Tab') return
-    const focusables = modalRef.current?.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled])',
-    )
-    if (!focusables || focusables.length === 0) return
-    const first = focusables[0]!
-    const last = focusables[focusables.length - 1]!
-    if (document.activeElement === modalRef.current) {
-      e.preventDefault()
-      ;(e.shiftKey ? last : first).focus()
-      return
-    }
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
-  }
 
   function open(root: string): void {
     const trimmed = root.trim()
@@ -95,12 +62,8 @@ export function WorkspaceSwitch({
           problems: r.problems, items: r.items, workspaceRoot: trimmed,
           workspaceName: r.workspaceName, folderCount: r.folderCount,
           contextUsed: r.contextUsed,
-          // The five other constructions of this object carry it and these two did
-          // not. `session-switched` writes compactAt unguarded, so an undefined here
-          // replaces a real trigger with the 80%-of-window fallback: on a 262k window
-          // the bar then warns at 188k instead of at the 140k trigger, and stays calm
-          // and grey for exactly the stretch you would consult it. The next step.done
-          // merges it back, i.e. it is wrong until the next turn answers.
+          // `session-switched` writes compactAt unguarded, so an undefined here would
+          // replace a real trigger with the 80%-of-window fallback until the next step.done.
           ...(r.compactAt !== undefined ? { compactAt: r.compactAt } : {}),
         })
       })
@@ -117,38 +80,41 @@ export function WorkspaceSwitch({
   }
 
   return (
-    <div class="modal-overlay" onClick={onClose}>
-      <div
-        class="modal modal-narrow"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Switch workspace"
-        tabindex={-1}
-        ref={modalRef}
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={trapTab}
-      >
-        <div class="modal-head">
-          <b>Switch workspace</b>
-          <button class="icon-button" onClick={onClose} title="Close">{Icon.x()}</button>
-        </div>
-
+    <Dialog
+      open
+      onClose={onClose}
+      title="Switch workspace"
+      description="Opening a workspace picks up its most recent session. The current one keeps its sessions and files."
+      size="sm"
+    >
+      <div data-workspace-switch="" class="font-ui">
         {recents.length > 0 && (
           <>
-            <div class="field-label">Recent — click to open</div>
-            <div class="recent-list">
+            <SettingLabel>Recent — click to open</SettingLabel>
+            <div class="flex flex-col gap-0.5" role="list">
               {recents.map((w) => {
                 const isCurrent = w.toLowerCase() === currentRoot.toLowerCase()
+                const gone = missing.includes(w)
                 return (
                   <button
                     key={w}
-                    class={`recent-item ${isCurrent ? 'recent-item-active' : ''}`}
-                    disabled={isCurrent || opening !== null}
-                    title={isCurrent ? 'Already open' : w}
+                    type="button"
+                    role="listitem"
+                    data-recent={w}
+                    disabled={isCurrent || gone || opening !== null}
+                    title={isCurrent ? 'Already open' : gone ? 'This folder is no longer on disk' : w}
                     onClick={() => open(w)}
+                    class={cn(
+                      'flex w-full min-w-0 items-center gap-2 rounded-sm border-0 bg-transparent px-2 py-1.5 text-left font-mono text-[12px]',
+                      'transition-colors duration-(--duration-fast)',
+                      'focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent',
+                      isCurrent || gone ? 'cursor-default text-faint' : 'cursor-pointer text-fg hover:bg-hover',
+                    )}
                   >
-                    {opening === w ? 'Opening…' : w}
-                    {isCurrent && <span class="tag">current</span>}
+                    <span class="inline-flex shrink-0 text-faint [&>svg]:size-3.5">{isCurrent ? <FolderOpen /> : <Folder />}</span>
+                    <span class="min-w-0 flex-1 truncate" dir="rtl"><span dir="ltr">{opening === w ? 'Opening…' : w}</span></span>
+                    {isCurrent && <Chip tone="accent">current</Chip>}
+                    {gone && <Chip tone="red">missing</Chip>}
                   </button>
                 )
               })}
@@ -156,30 +122,31 @@ export function WorkspaceSwitch({
           </>
         )}
 
-        {isDevBridge
-          ? (
-            <input
-              class="input"
-              value={typed}
-              placeholder="paste a folder path — Enter opens it"
-              disabled={opening !== null}
-              onInput={(e) => setTyped(e.currentTarget.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') open(typed) }}
-            />
-            )
-          : (
-            <button class="btn" disabled={opening !== null} onClick={() => void browse()}>
-              {Icon.folder()} Browse…
-            </button>
-            )}
+        <div class="mt-4">
+          {isDevBridge
+            ? (
+              <Input
+                data-workspace-path=""
+                class="font-mono text-[12px]"
+                value={typed}
+                placeholder="paste a folder path — Enter opens it"
+                aria-label="Folder to open"
+                disabled={opening !== null}
+                onInput={(e) => setTyped(e.currentTarget.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') open(typed) }}
+              />
+              )
+            : (
+              <Button icon={<FolderOpen />} disabled={opening !== null} loading={opening !== null} onClick={() => void browse()}>
+                Browse…
+              </Button>
+              )}
+        </div>
 
         {error !== null && <PanelError message={error} />}
 
-        <div class="field-hint">
-          Opening a workspace picks up its most recent session. The current one keeps its
-          sessions and files.
-        </div>
+        <SettingHint>A workspace is a folder, or a few of them, that the agent may read and edit. Nothing outside it is touched.</SettingHint>
       </div>
-    </div>
+    </Dialog>
   )
 }

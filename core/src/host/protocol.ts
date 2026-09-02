@@ -588,11 +588,18 @@ export interface ConfigGetResult {
   missingWorkspaces?: string[]
   /** `system` (the default when absent), `dark` or `light`. */
   theme?: 'system' | 'dark' | 'light'
+  /** Animation: `system` (the default when absent) follows the OS's reduced-motion
+   * preference, `reduce` always reduces, `full` always animates. */
+  motion?: 'system' | 'reduce' | 'full'
+  /** Ligatures in the code font; absent means on. */
+  ligatures?: boolean
 }
 
 export interface ConfigSetParams {
   serverUrl?: string
   theme?: 'system' | 'dark' | 'light'
+  motion?: 'system' | 'reduce' | 'full'
+  ligatures?: boolean
   /** Drops one path from the recent list — the "forget" on a welcome-screen row. */
   forgetWorkspace?: string
   /** Records this workspace path as most-recently-used (most-recent-first, deduplicated,

@@ -2,6 +2,10 @@ import { useCallback, useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
 import { PanelError } from '../components/panel'
+import { CopyablePath, SettingHint, SettingLabel } from '../components/settings-bits'
+import { Button } from '../ui/button'
+import { cn } from '../ui/cn'
+import { Textarea } from '../ui/input'
 
 /**
  * MCP configuration, VS Code's way: the JSON document itself, editable in place.
@@ -27,7 +31,7 @@ export function McpEditor({
   client, onApply,
 }: {
   client: ProtocolClient
-  /** Re-opens the workspace so the edit actually connects; the modal's own connect(). */
+  /** Re-opens the workspace so the edit actually connects; the dialog's own connect(). */
   onApply: () => void
 }): VNode {
   const [text, setText] = useState<string | null>(null)
@@ -59,6 +63,7 @@ export function McpEditor({
     }
   })()
   const dirty = text !== null && text !== saved
+  const bad = syntaxProblem !== null && dirty
 
   function save(): void {
     if (text === null || syntaxProblem !== null) return
@@ -76,24 +81,24 @@ export function McpEditor({
   }
 
   return (
-    <div class="mcp-editor">
+    <div data-mcp-editor="" class="font-ui">
       {error !== null && <PanelError message={error} onRetry={load} />}
 
-      <div class="mcp-editor-pathrow">
-        <span class="mcp-editor-key">"mcpServers"</span>
-        <span class="mcp-editor-path" title={path}>{path}</span>
-      </div>
-      <textarea
-        class={`mcp-editor-json ${syntaxProblem !== null && dirty ? 'mcp-editor-json-bad' : ''}`}
+      <SettingLabel htmlFor="mcp-json">"mcpServers"</SettingLabel>
+      {path !== '' && <div class="mb-1.5"><CopyablePath path={path} /></div>}
+      <Textarea
+        id="mcp-json"
+        class={cn('min-h-[180px] font-mono text-[12px] leading-[1.5]', bad && 'border-red')}
+        invalid={bad}
         spellcheck={false}
         value={text ?? ''}
         placeholder={PLACEHOLDER}
         disabled={text === null}
         onInput={(e) => setText(e.currentTarget.value)}
       />
-      <div class="mcp-editor-foot">
-        <span class="mcp-editor-status">
-          {syntaxProblem !== null && dirty
+      <div class="mt-2 flex items-center gap-2">
+        <span class={cn('min-w-0 flex-1 truncate text-[12px]', bad ? 'text-red' : 'text-faint')} data-mcp-status="" aria-live="polite">
+          {bad
             ? syntaxProblem
             : dirty
             ? 'unsaved changes'
@@ -101,21 +106,23 @@ export function McpEditor({
             ? 'no servers configured — the placeholder above is the shape'
             : ''}
         </span>
-        <button
-          class="btn btn-primary btn-small"
+        <Button
+          size="sm"
+          variant="primary"
           disabled={saving || !dirty || syntaxProblem !== null}
+          loading={saving}
           onClick={save}
           title="Write the file, then re-open the workspace so the servers connect"
         >
-          {saving ? 'Saving…' : 'Save & reconnect'}
-        </button>
+          Save &amp; reconnect
+        </Button>
       </div>
-      <div class="field-hint">
+      <SettingHint>
         Each entry is a server: <code>{'{ "command": "...", "args": [...] }'}</code> for a
         local one, <code>{'{ "url": "https://..." }'}</code> for a remote one. Optional:
         <code>env</code>, <code>cwd</code>, <code>headers</code>,
         <code>trustReadOnlyHints</code>. Whether each server connected is shown above.
-      </div>
+      </SettingHint>
     </div>
   )
 }

@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { Shield, TriangleAlert } from 'lucide-preact'
 import type { AgentMode } from '@core/permissions/engine'
 import type { PermissionLayerView, PermissionRuleView } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
-import { PanelEmpty, PanelError, PanelRow } from '../components/panel'
-import { Icon } from '../components/icons'
+import { PanelEmpty, PanelError, PanelLoading, PanelRow, PanelSection } from '../components/panel'
+import { SettingHint, SettingLabel } from '../components/settings-bits'
+import { Button } from '../ui/button'
+import { Chip, type ChipTone } from '../ui/chip'
+import { cn } from '../ui/cn'
+import { Input } from '../ui/input'
+import { Select } from '../ui/select'
 
 /**
- * What the agent has standing permission to do, and how to take it back.
+ * What the agent has standing permission to do, and how to take it back
+ * (docs/UI-REDESIGN-2026-09.md §8 "Permissions").
  *
  * The window could GRANT a standing permission from two places — an approval card's "Allow
  * always" and the decision queue — and had nowhere to show what had been granted. So the one
@@ -49,17 +56,17 @@ const SCOPE_LABEL: Record<PermissionLayerView['scope'], { title: string; detail:
   local: { title: 'This project, just you', detail: 'Your own overrides here; not shared.' },
 }
 
-const LIST_TONE: Record<PermissionRuleView['list'], { label: string; cls: string }> = {
-  deny: { label: 'never', cls: 'rule-deny' },
-  ask: { label: 'always ask', cls: 'rule-ask' },
-  allow: { label: 'allowed', cls: 'rule-allow' },
+const LIST_TONE: Record<PermissionRuleView['list'], { label: string; tone: ChipTone }> = {
+  deny: { label: 'never', tone: 'red' },
+  ask: { label: 'always ask', tone: 'yellow' },
+  allow: { label: 'allowed', tone: 'green' },
 }
 
 export function Permissions({ client, liveMode }: {
   client: ProtocolClient
   /** The mode as the WINDOW knows it, which updates the moment it is switched — including
-   * from the Ctrl+K palette while this modal is open. The fetched mode is a snapshot from
-   * when the panel mounted, and the palette renders over the modal, so the snapshot can go
+   * from the Ctrl+K palette while this dialog is open. The fetched mode is a snapshot from
+   * when the panel mounted, and the palette renders over the dialog, so the snapshot can go
    * stale while the block built to describe the mode is on screen. */
   liveMode?: AgentMode
 }): VNode {
@@ -123,14 +130,20 @@ export function Permissions({ client, liveMode }: {
   const total = (layers ?? []).reduce((n, l) => n + l.rules.length, 0)
 
   return (
-    <div class="perms">
-      <div class={`perms-mode ${summary.tone === 'warn' ? 'perms-mode-warn' : ''}`}>
-        <span class="perms-mode-icon" aria-hidden="true">
-          {summary.tone === 'warn' ? Icon.alert() : Icon.shield()}
+    <div data-permissions="" class="font-ui">
+      <div
+        data-mode-summary=""
+        class={cn(
+          'flex items-start gap-2.5 rounded-md border px-3 py-2.5',
+          summary.tone === 'warn' ? 'border-red-line bg-red-soft' : 'border-border-soft bg-raised',
+        )}
+      >
+        <span class={cn('mt-0.5 inline-flex shrink-0 [&>svg]:size-4', summary.tone === 'warn' ? 'text-red' : 'text-accent')} aria-hidden="true">
+          {summary.tone === 'warn' ? <TriangleAlert /> : <Shield />}
         </span>
-        <div>
-          <div class="perms-mode-title">{summary.title}</div>
-          <div class="perms-mode-detail">{summary.detail}</div>
+        <div class="min-w-0">
+          <div class="text-[13px] font-semibold text-fg">{summary.title}</div>
+          <div class="mt-0.5 text-[12px] leading-[1.5] text-dim">{summary.detail}</div>
         </div>
       </div>
 
@@ -138,22 +151,18 @@ export function Permissions({ client, liveMode }: {
       {error !== null && <PanelError message={error} onRetry={load} />}
 
       {layers === null
-        ? <div class="field-hint">Reading the settings files…</div>
+        ? <PanelLoading what="Reading the settings files…" />
         : total === 0
         ? (
           <PanelEmpty
-            icon={Icon.shield()}
+            icon={<Shield />}
             title="Nothing has been granted standing permission"
             hint="Choosing “Allow always” on a request, or answering one in the decision queue, adds a rule here."
           />
           )
         : layers.filter((l) => l.rules.length > 0).map((layer) => (
-          <section key={layer.scope} class="perms-layer">
-            <div class="perms-layer-head">
-              <span class="perms-layer-title">{SCOPE_LABEL[layer.scope].title}</span>
-              <span class="perms-layer-path" title={layer.path}>{layer.path}</span>
-            </div>
-            <div class="perms-layer-detail">{SCOPE_LABEL[layer.scope].detail}</div>
+          <PanelSection key={layer.scope} title={SCOPE_LABEL[layer.scope].title} subtitle={layer.path}>
+            <div class="px-2.5 pb-1 text-[11.5px] text-faint">{SCOPE_LABEL[layer.scope].detail}</div>
             {layer.rules.map((rule) => {
               const key = `${layer.scope}:${rule.list}:${rule.rule}`
               return (
@@ -162,67 +171,67 @@ export function Permissions({ client, liveMode }: {
                   mono
                   label={rule.rule}
                   title={rule.rule}
-                  meta={<span class={`rule-tag ${LIST_TONE[rule.list].cls}`}>{LIST_TONE[rule.list].label}</span>}
+                  meta={<Chip tone={LIST_TONE[rule.list].tone}>{LIST_TONE[rule.list].label}</Chip>}
                   actions={
-                    <button
-                      class="btn btn-small"
+                    <Button
+                      size="sm"
+                      variant="ghost"
                       disabled={busy === key}
+                      loading={busy === key}
                       onClick={() => revoke(layer, rule)}
-                      title={rule.list === 'deny'
-                        ? 'Lift this restriction'
-                        : 'Withdraw this permission'}
+                      data-action="revoke"
+                      title={rule.list === 'deny' ? 'Lift this restriction' : 'Withdraw this permission'}
                     >
-                      {busy === key ? 'Removing…' : rule.list === 'deny' ? 'Lift' : 'Revoke'}
-                    </button>
+                      {rule.list === 'deny' ? 'Lift' : 'Revoke'}
+                    </Button>
                   }
                 />
               )
             })}
-          </section>
+          </PanelSection>
         ))}
 
-      <div class="field-label">Add a rule</div>
-      <div class="perms-add">
-        <select
-          class="input input-small perms-add-list"
+      <SettingLabel>Add a rule</SettingLabel>
+      <div class="flex flex-wrap items-center gap-1.5" data-add-rule="">
+        <Select
+          class="h-7"
           value={newList}
+          aria-label="What the rule does"
           onChange={(e) => setNewList(e.currentTarget.value as 'allow' | 'ask' | 'deny')}
           title="never = the agent may not do this, in any mode. always ask = stops for you every time. allowed = goes through without asking."
         >
           <option value="deny">never</option>
           <option value="ask">always ask</option>
           <option value="allow">allowed</option>
-        </select>
-        <input
-          class="input input-small perms-add-rule"
+        </Select>
+        <Input
+          class="min-w-[200px] flex-1 font-mono text-[12px]"
           placeholder="run_command(npm publish:*) · edit_file(src/**)"
+          aria-label="The rule"
           value={newRule}
           onInput={(e) => setNewRule(e.currentTarget.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') addRule() }}
         />
-        <select
-          class="input input-small perms-add-scope"
+        <Select
+          class="h-7"
           value={newScope}
+          aria-label="Which settings file it is written to"
           onChange={(e) => setNewScope(e.currentTarget.value as 'user' | 'project' | 'local')}
           title="Which settings file it is written to"
         >
           <option value="project">this project</option>
           <option value="local">project, just me</option>
           <option value="user">everywhere</option>
-        </select>
-        <button
-          class="btn btn-small"
-          disabled={adding || newRule.trim() === ''}
-          onClick={addRule}
-        >
-          {adding ? 'Adding…' : 'Add'}
-        </button>
+        </Select>
+        <Button size="sm" disabled={adding || newRule.trim() === ''} loading={adding} onClick={addRule} data-action="add-rule">
+          Add
+        </Button>
       </div>
-      <div class="field-hint">
+      <SettingHint>
         A rule is a tool name with an optional pattern: commands match by prefix
         (<code>run_command(git push:*)</code>), paths by glob (<code>edit_file(src/**)</code>).
         It applies immediately, this session included.
-      </div>
+      </SettingHint>
     </div>
   )
 }

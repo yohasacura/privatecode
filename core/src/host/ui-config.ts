@@ -27,10 +27,17 @@ export function uiConfigPath(): string {
 export type ThemeSetting = 'system' | 'dark' | 'light'
 export const THEME_SETTINGS: readonly ThemeSetting[] = ['system', 'dark', 'light']
 
+/** Animation: follow the OS's reduced-motion preference, always reduce, or always animate. */
+export type MotionSetting = 'system' | 'reduce' | 'full'
+export const MOTION_SETTINGS: readonly MotionSetting[] = ['system', 'reduce', 'full']
+
 export interface UiConfig {
   serverUrl?: string
   recentWorkspaces: string[]
   theme?: ThemeSetting
+  motion?: MotionSetting
+  /** Ligatures in the code font; absent means on. */
+  ligatures?: boolean
 }
 
 function emptyUiConfig(): UiConfig {
@@ -93,6 +100,21 @@ export function loadUiConfig(path: string = uiConfigPath()): { config: UiConfig;
     }
   }
 
+  const motionRaw = parsed['motion']
+  if (motionRaw !== undefined) {
+    if (typeof motionRaw === 'string' && (MOTION_SETTINGS as readonly string[]).includes(motionRaw)) {
+      config.motion = motionRaw as MotionSetting
+    } else {
+      problems.push(`"motion" in ui settings (${path}) is not one of system, reduce, full; ignoring it`)
+    }
+  }
+
+  const ligaturesRaw = parsed['ligatures']
+  if (ligaturesRaw !== undefined) {
+    if (typeof ligaturesRaw === 'boolean') config.ligatures = ligaturesRaw
+    else problems.push(`"ligatures" in ui settings (${path}) is not true or false; ignoring it`)
+  }
+
   const recentRaw = parsed['recentWorkspaces']
   if (recentRaw !== undefined) {
     if (Array.isArray(recentRaw)) {
@@ -127,11 +149,16 @@ const MAX_RECENT_WORKSPACES = 8
  * `Workspace`, matching `addRuleToSettings`'s own reasoning.
  */
 export function saveUiConfig(
-  patch: { serverUrl?: string; recentWorkspace?: string; theme?: ThemeSetting; forgetWorkspace?: string },
+  patch: {
+    serverUrl?: string; recentWorkspace?: string; theme?: ThemeSetting; motion?: MotionSetting
+    ligatures?: boolean; forgetWorkspace?: string
+  },
   path: string = uiConfigPath(),
 ): void {
   const { config } = loadUiConfig(path)
   if (patch.theme !== undefined) config.theme = patch.theme
+  if (patch.motion !== undefined) config.motion = patch.motion
+  if (patch.ligatures !== undefined) config.ligatures = patch.ligatures
   if (patch.forgetWorkspace !== undefined) {
     config.recentWorkspaces = config.recentWorkspaces.filter((w) => w !== patch.forgetWorkspace)
   }

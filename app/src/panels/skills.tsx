@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { Brain } from 'lucide-preact'
 import type { SkillsListResult } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
-import { PanelEmpty, PanelError, PanelRow } from '../components/panel'
-import { Icon } from '../components/icons'
+import { PanelEmpty, PanelError, PanelLoading, PanelRow } from '../components/panel'
+import { CopyablePath, SettingHint, SettingLabel } from '../components/settings-bits'
+import { Chip } from '../ui/chip'
 
 /**
- * The skills this workspace offers the model.
+ * The skills this workspace offers the model (docs/UI-REDESIGN-2026-09.md §8 "Skills").
  *
  * Read-only on purpose: a skill is a folder with a markdown file in it, and the thing that
  * edits markdown well is already on this machine. What the window owes is the answer the
@@ -32,17 +34,14 @@ export function Skills({ client }: { client: ProtocolClient }): VNode {
   useEffect(load, [load])
 
   if (error !== null) return <PanelError message={error} onRetry={load} />
-  // The same phrasing and the same class the Permissions tab uses while it reads its files:
-  // two screens in one modal answering "am I waiting or is it empty" differently would be a
-  // difference with no reason behind it.
-  if (data === null) return <div class="field-hint">Reading the skills folders…</div>
+  if (data === null) return <PanelLoading what="Reading the skills folders…" />
 
   return (
-    <div class="skills">
+    <div data-skills="" class="font-ui">
       {data.skills.length === 0
         ? (
           <PanelEmpty
-            icon={Icon.brain()}
+            icon={<Brain />}
             title="No skills yet"
             hint="A skill is a folder with a SKILL.md in it. Create one in either folder below."
           />
@@ -52,35 +51,32 @@ export function Skills({ client }: { client: ProtocolClient }): VNode {
             key={`${s.scope}/${s.name}`}
             open={open === s.name}
             onToggle={() => setOpen(open === s.name ? null : s.name)}
-            icon={Icon.brain()}
+            icon={<Brain />}
             label={s.name}
             mono
-            meta={<span class="skills-scope">{s.scope}</span>}
+            meta={<Chip>{s.scope}</Chip>}
           >
-            <div class="skills-description">{s.description}</div>
-            <div class="skills-path" title={s.path}>{s.path}</div>
+            <div class="text-[12.5px] leading-[1.5] text-fg">{s.description}</div>
+            <div class="mt-1.5"><CopyablePath path={s.path} /></div>
             {s.files.length > 0 && (
-              <div class="skills-files">bundled: {s.files.join(', ')}</div>
+              <div class="mt-1 text-[11.5px] text-faint">bundled: {s.files.join(', ')}</div>
             )}
           </PanelRow>
         ))}
 
       {data.problems.map((p) => <PanelError key={p} message={p} />)}
 
-      <div class="field-label">Read from</div>
-      {data.dirs.map((d) => (
-        <div key={d.path} class="skills-dir">
-          <span class="skills-scope">{d.scope}</span>
-          <span class="skills-path" title={d.path}>{d.path}</span>
-        </div>
-      ))}
-      <div class="field-hint">
+      <SettingLabel>Read from</SettingLabel>
+      <div class="flex flex-col gap-1">
+        {data.dirs.map((d) => <CopyablePath key={d.path} label={d.scope} path={d.path} />)}
+      </div>
+      <SettingHint>
         This is what is on disk now. The running session uses the catalogue it started with,
         so a NEW skill — or a changed description — reaches the model on New session. A
         change to a skill's steps applies immediately, because the body is read each time
         it is used. Both folders are local to this machine — <code>.privatecode</code> is
         git-ignored in full — so a skill you want on another machine has to be copied there.
-      </div>
+      </SettingHint>
     </div>
   )
 }

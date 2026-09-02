@@ -26,8 +26,7 @@ everywhere. Instant flips
 it only changes shade. */
 button,
 .btn,
-.icon-button,
-.recent-item {
+.icon-button {
   transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 /* Pressed: one shade deeper than hover. */
@@ -39,8 +38,7 @@ button,
 .tool-head:active:not(:disabled),
 .todos-head:active,
 .jump-latest:active,
-.cmd-more:active,
-.recent-item:active {
+.cmd-more:active {
   background: var(--bg-active);
 }
 /* Primary: hover lightens to --accent-hover, press drops back to base = depress. */
@@ -103,7 +101,6 @@ kbd {
 .rail-item:focus-visible,
 .rail-workspace:focus-visible,
 .rail-settings:focus-visible,
-.palette-item:focus-visible,
 .tool-head:focus-visible,
 .todos-head:focus-visible,
 .cmd-more:focus-visible {
@@ -186,9 +183,6 @@ kbd {
   color: var(--text-dim);
 }
 
-/* The switcher dialog: a list and a Browse button need less room than Settings. */
-.modal-narrow { max-width: 460px; }
-
 
 /* The session's fingerprints on the tree: a diff shape on a changed file, a count of
  * changed files on a folder — visible even while the folder is collapsed. */
@@ -246,17 +240,6 @@ kbd {
 }
 .tag-danger { background: var(--red-soft); color: var(--red); }
 
-.field-label {
-  display: block;
-  margin: 14px 0 5px;
-  font-size: 10.5px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-.field-row { display: flex; gap: 8px; }
-.field-row .input { flex: 1; }
-.field-hint { margin-top: 5px; font-size: 11.5px; color: var(--text-faint); }
 
 .panel-placeholder { padding: 18px 14px; color: var(--text-faint); font-size: 12.5px; }
 
@@ -1301,25 +1284,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 
 /* ----------------------------------------------------------------------- composer ---- */
 
-/* Configuration went wrong and the agent is running anyway, with less policy than the
-   user wrote. Deliberately loud and deliberately not a toast: a dropped deny rule is
-   still dropped ten seconds later. */
-.problem-strip {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  max-width: var(--read);
-  margin: 0 auto;
-  padding: 7px 6px 7px 11px;
-  border: 1px solid color-mix(in srgb, var(--yellow) 30%, transparent);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--yellow) 6%, transparent);
-  font-size: 12.5px;
-  color: var(--text-dim);
-}
-.problem-icon { display: flex; color: var(--yellow); padding-top: 2px; }
-.problem-list { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; word-break: break-word; }
-
 
 .composer {
   flex: none;
@@ -1598,46 +1562,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 }
 .welcome-connect { width: 100%; justify-content: center; margin-top: 18px; height: 32px; }
 
-.recent-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.recent-item {
-  padding: 4px 9px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
-  background: var(--bg-raised);
-  color: var(--text-dim);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  cursor: pointer;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.recent-item:hover { background: var(--bg-hover); color: var(--text); }
-.recent-item-active { border-color: var(--accent-line); color: var(--text); }
-
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 50;
-}
-.modal {
-  width: 100%;
-  max-width: 480px;
-  max-height: 84vh;
-  overflow-y: auto;
-  padding: 16px 20px 22px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-panel);
-  box-shadow: var(--shadow-overlay);
-}
-.modal-head { display: flex; align-items: center; justify-content: space-between; font-size: 13.5px; }
-.modal-primary { width: 100%; justify-content: center; margin-top: 20px; height: 32px; }
 
 /* ----------------------------------------------------------------------- markdown ---- */
 
@@ -1736,39 +1660,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   color: var(--text-dim);
 }
 
-.mcp-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-.mcp-item {
-  border: 1px solid var(--border-soft);
-  border-radius: 6px;
-  padding: 6px 8px;
-  background: var(--bg-raised);
-}
-.mcp-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-.mcp-name { font-weight: 600; }
-.mcp-state { font-size: 11.5px; color: var(--text-dim); }
-.mcp-failed { border-color: var(--red); }
-.mcp-failed .mcp-state { color: var(--red); }
-/* The reason a server failed is usually a missing token or a command that is not on PATH.
-   Both are one edit away from fixed -- once you can read them, whole and unwrapped. */
-.mcp-problem {
-  margin: 6px 0 0;
-  font-size: 11.5px;
-  line-height: 1.4;
-  color: var(--text-dim);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 
 /* `.btn-danger` is declared once, with the controls at the top of this file. A second
    declaration lived here and quietly won, which is how the one destructive button in the
@@ -1827,73 +1718,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 
 /* --- git, worn by the tree ------------------------------------------------------------ */
 
-
-/* --- the command palette -------------------------------------------------------------- */
-
-.palette {
-  width: 100%;
-  max-width: 620px;
-  margin-top: 12vh;
-  align-self: flex-start;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-panel);
-  box-shadow: var(--shadow-overlay);
-  overflow: hidden;
-}
-.palette-input {
-  display: block;
-  width: 100%;
-  padding: 13px 16px;
-  border: none;
-  border-bottom: 1px solid var(--border-soft);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13.5px;
-  outline: none;
-}
-.palette-input::placeholder { color: var(--text-faint); }
-
-.palette-list { max-height: 52vh; overflow-y: auto; }
-.palette-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 14px;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-}
-/* Hover and the arrow keys drive the same highlight: this is used from the keyboard, and a
-   mouse that happens to be resting over a row must not disagree with the selection. */
-.palette-item-on { background: var(--bg-hover); color: var(--text); }
-.palette-icon { display: flex; flex: none; color: var(--text-faint); }
-.palette-icon .icon { width: 13px; height: 13px; }
-.palette-label { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.palette-detail {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-faint);
-  font-size: 11.5px;
-}
-.palette-group {
-  flex: none;
-  margin-left: auto;
-  padding-left: 10px;
-  font-size: 10.5px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
 
 /* ---------------------------------------------------------------------------------------
    The folders a workspace is made of.
@@ -2063,78 +1887,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 /* Said quietly beside the step timer: it explains a pause, it is not an event. */
 .status-quiet { color: var(--text-faint); }
 
-/* ---------------------------------------------------------------------------------------
-   Permissions: what the agent may do, and taking it back.
-
-   The one section in Settings that can REMOVE something, so it reads as its own object
-   rather than as more fields: a framed statement of what the current mode permits, then the
-   rules grouped by the file each one lives in. The mode block is deliberately the loudest
-   thing here — a mode grants far more than any rule does, and a list of three `allow` entries
-   under autopilot would understate the answer badly.
-   --------------------------------------------------------------------------------------- */
-.perms { display: flex; flex-direction: column; gap: 12px; }
-
-.perms-mode {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 11px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-raised);
-}
-/* Autopilot only. The one mode that changes the machine with nobody watching should not
-   look the same as the one that asks first. */
-.perms-mode-warn { border-color: var(--accent-line); background: var(--accent-soft); }
-.perms-mode-icon { flex: none; display: flex; color: var(--text-dim); margin-top: 1px; }
-.perms-mode-warn .perms-mode-icon { color: var(--accent); }
-.perms-mode-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
-.perms-mode-detail { font-size: 11.5px; line-height: 1.5; color: var(--text-dim); margin-top: 2px; }
-
-.perms-layer { display: flex; flex-direction: column; }
-.perms-layer-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.perms-layer-title {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-/* The file a rule lives in, never hidden: a permission that came from nowhere is a
-   permission you cannot reason about. Truncated from the left, because the end of a path is
-   the part that identifies it. */
-.perms-layer-path {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--text-faint);
-  text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-}
-.perms-layer-detail {
-  font-size: 11.5px;
-  color: var(--text-faint);
-  margin: 2px 0 4px;
-}
-
-/* Which list a rule is in, said in the row rather than by grouping: `deny` and `allow`
-   entries interleave in one file and a reader must never have to count headings to tell a
-   restriction from a grant. */
-.rule-tag {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-}
-.rule-allow { color: var(--green); background: var(--green-soft); border-color: var(--green-soft); }
-.rule-ask { color: var(--yellow); background: var(--yellow-soft); border-color: var(--yellow-line); }
-.rule-deny { color: var(--red); background: var(--red-soft); border-color: var(--red-soft); }
 
 /* ---------------------------------------------------------------------------------------
    The unattended run, visible.
@@ -2236,111 +1988,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
    depend on keeping the pointer still. */
 .copy-button-done { opacity: 1; color: var(--green); border-color: var(--green-soft); }
 
-/* ---------------------------------------------------------------------------------------
-   Settings, on tabs.
-
-   Burial was measured, not assumed: the permissions section existed at the bottom of one
-   long scroll and the person it was built for reported not finding it. A section you must
-   already know about to find is not a section.
-   --------------------------------------------------------------------------------------- */
-.modal-tabs {
-  display: flex;
-  gap: 2px;
-  margin: 12px 0 14px;
-  border-bottom: 1px solid var(--border);
-}
-.modal-tab {
-  padding: 6px 12px 7px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-dim);
-  border: none;
-  background: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  cursor: pointer;
-}
-.modal-tab:hover { color: var(--text); }
-.modal-tab-active { color: var(--text); border-bottom-color: var(--accent); }
-
-/* The add-rule row: list, rule, scope, add — the order you say the sentence in. */
-.perms-add { display: flex; gap: 6px; align-items: center; }
-.perms-add-list { flex: none; width: 96px; }
-.perms-add-rule { flex: 1; min-width: 0; font-family: var(--mono); }
-.perms-add-scope { flex: none; width: 118px; }
-
-/* Skills: a read-only audit of what the model was offered. Nothing here is editable — the
-   thing that edits markdown well is already on this machine — so the whole screen is a list
-   plus the two folders it was read from. */
-.skills { display: flex; flex-direction: column; gap: 4px; }
-.skills-scope {
-  flex: none;
-  font-size: 10.5px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-.skills-description { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
-.skills-path {
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  /* The end of a path identifies it; the start is the same for every row. */
-  direction: rtl;
-  text-align: left;
-}
-.skills-files { margin-top: 3px; font-size: 11.5px; color: var(--text-faint); }
-.skills-dir { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-
-/* The MCP editor, VS Code's way: the JSON document itself. The textarea is the whole
-   point — everything the loader can read is expressible, including fields no form
-   anticipated. */
-.mcp-editor { display: flex; flex-direction: column; gap: 8px; }
-.mcp-editor-pathrow { display: flex; align-items: baseline; gap: 8px; }
-.mcp-editor-key { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
-.mcp-editor-path {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--text-faint);
-  text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-}
-.mcp-editor-json {
-  width: 100%;
-  min-height: 180px;
-  resize: vertical;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  tab-size: 2;
-}
-.mcp-editor-json:focus-visible { outline: none; border-color: var(--accent-line); }
-/* A parse error colours the frame, not the text: the text is what you are fixing. */
-.mcp-editor-json-bad { border-color: var(--red); }
-.mcp-editor-foot { display: flex; align-items: center; gap: 10px; }
-.mcp-editor-status {
-  flex: 1;
-  min-width: 0;
-  font-size: 11.5px;
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 /* Reviewed changes fold away rather than scroll forever. */
 .changes-total-spacer { flex: 1; }
@@ -2362,89 +2009,8 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 }
 .changes-reviewed-toggle:hover { color: var(--text); }
 
-/* The update notice reuses the problem strip's layout and only changes its colour: this is
-   news, not a fault, and a red bar for "a new version is available" reads as something being
-   wrong. */
-.update-strip {
-  border-color: var(--green);
-  background: var(--green-soft);
-}
 
 /* ------------------------------------------------------------------------- erase ----- */
-/* "Remove everything on this computer". The list is the confirmation: real folders, real
-   sizes, from the same code that deletes them — a person can check that against what they
-   believe is there, which is a question they can actually answer. */
-
-.erase { display: flex; flex-direction: column; gap: 10px; }
-
-.erase-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-.erase-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 2px 10px;
-  padding: 7px 9px;
-  background: var(--bg-panel);
-  font-size: 12px;
-}
-.erase-row-label { color: var(--text); }
-.erase-row-size { color: var(--text-dim); font-family: var(--mono); font-size: 11px; text-align: right; }
-/* The path is the part a person checks, so it wraps rather than being cut off — an ellipsis
-   in the middle of a folder name is exactly where the checking would fail. */
-.erase-row-path {
-  grid-column: 1 / -1;
-  color: var(--text-faint);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  word-break: break-all;
-}
-.erase-row-gone .erase-row-label,
-.erase-row-gone .erase-row-path { color: var(--text-faint); }
-
-.erase-total { font-size: 11.5px; color: var(--text-dim); }
-
-.erase-armed {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--red);
-  border-radius: var(--radius-sm);
-  background: var(--red-soft);
-}
-.erase-armed-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
-  color: var(--red);
-}
-.erase-armed-row { display: flex; gap: 8px; }
-
-/* The bar under a running update: the download by bytes, the short phases full. Green like
-   the strip it sits in — progress on news, not on a fault. */
-.update-progress {
-  margin-top: 6px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border-soft);
-  overflow: hidden;
-}
-.update-progress-bar {
-  height: 100%;
-  background: var(--green);
-  transition: width 120ms linear;
-}
-
-/* "Updated to 0.3.1 from 0.3.0" — the one thing an update says afterwards. Same green strip
-   as the offer; it is the offer's other end. */
-.updated-strip { border-color: var(--green); background: var(--green-soft); }
 
 
 /* --- window controls ------------------------------------------------------------------
@@ -2470,29 +2036,3 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 .win-btn .icon { width: 10px; height: 10px; }
 .titlebar-no-controls { padding-right: 8px; }
 
-/* --- a choice of a few, as radio buttons drawn as segments ---------------------------------
-   Settings → Appearance. Same shape as the composer's mode control, for the same reason:
-   one of a few, all visible, the chosen one raised. */
-.appearance { display: flex; flex-direction: column; gap: 6px; }
-.choice-group {
-  display: inline-flex;
-  gap: 1px;
-  padding: 2px;
-  border: 1px solid var(--border-soft);
-  border-radius: 7px;
-  background: var(--bg);
-  align-self: flex-start;
-}
-.choice {
-  padding: 4px 12px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.choice:hover:not(.choice-on) { background: var(--bg-hover); color: var(--text); }
-.choice-on { background: var(--bg-active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
