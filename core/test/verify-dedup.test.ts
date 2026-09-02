@@ -16,8 +16,13 @@ import type { Tool } from '../src/tools/types.js'
  * Watched live: every write cycle ended with the model asking to run exactly the configured
  * verify command, after which the write-boundary check ran the SAME command over the SAME
  * bytes — in one recorded cycle the command ran four times. The model saw the output; the
- * question is answered, and `noteModelRanVerify` records it so neither the mid-turn boundary
- * check nor the end-of-turn pass repeats it.
+ * question is answered, and `noteModelRanVerify` records it so the end-of-turn pass does
+ * not repeat it.
+ *
+ * Since the boundary check moved to right after the step that wrote (session.ts,
+ * `verifyMidTurn`), the order is the other way round: the harness answers first, and a
+ * model that still runs the command by hand is the one repeating the question — which the
+ * prompt now tells it not to do. What must not happen is a THIRD run at the end of the turn.
  */
 
 let stop: (() => Promise<void>) | undefined
@@ -110,7 +115,8 @@ test("the model's own successful run of the verify command replaces the automati
   const result = await session.send('change a.txt and check it')
   expect(result.stoppedBecause).toBe('done')
 
-  // Exactly the model's own run — the boundary check and the end-of-turn pass both saw
-  // that the question was already answered. Before the fix this file held two bytes.
-  expect(readFileSync(join(root, 'runs.txt'), 'utf8')).toBe('x')
+  // The boundary check right after the write, then the model's own run — and nothing at the
+  // end of the turn, because the question was answered twice over by then. Before
+  // `noteModelRanVerify` this file held one byte more.
+  expect(readFileSync(join(root, 'runs.txt'), 'utf8')).toBe('xx')
 })

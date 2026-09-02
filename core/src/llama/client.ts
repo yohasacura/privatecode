@@ -78,6 +78,13 @@ export class LlamaRequestError extends Error {
 /** Ceiling on how much of a response body is carried on an error. */
 const MAX_ERROR_BODY_CHARS = 600
 
+/** How long a slot save or restore may take before it is abandoned. See `slotSave`. */
+const SLOT_ACTION_TIMEOUT_MS = 20_000
+
+export type SlotOutcome =
+  | { ok: true; tokens: number }
+  | { ok: false; unsupported: boolean }
+
 /**
  * How long `/slots` gets to answer — and it needs far more than a health check does.
  *
@@ -179,6 +186,43 @@ export class LlamaClient {
       return { processing: slot.is_processing === true, processed: slot.n_prompt_tokens_processed ?? 0 }
     } catch {
       return null
+    }
+  }
+
+  /**
+   * Write the slot's prompt state to a file under the server's `--slot-save-path`, or read
+   * one back. `unsupported` is the server saying it was started without the flag (HTTP
+   * 501), which callers treat as "this feature is off" rather than as an error.
+   *
+   * Measured (`spike/slot-save-probe.mts`): 0.4 s to save and 0.5 s to restore a 20k-token
+   * state of 453 MiB, and the restored conversation then prefilled 22 tokens instead of
+   * 19,900 — across a server restart. The file name is exactly that: the server refuses a
+   * path, and it puts the file where its own flag says.
+   */
+  async slotSave(filename: string): Promise<SlotOutcome> {
+    return this.slotAction('save', filename)
+  }
+
+  async slotRestore(filename: string): Promise<SlotOutcome> {
+    return this.slotAction('restore', filename)
+  }
+
+  private async slotAction(action: 'save' | 'restore', filename: string): Promise<SlotOutcome> {
+    try {
+      const res = await fetch(`${this.baseUrl}/slots/0?action=${action}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ filename }),
+        // A 2 GB state takes a couple of seconds either way; a server that takes longer than
+        // this is not one to wait on at shutdown.
+        signal: AbortSignal.timeout(SLOT_ACTION_TIMEOUT_MS),
+      })
+      if (res.status === 501) return { ok: false, unsupported: true }
+      if (!res.ok) return { ok: false, unsupported: false }
+      const data = await res.json() as { n_saved?: number; n_restored?: number }
+      return { ok: true, tokens: numberOr(action === 'save' ? data.n_saved : data.n_restored, 0) }
+    } catch {
+      return { ok: false, unsupported: false }
     }
   }
 

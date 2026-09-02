@@ -124,9 +124,18 @@ export const CONTRACT_SCHEMA: Record<string, unknown> = {
     // implement (lowercases, strips punctuation, no leading hyphen)" — and a measured run
     // produced exactly those three anyway. This session has the general lesson twice over:
     // this model follows the grammar and negotiates with the prose.
-    rules: { type: 'array', items: { type: 'string' } },
-    criteria: { type: 'array', items: { type: 'string' } },
-    constraints: { type: 'array', items: { type: 'string' } },
+    // Bounded by the grammar, not only by the ask. "Two to six in total" is in the prose and
+    // the model wrote eight and nine on two ordinary five-line requests (speed probe,
+    // 2026-09-02) — and every extra criterion is audited, planned and re-audited. `maxItems`
+    // is honoured by this server's schema-to-grammar (spike/grammar-bounds-probe.mts); the
+    // model's answer to a bound is a longer item, which the audit copes with better than
+    // three more rows.
+    // Three and five, because `readContract` folds the rules INTO the criteria: the audited
+    // list is their sum, and the first bound (four and six) still let a five-line request
+    // reach eight audited rows.
+    rules: { type: 'array', maxItems: 3, items: { type: 'string' } },
+    criteria: { type: 'array', maxItems: 5, items: { type: 'string' } },
+    constraints: { type: 'array', maxItems: 6, items: { type: 'string' } },
     // Required-but-emptyable rather than optional: a strict schema is clearer about what
     // "nothing to say here" looks like than an absent key, and `parseContract` already
     // treats an empty string and an absent one identically.
@@ -204,6 +213,41 @@ function distillContext(transcript: readonly ChatMessage[]): ChatMessage[] {
   return [...head, ...recent]
 }
 
+/**
+ * The `fast` profile's contract: a goal, at most four criteria, and the two flags the gates
+ * key on. No rules, constraints or interfaces — the audit is the only consumer left in that
+ * profile, and it audits criteria.
+ *
+ * Measured reason (docs/SPEED-2026-09-02.md): the full distillation costs 10–15 s of
+ * generation on a five-line request and hands the audit eight rows; every row is another
+ * ~60 tokens of evidence at the end of every writing turn. Four rows halve both.
+ */
+const CONTRACT_SCHEMA_FAST: Record<string, unknown> = {
+  type: 'object',
+  required: ['goal', 'criteria', 'kind', 'changesCode'],
+  additionalProperties: false,
+  properties: {
+    goal: { type: 'string' },
+    criteria: { type: 'array', maxItems: 4, items: { type: 'string' } },
+    kind: { type: 'string', enum: ['bugfix', 'feature', 'other'] },
+    changesCode: { type: 'boolean' },
+  },
+}
+
+const DISTILL_ASK_FAST =
+  '[Before starting: distill this request into a task contract. Do not begin the work yet.\n\n' +
+  'goal — one sentence: what must exist when this is done.\n\n' +
+  'criteria — two to four done-criteria, each answerable yes/no by looking at a file or ' +
+  'running a command, each a STATE OF THE WORLD once the work is finished and never an ' +
+  'activity along the way ("the counter cannot hand out the same number twice", not "the ' +
+  'code is examined"). Every criterion must come from the REQUEST, in its own specifics, ' +
+  'and each is a short line — under twenty words.\n\n' +
+  'kind — "bugfix" ONLY when the request reports existing behaviour as broken and asks to ' +
+  'repair it; "feature" for new capability; "other" for the rest.\n\n' +
+  'changesCode — true when finishing this means changing source that has to build and pass ' +
+  'tests. False when the work is writing, answering, explaining or producing a document.\n\n' +
+  'Answer with JSON only.]'
+
 export async function distillContract(
   client: LlamaClient,
   transcript: readonly ChatMessage[],
@@ -211,7 +255,21 @@ export async function distillContract(
   signal?: AbortSignal,
   /** The session's own tool array, unchanged, so this stays an append onto the warm prefix. */
   tools?: readonly ToolSchema[],
+  /** `lean`: the `fast` profile's smaller contract — see `CONTRACT_SCHEMA_FAST`. */
+  opts: { lean?: boolean } = {},
 ): Promise<TaskContract | null> {
+  if (opts.lean === true) {
+    const parsedLean = await forcedJson(client, {
+      messages: [...distillContext(transcript), { role: 'user', content: `${userText}\n\n${DISTILL_ASK_FAST}` }],
+      name: 'contract',
+      schema: CONTRACT_SCHEMA_FAST,
+      maxTokens: DISTILL_MAX_TOKENS,
+      disableThinking: true,
+      ...(tools ? { tools } : {}),
+      ...(signal ? { signal } : {}),
+    })
+    return parsedLean === null ? null : readContract(parsedLean)
+  }
   const messages: ChatMessage[] = [
     ...distillContext(transcript),
     {
@@ -1142,7 +1200,12 @@ function acceptanceSchema(criteriaCount: number): Record<string, unknown> {
           additionalProperties: false,
           properties: {
             index: { type: 'integer', minimum: 1, maximum: Math.max(1, criteriaCount) },
-            evidence: { type: 'string' },
+            // A pointer, not a paragraph. Unbounded, the audit wrote ~120 tokens per
+            // criterion — 24 s for eight of them at the end of every writing turn — to say
+            // "dotnet test ran, 30 passed". The bound is a grammar bound because the ask
+            // alone does not route length on this model; the ask says the same thing so
+            // the sentence is planned short rather than cut short.
+            evidence: { type: 'string', maxLength: 240 },
             met: { type: 'boolean' },
           },
         },
@@ -1205,7 +1268,9 @@ export async function checkAcceptance(
         'listed, an empty string, something already in the target form — with its output ' +
         'visible. Such a run is enough; it does not have to name every input. If the only ' +
         'evidence is the code itself, met is false, and say which input is missing. ' +
-        'Report one item per criterion, and report on EVERY criterion above.\n\n' +
+        'Report one item per criterion, and report on EVERY criterion above. Evidence is ' +
+        'ONE short line, under twenty-five words: name the command and its result, the diff, ' +
+        'or the file — not the reasoning.\n\n' +
         // The pin every other gate carries. This one's `evidence` is not internal: it goes
         // into `contract.checkedState`, which `renderContract` promotes into MESSAGE 0 at
         // every compaction swap, and `acceptanceFailureMessage` puts it on screen as a note
@@ -1489,7 +1554,9 @@ export async function reviewVerdict(
             'Answer with JSON only.]',
         },
       ],
-      ...(tools && tools.length > 0 ? { tools: [...tools] } : {}),
+      // `toolChoice: 'none'` with the array, or the server refuses the pair outright on
+      // b10665 ("failed to parse grammar") — see forced-json.ts, which this call mirrors.
+      ...(tools && tools.length > 0 ? { tools: [...tools], toolChoice: 'none' as const } : {}),
       jsonSchema: { name: 'review', schema: REVIEW_SCHEMA },
       maxTokens: REVIEW_MAX_TOKENS,
       // Thinking OFF, and this is a change from when the review was a single generation.

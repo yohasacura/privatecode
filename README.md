@@ -65,6 +65,34 @@ out of git, so nothing in it travels with the project — copy a skill across by
 Nothing follows you between machines automatically. `%APPDATA%\PrivateCode\` holds the
 user-scope settings, `AGENTS.md` and skills; copy that folder if you want them elsewhere.
 
+**Two numbers in `settings.json` shape how much the model is told up front.**
+`"prefix": { "mapChars": 20000 }` is how much of the cached prefix the project map may take
+— every folder with a file count, then the most-referenced files with their definitions and
+line numbers. Bigger means fewer `list_dir` and `find_files` steps on a large workspace, paid
+once when the workspace opens (the prefix is prewarmed then, while you type).
+`"compaction": { "triggerTokens": 140000 }` is where a long session folds its history.
+A configured `verify` command runs by itself right after every step that edits files, and
+the model is told so; it should not be running the build itself.
+
+**Resuming a session is instant when the server can save its state.** Start llama.cpp with
+`--slot-save-path <a directory>` and PrivateCode writes the model's state for the session you
+are in to that directory every few minutes (one file per workspace, ~23 MB per thousand
+tokens) and reads it back when you resume — half a second, measured, where a long
+conversation used to be re-read for minutes. Without the flag nothing changes: the transcript
+is prefilled in the background as before.
+
+**`"gates"` decides how much checking a task-shaped request buys.** `thorough` (the default)
+is everything: the request is distilled into a contract, the plan is seeded, what the change
+assumes about the code is checked against the files, the request is read three ways for a
+disagreement worth asking about, the work is audited against the contract and an independent
+reviewer reads the diff. Measured, that is about a minute on top of a task whose own work
+takes fifty seconds. `fast` keeps the contract and the audit — what holds a task to its goal
+and catches "done" said early — and drops the rest; `off` runs a turn the way it ran before
+contracts existed. The **Checks on / off** chip in the composer is the other axis, per
+session: off means nothing checks by itself — not the build after an edit, not the
+first-write checks, not the audit — until you ask with `/check` (the build) or `/review` (the
+independent read of the diff). An explicit `/review` runs whatever the profile says.
+
 **Deliberately absent:** no images or screenshots — the model this is built for has no
 vision tower (DESIGN.md §6). And the app itself opens exactly one network connection: the
 server URL you configured.

@@ -138,6 +138,42 @@ export function unparsableChainAt(command: string): '&&' | '||' | null {
   return null
 }
 
+/**
+ * `a && b && c` as the list entries `[a, b, c]` — the same scan as `unparsableChainAt`,
+ * cutting at every `&&` outside quotes.
+ *
+ * Splitting rather than refusing, because the refusal was measured to cost a whole step and
+ * buy nothing: the model reads "put each command in its own entry", re-issues the identical
+ * pair as two entries, and the list runs exactly what the split would have run — the entries
+ * already execute in order and stop at the first failure, which IS what `&&` means, and in
+ * ONE shell, so a leading `cd` still applies to what follows. Watched in the speed probe:
+ * `cd <root> && dotnet build` refused, then re-sent split, one step of ~5 s for a rewrite
+ * the harness can do exactly. `||` stays refused: PowerShell 5.1 has no operator for it and
+ * a rewrite would have to invent control flow the caller never wrote.
+ *
+ * Only reached when the scan already found an unquoted `&&`, so a `&&` inside quotes is
+ * never a cut point here either.
+ */
+export function splitUnquotedAnd(command: string): string[] {
+  const parts: string[] = []
+  let quote: "'" | '"' | null = null
+  let start = 0
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (quote === '"' && c === '`') { i++; continue }
+    if (quote === null && (c === "'" || c === '"')) { quote = c; continue }
+    if (quote !== null && c === quote) { quote = null; continue }
+    if (quote !== null) continue
+    if (c === '&' && command[i + 1] === '&') {
+      parts.push(command.slice(start, i))
+      start = i + 2
+      i++
+    }
+  }
+  parts.push(command.slice(start))
+  return parts.map((p) => p.trim()).filter((p) => p !== '')
+}
+
 export const runCommandTool: Tool<RunCommandArgs> = {
   name: 'run_command',
   readOnly: false,
@@ -188,24 +224,31 @@ export const runCommandTool: Tool<RunCommandArgs> = {
     if (given === null) {
       return { ok: false, error: 'commands must be an array of command lines' }
     }
-    const commands = given.filter((c): c is string => typeof c === 'string' && c.trim() !== '')
-    if (commands.length !== given.length) {
+    const entries = given.filter((c): c is string => typeof c === 'string' && c.trim() !== '')
+    if (entries.length !== given.length) {
       return { ok: false, error: 'every entry in commands must be a non-empty string' }
     }
-    if (commands.length === 0) {
+    if (entries.length === 0) {
       return { ok: false, error: 'commands must contain at least one command line' }
     }
-    for (const [i, c] of commands.entries()) {
+    const commands: string[] = []
+    for (const [i, c] of entries.entries()) {
       const op = unparsableChainAt(c)
+      if (op === '&&') {
+        // The habit the list shape did not remove, absorbed instead of refused — see
+        // `splitUnquotedAnd`. The parts land in the list the model should have written.
+        commands.push(...splitUnquotedAnd(c))
+        continue
+      }
       if (op !== null) {
         return {
           ok: false,
           error: `commands[${i}] contains \`${op}\`, which Windows PowerShell 5.1 cannot ` +
             'parse — nothing would run at all. Put each command in its own entry: they ' +
-            'already run in order and stop at the first failure, which is what ' +
-            `\`${op}\` means.`,
+            'already run in order and stop at the first failure.',
         }
       }
+      commands.push(c)
     }
     if (r.timeout_seconds !== undefined) {
       if (!Number.isInteger(r.timeout_seconds) || r.timeout_seconds < 1 ||

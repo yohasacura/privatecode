@@ -239,6 +239,9 @@ export interface AgentOptions {
   repoMap?: string
   /** The database's shape, for the cached prefix. See `PromptOptions.databaseSchema`. */
   databaseSchema?: string
+  /** The verify command the session runs after a writing step, for the prompt paragraph
+   * that tells the model not to run it itself. See `PromptOptions.autoCheck`. */
+  autoCheck?: string
   /** What earlier sessions learned; see `memory/project-notes.ts`. Frozen into message 0
    * like the rest — a note recorded mid-session lands in the NEXT one. */
   notes?: string
@@ -669,6 +672,7 @@ export class Agent {
           ...(opts.skills !== undefined ? { skills: opts.skills } : {}),
           ...(opts.repoMap !== undefined ? { repoMap: opts.repoMap } : {}),
           ...(opts.databaseSchema !== undefined ? { databaseSchema: opts.databaseSchema } : {}),
+          ...(opts.autoCheck !== undefined ? { autoCheck: opts.autoCheck } : {}),
           ...(opts.context.workspace.multi
             ? {
               folders: opts.context.workspace.mounts.map((m) => ({ name: m.name, access: m.access })),

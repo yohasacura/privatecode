@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import {
-  buildRepoMap, indexWorkspace, rankByReferences, renderFile, renderRepoMap, type FileOutline,
+  buildRepoMap, indexRepo, indexWorkspace, rankByReferences, renderFile, renderIndex, renderRepoMap,
+  summariseLayout, type FileOutline,
 } from '../src/outline/repo-map.js'
 
 /**
@@ -138,12 +139,22 @@ describe('ranking', () => {
 })
 
 describe('rendering', () => {
-  test('a class carries its members on its own line', () => {
-    const file = outline('src/store.ts', [
-      ['class', 'Store', 0], ['method', 'save', 1], ['method', 'load', 1],
-      ['function', 'helper', 0],
-    ])
-    expect(renderFile(file)).toBe('src/store.ts\n  class Store: save, load\n  function helper')
+  test('a class carries its members on its own line, every name with its line number', () => {
+    // The line numbers are what make a map entry the ARGUMENT of the next call: with them,
+    // `read_file(path, start_line, end_line)` for one method is writable from the map alone;
+    // without them the only way to reach the method is to read the file — which is what the
+    // recorded sessions show, 285 reads to 0 outlines.
+    const file: FileOutline = {
+      path: 'src/store.ts',
+      entries: [
+        { kind: 'class', name: 'Store', depth: 0, line: 3 },
+        { kind: 'method', name: 'save', depth: 1, line: 5 },
+        { kind: 'method', name: 'load', depth: 1, line: 9 },
+        { kind: 'function', name: 'helper', depth: 0, line: 14 },
+      ],
+      identifiers: new Set(),
+    }
+    expect(renderFile(file)).toBe('src/store.ts\n  class Store :3: save :5, load :9\n  function helper :14')
   })
 
   test('the header says the map is a snapshot and not the truth', () => {
@@ -179,7 +190,7 @@ describe('building it for real', () => {
 
     const map = await buildRepoMap(root)
     expect(map).toContain('src/engine.ts')
-    expect(map).toContain('class Engine: start')
+    expect(map).toContain('class Engine :1: start :2')
     // Engine is referenced by app.ts, so it leads.
     expect(map.indexOf('src/engine.ts')).toBeLessThan(map.indexOf('src/app.ts'))
   })
@@ -236,9 +247,95 @@ describe('breadth', () => {
     const entries: [string, string, number][] = [['class', 'Big', 0]]
     for (let i = 0; i < 30; i++) entries.push(['method', `m${i}`, 1])
     const rendered = renderFile(outline('src/big.ts', entries))
-    expect(rendered).toContain('m0, m1')
+    expect(rendered).toContain('m0 :1, m1 :1')
     expect(rendered).toMatch(/…\+22/)
     expect(rendered).not.toContain('m29')
+  })
+})
+
+describe('a C# file renders its types and their members, not its namespace', () => {
+  test('a file-scoped namespace is folded away', () => {
+    // What the map printed for every C# file before: `namespace App :1: Controller :4` —
+    // the namespace as the class, the class as its only member, the endpoints invisible.
+    const file: FileOutline = {
+      path: 'Api/LeadsController.cs',
+      entries: [
+        { kind: 'namespace', name: 'App.Api', depth: 0, line: 1 },
+        { kind: 'class', name: 'LeadsController', depth: 1, line: 4 },
+        { kind: 'method', name: 'List', depth: 2, line: 9 },
+        { kind: 'method', name: 'Get', depth: 2, line: 30 },
+        { kind: 'record', name: 'LeadRow', depth: 1, line: 60 },
+        { kind: 'property', name: 'Id', depth: 2, line: 61 },
+      ],
+      identifiers: new Set(),
+    }
+    expect(renderFile(file)).toBe(
+      'Api/LeadsController.cs\n  class LeadsController :4: List :9, Get :30\n  record LeadRow :60: Id :61',
+    )
+  })
+
+  test('a block namespace, and a nested one, fold the same way', () => {
+    const file: FileOutline = {
+      path: 'A.cs',
+      entries: [
+        { kind: 'namespace', name: 'Outer', depth: 0, line: 1 },
+        { kind: 'namespace', name: 'Inner', depth: 1, line: 2 },
+        { kind: 'class', name: 'Deep', depth: 2, line: 3 },
+        { kind: 'method', name: 'Run', depth: 3, line: 4 },
+        { kind: 'class', name: 'Shallow', depth: 1, line: 20 },
+      ],
+      identifiers: new Set(),
+    }
+    expect(renderFile(file)).toBe('A.cs\n  class Deep :3: Run :4\n  class Shallow :20')
+  })
+})
+
+describe('the layout summary', () => {
+  test('a big folder is opened into its sub-folders while the listing stays short', () => {
+    // The question the model spent its first steps asking one list_dir at a time: which
+    // folders exist and how much lives in each. Two thousand files must read as twenty lines.
+    const paths: string[] = []
+    for (let i = 0; i < 40; i++) paths.push(`src/backend/Api/Controllers/C${i}.cs`)
+    for (let i = 0; i < 30; i++) paths.push(`src/backend/Domain/E${i}.cs`)
+    for (let i = 0; i < 60; i++) paths.push(`src/frontend/app/P${i}.tsx`)
+    for (let i = 0; i < 200; i++) paths.push(`src/frontend/public/svg/i${i}.svg`)
+    for (let i = 0; i < 5; i++) paths.push(`docs/d${i}.md`)
+    paths.push('README.md', 'package.json')
+
+    const lines = summariseLayout(paths)
+    expect(lines.length).toBeLessThanOrEqual(24)
+    // `src/` alone would say nothing; it is opened until the folders that matter are named.
+    expect(lines).not.toContain('src/ 330 (svg 200, tsx 60)')
+    expect(lines.some((l) => l.startsWith('src/backend/Api/ 40 (cs 40)'))).toBe(true)
+    expect(lines.some((l) => l.startsWith('src/frontend/public/ 200 (svg 200)'))).toBe(true)
+    // A small folder keeps its one line and is not opened.
+    expect(lines).toContain('docs/ 5 (md 5)')
+    // Files directly under the root are not a folder and are not listed as one.
+    expect(lines.some((l) => l.includes('README'))).toBe(false)
+  })
+
+  test('the map carries the layout under its header, in front of the file blocks', () => {
+    const text = renderRepoMap(
+      [outline('src/a.ts', [['function', 'f', 0]])], undefined, ['src/ 12 (ts 12)', 'docs/ 3 (md 3)'],
+    )
+    expect(text).toMatch(/Folders \(files under each/)
+    expect(text.indexOf('src/ 12 (ts 12)')).toBeLessThan(text.indexOf('src/a.ts\n'))
+  })
+
+  test('a multi-folder index prefixes each folder\'s layout with the folder name', async () => {
+    const a = join(root, 'a')
+    const b = join(root, 'b')
+    for (let i = 0; i < 4; i++) write(`a/lib/f${i}.ts`, `export function f${i}() {}\n`)
+    for (let i = 0; i < 4; i++) write(`b/src/g${i}.ts`, `export function g${i}() {}\n`)
+    const index = await indexRepo([
+      { name: 'alpha', root: a, access: 'write', primary: true },
+      { name: 'beta', root: b, access: 'read', primary: false },
+    ])
+    expect(index.folders[0]?.layout).toEqual(['alpha/lib/ 4 (ts 4)'])
+    expect(index.folders[1]?.layout).toEqual(['beta/src/ 4 (ts 4)'])
+    const text = renderIndex(index)
+    expect(text).toContain('alpha/lib/ 4 (ts 4)')
+    expect(text).toContain('beta/src/ 4 (ts 4)')
   })
 })
 

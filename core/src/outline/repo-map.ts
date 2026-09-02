@@ -31,19 +31,29 @@ const MAX_FILES = 500
 /** Skipped outright — a generated bundle tells you nothing about a project's shape. */
 const MAX_FILE_BYTES = 300_000
 /**
- * Roughly 2.5k tokens of a 131k window, spent once per session and cached from then on.
+ * Roughly 5k tokens of a 196k window, spent once per session and cached from then on.
  *
- * Measured on this project at that budget: 55 of 137 source files listed, 577 ms to build.
- * The number was raised from 6k after watching what it bought — at 6k the same map covered
- * barely a third as many files, and breadth is what a map is for.
+ * Measured on this project at 10k: 55 of 137 source files listed, 577 ms to build. The
+ * number was raised from 6k after watching what it bought — at 6k the same map covered
+ * barely a third as many files, and breadth is what a map is for — and again from 10k to
+ * 20k for the workspaces this tool is actually used on: several folders, hundreds to
+ * thousands of files, where a 10k map named one file in fifteen and the model spent its
+ * first steps on `list_dir` (24 calls across the recorded sessions, one directory at a
+ * time). The prefix is prewarmed when the workspace opens, so the extra 2.5k tokens cost
+ * nothing at the moment a person is waiting; `prefix.mapChars` in settings.json overrides.
  */
-export const DEFAULT_MAP_BUDGET = 10_000
+export const DEFAULT_MAP_BUDGET = 20_000
 
 export interface FileOutline {
   path: string
   entries: OutlineEntry[]
   /** Every identifier that appears anywhere in the file, for the reference count. */
   identifiers: Set<string>
+  /**
+   * Where the file lives on disk, so the source block can read its CURRENT text without a
+   * second walk. Absent for an outline built by hand (tests), which the map never reads.
+   */
+  abs?: string
 }
 
 /**
@@ -76,11 +86,118 @@ const CONTAINER_KINDS = new Set(['class', 'interface', 'struct', 'record', 'enum
  */
 const NAMED_ONLY = new Set(['.xaml', '.axaml', '.razor', '.cshtml', '.sql', '.sqlproj', '.csproj'])
 
+/**
+ * Which folders hold the files, and how many — the answer to the question the model spent
+ * its first steps asking one `list_dir` at a time.
+ *
+ * A cut through the directory tree: the root's children, with the biggest of them opened
+ * up into THEIR children while the listing stays short, so a workspace of two thousand
+ * files reads as twenty lines of `src/frontend/src/app/ 64 (tsx 60)` rather than as one
+ * line saying `src/ 881`. Counts include everything below a folder, the two commonest
+ * extensions say what kind of thing lives there, and the walk's own exclusions (build
+ * output, dependencies, dot-folders) apply. Deliberately not a tree: a tree of two
+ * thousand files is the thing this replaces.
+ */
+export function summariseLayout(paths: readonly string[], maxEntries = LAYOUT_MAX_ENTRIES): string[] {
+  interface Node {
+    name: string
+    /** Files anywhere below. */
+    count: number
+    /** Files directly in this folder, and what kind. */
+    direct: number
+    directExts: Map<string, number>
+    exts: Map<string, number>
+    children: Map<string, Node>
+  }
+  const make = (name: string): Node => ({
+    name, count: 0, direct: 0, directExts: new Map(), exts: new Map(), children: new Map(),
+  })
+  const root = make('')
+  for (const path of paths) {
+    const parts = path.split('/')
+    const ext = extname(path).toLowerCase().replace(/^\./, '') || '(none)'
+    let node = root
+    node.count++
+    node.exts.set(ext, (node.exts.get(ext) ?? 0) + 1)
+    for (let i = 0; i < parts.length - 1; i++) {
+      const name = parts[i]!
+      let child = node.children.get(name)
+      if (child === undefined) { child = make(name); node.children.set(name, child) }
+      node = child
+      node.count++
+      node.exts.set(ext, (node.exts.get(ext) ?? 0) + 1)
+    }
+    node.direct++
+    node.directExts.set(ext, (node.directExts.get(ext) ?? 0) + 1)
+  }
+  if (root.count === 0) return []
+
+  // The cut: start at the root's children and keep opening the largest entry that has at
+  // least two sub-folders worth naming, while the listing stays within the cap.
+  type Cut = { node: Node; path: string }
+  const worth = (n: Node): boolean => n.count >= LAYOUT_MIN_FILES
+  const cut: Cut[] = [...root.children.values()].filter(worth).map((n) => ({ node: n, path: n.name }))
+  for (;;) {
+    let best: number = -1
+    for (const [i, entry] of cut.entries()) {
+      const subs = [...entry.node.children.values()].filter(worth)
+      if (subs.length < 2) continue
+      if (cut.length - 1 + subs.length + (entry.node.direct > 0 ? 1 : 0) > maxEntries) continue
+      if (best === -1 || entry.node.count > cut[best]!.node.count) best = i
+    }
+    if (best === -1) break
+    const opened = cut[best]!
+    const subs = [...opened.node.children.values()].filter(worth)
+      .map((n) => ({ node: n, path: `${opened.path}/${n.name}` }))
+    // The folder's own files stay visible as a line of their own, so `src/ (3 files here)`
+    // is not lost when `src/` is opened into its sub-folders.
+    const own = opened.node.direct > 0
+      ? [{
+        node: {
+          ...opened.node, count: opened.node.direct, exts: opened.node.directExts,
+          children: new Map<string, Node>(),
+        },
+        path: `${opened.path}/ (files directly in it)`,
+      }]
+      : []
+    cut.splice(best, 1, ...own, ...subs)
+  }
+
+  const describe = (n: Node): string => {
+    const exts = [...n.exts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2)
+      .map(([e, c]) => `${e} ${c}`).join(', ')
+    return exts === '' ? '' : ` (${exts})`
+  }
+  return cut
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((e) => e.path.endsWith('(files directly in it)')
+      ? `${e.path.slice(0, -'(files directly in it)'.length).trimEnd()} ${e.node.count} directly here${describe(e.node)}`
+      : `${e.path}/ ${e.node.count}${describe(e.node)}`)
+}
+
+/** Lines in a layout summary, at most — twenty-odd is a glance, sixty is a listing. */
+const LAYOUT_MAX_ENTRIES = 24
+/** A folder with fewer files than this is not worth a line of its own. */
+const LAYOUT_MIN_FILES = 3
+
+/** One folder's index: what was outlined, and the layout the walk saw on the way. */
+export interface FolderIndex {
+  files: FileOutline[]
+  /** `summariseLayout` over every file the walk returned, source or not. */
+  layout: string[]
+}
+
 /** Parses every supported source file in the workspace. Unreadable and unparseable files are
  * skipped: a map missing one file is useful, a map that failed to build is not. */
 export async function indexWorkspace(root: string, maxFiles = MAX_FILES): Promise<FileOutline[]> {
+  return (await indexFolder(root, maxFiles)).files
+}
+
+/** `indexWorkspace`, plus the layout summary of the same walk. */
+export async function indexFolder(root: string, maxFiles = MAX_FILES): Promise<FolderIndex> {
   const supported = new Set(SUPPORTED_EXTENSIONS)
   const all = await walkFiles(root)
+  const layout = summariseLayout(all)
   const candidates = all
     .filter((p) => supported.has(extname(p).toLowerCase()) || NAMED_ONLY.has(extname(p).toLowerCase()))
     .slice(0, maxFiles)
@@ -97,17 +214,17 @@ export async function indexWorkspace(root: string, maxFiles = MAX_FILES): Promis
       // longest session, while never once appearing in the map. Its identifiers still join
       // the reference graph, so the markup is what links a view to its view-model.
       if (NAMED_ONLY.has(extname(path).toLowerCase())) {
-        out.push({ path, entries: [], identifiers: new Set(source.match(IDENTIFIER) ?? []) })
+        out.push({ path, entries: [], identifiers: new Set(source.match(IDENTIFIER) ?? []), abs })
         continue
       }
       const result = await outlineFile(abs, source)
       if ('unsupported' in result || result.length === 0) continue
-      out.push({ path, entries: result, identifiers: new Set(source.match(IDENTIFIER) ?? []) })
+      out.push({ path, entries: result, identifiers: new Set(source.match(IDENTIFIER) ?? []), abs })
     } catch {
       continue
     }
   }
-  return out
+  return { files: out, layout }
 }
 
 /**
@@ -284,27 +401,63 @@ const MAX_LINES_PER_FILE = 6
 /** Members listed for one class or interface; see `renderFile`. */
 const MAX_MEMBERS = 8
 
-/** One file's line in the map: its top-level definitions, with a container's own members
- * folded onto the same line rather than given a line each. */
+/**
+ * One file's line in the map: its top-level definitions, with a container's own members
+ * folded onto the same line rather than given a line each.
+ *
+ * Every name carries its line number (` :41`), and that is what turns the map from a list
+ * of what exists into the ARGUMENT of the next call. Measured over the recorded sessions:
+ * 285 `read_file` calls against 11 `search_code` and 0 `symbol_outline`, nearly all of them
+ * whole files — a 19k-character view-model read three times in one turn for edits that
+ * touched one method each. A name with no line leaves the model exactly one way to reach
+ * the method: read the file. A name with a line makes `read_file(path, start_line,
+ * end_line)` writable from the map alone, which `read_file`'s own large-file answer
+ * already relies on. Two tokens a name, paid once per session in the cached prefix.
+ */
+/**
+ * The outline with its namespaces folded away, so a C# file renders like a TypeScript one.
+ *
+ * In C# the depth-0 entry is the NAMESPACE and every type sits at depth 1 under it, so
+ * `renderFile` treating depth 0 as the file's top level printed `namespace App.Controllers
+ * :17: LeadsController :22` — the namespace as the class and the class as its one member,
+ * with the twenty endpoints under it invisible. Measured on a real two-folder C# workspace:
+ * not one method name in a 20k-character map. The ranking learned this lesson first
+ * (`rankByReferences` and its depth-1 definers); the rendering needed the same one. A
+ * namespace is scaffolding, not a definition anyone opens a file for.
+ */
+function withoutNamespaces(entries: readonly OutlineEntry[]): OutlineEntry[] {
+  const out: OutlineEntry[] = []
+  // The depths of the namespaces currently open, deepest last: everything nested inside
+  // them moves up by that many levels.
+  const open: number[] = []
+  for (const entry of entries) {
+    while (open.length > 0 && entry.depth <= open[open.length - 1]!) open.pop()
+    if (entry.kind === 'namespace') { open.push(entry.depth); continue }
+    out.push(open.length === 0 ? entry : { ...entry, depth: entry.depth - open.length })
+  }
+  return out
+}
+
 export function renderFile(file: FileOutline): string {
   const lines: string[] = [file.path]
+  const entries = withoutNamespaces(file.entries)
   // A file can genuinely define the same name twice at the top level -- object literals in
   // a test file produce a dozen identical `method validate` entries -- and repeating a line
   // spends budget to say nothing.
   const seen = new Set<string>()
-  for (const [i, entry] of file.entries.entries()) {
+  for (const [i, entry] of entries.entries()) {
     if (entry.depth !== 0 || entry.kind === '...') continue
     if (seen.has(`${entry.kind} ${entry.name}`)) continue
     seen.add(`${entry.kind} ${entry.name}`)
     if (!CONTAINER_KINDS.has(entry.kind)) {
-      lines.push(`  ${entry.kind} ${entry.name}`)
+      lines.push(`  ${entry.kind} ${entry.name} :${entry.line}`)
       continue
     }
     const members: string[] = []
-    for (let j = i + 1; j < file.entries.length; j++) {
-      const child = file.entries[j]!
+    for (let j = i + 1; j < entries.length; j++) {
+      const child = entries[j]!
       if (child.depth === 0) break
-      if (child.depth === 1 && child.kind !== '...') members.push(child.name)
+      if (child.depth === 1 && child.kind !== '...') members.push(`${child.name} :${child.line}`)
     }
     // Capped for the same reason the file list is: one class with thirty methods on one
     // line is most of a budget, and the thirtieth method name is not what tells you the
@@ -313,8 +466,8 @@ export function renderFile(file: FileOutline): string {
       ? [...members.slice(0, MAX_MEMBERS), `…+${members.length - MAX_MEMBERS}`]
       : members
     lines.push(shown.length === 0
-      ? `  ${entry.kind} ${entry.name}`
-      : `  ${entry.kind} ${entry.name}: ${shown.join(', ')}`)
+      ? `  ${entry.kind} ${entry.name} :${entry.line}`
+      : `  ${entry.kind} ${entry.name} :${entry.line}: ${shown.join(', ')}`)
   }
 
   const defined = lines.length - 1
@@ -388,12 +541,25 @@ function omissionNote(omitted: number): string {
     : ''
 }
 
-export function renderRepoMap(ranked: readonly FileOutline[], budget = DEFAULT_MAP_BUDGET): string {
+/**
+ * The layout lines as a block under the header, or nothing. Kept short by construction
+ * (`summariseLayout` caps its entries), so it is spent before the file blocks: knowing
+ * which folders exist is worth more than the last three files that would have fitted.
+ */
+function layoutBlock(layout: readonly string[] | undefined): string {
+  if (layout === undefined || layout.length === 0) return ''
+  return `Folders (files under each, excluding build output and dependencies):\n${layout.map((l) => `  ${l}`).join('\n')}\n\n`
+}
+
+export function renderRepoMap(
+  ranked: readonly FileOutline[], budget = DEFAULT_MAP_BUDGET, layout?: readonly string[],
+): string {
   if (ranked.length === 0) return ''
   const header = mapHeader(ranked)
-  const fitted = fitBlocks(ranked, budget - header.length)
+  const folders = layoutBlock(layout)
+  const fitted = fitBlocks(ranked, budget - header.length - folders.length)
   if (fitted.shown === 0) return ''
-  return `${header}\n${fitted.text}${omissionNote(ranked.length - fitted.shown)}`
+  return `${header}\n${folders}${fitted.text}${omissionNote(ranked.length - fitted.shown)}`
 }
 
 /**
@@ -418,6 +584,8 @@ export interface MappedFolder {
   name: string
   access: 'write' | 'read'
   ranked: readonly FileOutline[]
+  /** Its layout lines, mount-prefixed. See `summariseLayout`. */
+  layout?: readonly string[]
 }
 
 /**
@@ -462,7 +630,8 @@ function renderMultiRepoMap(
    * because `cap` strictly decreases.
    */
   function section(folder: MappedFolder, allowance: number): { text: string; spent: number } {
-    const label = `## ${folder.name}/${folder.access === 'read' ? '   (read-only reference)' : ''}\n`
+    const label = `## ${folder.name}/${folder.access === 'read' ? '   (read-only reference)' : ''}\n` +
+      layoutBlock(folder.layout)
     let cap = allowance - label.length
     for (;;) {
       const fitted = fitBlocks(folder.ranked, cap)
@@ -509,7 +678,14 @@ function renderMultiRepoMap(
  */
 export interface RepoIndex {
   /** One entry per mount; a single-folder workspace has one, unnamed. */
-  folders: { name: string | null; access: 'write' | 'read'; files: FileOutline[] }[]
+  folders: {
+    name: string | null
+    access: 'write' | 'read'
+    files: FileOutline[]
+    /** The folder's layout lines (`summariseLayout`), already carrying the mount prefix in a
+     * multi-folder workspace. Absent for an index built by hand. */
+    layout?: string[]
+  }[]
 }
 
 /** Walks and parses. Never throws: a workspace it cannot index yields an empty index. */
@@ -517,20 +693,23 @@ export async function indexRepo(workspace: string | readonly Mount[]): Promise<R
   try {
     if (typeof workspace === 'string' || workspace.length === 1) {
       const root = typeof workspace === 'string' ? workspace : workspace[0]!.root
-      return { folders: [{ name: null, access: 'write', files: await indexWorkspace(root) }] }
+      const { files, layout } = await indexFolder(root)
+      return { folders: [{ name: null, access: 'write', files, layout }] }
     }
     const folders: RepoIndex['folders'] = []
     for (const mount of workspace) {
+      const { files, layout } = await indexFolder(mount.root)
       folders.push({
         name: mount.name,
         access: mount.access,
         // Prefixed here rather than left to the section heading: a model reads one of these
         // lines and calls read_file with exactly the text it saw, and a bare `src/boot.ts`
         // would be refused by the jail for not naming a folder.
-        files: (await indexWorkspace(mount.root)).map((file) => ({
+        files: files.map((file) => ({
           ...file,
           path: `${mount.name}/${file.path.split(/[\\/]/).join('/')}`,
         })),
+        layout: layout.map((line) => `${mount.name}/${line}`),
       })
     }
     return { folders }
@@ -555,7 +734,8 @@ export function renderIndex(
   try {
     if (index.folders.length === 0) return ''
     if (index.folders.length === 1 && index.folders[0]!.name === null) {
-      return renderRepoMap(rankByReferences(index.folders[0]!.files, focus, semanticEdges), budget)
+      const only = index.folders[0]!
+      return renderRepoMap(rankByReferences(only.files, focus, semanticEdges), budget, only.layout)
     }
     // Semantic edges stop here on purpose: the harvest runs against one workspace root and
     // its paths are root-relative, while multi-mount files carry `name/` prefixes. Wiring
@@ -568,6 +748,7 @@ export function renderIndex(
       name: f.name ?? '',
       access: f.access,
       ranked: rankByReferences(f.files, focus),
+      ...(f.layout !== undefined ? { layout: f.layout } : {}),
     })), budget)
   } catch {
     return ''

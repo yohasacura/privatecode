@@ -33,6 +33,19 @@ import type { ChatMessage, ToolSchema } from '../llama/types.js'
  * cached). It constrained 5/5 in the adversarial case where the named tool choice failed.
  *
  * The answer arrives as JSON in `message.content`; there is no tool call to unwrap.
+ *
+ * **`tool_choice: 'none'` rides along whenever the tool array does, and it is not optional.**
+ * Measured against llama.cpp b10665 (`spike/response-format-check.mts`): `tools` plus
+ * `response_format`, in any schema shape, is refused with HTTP 400 *"Failed to initialize
+ * samplers: failed to parse grammar"* — the server tries to combine the tool-call grammar
+ * with the schema grammar and the result does not parse. The b10202 build this file was
+ * measured on accepted the pair. Because this function swallows a refusal into `null` by
+ * design, the regression was SILENT: from the server update on 2026-08-28 until this line,
+ * every gate — contract, plan, lenses, premises, acceptance, review — asked its question,
+ * was refused in 0.2 s, and reported "could not run". `tool_choice: 'none'` drops the
+ * tool-call grammar and leaves the rendered prompt byte-identical (the template still
+ * renders the tool block), so the request stays the pure append it was meant to be:
+ * measured at 10/10 constrained, prompt cached (`spike/response-format-cache-check.mts`).
  */
 export async function forcedJson(
   client: LlamaClient,
@@ -57,7 +70,9 @@ export async function forcedJson(
       messages: opts.messages,
       jsonSchema: { name: opts.name, schema: opts.schema },
       maxTokens: opts.maxTokens,
-      ...(opts.tools && opts.tools.length > 0 ? { tools: [...opts.tools] } : {}),
+      // Both or neither: the array keeps the prefix warm, the `'none'` keeps the server from
+      // building a tool-call grammar it cannot merge with the schema's. See the doc comment.
+      ...(opts.tools && opts.tools.length > 0 ? { tools: [...opts.tools], toolChoice: 'none' as const } : {}),
       ...(opts.disableThinking ? { disableThinking: true } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
     })

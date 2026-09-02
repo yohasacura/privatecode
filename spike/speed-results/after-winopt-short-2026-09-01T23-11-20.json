@@ -1,0 +1,188 @@
+{
+ "summary": {
+  "label": "after",
+  "workspace": "winopt",
+  "task": "short",
+  "stoppedBecause": "done",
+  "steps": 5,
+  "warmSeconds": 5.686,
+  "totalSeconds": 35,
+  "firstStepSeconds": 2.3,
+  "secondsToFirstWrite": 20.4,
+  "stepsBeforeFirstWrite": 3,
+  "readCallsBeforeFirstWrite": 4,
+  "readCalls": 4,
+  "readCharsBeforeFirstWrite": 10966,
+  "modelSelfChecks": 0,
+  "modelSecondsInSteps": 30.5,
+  "gateSeconds": {},
+  "generatedTokens": 711,
+  "finalPromptTokens": 12870,
+  "repoMapChars": 4178,
+  "toolCounts": {
+   "edit_file": 3,
+   "read_file": 4
+  }
+ },
+ "rows": [
+  {
+   "t": 0.001,
+   "kind": "step-start",
+   "detail": "step 1"
+  },
+  {
+   "t": 2.295,
+   "kind": "step-done",
+   "detail": "step 1",
+   "seconds": 2.293992500000001,
+   "promptTokens": 7821,
+   "completionTokens": 82
+  },
+  {
+   "t": 2.296,
+   "kind": "tool-call",
+   "detail": "read_file(path=src/WinOptimizer/Core/Snapshot.cs)"
+  },
+  {
+   "t": 2.298,
+   "kind": "tool-result",
+   "detail": "read_file ok: src/WinOptimizer/Core/Snapshot.cs (28 lines) 1 namespace WinOptimizer.",
+   "chars": 1270
+  },
+  {
+   "t": 2.298,
+   "kind": "tool-call",
+   "detail": "read_file(path=src/WinOptimizer/Services/SnapshotStore.cs)"
+  },
+  {
+   "t": 2.299,
+   "kind": "tool-result",
+   "detail": "read_file ok: src/WinOptimizer/Services/SnapshotStore.cs (87 lines) 1 using System.I",
+   "chars": 2962
+  },
+  {
+   "t": 2.3,
+   "kind": "step-start",
+   "detail": "step 2"
+  },
+  {
+   "t": 8.431,
+   "kind": "step-done",
+   "detail": "step 2",
+   "seconds": 6.1319064,
+   "promptTokens": 9110,
+   "completionTokens": 126
+  },
+  {
+   "t": 8.432,
+   "kind": "tool-call",
+   "detail": "read_file(path=tests/WinOptimizer.Tests/SnapshotStoreTests.cs)"
+  },
+  {
+   "t": 8.433,
+   "kind": "tool-result",
+   "detail": "read_file ok: tests/WinOptimizer.Tests/SnapshotStoreTests.cs (95 lines) 1 using Syst",
+   "chars": 3769
+  },
+  {
+   "t": 8.433,
+   "kind": "tool-call",
+   "detail": "read_file(path=tests/WinOptimizer.Tests/Fakes.cs)"
+  },
+  {
+   "t": 8.434,
+   "kind": "tool-result",
+   "detail": "read_file ok: tests/WinOptimizer.Tests/Fakes.cs (63 lines) 1 using WinOptimizer.Core",
+   "chars": 2965
+  },
+  {
+   "t": 8.435,
+   "kind": "step-start",
+   "detail": "step 3"
+  },
+  {
+   "t": 20.44,
+   "kind": "step-done",
+   "detail": "step 3",
+   "seconds": 12.0056861,
+   "promptTokens": 11223,
+   "completionTokens": 302
+  },
+  {
+   "t": 20.44,
+   "kind": "tool-call",
+   "detail": "edit_file(path=src/WinOptimizer/Core/Snapshot.cs search=48ch replace=91ch)"
+  },
+  {
+   "t": 20.452,
+   "kind": "tool-result",
+   "detail": "edit_file ok: --- src/WinOptimizer/Core/Snapshot.cs +++ src/WinOptimizer/Core/Snapsh",
+   "chars": 132
+  },
+  {
+   "t": 20.452,
+   "kind": "tool-call",
+   "detail": "edit_file(path=src/WinOptimizer/Services/SnapshotStore.cs search=193ch replace=237ch)"
+  },
+  {
+   "t": 20.461,
+   "kind": "tool-result",
+   "detail": "edit_file ok: --- src/WinOptimizer/Services/SnapshotStore.cs +++ src/WinOptimizer/Se",
+   "chars": 152
+  },
+  {
+   "t": 22.556,
+   "kind": "verify",
+   "detail": "FAIL attempt 1"
+  },
+  {
+   "t": 22.556,
+   "kind": "step-start",
+   "detail": "step 4"
+  },
+  {
+   "t": 29.242,
+   "kind": "step-done",
+   "detail": "step 4",
+   "seconds": 6.685409500000001,
+   "promptTokens": 12647,
+   "completionTokens": 120
+  },
+  {
+   "t": 29.242,
+   "kind": "tool-call",
+   "detail": "edit_file(path=src/WinOptimizer/Core/Snapshot.cs search=42ch replace=41ch)"
+  },
+  {
+   "t": 29.252,
+   "kind": "tool-result",
+   "detail": "edit_file ok: --- src/WinOptimizer/Core/Snapshot.cs +++ src/WinOptimizer/Core/Snapsh",
+   "chars": 175
+  },
+  {
+   "t": 31.639,
+   "kind": "verify",
+   "detail": "ok attempt 1"
+  },
+  {
+   "t": 31.639,
+   "kind": "step-start",
+   "detail": "step 5"
+  },
+  {
+   "t": 35.048,
+   "kind": "step-done",
+   "detail": "step 5",
+   "seconds": 3.4081235000000016,
+   "promptTokens": 12870,
+   "completionTokens": 81
+  },
+  {
+   "t": 35.048,
+   "kind": "text",
+   "detail": "assistant: Build passes. The `SavedAt` property now uses `set` instead of `init` so it can be assigned in `SnapshotStore.SaveSnapshot`, and it's set to",
+   "chars": 165
+  }
+ ],
+ "finalText": "Build passes. The `SavedAt` property now uses `set` instead of `init` so it can be assigned in `SnapshotStore.SaveSnapshot`, and it's set to `DateTime.UtcNow` there."
+}

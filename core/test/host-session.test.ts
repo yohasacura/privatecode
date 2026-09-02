@@ -123,6 +123,12 @@ async function makeServer(
       return contextLength === null ? {} : { default_generation_settings: { n_ctx: contextLength } }
     }
     if (req.url === '/health') return { status: 'ok' }
+    // The slot save a done turn attempts: answered as a server started without
+    // `--slot-save-path` answers it, so it is asked once and never reaches the chat
+    // handler's call counting. `slot-resume.test.ts` covers the feature itself.
+    if (req.url?.startsWith('/slots/')) {
+      return new RawResponse(501, '{"error":{"code":501,"message":"no slots action"}}', 'application/json')
+    }
     return chatHandler(body, body.stream === true && body.tool_choice !== 'none')
   })
 }
@@ -176,9 +182,12 @@ async function waitForEvent(transport: CapturedTransport, name: string): Promise
   }
 }
 
+// Every host here is built with `prewarm: false`: these fakes answer by CALL ORDER, and the
+// prefix warm-up is a real request that would consume the first scripted answer.
+// `warm-prefix.test.ts` covers the warm-up itself.
 async function initHost(serverUrl: string, workspaceRoot: string) {
   const transport = makeTransport()
-  const host = new SessionHost({ transport })
+  const host = new SessionHost({ transport, prewarm: false })
   await host.handle({ id: 1, method: 'init', params: { workspaceRoot, serverUrl } })
   return { host, transport }
 }
@@ -471,7 +480,7 @@ test('config.get/config.set round-trip through SessionHost.handle, available bef
   process.env['APPDATA'] = tempAppData
   try {
     const transport = makeTransport()
-    const host = new SessionHost({ transport })
+    const host = new SessionHost({ transport, prewarm: false })
 
     // No init() call anywhere above -- config.get/config.set must work standalone, since
     // a settings modal or workspace picker needs them before any session exists.
@@ -607,7 +616,7 @@ test('init with continueLast opens the workspace\'s newest session, with its con
 
   // A fresh host, as a relaunch would be.
   const transport = makeTransport()
-  const host = new SessionHost({ transport })
+  const host = new SessionHost({ transport, prewarm: false })
   await host.handle({
     id: 1, method: 'init', params: { workspaceRoot: root, serverUrl: fake.url, continueLast: true },
   })
@@ -623,7 +632,7 @@ test('continueLast in a workspace with no sessions yet is simply a fresh one', a
   stop = fake.close
   const root = newWorkspace()
   const transport = makeTransport()
-  const host = new SessionHost({ transport })
+  const host = new SessionHost({ transport, prewarm: false })
   await host.handle({
     id: 1, method: 'init', params: { workspaceRoot: root, serverUrl: fake.url, continueLast: true },
   })
@@ -647,7 +656,7 @@ test('an explicit resume beats continueLast: they answer different questions', a
   await first.host.shutdown()
 
   const transport = makeTransport()
-  const host = new SessionHost({ transport })
+  const host = new SessionHost({ transport, prewarm: false })
   await host.handle({
     id: 1,
     method: 'init',

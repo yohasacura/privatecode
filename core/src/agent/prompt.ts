@@ -88,6 +88,19 @@ export interface PromptOptions {
    */
   delegation?: boolean
   /**
+   * The project's own check — the verify command the harness runs by itself after a step
+   * that edited files — when one is configured.
+   *
+   * Named in the prompt because of what the recorded sessions show without it: 137 of 766
+   * tool calls were `run_command`, and the bulk of those were the model running
+   * `dotnet build` on its own work the step after every edit, in a session where the
+   * harness was about to run the same command for free. The result line the harness
+   * appends is the structural half of the fix (it now lands right after the edit, so the
+   * model reads a verdict before it decides what to do next); this paragraph is the half
+   * that says whose job the command is. Absent leaves the prompt byte-for-byte unchanged.
+   */
+  autoCheck?: string
+  /**
    * The rendered task contract (`contract.ts`'s `renderContract`), promoted here at every
    * compaction swap. The goal and its checkable criteria are the one thing a long task
    * cannot afford to lose to a swap, and message 0 is the one place a swap rebuilds anyway
@@ -168,6 +181,17 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     'every argument — four files to read, three files to edit. They run in order and stop at',
     'the first failure, so anything that depends on an earlier result belongs in a later step.',
     '',
+    ...(opts.autoCheck !== undefined && opts.autoCheck !== ''
+      ? [
+        // See `PromptOptions.autoCheck`. The example line is the exact shape
+        // `Session.verifyMidTurn` appends, so the model recognises it when it arrives.
+        `After any step in which you edited files, the project's own check runs by itself:`,
+        `\`${opts.autoCheck}\`. Its result reaches you as a line like`,
+        `\`[${opts.autoCheck}: ok, 2.1s]\`, or as the errors it printed. Do not run that`,
+        'command yourself — the line arrives before your next step.',
+        '',
+      ]
+      : []),
     'Do not deliberate at length, and do not re-check a decision you have already made —',
     'if you notice yourself going over the same reasoning twice, stop and call the tool.',
     'Prefer the smallest change that satisfies the request.',

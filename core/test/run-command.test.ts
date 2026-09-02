@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { runCommandTool, clipOutput, unparsableChainAt } from '../src/tools/run-command.js'
+import { runCommandTool, clipOutput, splitUnquotedAnd, unparsableChainAt } from '../src/tools/run-command.js'
 import { Workspace } from '../src/workspace.js'
 
 const root = mkdtempSync(join(tmpdir(), 'pc-run-'))
@@ -275,15 +275,16 @@ describe('a list of commands', () => {
 })
 
 describe('an operator PowerShell 5.1 cannot parse', () => {
-  it('is refused before anything is spawned, with the fix in the message', () => {
-    // The residue the list shape does not remove: `&&` inside ONE entry. Measured against
-    // the live model with the real schema — the separator use went to zero, this stayed at
-    // about one in twelve. Reaching the shell, it is a parse error pointing at our own
-    // prelude; caught here, it costs no process and names what to do.
-    const v = runCommandTool.validate({ commands: ['npm run build && npm test'] })
-    expect(v.ok).toBe(false)
-    expect(v.ok === false && v.error).toContain('own entry')
-    expect(v.ok === false && v.error).toContain('&&')
+  it('`&&` inside one entry becomes the entries the model should have written', () => {
+    // The residue the list shape does not remove: `&&` inside ONE entry, about one call in
+    // twelve. This used to be refused with "put each command in its own entry" — and the
+    // refusal was measured to cost a whole step for a rewrite the harness can do exactly:
+    // the entries already run in order, in ONE shell, stopping at the first failure, which
+    // is what `&&` means.
+    const v = runCommandTool.validate({ commands: ['cd src && npm run build && npm test'] })
+    expect(v.ok).toBe(true)
+    expect(v.ok && v.args.commands).toEqual(['cd src', 'npm run build', 'npm test'])
+    expect(splitUnquotedAnd('cmd /c "echo a && echo b" && echo c')).toEqual(['cmd /c "echo a && echo b"', 'echo c'])
   })
 
   it('catches || too, and says which entry', () => {

@@ -390,6 +390,39 @@ is a set of commits recorded in `.privatecode/checkpoints/sets.jsonl`. Verified 
 removed a file the agent had written inside a nested repository, and that repository's own git
 history was untouched.
 
+## 8a. Speed (2026-09-02)
+
+Measured and rebuilt in `docs/SPEED-2026-09-02.md`. The decisions it records:
+
+- **Forced-JSON requests carry `tool_choice: 'none'`** beside the session's tool array. On
+  llama.cpp b10665 the pair without it is refused ("failed to parse grammar"), and because
+  `forcedJson` maps a refusal to `null`, every gate had been silently off since the server
+  update of 2026-08-28. `spike/response-format-check.mts` re-verifies in ten seconds.
+- **The map is the argument of the next call**: every name with its line number, a folder
+  layout under the header, C# namespaces folded away, 20k characters by default
+  (`prefix.mapChars`). Measured on a 335-file two-folder C# workspace: an 826-line controller
+  edited without ever being read whole.
+- **The prefix is prewarmed at workspace open** (`Session.warmPrefix`): first step 2.3 s
+  instead of 7–20.
+- **The project's check runs right after the step that wrote**, and the prompt names it as
+  the harness's job. The model's own `dotnet build` after every edit — 137 `run_command`
+  calls in the recorded sessions — went to zero in both probes.
+- **`&&` inside one command entry is split**, not refused.
+- **An enum of workspace paths in a grammar is dead**: 8.5 tok/s at 2000 alternatives and the
+  same path repeated. Orientation comes from the prefix, never from constrained choice.
+- **Resume restores the slot's saved state** when the server runs with `--slot-save-path`:
+  0.5 s to read a 20k-token state back, then 22 tokens of prefill instead of 19,900. Saved
+  only at the one moment the next prompt can extend it — after the turn's final message,
+  before any gate — because the recurrent state cannot be rewound (`Session.saveSlotIfDue`).
+- **N-gram speculative decoding beside MTP is a loss** (26–39 tok/s against 45): the
+  agent copies NUMBERED lines out and writes them back without numbers, so the n-grams are
+  never in the context verbatim. MTP alone stays.
+- **The gates, working, cost about a minute per task-shaped turn** (contract 10–14 s,
+  premises 12–13 s, lenses 15–17 s, audit 24–25 s, plus the `todo_write` steps the plan
+  nudges provoke). Two bounds now live in the grammar — six criteria at most, evidence a
+  line — and `"gates": "thorough" | "fast" | "off"` in settings.json chooses how much of the
+  harness a person's time buys (`GateProfile` in session.ts). `thorough` ships as default.
+
 ## 8. Open items
 
 - ~~Finish the edit-reliability probe and settle whether SEARCH/REPLACE anchors need

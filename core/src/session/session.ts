@@ -60,6 +60,7 @@ import {
   type ReviewIssue, saysFinished,
 } from './contract.js'
 import { SessionStore, type CompactionMarker, type SessionMeta } from './store.js'
+import { clearSlotRecord, readSlotRecord, slotFilenameFor, writeSlotRecord } from './slot-record.js'
 
 /** Task 9: background auto-compaction. Omitting this entirely from `SessionOptions`
  * turns the feature off completely -- no trigger check ever runs, no background
@@ -150,6 +151,32 @@ export interface CompactionEvent {
  *
  * The order is execution order, which is also the order they are worth explaining in.
  */
+/**
+ * How much of the harness runs around a task-shaped turn.
+ *
+ * Measured on 2026-09-02 (docs/SPEED-2026-09-02.md), the gates working again after a week
+ * silently off, every one of them a forced generation with thinking off:
+ *
+ *   contract   10–14 s   premises  12–13 s   lenses  15–17 s   acceptance  24–25 s
+ *
+ * plus two or three `todo_write` steps the plan nudges provoke — about a minute on top of a
+ * task whose actual work took fifty seconds. The two turns measured needed none of it: every
+ * premise held, the lenses asked nothing worth asking, the audit affirmed everything. That is
+ * the design working, and it is also a minute.
+ *
+ *   thorough — everything, as designed.
+ *   fast     — the contract and the acceptance audit, which are what hold a task to its goal
+ *              and catch "done" said early; not the premise check, the lenses, the fresh
+ *              reviewer or the plan nudges. The audit runs on every turn that wrote, since
+ *              without the nudges the plan is not the signal it is in `thorough`.
+ *   off      — no contract at all: the turn runs the way every turn ran before contracts
+ *              existed, and the way every turn ran while the gates were broken.
+ *
+ * A judgement about the person's own time, so it lives in settings.json (`"gates"`), most
+ * specific layer wins; absent means thorough.
+ */
+export type GateProfile = 'thorough' | 'fast' | 'off'
+
 export type StageName =
   /** Distilling the request into a contract, before anything runs. */
   | 'contract'
@@ -298,6 +325,9 @@ export interface SessionOptions {
    * a spinner nobody can clear.
    */
   onStage?(info: StageInfo): void
+  /** How much of the harness runs around a task-shaped turn; see `GateProfile`. Absent
+   * means `thorough`. */
+  gates?: GateProfile
   /** The shell's version, stamped onto sessions this process creates. See
    * `SessionMeta.appVersion`. Absent for callers with no app around them. */
   appVersion?: string
@@ -460,14 +490,10 @@ const MID_TURN_CHECKPOINT_MS = 120_000
  */
 const MID_TURN_VERIFY_MS = 240_000
 
-/**
- * How many unchecked writes may pile up before the check runs anyway, mid-edit.
- *
- * A multi-file change should not be interrupted, but a rename touching twenty files must not
- * go unchecked for twenty steps either — the value of the check is that it fires near the
- * mistake. Eight is roughly "a large but coherent edit".
- */
-const VERIFY_BURST_CAP = 8
+/** How often a session's slot state is written to disk, and after how much growth regardless.
+ * See `Session.saveSlotIfDue`. */
+const SLOT_SAVE_INTERVAL_MS = 3 * 60_000
+const SLOT_SAVE_GROWTH_TOKENS = 20_000
 
 /** Writes since the plan was last touched before an upkeep note fires. Three is a real
  * stretch of work, not a single edit — the note must stay rare enough to be read. */
@@ -1057,7 +1083,7 @@ export class Session {
     // shortcut used to carry them straight past the build gate — so the second half of the
     // test is "and there is nothing outstanding", not just "and I wrote nothing".
     if (writesThisTurn === 0 && this.writeCount === this.writesAtLastVerify) {
-      return await this.acceptanceGate(result, signal)
+      return await this.acceptanceGate(result, signal, writesThisTurn > 0)
     }
 
     // Nothing has been written since the mid-turn check last ran, and it passed. Running the
@@ -1073,7 +1099,7 @@ export class Session {
     if (this.writesAtLastVerify === this.writeCount &&
         [...this.lastVerifyFingerprint.values()].every((f) => f === 'ok') &&
         this.lastVerifyFingerprint.size > 0) {
-      return await this.acceptanceGate(result, signal)
+      return await this.acceptanceGate(result, signal, writesThisTurn > 0)
     }
 
     // Work that does not change code has no build to break, and running one is not merely
@@ -1085,7 +1111,7 @@ export class Session {
     // The CONTRACT gate still runs. "Did I do what you asked" is as true of an email as of a
     // refactor; it is the build that has nothing to say about one.
     if (this.meta.contract?.changesCode === false) {
-      return await this.acceptanceGate(result, signal)
+      return await this.acceptanceGate(result, signal, writesThisTurn > 0)
     }
 
     // Only the folders this turn actually wrote to, each with its own command. Running every
@@ -1102,7 +1128,7 @@ export class Session {
     }
     // The contract gate runs AFTER the build gate: green code that misses a criterion is
     // a different failure from red code, and handing the model both at once buries one.
-    return await this.acceptanceGate(current, signal)
+    return await this.acceptanceGate(current, signal, writesThisTurn > 0)
   }
 
   /**
@@ -1114,6 +1140,8 @@ export class Session {
    */
   private async acceptanceGate(
     result: TurnResult, signal?: AbortSignal,
+    /** Whether the turn changed the workspace — in `fast` that alone opens the audit. */
+    wrote = false,
   ): Promise<TurnResult> {
     const contract = this.meta.contract
     // A SATISFIED contract has retired: the follow-up turns after a finished task must
@@ -1137,7 +1165,12 @@ export class Session {
     // small enough never to have grown a plan.
     const todos = this.opts.toolset.todos?.list() ?? []
     const planFinished = todos.length > 0 && todos.every((t) => t.status === 'completed')
-    if (!planFinished && !saysFinished(result.finalText)) return result
+    // In `fast` the plan is never nudged and so never reliably finished, and the phrase
+    // match alone missed three live runs in a row; a turn that WROTE is the honest trigger
+    // there. Affordable now that the audit is a pure append (no cache displacement) and its
+    // evidence is bounded to a line per criterion.
+    const wroteInFast = this.gateProfile === 'fast' && wrote
+    if (!planFinished && !saysFinished(result.finalText) && !wroteInFast) return result
     let current = result
     // Three outcomes, not two. "Clean" and "unmet" want opposite things from the diff review
     // below, and "the audit could not run" wants what CLEAN wants rather than what unmet
@@ -1266,8 +1299,14 @@ export class Session {
     contract: NonNullable<SessionMeta['contract']>,
     result: TurnResult,
     signal?: AbortSignal,
+    /** `/review` typed by a person. The profile decides what runs by itself, never what a
+     * person may ask for by name. */
+    explicit = false,
   ): Promise<TurnResult> {
     if (signal?.aborted || result.stoppedBecause !== 'done') return result
+    // The fresh reviewer is a six-step sub-agent; `fast` does without it — unless asked.
+    // See `GateProfile`.
+    if (this.gateProfile === 'fast' && !explicit) return result
     // Read HERE, not carried in: a fixer turn inside the acceptance gate can compact, and
     // `applyCompactionSwap` remaps the field while a value captured before the gate keeps
     // pointing into the pre-swap transcript. `slice(190)` of a 9-message transcript is
@@ -1588,6 +1627,13 @@ export class Session {
     if (!WRITE_TOOLS.has(tool)) return undefined
     const contract = this.meta.contract
     if (contract === undefined || contract.satisfied === true) return undefined
+    // Neither check in `fast`: together they are ~30 s at the first write, and on the turns
+    // measured they found nothing. See `GateProfile`.
+    if (this.gateProfile === 'fast') return undefined
+    // Nor with the checks switched off: "Checks off" promises that nothing checks until
+    // asked, and this pair ran anyway — forty seconds of gates on a turn the person had
+    // told to stop checking. There is no `/premises` to ask for; they simply wait.
+    if (this.gateMode === 'manual') return undefined
 
     // The premise check first, and both of these run at the same moment for the same reason:
     // it is the last one that is free. They answer different questions in a deliberate order,
@@ -1719,6 +1765,24 @@ export class Session {
     return 'Not run: before this change the user was asked what they actually meant, ' +
       `because your own readings of the request disagreed.\n\n${wanted}${refused}\n` +
       'Re-issue the change with that settled. Nothing was written.'
+  }
+
+  /**
+   * The primary folder's own check, for the prompt paragraph that tells the model the
+   * harness runs it. Absent when nothing is configured, which leaves the prompt as it was.
+   * The primary's command only: it is the one `verifyMidTurn` runs after most edits, and a
+   * paragraph naming three commands would be a list, not a rule.
+   */
+  private autoCheckCommand(): string | undefined {
+    // With the checks off the paragraph would be a lie in message 0: nothing runs the
+    // command by itself, so the model is left to run it — which is what "off" asks for. A
+    // session switched to manual mid-way keeps the paragraph until its next compaction
+    // swap rebuilds message 0; a stale sentence for a while, never a rewritten prefix.
+    if (this.gateMode === 'manual') return undefined
+    const primary = this.workspace.mounts.find((m) => m.primary) ?? this.workspace.mounts[0]
+    if (primary === undefined) return undefined
+    const spec = this.opts.verifyFolders?.[primary.name] ?? this.opts.verify
+    return spec?.command
   }
 
   /** The verify commands that apply to what this turn wrote, in mount order. */
@@ -2160,6 +2224,11 @@ export class Session {
     return this.meta.gateMode ?? 'auto'
   }
 
+  /** See `GateProfile`. A settings-file decision, unlike `gateMode`, which is per session. */
+  private get gateProfile(): GateProfile {
+    return this.opts.gates ?? 'thorough'
+  }
+
   set gateMode(mode: 'auto' | 'manual') {
     this.meta.gateMode = mode
     this.opts.store?.saveMeta(this.meta)
@@ -2244,7 +2313,7 @@ export class Session {
     // ask always runs. The flag means "the gates decided this is finished", and the person
     // asking again is overriding exactly that.
     contract.satisfied = false
-    return await this.freshReview(contract, asked, signal)
+    return await this.freshReview(contract, asked, signal, true)
   }
 
   approxTokens(): number {
@@ -2576,13 +2645,15 @@ export class Session {
       // transcript describes work that was never asked for.
       const todosBefore = this.opts.toolset.todos?.list()
       let turnText = userText
-      if ((sendOpts?.distill ?? looksLikeTask(text)) && looksLikeTask(text)) {
+      if (this.gateProfile !== 'off' && (sendOpts?.distill ?? looksLikeTask(text)) && looksLikeTask(text)) {
         // The very first thing a long message pays for, and it happens BEFORE the model
         // says a word — so on a task-shaped request the window's first ten to sixty
         // seconds used to be blank. Naming it is most of the fix.
         const endDistill = this.beginStage('contract', 'working out what you asked for')
         const contract = await distillContract(
           this.opts.client, this.transcript.messages(), userText, signal, this.stepSchemas(),
+          // `fast` distils the smaller contract: a goal and at most four criteria.
+          { lean: this.gateProfile === 'fast' },
         )
         endDistill(contract === null
           ? 'no contract — the turn runs without one'
@@ -2660,6 +2731,10 @@ export class Session {
       // `this.turnStartIndex`, not `beforeCount`: a mid-turn compaction swap replaces the
       // transcript object and remaps the field to the new object's coordinates, while the
       // captured local would silently index past the end of a ten-message transcript.
+      // HERE, before the gates: the slot holds exactly this transcript's state only until the
+      // next request that is not a pure extension of it, and the audit's forced answer is the
+      // first of those. See `saveSlotIfDue`.
+      if (result.stoppedBecause === 'done') await this.saveSlotIfDue()
       result = await this.verifyAndFix(result, this.writeCount - writesBefore, signal)
 
       // Restore the note only when the user message itself never reached the transcript --
@@ -2788,28 +2863,29 @@ export class Session {
    */
   private async verifyMidTurn(signal?: AbortSignal): Promise<void> {
     if (this.writeCount === this.writesAtLastVerify) return
+    // "Checks off" means this one too: the chip says nothing builds until asked, and the
+    // build after every edit is the most frequent check there is. `/check` runs it by hand.
+    if (this.gateMode === 'manual') return
 
-    // Not after every write — after a RUN of writes ends.
+    // Right after the step that wrote — not, as it used to be, after the RUN of writes ends.
     //
-    // A change worth making often spans several files, and between the first edit and the
-    // last the project does not compile because the work is half done, not because anything
-    // is wrong. Renaming an interface breaks every file that mentions it until the final one
-    // is saved. Showing the model that list of errors on the second edit of six invites it to
-    // "fix" work that is simply unfinished, which is worse than not checking at all.
+    // The old rule waited for the first step that did something other than write (a read, a
+    // command, an answer), on the argument that a multi-file change is legitimately red
+    // halfway through and showing that on the second edit of six invites the model to "fix"
+    // unfinished work. Measured against what the model actually does with that step
+    // (spike/speed-baseline-probe.mts, and the 137 `run_command` calls in the recorded
+    // sessions): the step after an edit IS the model running `dotnet build` on its own work.
+    // So the deferred check never arrived before the model had spent a step — five seconds of
+    // generation and a build — doing it by hand, and in a copy where its own command could
+    // not run it spent eight steps and four minutes on that instead of on the task. A check
+    // whose result lands WITH the edit's is what makes the self-check unnecessary, and the
+    // prompt now says whose job the command is (`PromptOptions.autoCheck`).
     //
-    // The boundary that means something is the model doing something ELSE: a read, a command,
-    // an answer. A step that wrote is a step still in the middle of the change; the first step
-    // that does not is the moment the change is as done as it is going to get. This costs at
-    // most one step of delay against checking eagerly, and buys not interrupting a multi-file
-    // edit halfway through.
+    // The half-done refactor keeps the protection it had: a failure that is unchanged since
+    // the last check is reported as unchanged, one line, and the note itself says to carry on
+    // if the red is work that is not finished yet.
     //
-    // The cap is the other half. A rename touching twenty files would otherwise go unchecked
-    // for twenty steps, and the whole point is catching a mistake near where it was made.
-    const writesInLastStep = this.writeCount - this.writeCountAtStepStart
-    this.writeCountAtStepStart = this.writeCount
-    const pending = this.writeCount - this.writesAtLastVerify
-    if (writesInLastStep > 0 && pending < VERIFY_BURST_CAP) return
-    // The back-off, and the only remaining time gate. A project whose check takes half a
+    // The back-off is the only remaining time gate. A project whose check takes half a
     // minute cannot afford one per write, and the honest way to discover that is to have
     // measured it rather than to have guessed a constant.
     if (this.verifySlow && Date.now() - this.lastVerifyAtMs < MID_TURN_VERIFY_MS) return
@@ -2881,7 +2957,8 @@ export class Session {
             `[${MIDTURN_VERIFY_PREFIX}${where}${verifyFailureMessage(job.spec, outcome)}\n\n` +
             'This ran automatically after your recent edits, so the cause is probably in ' +
             'them and is still fresh. Fix it now if it is yours; if it was already broken ' +
-            'before this turn, say so and carry on.]',
+            'before this turn, say so and carry on. If this is the middle of a change that ' +
+            'spans several files, carry on — it is checked again after every edit.]',
         })
         return
       }
@@ -2941,6 +3018,8 @@ export class Session {
     // outlives tasks, and a new small request re-pointed at the previous task's stale
     // plan read as an instruction to resume it.
     if (this.meta.contract === undefined || this.meta.contract.satisfied === true) return
+    // No nudges in `fast`: each one the model answers costs a `todo_write` step.
+    if (this.gateProfile === 'fast') return
     const todos = this.opts.toolset.todos?.list() ?? []
     if (todos.length < 2) return // a one-item plan IS its own focus
     const current = todos.find((t) => t.status === 'in_progress') ?? todos.find((t) => t.status === 'pending')
@@ -2977,7 +3056,9 @@ export class Session {
     if (store === undefined) return
     if (store.list().some((t) => t.status !== 'completed')) return
     if (!Array.isArray(contract.criteria) || contract.criteria.length === 0) return
-    const big = contract.criteria.length >= 4 || contract.interfaces !== undefined
+    // `fast` keeps the free scaffold and skips the decomposition generation.
+    const big = this.gateProfile !== 'fast' &&
+      (contract.criteria.length >= 4 || contract.interfaces !== undefined)
     if (big) {
       const planned = await decomposeTodos(
         this.opts.client, this.transcript.messages(), contract, signal, this.stepSchemas(),
@@ -3106,6 +3187,7 @@ export class Session {
     const store = this.opts.toolset.todos
     if (store === undefined) return
     if (this.meta.contract === undefined || this.meta.contract.satisfied === true) return
+    if (this.gateProfile === 'fast') return // see `injectPlanFocus`
     if (store.list().filter((t) => t.status !== 'completed').length < 2) return
     if (store.version !== this.lastTodoVersion) {
       this.syncUpkeepMarkers()
@@ -3568,6 +3650,7 @@ export class Session {
     for (const p of outgoing.seen) this.touchedSeen.add(p)
     for (const p of outgoing.changed) this.touchedChanged.add(p)
 
+    const autoCheck = this.autoCheckCommand()
     const next = new Transcript()
     next.append({
       role: 'system',
@@ -3588,6 +3671,7 @@ export class Session {
         ...(this.skillsText !== undefined ? { skills: this.skillsText } : {}),
         ...(this.repoMapText !== undefined ? { repoMap: this.repoMapText } : {}),
         ...(this.schemaText !== undefined ? { databaseSchema: this.schemaText } : {}),
+        ...(autoCheck !== undefined ? { autoCheck } : {}),
         // The contract's promotion — the tail note that announced it is usually in the
         // summarised middle by now, and this is what makes losing it impossible. A
         // satisfied contract is history, not standing orders, and stays out.
@@ -3724,6 +3808,10 @@ export class Session {
     // The swap rewrote the prefix: nothing the server cached still matches, and the next
     // request pays a full prefill.
     this.promptCacheCold = true
+    // Nor does the state saved to disk: it describes the transcript that was just replaced,
+    // and a restore of it on resume would cost a full prefill after a pointless read.
+    clearSlotRecord(this.workspace.root, this.id)
+    this.slotSavedTokens = 0
     // fillRatio must wait for a real measurement against the NEW transcript -- the stale
     // pre-swap prompt-token count would otherwise immediately look "still over threshold"
     // against the just-shrunk transcript and re-trigger a pointless compaction of the
@@ -3895,9 +3983,6 @@ export class Session {
    * "is there anything new to snapshot, and is it time". See `checkpointLongTurn`. */
   private writesAtLastCheckpoint = 0
   private writesAtLastVerify = 0
-  /** Writes seen when the previous step began, so a run of consecutive editing steps can be
-   * told from a step that moved on to something else. See `verifyMidTurn`. */
-  private writeCountAtStepStart = 0
   /** What the last mid-turn check said, so an unchanged answer is reported as unchanged
    * rather than repeated in full. 'ok' or a clipped failure fingerprint. */
   /**
@@ -3978,6 +4063,137 @@ export class Session {
    * cache, spent entirely on prefill before a token was produced.
    */
   private promptCacheCold = true
+  /** The in-flight prefix warm-up, so a session switch can cancel it. See `warmPrefix`. */
+  private warmup: AbortController | undefined
+
+  /**
+   * Prefill the session's constant prefix while nobody is waiting for anything.
+   *
+   * The first step of a fresh session pays for the whole prefix — the tool block, the system
+   * message with its map — before it can produce a token, and the person has just pressed
+   * Enter. Measured on a 7.5k-token prefix (spike/speed-baseline-probe.mts): 20.3 s for the
+   * first step against 4–7 s for every later one, and the prefix that speed depends on is
+   * exactly the part that is known before the person has typed a word. A resumed session is
+   * the same story with a bigger number: its whole transcript.
+   *
+   * So the host calls this the moment a session exists, and it asks the server for ONE
+   * token over the prefix plus a placeholder user message. llama.cpp keeps that KV state,
+   * matches the real first message by longest common prefix, and prefills only the message
+   * itself. The placeholder is never part of the transcript. Never throws: warmth is a
+   * bonus, and a server that is still loading simply leaves the first step cold, which is
+   * what it always was. If a turn starts while this is in flight, the server serialises the
+   * two and the turn's own request lands on a prefix that is most of the way warm.
+   */
+  async warmPrefix(): Promise<void> {
+    if ((!this.promptCacheCold && !this.slotJustRestored) || this.sending || this.warmup !== undefined) return
+    this.slotJustRestored = false
+    const controller = new AbortController()
+    this.warmup = controller
+    const transcript = this.transcript
+    try {
+      // Message 0 through the same builder the first turn uses — a warm-up of a different
+      // prompt warms nothing. `Agent` appends it only to an EMPTY transcript, so the first
+      // turn finds it already there instead of adding a second.
+      this.buildAgent(controller.signal)
+      const messages = this.transcript.messages()
+      if (messages.length === 0) return
+      await this.opts.client.chat({
+        messages: [...messages, { role: 'user', content: '.' }],
+        // The same tool list the real steps send: the rendered schemas are part of the prompt.
+        tools: this.stepSchemas(),
+        maxTokens: 1,
+        disableThinking: true,
+        signal: controller.signal,
+      })
+      // Only if nothing replaced the transcript meanwhile: a compaction swap or a turn that
+      // already ran owns the cache's state now, and a stale "warm" here would hand the next
+      // step a budget sized for a warm cache it does not have.
+      if (!controller.signal.aborted && this.transcript === transcript && !this.sending) {
+        this.promptCacheCold = false
+      }
+    } catch { /* warmth is a bonus, never a requirement */ } finally {
+      if (this.warmup === controller) this.warmup = undefined
+    }
+  }
+
+  /** Cancels a warm-up still in flight — a session being switched away from must not keep
+   * the single slot busy prefilling a prompt nobody will send. */
+  abortWarmup(): void {
+    this.warmup?.abort()
+    this.warmup = undefined
+  }
+
+  /** When the slot's state was last written to disk for this session, and how many tokens it
+   * held. Zero until the first save. See `saveSlotIfDue`. */
+  private lastSlotSaveAt = 0
+  private slotSavedTokens = 0
+  /** The server answered 501 once: started without `--slot-save-path`. Asked no more. */
+  private slotUnsupported = false
+  /** A restore just landed and the transcript may have grown since that save; the next
+   * `warmPrefix` prefills the difference instead of returning early. */
+  private slotJustRestored = false
+
+  /**
+   * Write the slot's state to disk, when it is worth writing.
+   *
+   * The state is worth writing at exactly one moment: right after a turn ended with the
+   * model's own final message, before any gate has asked it anything. Then the slot holds
+   * the transcript's tokens plus the reply the model generated, and the next prompt of this
+   * session — the transcript with that reply rendered back, plus a new message — EXTENDS the
+   * saved sequence. That is the only shape this model can resume from: its recurrent state
+   * cannot be rewound, so a saved sequence that the next prompt diverges from before its end
+   * is worth nothing, and the acceptance audit's forced answer is such a divergence
+   * (measured both ways, `spike/slot-save-probe.mts`).
+   *
+   * Not after every turn: a state is ~23 MiB per thousand tokens (453 MiB at 20k, measured),
+   * so a fat session would write gigabytes a turn. Every few minutes, or after the transcript
+   * has grown by a lot, is the compromise — and what is lost on a crash is the prefill of the
+   * turns since the last save, not the whole session.
+   */
+  private async saveSlotIfDue(): Promise<void> {
+    if (this.slotUnsupported || this.opts.store === undefined || this.promptCacheCold) return
+    const now = Date.now()
+    const tokens = this.latestPromptTokens ?? this.approxTokens()
+    const grown = tokens - this.slotSavedTokens
+    if (now - this.lastSlotSaveAt < SLOT_SAVE_INTERVAL_MS && grown < SLOT_SAVE_GROWTH_TOKENS) return
+    const outcome = await this.opts.client.slotSave(slotFilenameFor(this.workspace.root))
+    if (!outcome.ok) {
+      if (outcome.unsupported) this.slotUnsupported = true
+      return
+    }
+    writeSlotRecord(this.workspace.root, {
+      sessionId: this.id, savedAt: new Date(now).toISOString(), tokens: outcome.tokens,
+    })
+    this.lastSlotSaveAt = now
+    this.slotSavedTokens = outcome.tokens
+  }
+
+  /**
+   * Read the workspace's saved slot state back, if it is this session's.
+   *
+   * For a resumed session, and before `warmPrefix`: a restore is half a second for a state
+   * that would take minutes to prefill (0.5 s against 19,900 tokens re-read, measured across
+   * a server restart), and the warm-up afterwards prefills only what the transcript gained
+   * since the save. A record naming another session, a missing file, a server without the
+   * flag — all mean "no", and the resume goes on exactly as it did before slots existed.
+   */
+  async restoreSlot(): Promise<boolean> {
+    if (this.opts.store === undefined || this.slotUnsupported) return false
+    const record = readSlotRecord(this.workspace.root)
+    if (record === null || record.sessionId !== this.id) return false
+    const outcome = await this.opts.client.slotRestore(slotFilenameFor(this.workspace.root))
+    if (!outcome.ok) {
+      if (outcome.unsupported) this.slotUnsupported = true
+      return false
+    }
+    // The slot holds a prefix of this transcript now; only the tail since the save is cold,
+    // and the warm-up that follows takes care of it.
+    this.promptCacheCold = false
+    this.slotJustRestored = true
+    this.lastSlotSaveAt = Date.now()
+    this.slotSavedTokens = outcome.tokens
+    return true
+  }
   /** Transcript size when `latestPromptTokens` was recorded; see `compactIfOverWindow`. */
   private charsAtPromptCount = 0
   private commandCount = 0
@@ -4173,6 +4389,8 @@ export class Session {
     if (sampling !== undefined) agentOpts.sampling = sampling
     if (this.repoMapText !== undefined) agentOpts.repoMap = this.repoMapText
     if (this.schemaText !== undefined) agentOpts.databaseSchema = this.schemaText
+    const autoCheck = this.autoCheckCommand()
+    if (autoCheck !== undefined) agentOpts.autoCheck = autoCheck
     if (this.opts.engine) {
       // mode intentionally omitted here -- see the constructor's invariant note. Agent
       // resolves opts.permissions.mode instead, which is always meta.mode by now.

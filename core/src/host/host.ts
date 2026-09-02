@@ -24,8 +24,11 @@ import { loadSkills, projectSkillsDir, userSkillsDir } from '../skills/skills.js
 import { stopNavProcess } from '../csharp/nav-process.js'
 import { stopSqlProcess } from '../sql/sql-process.js'
 import { expandCommand, listCommands } from '../commands/custom.js'
-import { DEFAULT_TRIGGER_TOKENS, Session, type SessionOptions } from '../session/session.js'
+import {
+  DEFAULT_TRIGGER_TOKENS, Session, type GateProfile, type SessionOptions,
+} from '../session/session.js'
 import { SessionStore } from '../session/store.js'
+import { clearSlotRecord } from '../session/slot-record.js'
 import { createToolset, type Toolset } from '../tools/default-set.js'
 import { loadBrowserSettings } from '../browser/settings.js'
 import { loadServers } from '../mcp/config.js'
@@ -135,7 +138,9 @@ import { loadUiConfig, saveUiConfig } from './ui-config.js'
 import { replayEntries, toolOutcomes } from './replay.js'
 import { rankFiles, walkTree } from './file-search.js'
 import { attachFiles } from './attachments.js'
-import { indexRepo, renderIndex, type ReferenceEdges, type RepoIndex } from '../outline/repo-map.js'
+import {
+  DEFAULT_MAP_BUDGET, indexRepo, renderIndex, type ReferenceEdges, type RepoIndex,
+} from '../outline/repo-map.js'
 import { harvestReferenceEdges } from '../csharp/reference-edges.js'
 import { gitCommitStaged, gitDiff, gitStage, gitUnstage, stagedPaths, suggestCommitMessage } from './git.js'
 import { describeFolder, discoverRepos, repoRootFor, resolvePanelPath, toRepoPaths } from './repos.js'
@@ -331,6 +336,8 @@ export class SessionHost {
    * session switch, matching the REPL's own probe-once-at-startup behavior (`repl.ts`'s
    * `contextLength` variable). */
   private repoIndex: RepoIndex | undefined
+  /** How much of the prefix the map may take; `prefix.mapChars` in settings.json overrides. */
+  private mapChars = DEFAULT_MAP_BUDGET
   /** Compiler-confirmed file->file reference edges, harvested in the background after the
    * index is built and read by the swap-time rerank. Undefined until (and unless) the
    * harvest lands; the rerank treats that as "rank textually, as always". */
@@ -382,8 +389,16 @@ export class SessionHost {
 
   private shutdownPromise: Promise<void> | undefined
 
-  constructor(opts: { transport: HostTransport }) {
+  /**
+   * Whether a new session prefills its prefix in the background (`Session.warmPrefix`).
+   * On for the app; a test that scripts the fake server by call order turns it off, because
+   * the warm-up is a real request that would otherwise consume the first scripted answer.
+   */
+  private readonly prewarm: boolean
+
+  constructor(opts: { transport: HostTransport; prewarm?: boolean }) {
     this.transport = opts.transport
+    this.prewarm = opts.prewarm ?? true
   }
 
   /**
@@ -412,7 +427,12 @@ export class SessionHost {
   private async runShutdown(): Promise<void> {
     if (this.currentAbort && !this.currentAbort.signal.aborted) this.currentAbort.abort()
     this.denyAllPending()
-    if (this.session) await this.session.abortCompaction()
+    if (this.session) {
+      // The warm-up first: it is a request on the single slot, and a session being left
+      // behind must not keep the server prefilling a prompt nobody will send.
+      this.session.abortWarmup()
+      await this.session.abortCompaction()
+    }
     await this.stopExternal()
   }
 
@@ -548,7 +568,12 @@ export class SessionHost {
     // until app exit (the polish review's Minor 6).
     if (this.currentAbort && !this.currentAbort.signal.aborted) this.currentAbort.abort()
     await this.currentTurn?.catch(() => {})
-    if (this.session) await this.session.abortCompaction()
+    if (this.session) {
+      // The warm-up first: it is a request on the single slot, and a session being left
+      // behind must not keep the server prefilling a prompt nobody will send.
+      this.session.abortWarmup()
+      await this.session.abortCompaction()
+    }
     this.denyAllPending()
     // Everything the OLD workspace owned, including its MCP servers and its browser: init
     // replaces the toolset below, and an orphan would otherwise run until app exit.
@@ -607,7 +632,8 @@ export class SessionHost {
     // index is what lets a compaction swap re-order the map around the work in progress
     // without touching the disk again.
     this.repoIndex = await indexRepo(loaded.mounts)
-    this.repoMap = renderIndex(this.repoIndex)
+    this.mapChars = loadMapChars(params.workspaceRoot) ?? DEFAULT_MAP_BUDGET
+    this.repoMap = renderIndex(this.repoIndex, this.mapChars)
     phase('repo index')
     // Fire-and-forget: compiler-confirmed reference edges for the swap-time rerank. The
     // helper question is async and the rerank callback is not, so the edges are gathered
@@ -790,7 +816,12 @@ export class SessionHost {
     // Awaited, not merely signalled: the turn must be OVER before the new session exists,
     // or its trailing events land in a view that has already been reset.
     await this.currentTurn?.catch(() => {})
-    if (this.session) await this.session.abortCompaction()
+    if (this.session) {
+      // The warm-up first: it is a request on the single slot, and a session being left
+      // behind must not keep the server prefilling a prompt nobody will send.
+      this.session.abortWarmup()
+      await this.session.abortCompaction()
+    }
     this.denyAllPending()
     return this.buildSession(resumeId)
   }
@@ -929,7 +960,7 @@ export class SessionHost {
       // `this.referenceEdges` is read at CALL time, not closure time: the harvest finishes
       // minutes before the first swap needs it, and a swap that outruns it gets the map
       // exactly as it was before edges existed.
-      sessionOpts.rerankRepoMap = (focus) => renderIndex(index, undefined, focus, this.referenceEdges)
+      sessionOpts.rerankRepoMap = (focus) => renderIndex(index, this.mapChars, focus, this.referenceEdges)
     }
     if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
     if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
@@ -972,6 +1003,8 @@ export class SessionHost {
     // built-in threshold and silently ignore the user's own `compaction.triggerTokens`.
     const triggerTokens = loadTriggerTokens(workspaceRoot)
     if (triggerTokens !== undefined) sessionOpts.compactionDefaults = { triggerTokens }
+    const gates = loadGateProfile(workspaceRoot)
+    if (gates !== undefined) sessionOpts.gates = gates
     if (this.contextLength !== null) {
       sessionOpts.compaction = {
         contextLength: this.contextLength,
@@ -1002,6 +1035,22 @@ export class SessionHost {
 
     const session = new Session(sessionOpts)
     this.session = session
+    // Prefill the prefix now, while the person is still reading the window or typing: the
+    // first step's 20 s of silence (measured, spike/speed-baseline-probe.mts) is the tool
+    // block and the map being read for the first time, and both are known before the first
+    // message is. Fire-and-forget by design — see `Session.warmPrefix`.
+    //
+    // A RESUMED session first tries the state saved to disk (`Session.restoreSlot`): half a
+    // second for what would otherwise be minutes of prefill on a fat transcript, and the
+    // warm-up afterwards covers only what the transcript gained since the save. A miss —
+    // no file, another session's file, a server without the flag — falls through to the
+    // warm-up exactly as before.
+    if (this.prewarm) {
+      void (async () => {
+        if (resumeId !== undefined) await session.restoreSlot()
+        await session.warmPrefix()
+      })()
+    }
     // The plan follows the SESSION, not the toolset: the toolset outlives every switch,
     // and an unbound store carried session A's plan straight into session B's Plan card.
     // Bound before the `todos` emit below, so what gets emitted is this session's own.
@@ -1118,10 +1167,14 @@ export class SessionHost {
    * doing two unrelated things and the window should treat them that way.
    */
   private async sessionsDelete(params: SessionsDeleteParams): Promise<SessionsDeleteResult> {
-    const { store } = this.requireInitialized()
+    const { store, workspaceRoot } = this.requireInitialized()
     const isLive = this.session?.id === params.id
     const replacedBy = isLive ? await this.switchSession(undefined) : undefined
     const { removed, problems } = store.delete(params.id)
+    // The saved slot state, if it was this session's, must not be restored into a session
+    // that no longer exists — the file itself is the server's and is overwritten by the next
+    // save.
+    clearSlotRecord(workspaceRoot, params.id)
     return {
       // A session is "there" if any of its four files was, and the meta alone is what the
       // rail shows — so anything removed counts as a deletion of one session.
@@ -2399,4 +2452,42 @@ function loadTriggerTokens(workspaceRoot: string): number | undefined {
   // The number itself lives in session.ts, which needs it for the same reason when the
   // window arrives late — one constant, so the two cannot drift apart.
   return DEFAULT_TRIGGER_TOKENS
+}
+
+/**
+ * settings.json's `"gates": "thorough" | "fast" | "off"` — see `GateProfile`. Most specific
+ * file wins; anything else means the default, thorough.
+ */
+function loadGateProfile(workspaceRoot: string): GateProfile | undefined {
+  for (const path of [
+    localSettingsPath(workspaceRoot), projectSettingsPath(workspaceRoot), userSettingsPath(),
+  ]) {
+    try {
+      const parsed = JSON.parse(settingsText(readFileSync(path, 'utf8'))) as { gates?: unknown }
+      const v = parsed.gates
+      if (v === 'thorough' || v === 'fast' || v === 'off') return v
+    } catch { /* absent file, or malformed — the permission loader already reports that */ }
+  }
+  return undefined
+}
+
+/**
+ * settings.json's `"prefix": { "mapChars": N }` — how much of the cached prefix the project
+ * map may take, in characters. Same layering and the same tolerance as `loadTriggerTokens`:
+ * most specific file wins, anything malformed means the default. Floored at 2,000, below
+ * which a map cannot name a file and the setting would silently switch the map off.
+ */
+function loadMapChars(workspaceRoot: string): number | undefined {
+  for (const path of [
+    localSettingsPath(workspaceRoot), projectSettingsPath(workspaceRoot), userSettingsPath(),
+  ]) {
+    try {
+      const parsed = JSON.parse(settingsText(readFileSync(path, 'utf8'))) as {
+        prefix?: { mapChars?: unknown }
+      }
+      const v = parsed.prefix?.mapChars
+      if (typeof v === 'number' && Number.isFinite(v) && Math.floor(v) >= 2_000) return Math.floor(v)
+    } catch { /* absent file, or malformed — the permission loader already reports that */ }
+  }
+  return undefined
 }

@@ -189,16 +189,17 @@ async function run(
   return session
 }
 
-test('a run of edits is never interrupted, however red the project is halfway through', async () => {
-  // The objection this exists to answer: a change worth making often spans several files, and
-  // between the first edit and the last the project does not compile because the work is half
-  // done. Renaming an interface breaks every file that mentions it until the final one is
-  // saved. Showing that error list on the second edit of six invites the model to "fix" work
-  // that is simply unfinished — worse than not checking at all.
+test('the check runs right after the step that wrote, and a repeat failure costs one line', async () => {
+  // This used to wait for the run of writes to END — the first step that read or ran
+  // something — so as not to interrupt a multi-file change while it was legitimately red.
+  // Measured against what the model does with that step (spike/speed-baseline-probe.mts):
+  // it runs the build itself, every time, so the deferred check never arrived before a step
+  // had already been spent on it by hand. The check now lands with the edit's own result,
+  // and the note says to carry on when the red is unfinished work.
   //
-  // Asserted by POSITION, not by count. A note after the turn's last write is the end-of-turn
-  // check or its fix rounds doing their job; the thing that must not happen is one arriving
-  // while the edit is still in progress.
+  // Asserted by POSITION: the first note arrives BEFORE the last write, and the same failure
+  // is reported in full once and as "still failing" after that — one line, not the error
+  // list six times.
   let call = 0
   const session = await run(() => { call++; return call <= 6 ? write(call) : done }, 'cmd /c exit 1')
 
@@ -209,12 +210,15 @@ test('a run of edits is never interrupted, however red the project is halfway th
     .pop()
   expect(lastWrite).toBeDefined()
 
-  const interrupted = messages
+  const notes = messages
     .map((m, i) => ({ m, i }))
-    .filter(({ m, i }) => i < lastWrite!
-      && m.role === 'user' && typeof m.content === 'string'
+    .filter(({ m }) => m.role === 'user' && typeof m.content === 'string'
       && (m.content.startsWith('[Checked while you work') || m.content.includes('still failing')))
-  expect(interrupted).toHaveLength(0)
+  expect(notes.length).toBeGreaterThan(0)
+  expect(notes[0]!.i).toBeLessThan(lastWrite!)
+  const full = notes.filter(({ m }) => (m.content as string).startsWith('[Checked while you work'))
+  expect(full).toHaveLength(1)
+  expect(full[0]!.m.content).toContain('spans several files')
 })
 
 test('the check fires the moment the model does something other than write', async () => {

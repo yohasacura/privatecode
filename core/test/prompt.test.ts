@@ -78,3 +78,24 @@ test('the whole prompt still fits its budget with both surfaces on', () => {
   // Every request pays this. Two extra surfaces are worth ~700 chars, not unbounded growth.
   expect(p.length).toBeLessThan(2200)
 })
+
+// --- the project's own check ------------------------------------------------------------
+//
+// 137 of the 766 tool calls in the recorded sessions were `run_command`, most of them the
+// model running `dotnet build` on its own work the step after every edit — in sessions
+// where the harness was about to run the same command for free. The result line now lands
+// right after the edit (session.ts, `verifyMidTurn`); this paragraph says whose job it is.
+
+test('names the automatic check and tells the model not to run it, only when one exists', () => {
+  const without = buildSystemPrompt({ workspaceRoot: '/w', mode: 'normal' })
+  expect(without).not.toMatch(/runs by itself/)
+  const cmd = 'dotnet build src/App.csproj --no-restore'
+  const p = buildSystemPrompt({ workspaceRoot: '/w', mode: 'normal', autoCheck: cmd })
+  expect(p).toContain(`\`${cmd}\``)
+  expect(p).toMatch(/runs by itself/)
+  expect(p).toMatch(/do not run that\s+command yourself/i)
+  // The example line is the exact shape the session appends, so the model recognises it.
+  expect(p).toContain(`[${cmd}: ok, 2.1s]`)
+  // Still small: the paragraph is four lines, not a manual.
+  expect(p.length - without.length).toBeLessThan(400)
+})
