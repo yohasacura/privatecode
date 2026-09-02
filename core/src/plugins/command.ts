@@ -116,6 +116,12 @@ export interface CommandContext {
   /** Where a relative marketplace path is resolved from. */
   cwd?: string
   userPath?: string
+  /** The caller applies a change to the running session itself, so the report need not say "run /reload-plugins". */
+  autoReload?: boolean
+}
+
+function applyNote(ctx: CommandContext, what = 'apply'): string {
+  return ctx.autoReload === true ? '' : ` Run /reload-plugins to ${what}.`
 }
 
 export interface CommandOutcome {
@@ -223,23 +229,24 @@ export async function runPluginCommand(cmd: PluginCommand, ctx: CommandContext):
           (r.inventory.mcpServers.length > 0 ? `${r.inventory.hooks.length > 0 ? ';' : ':'} MCP servers ${r.inventory.mcpServers.join(', ')}` : '') + '.')
       }
       for (const w of r.warnings) lines.push(`  note: ${w}`)
-      lines.push(r.enabled ? '  Run /reload-plugins to activate.' : '  Installed disabled (the plugin asks not to be enabled by default). /plugin enable to turn it on.')
+      if (r.enabled) { if (ctx.autoReload !== true) lines.push('  Run /reload-plugins to activate.') }
+      else lines.push('  Installed disabled (the plugin asks not to be enabled by default). /plugin enable to turn it on.')
       return done(lines.join('\n'), true)
     }
     case 'uninstall': {
       const r = uninstallPlugin(store, cmd.spec, scopeOpts(ctx, cmd.scope))
       if ('error' in r) return failed(r.error)
-      return done(`✔ Uninstalled ${r.id} (${r.scope} scope)${r.removedFiles ? '' : '; it stays installed for its other scopes'}. Run /reload-plugins to apply.`, true)
+      return done(`✔ Uninstalled ${r.id} (${r.scope} scope)${r.removedFiles ? '' : '; it stays installed for its other scopes'}.${applyNote(ctx)}`, true)
     }
     case 'enable': case 'disable': {
       const r = setEnabled(store, cmd.spec, cmd.kind === 'enable', scopeOpts(ctx, cmd.scope))
       if ('error' in r) return failed(r.error)
-      return done(`✔ ${cmd.kind === 'enable' ? 'Enabled' : 'Disabled'} ${r.id} (${r.scope} scope, ${r.path}). Run /reload-plugins to apply.`, true)
+      return done(`✔ ${cmd.kind === 'enable' ? 'Enabled' : 'Disabled'} ${r.id} (${r.scope} scope, ${r.path}).${applyNote(ctx)}`, true)
     }
     case 'update': {
       const r = await updatePlugin(store, cmd.spec, scopeOpts(ctx, cmd.scope))
       if ('error' in r) return failed(r.error)
-      const lines = [r.changed ? `✔ Updated ${r.id}: ${r.from} → ${r.to}. Run /reload-plugins to apply.` : `✔ ${r.id} is already at ${r.to}.`]
+      const lines = [r.changed ? `✔ Updated ${r.id}: ${r.from} → ${r.to}.${applyNote(ctx)}` : `✔ ${r.id} is already at ${r.to}.`]
       for (const w of r.warnings) lines.push(`  note: ${w}`)
       return done(lines.join('\n'), r.changed)
     }

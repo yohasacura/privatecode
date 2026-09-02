@@ -844,6 +844,7 @@ export default function App() {
                 )}
                 <Composer
                   client={client}
+                  onOpenPlugins={() => { setSettingsTab('plugins'); setSettingsOpen(true) }}
                   state={chatState}
                   dispatch={dispatch}
                   // Every dialog that owns Escape, not just Settings: the composer's

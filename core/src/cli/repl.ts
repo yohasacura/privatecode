@@ -10,6 +10,14 @@ import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory, type LoadedMemory } from '../memory/project-memory.js'
 import { loadSkills, projectSkillsDir, userSkillsDir, type LoadedSkills } from '../skills/skills.js'
+import { ROLES } from '../agent/subagent.js'
+import { createDelegateTool } from '../tools/delegate.js'
+import { createHookEngine } from '../hooks/engine.js'
+import {
+  PluginStore, adoptDeclaredMarketplaces, ensureDefaultMarketplaces, loadPluginComponents, parsePluginCommand,
+  pluginHelpText, runPluginCommand, standaloneComponents,
+} from '../plugins/index.js'
+import { Workspace } from '../workspace.js'
 import { Session, type SessionOptions } from '../session/session.js'
 import type { SessionStore } from '../session/store.js'
 import type { Toolset } from '../tools/default-set.js'
@@ -46,6 +54,9 @@ const HELP_TEXT =
   '  /todos             show the current todo list\n' +
   '  /memory            show which AGENTS.md files this session loaded\n' +
   '  /skills            show the skills this session offers the model\n' +
+  '  /plugin …          Claude Code\'s plugin commands: marketplace add|list|remove|update,\n' +
+  '                     install|uninstall|enable|disable|update|list|details|validate, help\n' +
+  '  /reload-plugins    start a new session with the plugins as they are now\n' +
   '  /compact           summarise and compact the context now\n' +
   '  /exit              save and quit\n\n' +
   'Anything else is sent to the model. Esc or Ctrl+C aborts a turn in progress; ' +
@@ -243,14 +254,39 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
 
     const { layers, problems } = loadLayers(opts.workspaceRoot)
     const memory = loadProjectMemory(opts.workspaceRoot)
-    const skills = loadSkills(opts.workspaceRoot)
+    // The enabled plugins and Claude Code's own folders, exactly as the window loads them
+    // (docs/PLUGINS-2026-09.md §4): skills, commands, agents, hooks, `bin/`.
+    const pluginStore = new PluginStore()
+    let pluginProblems: string[] = []
+    try {
+      ensureDefaultMarketplaces(pluginStore)
+      pluginProblems = adoptDeclaredMarketplaces(pluginStore, opts.workspaceRoot).problems
+    } catch (e) {
+      pluginProblems = [`plugins: the store could not be prepared: ${(e as Error).message}`]
+    }
+    const plugins = loadPluginComponents(pluginStore, opts.workspaceRoot)
+    const standalone = standaloneComponents(opts.workspaceRoot)
+    const skills = loadSkills(opts.workspaceRoot, undefined, [...standalone.skillSources, ...plugins.skillSources])
     const formatting = loadFormatRules(opts.workspaceRoot)
     const hooking = loadHooks(opts.workspaceRoot)
     const verifying = loadVerify(opts.workspaceRoot)
+    const roleNames = new Set(ROLES.map((r) => r.name))
+    const roles = [...standalone.agents, ...plugins.agents].filter((r) => (roleNames.has(r.name) ? false : (roleNames.add(r.name), true)))
+    opts.toolset.registry.unregister('delegate')
+    opts.toolset.registry.register(createDelegateTool([...ROLES, ...roles]))
+    const hookEngine = createHookEngine({
+      legacy: hooking.hooks,
+      sources: [...standalone.hookSources, ...plugins.hookSources],
+      workspace: new Workspace(opts.workspaceRoot),
+      sessionId: () => (sessionBuilt ? session.id : 'new'),
+      permissionMode: () => (sessionBuilt ? session.mode : explicitMode ?? 'normal'),
+      onProblem: (text) => { turnRenderer.clearStatusLine(); process.stdout.write(`\x1b[90m  ${text}\x1b[0m\n`) },
+    })
     loadedMemory = memory
     loadedSkills = skills
     memoryProblems = [...memory.problems, ...skills.problems, ...formatting.problems,
-                      ...hooking.problems]
+                      ...hooking.problems, ...pluginProblems, ...plugins.problems, ...plugins.ignored,
+                      ...standalone.problems, ...hookEngine.problems]
     const newEngine = new PermissionEngine({
       layers, mode: explicitMode ?? 'normal', workspaceRoot: opts.workspaceRoot, problems,
     })
@@ -265,8 +301,11 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       interaction: port,
       ...(memory.layers.length > 0 ? { memory } : {}),
       ...(skills.skills.length > 0 ? { skills } : {}),
+      ...(roles.length > 0 ? { roles } : {}),
+      ...(plugins.binDirs.length > 0 ? { extraPath: plugins.binDirs } : {}),
       ...(formatting.rules.length > 0 ? { formatRules: formatting.rules } : {}),
-      ...(hooking.hooks.length > 0 ? { hooks: hooking.hooks } : {}),
+      // PrivateCode's own after-hooks run inside the engine, beside the plugins'.
+      hookEngine,
       ...(verifying.verify ? {
         verify: verifying.verify,
         // The REPL is a front end like the window is: a check that adds seconds to every
@@ -449,6 +488,32 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     for (const p of opts.store.problems) process.stdout.write(`(skipped) ${p}\n`)
   }
 
+  /**
+   * `/plugin …` and `/reload-plugins`, the Claude Code way (docs/PLUGINS-2026-09.md). The
+   * store changes at once; the SESSION is rebuilt on `/reload-plugins`, because a session's
+   * skills catalogue and roles are fixed at build time — the same contract `/new` has.
+   */
+  async function handlePlugin(line: string): Promise<void> {
+    const cmd = parsePluginCommand(line)
+    if (cmd === null) {
+      process.stdout.write(`${pluginHelpText()}\n`)
+      return
+    }
+    if (cmd.kind === 'open') {
+      process.stdout.write(`${pluginHelpText()}\n`)
+      return
+    }
+    if (cmd.kind === 'reload') {
+      await rebuild(undefined, undefined)
+      process.stdout.write(`Plugins reloaded into a new session: ${session.id}\n`)
+      writeProblems()
+      return
+    }
+    const outcome = await runPluginCommand(cmd, { store: new PluginStore(), workspaceRoot: opts.workspaceRoot, cwd: process.cwd() })
+    process.stdout.write(`${outcome.text}\n`)
+    if (outcome.changed) process.stdout.write('Applies to the next session: /reload-plugins or /new.\n')
+  }
+
   async function handleResume(id: string): Promise<void> {
     if (id === '') {
       process.stdout.write('usage: /resume <id>\n')
@@ -571,6 +636,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       case '/todos': handleTodos(); return
       case '/memory': handleMemory(); return
       case '/skills': handleSkills(); return
+      case '/plugin': case '/plugins': case '/reload-plugins': await handlePlugin(line); return
       case '/compact': await handleCompact(); return
       case '/exit': await shutdown(); return
       default: process.stdout.write(`Unknown command "${cmd}". Type /help for the list.\n`); return

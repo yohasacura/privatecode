@@ -28,8 +28,10 @@ import { expandCommand, listCommands, type CommandSource } from '../commands/cus
 import { ROLES, type SubAgentRole } from '../agent/subagent.js'
 import { createDelegateTool } from '../tools/delegate.js'
 import {
-  PluginStore, adoptDeclaredMarketplaces, ensureDefaultMarketplaces, loadPluginComponents, mergeServers,
-  standaloneComponents, type PluginComponents, type StandaloneComponents,
+  PluginStore, SUGGESTED_MARKETPLACES, adoptDeclaredMarketplaces, describeMarketplaceSource, describeSource,
+  effectivePlugins, ensureDefaultMarketplaces, ensureFetched, loadPluginComponents, loadPluginSettings, mergeServers,
+  parsePluginCommand, readCatalog, runPluginCommand, standaloneComponents, updateMarketplace,
+  type PluginComponents, type StandaloneComponents,
 } from '../plugins/index.js'
 import {
   DEFAULT_TRIGGER_TOKENS, Session, type GateProfile, type SessionOptions,
@@ -78,6 +80,11 @@ import type {
   PermissionsAddResult,
   McpRawReadResult,
   SkillsListResult,
+  PluginsListResult,
+  PluginsCatalogParams,
+  PluginsCatalogResult,
+  PluginsCommandParams,
+  PluginsCommandResult,
   McpRawSaveParams,
   McpRawSaveResult,
   FsReadParams,
@@ -549,6 +556,9 @@ export class SessionHost {
       case 'permissions.remove': return this.permissionsRemove(params as PermissionsRemoveParams)
       case 'permissions.add': return this.permissionsAdd(params as PermissionsAddParams)
       case 'skills.list': return this.skillsList()
+      case 'plugins.list': return this.pluginsList()
+      case 'plugins.catalog': return this.pluginsCatalog(params as PluginsCatalogParams)
+      case 'plugins.command': return this.pluginsCommand(params as PluginsCommandParams)
       case 'mcp.rawRead': return this.mcpRawRead()
       case 'mcp.rawSave': return this.mcpRawSave(params as McpRawSaveParams)
       case 'run.start': return this.runStart(params as RunStartParams)
@@ -2280,6 +2290,113 @@ export class SessionHost {
         { scope: 'user', path: userSkillsDir() },
       ],
     }
+  }
+
+  // -----------------------------------------------------------------------------------
+  // Plugins (docs/PLUGINS-2026-09.md, phase D)
+  // -----------------------------------------------------------------------------------
+
+  private requirePluginStore(): PluginStore {
+    this.pluginStore ??= new PluginStore()
+    return this.pluginStore
+  }
+
+  /** What is installed and enabled for this workspace, and the marketplaces it can install from. */
+  private pluginsList(): PluginsListResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const store = this.requirePluginStore()
+    const eff = effectivePlugins(store, workspaceRoot)
+    const known = new Set<string>()
+    const marketplaces = store.knownMarketplaces().map((m) => {
+      known.add(m.name)
+      const catalog = readCatalog(store, m.name)
+      return {
+        name: m.name,
+        source: describeMarketplaceSource(m.source),
+        fetched: !('error' in catalog),
+        plugins: 'error' in catalog ? null : catalog.manifest.plugins.length,
+        bundled: m.bundled === true,
+        ...(m.lastUpdated !== undefined ? { lastUpdated: m.lastUpdated } : {}),
+      }
+    })
+    return {
+      plugins: eff.plugins.map((p) => ({
+        id: p.id, name: p.name, marketplace: p.marketplace, version: p.version, enabled: p.enabled,
+        scopes: p.scopes.map((s) => s.scope), installPath: p.installPath,
+        ...(p.manifest?.description !== undefined ? { description: p.manifest.description } : {}),
+        skills: p.inventory.skills, commands: p.inventory.commands, agents: p.inventory.agents,
+        hooks: p.inventory.hooks.map((h) => `${h.event} ×${h.count}`), mcpServers: p.inventory.mcpServers,
+        problems: p.problems, decidedBy: p.decidedBy,
+      })),
+      marketplaces,
+      suggested: SUGGESTED_MARKETPLACES.filter((s) => !known.has(s.name)).map((s) => ({
+        name: s.name, source: s.source.source === 'github' ? s.source.repo : describeMarketplaceSource(s.source), why: s.why,
+      })),
+      declared: eff.declared,
+      problems: [...eff.problems, ...(this.plugins?.problems ?? []), ...(this.plugins?.ignored ?? [])],
+      store: store.root,
+    }
+  }
+
+  /** A marketplace's catalog (fetched on first use), or every registered one's. */
+  private async pluginsCatalog(params: PluginsCatalogParams): Promise<PluginsCatalogResult> {
+    const { workspaceRoot } = this.requireInitialized()
+    const store = this.requirePluginStore()
+    const installed = new Set(store.installed().map((p) => p.id))
+    const enabled = loadPluginSettings(workspaceRoot).enabledPlugins
+    const names = params.marketplace !== undefined ? [params.marketplace] : store.knownMarketplaces().map((m) => m.name)
+    const entries: PluginsCatalogResult['entries'] = []
+    const problems: string[] = []
+    for (const name of names) {
+      if (params.refresh === true) {
+        const updated = await updateMarketplace(store, name)
+        if ('error' in updated) { problems.push(updated.error); continue }
+      }
+      const catalog = await ensureFetched(store, name)
+      if ('error' in catalog) { problems.push(catalog.error); continue }
+      problems.push(...catalog.problems.map((p) => `${name}: ${p}`))
+      for (const e of catalog.manifest.plugins) {
+        const id = `${e.name}@${name}`
+        entries.push({
+          id, name: e.name, marketplace: name,
+          description: e.description ?? '',
+          ...(e.version !== undefined ? { version: e.version } : {}),
+          ...(e.category !== undefined ? { category: e.category } : {}),
+          ...(e.author?.name !== undefined ? { author: e.author.name } : {}),
+          source: describeSource(e.source),
+          keywords: [...(e.keywords ?? []), ...(e.tags ?? [])],
+          installed: installed.has(id),
+          enabled: enabled[id] === true,
+        })
+      }
+    }
+    return { entries, problems }
+  }
+
+  /**
+   * One `/plugin …` line, run the way the composer and the REPL run it, and applied to the
+   * running workspace at once: what changed on disk is what the next tool call sees.
+   */
+  private async pluginsCommand(params: PluginsCommandParams): Promise<PluginsCommandResult> {
+    const { workspaceRoot } = this.requireInitialized()
+    const cmd = parsePluginCommand(params.line)
+    if (cmd === null) return { ok: false, text: `✗ ${params.line} is not a plugin command. Try /plugin help.`, changed: false }
+    const outcome = await runPluginCommand(cmd, { store: this.requirePluginStore(), workspaceRoot, cwd: workspaceRoot, autoReload: true })
+    const result: PluginsCommandResult = { ok: outcome.ok, text: outcome.text, changed: outcome.changed, ...(outcome.open === true ? { open: true } : {}) }
+    if (outcome.changed || outcome.reload !== undefined) {
+      const reloaded = await this.reloadPlugins()
+      result.reloaded = { connected: reloaded.connected, closed: reloaded.closed, plugins: reloaded.plugins }
+      const lines = [`Plugins active in this workspace: ${reloaded.plugins.length === 0 ? 'none' : reloaded.plugins.join(', ')}.`]
+      if (reloaded.connected.length > 0) lines.push(`MCP servers connected: ${reloaded.connected.join(', ')}.`)
+      if (reloaded.closed.length > 0) lines.push(`MCP servers stopped: ${reloaded.closed.join(', ')}.`)
+      lines.push('Commands, agents, hooks and servers apply now; a new skill is listed to the model from the next session.')
+      for (const p of reloaded.problems) {
+        lines.push(`note: ${p}`)
+        this.emit('settings.problem', { text: p })
+      }
+      result.text = outcome.reload !== undefined ? lines.join('\n') : `${outcome.text}\n${lines.join('\n')}`
+    }
+    return result
   }
 
   /** The project file's `mcpServers` object, verbatim — see the protocol's rationale. */

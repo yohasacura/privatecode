@@ -118,10 +118,13 @@ const DOCTOR_COMMANDS: readonly string[] = ['/doctor', '/доктор']
 const GATES_OFF = '/gates off'
 const GATES_ON = '/gates on'
 
-for (const c of [COMPACT_COMMAND, ...DOCTOR_COMMANDS, ...Object.keys(GATE_COMMANDS)]) WINDOW_COMMANDS.add(c)
+/** Claude Code's plugin commands, run by the host and answered in the transcript (docs/PLUGINS-2026-09.md). */
+const PLUGIN_COMMANDS = ['/plugin', '/plugins', '/reload-plugins']
+
+for (const c of [COMPACT_COMMAND, ...DOCTOR_COMMANDS, ...Object.keys(GATE_COMMANDS), ...PLUGIN_COMMANDS]) WINDOW_COMMANDS.add(c)
 
 export function Composer({
-  client, state, dispatch, modalOpen, onAdoptViewed, locked,
+  client, state, dispatch, modalOpen, onAdoptViewed, locked, onOpenPlugins,
 }: {
   client: ProtocolClient
   state: ChatState
@@ -138,6 +141,8 @@ export function Composer({
    * Typing stays possible; only sending and queueing wait.
    */
   locked?: string
+  /** `/plugin` alone: open Settings → Plugins. Absent, a note says where they live. */
+  onOpenPlugins?: () => void
 }): VNode {
   const [input, setInput] = useState('')
   /**
@@ -448,6 +453,12 @@ export function Composer({
     // ALIAS matches and the canonical name is what gets completed — both run, and offering
     // the same command twice in one list is noise rather than helpfulness.
     aliases: ['доктор'],
+  }, {
+    name: 'plugin',
+    description: 'Plugins, as in Claude Code: /plugin marketplace add owner/repo, /plugin install name@marketplace, /plugin list, /plugin help',
+  }, {
+    name: 'reload-plugins',
+    description: 'Re-read the enabled plugins and apply them to this workspace now',
   }]
   const matching = slashPrefix === null || commandsDismissed
     ? []
@@ -905,6 +916,13 @@ export function Composer({
     const slash = /^\/([\p{L}\p{N}-]+)(?:\s|$)/u.exec(text)
     if (slash) {
       const name = slash[1]!.toLowerCase()
+      // Claude Code's plugin commands go to the host, which runs them against the plugin
+      // store and applies the change to this workspace; the report lands in the transcript
+      // as a note. `/plugin` alone opens the manager.
+      if (name === 'plugin' || name === 'plugins' || name === 'reload-plugins') {
+        runPluginLine(text)
+        return
+      }
       // A built-in reaching here means it was written with arguments it does not take
       // (`/review now`), or `/gates` without on|off. Same NOTE treatment as `/compact`:
       // send-failed would end a turn that is streaming perfectly well.
@@ -958,6 +976,28 @@ export function Composer({
     }
 
     deliver(text)
+  }
+
+  /**
+   * `/plugin …` and `/reload-plugins`: the host runs the line (docs/PLUGINS-2026-09.md) and
+   * the answer is shown as a note, never sent to the model — it is the same text the REPL
+   * prints, so a README written for Claude Code reads the same here.
+   */
+  function runPluginLine(line: string): void {
+    setInput('')
+    setMention(null)
+    client.call('plugins.command', { line })
+      .then((r) => {
+        if (r.open === true) {
+          if (onOpenPlugins !== undefined) onOpenPlugins()
+          else dispatch({ type: 'error-note', tone: 'info', message: 'Plugins live in Settings → Plugins.' })
+          return
+        }
+        dispatch(r.ok ? { type: 'error-note', tone: 'info', message: r.text } : { type: 'error-note', message: r.text })
+      })
+      .catch((e: unknown) => {
+        dispatch({ type: 'error-note', message: e instanceof Error ? e.message : String(e) })
+      })
   }
 
   /** The second half of `send()`: routing that applies once the text is cleared to go. */

@@ -18,6 +18,7 @@ function stubClient(): ProtocolClient {
         case 'server.probe': return { reachable: true, model: 'KAT-Coder', contextLength: 196_608 }
         case 'permissions.list': return { layers: [], mode: 'normal', problems: [] }
         case 'skills.list': return { skills: [], problems: [], dirs: [] }
+        case 'plugins.list': return { plugins: [], marketplaces: [], suggested: [], declared: [], problems: [], store: 'D:/appdata/PrivateCode/plugins' }
         case 'status': return {}
         case 'mcp.rawRead': return { json: '{}', path: 'D:/ws/.privatecode/settings.json' }
         default: return {}
@@ -61,14 +62,14 @@ beforeEach(() => { host = document.createElement('div'); document.body.appendChi
 afterEach(() => { render(null, host); host.remove(); document.body.innerHTML = '' })
 
 describe('the dialog', () => {
-  it('is a modal with seven sections in a vertical tab list, opening on the one asked for', () => {
+  it('is a modal with eight sections in a vertical tab list, opening on the one asked for', () => {
     draw('appearance')
     const dialog = document.querySelector('[role="dialog"][aria-modal="true"]')!
     expect(dialog).not.toBeNull()
     const list = dialog.querySelector('[role="tablist"]')!
     expect(list.getAttribute('aria-orientation')).toBe('vertical')
     expect([...list.querySelectorAll('[role="tab"]')].map((t) => t.textContent?.trim()))
-      .toEqual(['Server', 'Appearance', 'Permissions', 'Skills', 'MCP servers', 'Data', 'About'])
+      .toEqual(['Server', 'Appearance', 'Permissions', 'Skills', 'Plugins', 'MCP servers', 'Data', 'About'])
     expect(dialog.querySelector('[data-settings-pane]')?.getAttribute('data-settings-pane')).toBe('appearance')
   })
 

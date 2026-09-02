@@ -682,6 +682,9 @@ export interface HostMethodMap {
   'permissions.remove': { params: PermissionsRemoveParams; result: PermissionsRemoveResult }
   'permissions.add': { params: PermissionsAddParams; result: PermissionsAddResult }
   'skills.list': { params: SkillsListParams; result: SkillsListResult }
+  'plugins.list': { params: PluginsListParams; result: PluginsListResult }
+  'plugins.catalog': { params: PluginsCatalogParams; result: PluginsCatalogResult }
+  'plugins.command': { params: PluginsCommandParams; result: PluginsCommandResult }
   'mcp.rawRead': { params: McpRawReadParams; result: McpRawReadResult }
   'mcp.rawSave': { params: McpRawSaveParams; result: McpRawSaveResult }
   'run.start': { params: RunStartParams; result: RunStartResult }
@@ -1125,6 +1128,84 @@ export interface SkillsListResult {
   problems: string[]
   /** The two folders skills are read from, so an empty list can say where to put one. */
   dirs: { scope: 'user' | 'project'; path: string }[]
+}
+
+/**
+ * Plugins (docs/PLUGINS-2026-09.md, phase D): what is installed and enabled for this
+ * workspace, which marketplaces are registered, what a marketplace offers, and a way to run
+ * the very same `/plugin …` lines the composer and the REPL accept — so the Settings tab,
+ * the composer and a README's instructions all do one thing.
+ */
+export type PluginsListParams = Empty
+export interface PluginView {
+  /** `name@marketplace` */
+  id: string
+  name: string
+  marketplace: string
+  version: string
+  enabled: boolean
+  scopes: ('user' | 'project' | 'local')[]
+  installPath: string
+  description?: string
+  skills: string[]
+  commands: string[]
+  agents: string[]
+  /** `PreToolUse ×2` and the like. */
+  hooks: string[]
+  mcpServers: string[]
+  problems: string[]
+  /** The settings file whose `enabledPlugins` decided; null when no file names it. */
+  decidedBy: string | null
+}
+export interface MarketplaceView {
+  name: string
+  source: string
+  /** Whether its catalog is on this machine yet (the bundled ones are fetched on first use). */
+  fetched: boolean
+  plugins: number | null
+  bundled: boolean
+  lastUpdated?: string
+}
+export interface SuggestedMarketplaceView { name: string; source: string; why: string }
+export interface PluginsListResult {
+  plugins: PluginView[]
+  marketplaces: MarketplaceView[]
+  /** Worth adding, one click each; never registered unasked. */
+  suggested: SuggestedMarketplaceView[]
+  /** Enabled in a settings file but not installed. */
+  declared: { id: string; from: string }[]
+  problems: string[]
+  /** `%APPDATA%\PrivateCode\plugins` */
+  store: string
+}
+
+/** One marketplace's catalog, or every registered one's. Fetches a bundled catalog on first use. */
+export interface PluginsCatalogParams { marketplace?: string; refresh?: boolean }
+export interface CatalogEntryView {
+  id: string
+  name: string
+  marketplace: string
+  description: string
+  version?: string
+  category?: string
+  author?: string
+  /** Where its files come from, as one line. */
+  source: string
+  keywords: string[]
+  installed: boolean
+  enabled: boolean
+}
+export interface PluginsCatalogResult { entries: CatalogEntryView[]; problems: string[] }
+
+/** `/plugin …` or `/reload-plugins`, exactly as typed. A change is applied to the running workspace at once. */
+export interface PluginsCommandParams { line: string }
+export interface PluginsCommandResult {
+  ok: boolean
+  text: string
+  changed: boolean
+  /** `/plugin` alone: the window opens its plugin manager. */
+  open?: boolean
+  reloaded?: { connected: string[]; closed: string[]; plugins: string[] }
 }
 
 /**
