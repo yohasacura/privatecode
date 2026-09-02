@@ -251,7 +251,7 @@ export interface CsharpDiagnostics {
 }
 
 /** `abs` is `root` or inside it, ignoring case and separator spelling. */
-function isUnder(abs: string, root: string): boolean {
+export function isUnder(abs: string, root: string): boolean {
   const a = pathResolve(abs).toLowerCase()
   const r = pathResolve(root).toLowerCase()
   return a === r || a.startsWith(r.endsWith(sep) ? r : r + sep)

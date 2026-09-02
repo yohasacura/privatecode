@@ -269,6 +269,23 @@ describe.skipIf(!vendored)('the vendored C# navigator', () => {
     expect((def['results'] as unknown[]).length).toBe(1)
   })
 
+  test('a file outside the loaded tree is not pulled into it', async () => {
+    // Another folder of a multi-folder workspace, say: the session never sends one, and the
+    // helper refuses one anyway, because a document added from there would make the other
+    // folder part of this compilation.
+    const outside = mkdtempSync(join(tmpdir(), 'pc-roslyn-outside-'))
+    try {
+      writeFileSync(join(outside, 'Elsewhere.cs'), 'namespace Other;\npublic class Elsewhere { }\n', 'utf8')
+      const s = await helper.ask('sync', { files: [join(outside, 'Elsewhere.cs')] })
+      expect(s['ok']).toBe(true)
+      expect(s['added']).toBe(0)
+      const def = await helper.ask('definition', { symbol: 'Elsewhere' })
+      expect((def['results'] as unknown[]).length).toBe(0)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
   test('a file that is deleted leaves the index on the next sync', async () => {
     rmSync(join(root, 'src', 'Helper.cs'))
     const s = await helper.ask('sync', { files: [join(root, 'src', 'Helper.cs')] })

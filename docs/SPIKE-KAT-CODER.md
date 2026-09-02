@@ -222,8 +222,10 @@ The fix therefore has to be structural rather than more prose. The reviewer curr
 volunteers a list, which lets "in scope" and "is a defect" collapse into one judgement. Asking
 it the goal question SEPARATELY and under force — a required `goalMet: boolean` beside
 `where`, answered about the goal rather than about the diff — would make the out-of-scope
-escape hatch inexpressible instead of merely discouraged. Not built; recorded as the next
-thing to try, with a probe that already reproduces the failure.
+escape hatch inexpressible instead of merely discouraged. Built on 2026-08-22 (commit
+13f1f3a: `REVIEW_SCHEMA` requires `goalMet` and `goalGap`, and `parseReview` folds a
+`goalMet: false` into a finding against "the goal"), and measured on 2026-09-02 — see the
+end of this section.
 
 ### Reproduced a second time, in a full live session
 
@@ -245,7 +247,32 @@ while addressing three unrelated findings the reviewer had raised about the test
 because the reviewer named it. So the reviewer has now missed this defect in both recorded
 runs, and the one time it was fixed was luck.
 
-This is the strongest open item in the codebase: a turn can end reviewed, audited, verified
+This was the strongest open item in the codebase: a turn can end reviewed, audited, verified
 green and *done* over a goal that is not met. The fix is structural — a required `goalMet`
 answered about the GOAL rather than about the diff, so "out of scope" stops being an
-expressible way to decline — and it is not built.
+expressible way to decline.
+
+### Built, and measured three times (2026-09-02)
+
+The `goalMet` question shipped on 2026-08-22, but every measurement between 2026-08-28 and
+2026-09-02 was void: the forced-JSON verdict had been silently refused by the server for that
+whole week (`response_format` without `tool_choice: 'none'` on b10665 — SPEED-2026-09-02.md
+§2), so the reviewer was never actually asked. With the verdict restored, `spike/reviewer-probe.mts`
+was run three times against the same planted defect. **Found, three of three**, each time as
+a finding against "the goal" naming `src/credit-note.ts` and the unlocked counter:
+
+| run | reading + verdict | what the READING prose concluded | what the VERDICT said |
+|---|---:|---|---|
+| 1 | 50.8 s | the goal is not met until credit-note is fixed too | `goalMet: false`, credit-note named |
+| 2 | 146.3 s | "separate service, out of scope for the stated goal… The goal is met." | `goalMet: false`, credit-note named |
+| 3 | 66.3 s | walks the interleaving that corrupts the counter | `goalMet: false`, credit-note named |
+
+Run 2 is the one worth keeping. The reader's free text made exactly the excuse this section
+opens with — *out of scope, the goal is met* — and the forced question overrode it: asked
+"is the goal met" as a required boolean with a required reason, the model answered no and
+named the file. Prose lost to habit; structure did not. The same law as §4 and the 0/703, from
+the other side.
+
+The verdict is still only as good as the reading before it (run 2 took twice as long to reach
+the same answer), and three runs is a count, not a rate. The eval set (`eval/`) is where a
+rate comes from; this probe stays as the reproduction.

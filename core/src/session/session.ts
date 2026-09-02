@@ -24,7 +24,9 @@ import type { VerifySpec } from '../verify/config.js'
 import {
   MIDTURN_VERIFY_PREFIX, STILL_FAILING_SUFFIX, runVerify, verifyFailureMessage,
 } from '../verify/runner.js'
-import { csharpCheck as defaultCsharpCheck, csharpRoot, type CsharpDiagnostics } from '../csharp/nav-process.js'
+import {
+  csharpCheck as defaultCsharpCheck, csharpRoot, isUnder, type CsharpDiagnostics,
+} from '../csharp/nav-process.js'
 import type { InteractionPort, TodoItem } from '../interaction.js'
 import { LlamaRequestError, type LlamaClient } from '../llama/client.js'
 import type { ChatMessage, StreamProgress } from '../llama/types.js'
@@ -2890,6 +2892,9 @@ export class Session {
     if (check === null) return false
     if (written.length === 0 || !written.every((f) => f.toLowerCase().endsWith('.cs'))) return false
     const root = csharpRoot(this.workspace)
+    // A .cs file in another folder of the workspace is not in this compilation, and the
+    // build is the only thing that can speak for it.
+    if (!written.every((f) => isUnder(f, root))) return false
     const startedAt = Date.now()
     let result: CsharpDiagnostics | null
     try {

@@ -75,12 +75,17 @@ async function runTask(task: Task): Promise<TaskResult> {
 
   for (const plant of task.plant ?? []) {
     const file = join(primary.root, plant.file)
-    const before = readFileSync(file, 'utf8')
-    const count = before.split(plant.from).length - 1
+    const raw = readFileSync(file, 'utf8')
+    // The anchors are written with \n; the projects are checked out with CRLF. Match on the
+    // file's own line endings and write them back unchanged.
+    const eol = raw.includes('\r\n') ? '\r\n' : '\n'
+    const from = plant.from.split('\n').join(eol)
+    const to = plant.to.split('\n').join(eol)
+    const count = raw.split(from).length - 1
     if (count !== (plant.count ?? 1)) {
       throw new Error(`${task.id}: plant expected ${plant.count ?? 1} occurrence(s) in ${plant.file}, found ${count}`)
     }
-    writeFileSync(file, before.split(plant.from).join(plant.to), 'utf8')
+    writeFileSync(file, raw.split(from).join(to), 'utf8')
   }
 
   const rows: Row[] = []
@@ -315,23 +320,39 @@ async function main(): Promise<void> {
         readCalls: 0, writeCalls: 0, selfChecks: 0, verifyRuns: 0, compilerChecks: 0, finalText: '', timedOut: false, error: message,
       })
     }
+    // After EVERY task, not only at the end: a run killed at task nine still has eight results,
+    // and a person watching can read the table while it grows.
+    persist(results, render(results, started, tasks.length))
+    console.log(`  [${results.filter((r) => r.pass).length}/${results.length} passed so far, ${tasks.length - results.length} to go]`)
   }
 
-  const md = [`# Eval — ${LABEL}`, '', `${new Date().toISOString()} · gates ${GATES} · ${Math.round((Date.now() - started) / 1000)} s`, '', table(results)]
+  const report = render(results, started, tasks.length)
+  console.log(`\n${report}`)
+  persist(results, report)
+  console.log(`\nwritten: eval/results/${BASE}.json and .md`)
+  process.exit(results.every((r) => r.pass) ? 0 : 1)
+}
+
+const BASE = `${LABEL}-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`
+
+function render(results: TaskResult[], started: number, planned: number): string {
+  const md = [
+    `# Eval — ${LABEL}`, '',
+    `${new Date().toISOString()} · gates ${GATES} · ${Math.round((Date.now() - started) / 1000)} s` +
+      (results.length < planned ? ` · ${results.length} of ${planned} tasks so far` : ''),
+    '', table(results),
+  ]
   const failed = failures(results)
   if (failed) md.push('', '## Failures', '', failed)
   if (BASELINE) md.push('', `## Against ${BASELINE}`, '', compare(results, BASELINE))
-  const report = md.join('\n')
-  console.log(`\n${report}`)
+  return md.join('\n')
+}
 
+function persist(results: TaskResult[], report: string): void {
   const outDir = new URL('./results/', import.meta.url)
   mkdirSync(outDir, { recursive: true })
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const base = `${LABEL}-${stamp}`
-  writeFileSync(new URL(`./results/${base}.json`, import.meta.url), JSON.stringify({ label: LABEL, gates: GATES, at: new Date().toISOString(), results }, null, 1), 'utf8')
-  writeFileSync(new URL(`./results/${base}.md`, import.meta.url), report, 'utf8')
-  console.log(`\nwritten: eval/results/${base}.json and .md`)
-  process.exit(results.every((r) => r.pass) ? 0 : 1)
+  writeFileSync(new URL(`./results/${BASE}.json`, import.meta.url), JSON.stringify({ label: LABEL, gates: GATES, at: new Date().toISOString(), results }, null, 1), 'utf8')
+  writeFileSync(new URL(`./results/${BASE}.md`, import.meta.url), report, 'utf8')
 }
 
 main().catch((e) => {

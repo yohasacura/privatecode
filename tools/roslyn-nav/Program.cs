@@ -840,6 +840,9 @@ public static class Program
             try { full = Path.GetFullPath(Path.IsPathRooted(raw) ? raw : Path.Combine(_root, raw)); }
             catch { continue; }
             if (!full.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) continue;
+            // A file outside the loaded tree is not part of this compilation — another folder
+            // of a multi-folder workspace, say — and adding it would make it one.
+            if (!IsUnderRoot(full)) continue;
             var project = solution.GetProject(_projectId!)!;
             var doc = project.Documents.FirstOrDefault(d =>
                 d.FilePath is not null &&
@@ -999,6 +1002,12 @@ public static class Program
     {
         try { return Path.GetFullPath(path); }
         catch { return path; }
+    }
+
+    private static bool IsUnderRoot(string full)
+    {
+        var root = SafeFullPath(_root).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+        return full.StartsWith(root, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>File, code and message — no line, so an error that merely moved is the same error.</summary>
