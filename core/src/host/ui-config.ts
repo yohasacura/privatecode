@@ -127,11 +127,14 @@ const MAX_RECENT_WORKSPACES = 8
  * `Workspace`, matching `addRuleToSettings`'s own reasoning.
  */
 export function saveUiConfig(
-  patch: { serverUrl?: string; recentWorkspace?: string; theme?: ThemeSetting },
+  patch: { serverUrl?: string; recentWorkspace?: string; theme?: ThemeSetting; forgetWorkspace?: string },
   path: string = uiConfigPath(),
 ): void {
   const { config } = loadUiConfig(path)
   if (patch.theme !== undefined) config.theme = patch.theme
+  if (patch.forgetWorkspace !== undefined) {
+    config.recentWorkspaces = config.recentWorkspaces.filter((w) => w !== patch.forgetWorkspace)
+  }
 
   if (patch.serverUrl !== undefined) config.serverUrl = patch.serverUrl
 

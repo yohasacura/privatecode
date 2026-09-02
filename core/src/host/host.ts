@@ -133,6 +133,7 @@ import type {
   TerminalRunParams,
   TerminalRunResult,
   TurnSummary,
+  ServerProbeParams, ServerProbeResult,
 } from './protocol.js'
 import { loadUiConfig, saveUiConfig } from './ui-config.js'
 import { replayEntries, toolOutcomes } from './replay.js'
@@ -512,6 +513,7 @@ export class SessionHost {
       case 'todos.clear': return this.todosClear()
       case 'config.get': return this.configGet()
       case 'config.set': return this.configSet(params as ConfigSetParams)
+      case 'server.probe': return this.serverProbe(params as ServerProbeParams)
       case 'checkpoints.list': return this.checkpointsList(params as CheckpointsListParams)
       case 'checkpoints.rewind': return this.checkpointsRewind(params as CheckpointsRewindParams)
       case 'checkpoints.restoreFile':
@@ -2352,8 +2354,10 @@ export class SessionHost {
   private configGet(): ConfigGetResult {
     const { config, problems } = loadUiConfig()
     for (const p of problems) this.emit('settings.problem', { text: p })
+    const missing = config.recentWorkspaces.filter((w) => !existsSync(w))
     return {
       recentWorkspaces: config.recentWorkspaces,
+      ...(missing.length > 0 ? { missingWorkspaces: missing } : {}),
       ...(config.serverUrl !== undefined ? { serverUrl: config.serverUrl } : {}),
       ...(config.theme !== undefined ? { theme: config.theme } : {}),
     }
@@ -2364,8 +2368,56 @@ export class SessionHost {
       ...(params.serverUrl !== undefined ? { serverUrl: params.serverUrl } : {}),
       ...(params.recentWorkspace !== undefined ? { recentWorkspace: params.recentWorkspace } : {}),
       ...(params.theme !== undefined ? { theme: params.theme } : {}),
+      ...(params.forgetWorkspace !== undefined ? { forgetWorkspace: params.forgetWorkspace } : {}),
     })
     return {}
+  }
+
+  /**
+   * The welcome screen's question, answered in words a person can act on. Classified from
+   * what the request actually did: a refused connection, a timeout, a server that answered
+   * but is not llama.cpp (an HTML page, a 404), or a llama.cpp server with no model.
+   */
+  private async serverProbe(params: ServerProbeParams): Promise<ServerProbeResult> {
+    const url = params.serverUrl.trim()
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return { reachable: false, reason: 'not a URL — something like http://127.0.0.1:8080' }
+    }
+    // `new URL('localhost:8080')` parses, with `localhost:` as its scheme; only http(s) with a
+    // host is a server address.
+    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.hostname === '') {
+      return { reachable: false, reason: 'not a URL — something like http://127.0.0.1:8080' }
+    }
+    const probe = new LlamaClient({ baseUrl: url, model: FALLBACK_MODEL, requestTimeoutMs: HEALTH_CHECK_TIMEOUT_MS })
+    try {
+      const props = await probe.props()
+      const model = modelNameFrom(props.modelPath)
+      if (model === null) return { reachable: false, reason: 'the server answered, but has no model loaded' }
+      return {
+        reachable: true,
+        model,
+        ...(props.contextLength !== undefined ? { contextLength: props.contextLength } : {}),
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      const where = `${parsed.hostname}:${parsed.port || (parsed.protocol === 'https:' ? '443' : '80')}`
+      if (e instanceof LlamaRequestError && e.transportTimeout === true) {
+        return { reachable: false, reason: `no answer from ${where} within ${HEALTH_CHECK_TIMEOUT_MS / 1000} s` }
+      }
+      if (e instanceof LlamaRequestError && e.status !== undefined) {
+        return { reachable: false, reason: `${where} answered HTTP ${e.status} to /props — this is not a llama.cpp server` }
+      }
+      if (/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|fetch failed/i.test(message)) {
+        return { reachable: false, reason: `nothing is listening at ${where}` }
+      }
+      if (/JSON|Unexpected token|not valid/i.test(message)) {
+        return { reachable: false, reason: `${where} answered, but not as a llama.cpp server` }
+      }
+      return { reachable: false, reason: message }
+    }
   }
 
   // -----------------------------------------------------------------------------------

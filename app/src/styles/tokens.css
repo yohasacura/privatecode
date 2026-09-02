@@ -268,15 +268,18 @@
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-line: var(--accent-line);
   --color-on-accent: var(--on-accent);
   --color-green: var(--green);
   --color-green-soft: var(--green-soft);
   --color-red: var(--red);
   --color-red-soft: var(--red-soft);
+  --color-red-line: var(--red-line);
   --color-blue: var(--blue);
   --color-blue-soft: var(--blue-soft);
   --color-yellow: var(--yellow);
   --color-yellow-soft: var(--yellow-soft);
+  --color-yellow-line: var(--yellow-line);
 
   --font-ui: var(--ui);
   --font-mono: var(--mono);

@@ -349,7 +349,7 @@ test('the update notice is shown before any folder is open, not only inside a wo
 
   // The welcome screen, genuinely: no workspace body anywhere in the document.
   expect(host.querySelector('.body')).toBeNull()
-  expect(host.querySelector('.welcome-card')).not.toBeNull()
+  expect(host.querySelector('[data-screen="welcome"]')).not.toBeNull()
 
   const strip = host.querySelector('.update-strip')
   expect(strip).not.toBeNull()
@@ -488,7 +488,7 @@ test('after an update, the new version says where it came from — before any fo
   render(<App />, host)
   await settle()
 
-  expect(host.querySelector('.welcome-card')).not.toBeNull()
+  expect(host.querySelector('[data-screen="welcome"]')).not.toBeNull()
   const strip = host.querySelector('.updated-strip')
   expect(strip?.textContent).toContain('Updated to PrivateCode 0.3.1 from 0.3.0')
   ;(strip!.querySelector('.icon-button') as HTMLElement).click()

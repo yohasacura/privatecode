@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
-import type { VNode } from 'preact'
-import {
-  createClient, restartSidecar, sidecarStderr, withTimeout, wsUrlFromSearch,
-  type ConnectionState, type ProtocolClient,
-} from './lib/client'
+import { createClient, sidecarStderr, withTimeout, wsUrlFromSearch, type ConnectionState, type ProtocolClient } from './lib/client'
 import { useChatSession } from './lib/use-chat-session'
 import { notify } from './lib/notify'
 import {
@@ -24,6 +20,8 @@ import { SessionsRail, type SessionSwitch } from './panels/sessions-rail'
 import { SettingsModal } from './panels/status'
 import { StatusBar } from './shell/statusbar'
 import { TitleBar } from './shell/titlebar'
+import { Welcome } from './shell/welcome'
+import { AgentDown } from './shell/agent-down'
 import { Toaster } from './ui/toast'
 import { WorkspaceSwitch } from './panels/workspace-switch'
 import { Palette, type PaletteAction } from './panels/palette'
@@ -136,66 +134,6 @@ function saveLayout(key: string, value: unknown): void {
   try { localStorage.setItem(`pc.layout.${key}`, JSON.stringify(value)) } catch { /* private mode */ }
 }
 
-/**
- * The agent-unreachable screen: what went wrong, what the agent printed on its way out, and
- * a way back. This replaces the state the app was actually in the first time it was run for
- * real — "starting the agent…" forever, with no error, no diagnostics and no recovery.
- */
-function AgentDown({
-  phase, isDevBridge,
-}: {
-  phase: { kind: 'unreachable'; reason: string; stderr: string[] }
-  isDevBridge: boolean
-}): VNode {
-  const [restarting, setRestarting] = useState(false)
-
-  function restart(): void {
-    setRestarting(true)
-    // A fresh sidecar means a fresh SessionHost; reloading is the honest way to get this
-    // window's own state back in step with it rather than patching around a half-live one.
-    restartSidecar()
-      .then(() => window.location.reload())
-      .catch(() => setRestarting(false))
-  }
-
-  return (
-    <div class="welcome">
-      <div class="welcome-card">
-        <div class="welcome-logo welcome-logo-bad" aria-hidden="true">{Icon.alert()}</div>
-        <h1>The agent isn’t running</h1>
-        <p class="welcome-sub">{phase.reason}.</p>
-
-        {phase.stderr.length > 0
-          ? (
-            <>
-              <div class="field-label">What it printed</div>
-              <pre class="agent-stderr">{phase.stderr.slice(-40).join('\n')}</pre>
-            </>
-            )
-          : (
-            <p class="field-hint">
-              It left no output, which usually means the process was killed rather than that
-              it failed on its own.
-            </p>
-            )}
-
-        {isDevBridge
-          ? (
-            <p class="field-hint">
-              This window is running against the dev bridge. Restart it with
-              {' '}<code>npm run host:dev</code> and reload.
-            </p>
-            )
-          : (
-            <button class="btn btn-primary welcome-connect" disabled={restarting} onClick={restart}>
-              {restarting ? 'Restarting…' : 'Restart the agent'}
-            </button>
-            )}
-      </div>
-    </div>
-  )
-}
-
 export default function App() {
   const [client, setClient] = useState<ProtocolClient | null>(null)
   const [connState, setConnState] = useState<ConnectionState>('connecting')
@@ -203,6 +141,10 @@ export default function App() {
   const [workspaceInput, setWorkspaceInput] = useState('')
   const [serverInput, setServerInput] = useState(DEFAULT_SERVER_URL)
   const [recents, setRecents] = useState<string[]>([])
+  /** The recents whose folder is gone, as the host reports at `config.get`. */
+  const [missingRecents, setMissingRecents] = useState<string[]>([])
+  /** The shell's version, for the welcome screen's corner; null in the dev bridge. */
+  const [appVersionShown, setAppVersionShown] = useState<string | null>(null)
   /** Files opened as tabs beside the chat, and which tab is fronted (`null` = Chat).
    * The owner's ruling: files and diffs are siblings of the conversation, not an overlay
    * squeezed into the 420px side panel. */
@@ -436,6 +378,7 @@ export default function App() {
       let appVersion: string | undefined
       try {
         appVersion = await (await import('@tauri-apps/api/app')).getVersion()
+        setAppVersionShown(appVersion)
       } catch { /* not running under Tauri */ }
       const init = await c.call('init', {
         workspaceRoot: workspace, serverUrl, continueLast: true,
@@ -507,6 +450,18 @@ export default function App() {
    * back as the workspace to auto-connect to next launch. The user believes they are
    * reopening the workspace they just closed.
    */
+  /** Asked by name, so every outcome is said — the automatic check is the silent one. */
+  function checkForUpdatesByHand(): Promise<void> {
+    return checkForUpdate().then((r) => {
+      switch (r.kind) {
+        case 'available': setUpdateError(null); setUpdate(r.update); return
+        case 'latest': dispatch({ type: 'error-note', tone: 'info', message: `PrivateCode ${r.currentVersion} is the latest version.` }); return
+        case 'failed': dispatch({ type: 'error-note', message: `Could not check for updates: ${r.reason}` }); return
+        case 'unavailable': dispatch({ type: 'error-note', tone: 'info', message: 'Updates are only available in the desktop app.' }); return
+      }
+    })
+  }
+
   function onWorkspaceOpened(
     info: SessionSwitch & { workspaceRoot: string; workspaceName: string; folderCount: number },
   ): void {
@@ -538,6 +493,7 @@ export default function App() {
         const savedUrl = cfg.serverUrl ?? DEFAULT_SERVER_URL
         setServerInput(savedUrl)
         setRecents(cfg.recentWorkspaces)
+        setMissingRecents(cfg.missingWorkspaces ?? [])
         if (isThemeSetting(cfg.theme)) setThemeSetting(cfg.theme)
         const last = cfg.recentWorkspaces[0]
         if (last) {
@@ -698,18 +654,7 @@ export default function App() {
         return
       case 'command':
         if (action.id === 'settings') { setSettingsOpen(true); return }
-        if (action.id === 'check-updates') {
-          // Asked by name, so every outcome is said — the automatic check is the silent one.
-          void checkForUpdate().then((r) => {
-            switch (r.kind) {
-              case 'available': setUpdateError(null); setUpdate(r.update); return
-              case 'latest': dispatch({ type: 'error-note', tone: 'info', message: `PrivateCode ${r.currentVersion} is the latest version.` }); return
-              case 'failed': dispatch({ type: 'error-note', message: `Could not check for updates: ${r.reason}` }); return
-              case 'unavailable': dispatch({ type: 'error-note', tone: 'info', message: 'Updates are only available in the desktop app.' }); return
-            }
-          })
-          return
-        }
+        if (action.id === 'check-updates') { void checkForUpdatesByHand(); return }
         if (action.id === 'copy-conversation') {
           // The conversation on SCREEN, which is the viewed session when one is open: what
           // you are reading is what "copy" means.
@@ -837,7 +782,7 @@ export default function App() {
       })()}
 
       {phase.kind === 'unreachable'
-        ? <AgentDown phase={phase} isDevBridge={isDevBridge} />
+        ? <AgentDown reason={phase.reason} stderr={phase.stderr} isDevBridge={isDevBridge} />
         : ready && client
         ? (
           <div class="body">
@@ -1001,64 +946,28 @@ export default function App() {
           </div>
           )
         : (
-          <div class="welcome">
-            <div class="welcome-card">
-              <div class="welcome-logo" aria-hidden="true">{Icon.shield()}</div>
-              <h1>PrivateCode</h1>
-              <p class="welcome-sub">A coding agent that runs entirely on your machine.</p>
-
-              {phase.kind === 'boot' && <p class="welcome-wait">starting the agent…</p>}
-              {phase.kind === 'initializing' && (
-                <p class="welcome-wait">opening {baseName(phase.workspace)}…</p>
-              )}
-
-              {phase.kind === 'welcome' && client && (
-                <>
-                  {phase.error && <div class="panel-error">{phase.error}</div>}
-
-                  <label class="field-label" for="ws-input">Project folder</label>
-                  <div class="field-row">
-                    <input
-                      id="ws-input"
-                      class="input"
-                      placeholder={isDevBridge ? 'D:\\Projects\\my-app' : 'pick a folder…'}
-                      value={workspaceInput}
-                      onInput={(e) => setWorkspaceInput((e.target as HTMLInputElement).value)}
-                    />
-                    {!isDevBridge && (
-                      <button class="btn" onClick={() => void pickWorkspaceDialog()}>Browse…</button>
-                    )}
-                  </div>
-
-                  {recents.length > 0 && (
-                    <div class="recent-list">
-                      {recents.slice(0, 5).map((r) => (
-                        <button key={r} class="recent-item" title={r} onClick={() => setWorkspaceInput(r)}>
-                          {baseName(r)}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  <label class="field-label" for="srv-input">Model server</label>
-                  <input
-                    id="srv-input"
-                    class="input"
-                    value={serverInput}
-                    onInput={(e) => setServerInput((e.target as HTMLInputElement).value)}
-                  />
-
-                  <button
-                    class="btn btn-primary welcome-connect"
-                    disabled={workspaceInput.trim() === '' || serverInput.trim() === ''}
-                    onClick={() => void connect(client, workspaceInput.trim(), serverInput.trim())}
-                  >
-                    Open workspace
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
+          <Welcome
+            client={client}
+            phase={phase.kind === 'boot' ? { kind: 'boot' }
+              : phase.kind === 'initializing' ? { kind: 'initializing', workspace: phase.workspace }
+              : { kind: 'welcome', error: phase.kind === 'welcome' ? phase.error : null }}
+            isDevBridge={isDevBridge}
+            version={appVersionShown}
+            recents={recents}
+            missing={missingRecents}
+            workspace={workspaceInput}
+            onWorkspaceChange={setWorkspaceInput}
+            server={serverInput}
+            onServerChange={setServerInput}
+            onBrowse={() => void pickWorkspaceDialog()}
+            onForget={(path) => {
+              setRecents((r) => r.filter((x) => x !== path))
+              setMissingRecents((m) => m.filter((x) => x !== path))
+              client?.call('config.set', { forgetWorkspace: path }).catch(() => { /* the row is gone for this run anyway */ })
+            }}
+            onOpen={(workspace, server) => { if (client) void connect(client, workspace, server) }}
+            onCheckForUpdates={() => void checkForUpdatesByHand()}
+          />
           )}
       </div>
 

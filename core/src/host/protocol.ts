@@ -583,6 +583,9 @@ export type ConfigGetParams = Empty
 export interface ConfigGetResult {
   serverUrl?: string
   recentWorkspaces: string[]
+  /** The entries of `recentWorkspaces` whose folder no longer exists on disk, so the
+   * welcome screen can say so on the row instead of failing on the click. */
+  missingWorkspaces?: string[]
   /** `system` (the default when absent), `dark` or `light`. */
   theme?: 'system' | 'dark' | 'light'
 }
@@ -590,12 +593,29 @@ export interface ConfigGetResult {
 export interface ConfigSetParams {
   serverUrl?: string
   theme?: 'system' | 'dark' | 'light'
+  /** Drops one path from the recent list — the "forget" on a welcome-screen row. */
+  forgetWorkspace?: string
   /** Records this workspace path as most-recently-used (most-recent-first, deduplicated,
    * capped) -- the UI's own concern, not something `init` does implicitly, so a workspace
    * is only ever remembered when the UI explicitly asks to. */
   recentWorkspace?: string
 }
 export type ConfigSetResult = Empty
+
+/**
+ * Is there a llama.cpp server at this URL, and what is it serving? Asked by the welcome
+ * screen while the person types, BEFORE `init` — so the Open button can say "nothing is
+ * listening at :8080" in place of failing after the click. Never throws: an unreachable
+ * server is an ordinary answer here.
+ */
+export interface ServerProbeParams { serverUrl: string }
+export interface ServerProbeResult {
+  reachable: boolean
+  model?: string
+  contextLength?: number
+  /** Why not, in the words a person can act on, when `reachable` is false. */
+  reason?: string
+}
 
 /**
  * Every method this protocol defines, method name -> {params, result}. Nothing in this
@@ -645,6 +665,7 @@ export interface HostMethodMap {
   'todos.clear': { params: Empty; result: Empty }
   'config.get': { params: ConfigGetParams; result: ConfigGetResult }
   'config.set': { params: ConfigSetParams; result: ConfigSetResult }
+  'server.probe': { params: ServerProbeParams; result: ServerProbeResult }
   'checkpoints.list': { params: CheckpointsListParams; result: CheckpointsListResult }
   'checkpoints.rewind': { params: CheckpointsRewindParams; result: CheckpointsRewindResult }
   'decisions.list': { params: DecisionsListParams; result: DecisionsListResult }
