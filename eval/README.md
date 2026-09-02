@@ -28,13 +28,16 @@ depending on the gate profile.
 - **hidden tests** — xunit tests from `hidden/<task>/` are dropped into the test project
   *after* the model finishes and must pass, along with every existing test (so a change
   that breaks something else fails too)
-- **grep** — named strings present in named files, for the tasks whose project has no test
-  harness wired for hidden tests yet
+- **grep** — named strings present in named files
 
 A bugfix task **plants** its bug into the copy first, so the fix is measured against a defect
-that really is there. WindowsOptimizer (32 files, WPF) carries the ten tasks with hidden
-tests; black-port (two folders, ~600 files, ASP.NET + Next.js) carries five checked by build
-and grep.
+that really is there. WindowsOptimizer (32 files, WPF) has a test project of its own and
+carries ten tasks. black-port (two folders, ~600 files, ASP.NET + Next.js) has none, so the
+eval brings its own — `hidden-blackport/BlackPort.Eval.Tests`, copied into the backend after
+the model finishes and restored from the machine's NuGet cache (about 25 s) — and four of
+its five tasks are checked there: entity behaviour directly, an endpoint by the route
+attribute on its action and the shape of its DTO. The frontend task is grep only, because
+the copy has no `node_modules` to type-check with.
 
 ## What comes out
 
@@ -47,7 +50,8 @@ The exit code is 0 only when every task passed.
 
 ## Adding a task
 
-Add an entry to `tasks.ts`; for a WindowsOptimizer task, add a test class under
-`hidden/<task-id>/` in the namespace `WinOptimizer.Tests.Eval`. A hidden test should reach
+Add an entry to `tasks.ts` and a test class under `hidden/<task-id>/` — namespace
+`WinOptimizer.Tests.Eval` for WindowsOptimizer, `BlackPort.Eval.Tests` for black-port (where
+`Reflect.cs` in the template has the helpers for members and routes). A hidden test should reach
 new members by reflection (`typeof(Snapshot).GetProperty("SavedAt")`) so a model that named
 things differently fails the test rather than the compile of every other test.

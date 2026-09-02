@@ -296,6 +296,63 @@ describe.skipIf(!vendored)('the vendored C# navigator', () => {
   })
 })
 
+describe.skipIf(!vendored)('what the SDK generated into obj/', () => {
+  // The implicit global usings and the XAML partials live in obj/, and a compilation that
+  // skips obj/ reports every `List<T>` in a file without its using and every
+  // `InitializeComponent()` as an error the real build never has — 291 of them on a 32-file
+  // WPF app before this was fixed. WPF's throwaway `_wpftmp` project leaves a second copy of
+  // the same generated files behind on every build; those must not be loaded.
+  let genRoot: string
+  let own: Helper
+
+  beforeAll(async () => {
+    genRoot = mkdtempSync(join(tmpdir(), 'pc-roslyn-gen-'))
+    const write = (rel: string, body: string): void => {
+      mkdirSync(dirname(join(genRoot, rel)), { recursive: true })
+      writeFileSync(join(genRoot, rel), body, 'utf8')
+    }
+    write('App.csproj', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>')
+    // No `using System.Collections.Generic;` — the global using in obj/ supplies it.
+    write('src/Bag.cs', 'namespace App;\npublic partial class Bag { public List<int> Items { get; } = new(); public void Show() => Partial(); public partial void Partial(); }\n')
+    write('src/Bag.Other.cs', 'namespace App;\npublic partial class Bag { }\n')
+    write('obj/Debug/net10.0/App.GlobalUsings.g.cs', 'global using global::System.Collections.Generic;\n')
+    // The other half of the partial, generated the way XAML partials are.
+    write('obj/Debug/net10.0/Bag.g.cs', 'namespace App;\npublic partial class Bag { public partial void Partial() { } }\n')
+    write('obj/Debug/net10.0/App_k2x9_wpftmp.GlobalUsings.g.cs', 'global using global::System.Collections.Generic;\n')
+    write('obj/Debug/net10.0/App.AssemblyInfo.cs', '[assembly: System.Reflection.AssemblyTitleAttribute("App")]\n')
+    own = start()
+    await own.ask('status')
+  })
+
+  afterAll(() => {
+    own?.stop()
+    rmSync(genRoot, { recursive: true, force: true })
+  })
+
+  test('the generated sources compile with the tree, and the leftovers do not', async () => {
+    const loaded = await own.ask('load', { root: genRoot })
+    expect(loaded['ok']).toBe(true)
+    // The two hand-written files; obj/ is not a source.
+    expect(loaded['files']).toBe(2)
+    expect(loaded['generated']).toBe(2)
+    const status = await own.ask('status')
+    const generated = (status['generated'] as string[]).map((p) => p.replace(/\\/g, '/').split('/').pop())
+    expect(generated.sort()).toEqual(['App.GlobalUsings.g.cs', 'Bag.g.cs'])
+    const d = await own.ask('diagnostics')
+    expect(d['errors']).toEqual([])
+    expect(d['baseline']).toBe(0)
+  })
+
+  test('navigation never lists a generated file, but a partial resolves to its real half', async () => {
+    const def = await own.ask('definition', { symbol: 'Bag' })
+    const files = (def['results'] as { located: { file: string } }[]).map((r) => r.located.file.replace(/\\/g, '/'))
+    expect(files).toHaveLength(1)
+    expect(files[0]).not.toContain('/obj/')
+    const refs = await own.ask('references', { symbol: 'Partial' })
+    for (const row of refs['results'] as { file: string }[]) expect(row.file.replace(/\\/g, '/')).not.toContain('/obj/')
+  })
+})
+
 describe.skipIf(!vendored)('errors a tree already had', () => {
   let brokenRoot: string
   let own: Helper

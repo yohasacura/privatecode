@@ -7,9 +7,11 @@
  * in named files. A bugfix task PLANTS its bug into the copy first, so the fix is measured
  * against a defect that really is there.
  *
- * WindowsOptimizer is the small case (23 files); black-port the owner's real shape (two
- * folders, ~600 files), where the checks are the build plus grep, because its test project
- * is not wired for hidden tests yet.
+ * WindowsOptimizer is the small case (32 files) with its own test project; black-port is the
+ * owner's real shape (two folders, ~600 files) and has none, so a test project of the eval's
+ * own (eval/hidden-blackport/) is dropped in after the model finishes — entity behaviour is
+ * tested directly, an endpoint by the route attribute on its action and the shape of its DTO.
+ * The frontend task is grep only: the copy has no node_modules to type-check with.
  */
 export interface Plant {
   /** Folder-relative path inside the primary folder. */
@@ -175,6 +177,7 @@ export const TASKS: Task[] = [
     id: 'bp-count-by-status',
     workspace: 'blackport',
     kind: 'feature',
+    hidden: 'bp-count-by-status',
     text:
       'In the backend, add an endpoint GET api/crm/leads/count-by-status to LeadsController. For the leads the ' +
       'current user is allowed to see — everyone with LeadsViewAll sees all of them, anyone else only the leads ' +
@@ -191,6 +194,7 @@ export const TASKS: Task[] = [
     id: 'bp-quote-cost-total',
     workspace: 'blackport',
     kind: 'feature',
+    hidden: 'bp-quote-cost-total',
     text:
       'In the backend domain, add a read-only computed property `CostTotal` (decimal) to the Quote entity in ' +
       'BlackPort.Domain/Entities/Quote.cs that returns the sum of Amount over its Lines (currencies are not ' +
@@ -205,6 +209,7 @@ export const TASKS: Task[] = [
     id: 'bp-quote-is-expired',
     workspace: 'blackport',
     kind: 'feature',
+    hidden: 'bp-quote-is-expired',
     text:
       'In BlackPort.Domain/Entities/Quote.cs add a read-only computed property `IsExpired` (bool): true when ' +
       'ValidUntilUtc has a value and that value is earlier than DateTime.UtcNow, false otherwise. Mark it ' +
@@ -218,6 +223,7 @@ export const TASKS: Task[] = [
     id: 'bp-dashboard-lead-sources',
     workspace: 'blackport',
     kind: 'feature',
+    hidden: 'bp-dashboard-lead-sources',
     text:
       'In the backend, add an endpoint GET api/crm/dashboard/lead-sources to DashboardController ' +
       '(BlackPort.Api/Controllers/Crm/DashboardController.cs) returning, for the leads the current user may see ' +

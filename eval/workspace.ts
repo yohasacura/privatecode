@@ -24,8 +24,13 @@ export interface Shape {
   verify: Record<string, string>
   /** Files left out of the copy, per folder. */
   dropInCopy?: Record<string, string[]>
-  /** Where the C# test project lives, folder-relative, for hidden tests. */
-  testProject?: { folder: string; dir: string; csproj: string }
+  /**
+   * Where the C# test project lives, folder-relative, for hidden tests. `template` names a
+   * directory under eval/ that IS the test project, copied into the folder after the model
+   * has finished — for a project that has no test project of its own. A templated project
+   * is restored (from the machine's NuGet cache; ~25 s measured); an existing one is not.
+   */
+  testProject?: { folder: string; dir: string; csproj: string; template?: string }
 }
 
 export const SHAPES: Record<string, Shape> = {
@@ -69,6 +74,10 @@ export const SHAPES: Record<string, Shape> = {
     ].map((p) => `backend/${p}`),
     verify: {
       backend: 'dotnet build BlackPort.Api/BlackPort.Api.csproj --no-restore --nologo -v q',
+    },
+    testProject: {
+      folder: 'backend', dir: 'BlackPort.Eval.Tests', csproj: 'BlackPort.Eval.Tests.csproj',
+      template: 'hidden-blackport/BlackPort.Eval.Tests',
     },
   },
 }

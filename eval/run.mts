@@ -16,7 +16,7 @@
  * The originals are only ever READ: each task works in a copy under the system temp folder,
  * removed when the task is done.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { LlamaClient } from '../core/src/llama/client.js'
 import { Session, type SessionOptions, type StageInfo } from '../core/src/session/session.js'
@@ -188,11 +188,15 @@ async function runTask(task: Task): Promise<TaskResult> {
       checks.push({ name: 'hidden-tests', ok: false, detail: 'shape has no test project' })
     } else {
       const testDir = join(mounts.find((m) => m.name === tp.folder)!.root, tp.dir)
+      if (tp.template !== undefined) {
+        cpSync(new URL(`./${tp.template}/`, import.meta.url), testDir, { recursive: true })
+      }
       const hiddenDir = new URL(`./hidden/${task.hidden}/`, import.meta.url)
       for (const f of readdirSync(hiddenDir)) {
         if (f.endsWith('.cs')) copyFileSync(new URL(f, hiddenDir), join(testDir, f))
       }
-      const r = runIn(testDir, `dotnet test ${tp.csproj} --no-restore --nologo -v q`, 300_000)
+      const restore = tp.template !== undefined ? '' : ' --no-restore'
+      const r = runIn(testDir, `dotnet test ${tp.csproj}${restore} --nologo -v q`, 600_000)
       const m = /(Passed|Failed)!\s+-\s+Failed:\s+(\d+),\s+Passed:\s+(\d+)/.exec(r.output)
       const summary = m ? `failed ${m[2]}, passed ${m[3]}` : (/error CS\d+/.test(r.output) ? 'did not compile' : 'no test summary')
       checks.push({
