@@ -117,10 +117,12 @@ export function loadVerify(workspaceRoot: string): LoadedVerify {
   //
   // A notice rather than an error: a workspace with no build step is perfectly ordinary. It
   // appears once per session build on the channel the window already renders.
+  //
+  // One sentence and the example: the window shows this on every session of a workspace
+  // without a check, and a paragraph there read as an alarm rather than a note.
   problems.push(
-    'No check is configured, so nothing is run after the model edits files. Add one to ' +
-    '.privatecode/settings.json — for example { "verify": { "command": "dotnet build" } } — ' +
-    'and a broken edit is caught in the turn that made it rather than ten edits later.',
+    'No check is configured, so your build and tests never run by themselves after an edit. ' +
+    'Add { "verify": { "command": "dotnet build" } } to .privatecode/settings.json.',
   )
   return { verify: null, problems }
 }
