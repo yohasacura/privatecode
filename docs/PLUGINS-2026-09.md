@@ -1,7 +1,8 @@
 # Plugins, marketplaces, skills, agents, hooks and MCP — the Claude Code contract in PrivateCode
 
-Status, 2026-09-02: specification. The phases in §8 land one by one, each with tests and a
-commit, in the order written.
+Status, 2026-09-03: phases A–E landed (commits d484c19, 269a329, 204b002, 454ba3a and the
+docs commit). The user-facing description is `docs/PLUGINS.md`; this file is the design and
+the contract it was built against. The live proof is `test/integration/plugins-live.test.ts`.
 
 ## 0. The promise
 

@@ -76,6 +76,15 @@ out of git, so nothing in it travels with the project — copy a skill across by
 Nothing follows you between machines automatically. `%APPDATA%\PrivateCode\` holds the
 user-scope settings, `AGENTS.md` and skills; copy that folder if you want them elsewhere.
 
+**Plugins are Claude Code's plugins.** `/plugin marketplace add owner/repo` and
+`/plugin install name@marketplace`, typed in the composer, do what they do in Claude Code —
+a plugin's README works as written — and Settings → Plugins has the same commands behind
+buttons: Installed, Discover (Anthropic's four catalogs are registered for you and fetched
+on first use), Marketplaces. A plugin's skills, slash commands, agents, hooks and MCP
+servers all arrive; `.claude/skills`, `.claude/commands`, `.claude/agents`, `.mcp.json` and
+the `hooks` in `.claude/settings.json` are read too. Details, the hook contract and what is
+not supported: [docs/PLUGINS.md](docs/PLUGINS.md).
+
 **Two numbers in `settings.json` shape how much the model is told up front.**
 `"prefix": { "mapChars": 20000 }` is how much of the cached prefix the project map may take
 — every folder with a file count, then the most-referenced files with their definitions and
