@@ -1,4 +1,4 @@
-import { ROLES, ROLE_NAMES } from '../agent/subagent.js'
+import { ROLES, type SubAgentRole } from '../agent/subagent.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
 
 export interface DelegateArgs {
@@ -25,85 +25,94 @@ export interface DelegateArgs {
  * choosing something the harness can check; a caller writing a brief for an improvised
  * assistant is writing prose nobody validates.
  *
- * Read-only roles only, for now. A worker that WRITES needs the permission gate to answer
- * for two agents in one turn, checkpoints to know whose write is whose, and the verify gate
- * to run over changes the caller never made — none of which is hard, all of which is a
- * second change, and shipping it inside this one would hide it.
+ * The list is built per workspace: the three built-in roles, plus every agent an enabled
+ * plugin ships (`agents/<name>.md`, named `plugin:name`) and every `.claude/agents/` file —
+ * see `plugins/agents.ts`. `createDelegateTool` is what the host registers; `delegateTool`
+ * is the built-in list alone, for the toolset's default and for tests.
  */
-export const delegateTool: Tool<DelegateArgs> = {
-  name: 'delegate',
-  // Read-only in effect — every role is plan-mode with a read-only tool set — but declared
-  // false so the permission gate is asked. That is deliberate: a delegate call spends a
-  // generation and several tool calls, and a mode that asks before spending should get to.
-  readOnly: false,
-  description:
-    'Hand one narrow, self-contained job to a worker that has its own short conversation ' +
-    'and reports back. Use it when answering something would take several reads that you ' +
-    'do not need to keep — the worker does the reading, you get the answer. It cannot see ' +
-    'this conversation, so the task has to stand on its own.',
-  parameters: {
-    type: 'object',
-    properties: {
-      role: {
-        type: 'string',
-        enum: [...ROLE_NAMES],
-        description: ROLES.map((r) => `${r.name}: ${r.purpose}`).join(' '),
+export function createDelegateTool(roles: readonly SubAgentRole[]): Tool<DelegateArgs> {
+  const names = roles.map((r) => r.name)
+  return {
+    name: 'delegate',
+    // Read-only in effect for the built-in roles, but declared false so the permission gate
+    // is asked. That is deliberate: a delegate call spends a generation and several tool
+    // calls, and a mode that asks before spending should get to — and a plugin's agent may
+    // well write.
+    readOnly: false,
+    description:
+      'Hand one narrow, self-contained job to a worker that has its own short conversation ' +
+      'and reports back. Use it when answering something would take several reads that you ' +
+      'do not need to keep — the worker does the reading, you get the answer. It cannot see ' +
+      'this conversation, so the task has to stand on its own.',
+    parameters: {
+      type: 'object',
+      properties: {
+        role: {
+          type: 'string',
+          enum: [...names],
+          description: roles.map((r) => `${r.name}: ${r.purpose}`).join(' '),
+        },
+        task: {
+          type: 'string',
+          description:
+            'The whole job, in a few sentences. The worker sees this and the workspace, and ' +
+            'nothing else — no history, no contract, no earlier answers — so name the files, ' +
+            'symbols or behaviour you mean rather than referring back to anything here.',
+        },
       },
-      task: {
-        type: 'string',
-        description:
-          'The whole job, in a few sentences. The worker sees this and the workspace, and ' +
-          'nothing else — no history, no contract, no earlier answers — so name the files, ' +
-          'symbols or behaviour you mean rather than referring back to anything here.',
-      },
+      required: ['role', 'task'],
     },
-    required: ['role', 'task'],
-  },
-  validate(raw) {
-    const r = raw as Partial<DelegateArgs>
-    if (typeof r?.role !== 'string' || !ROLE_NAMES.includes(r.role)) {
-      return { ok: false, error: `role must be one of: ${ROLE_NAMES.join(', ')}` }
-    }
-    if (typeof r?.task !== 'string' || r.task.trim() === '') {
-      return { ok: false, error: 'task must be a non-empty description of the job' }
-    }
-    // A task shorter than this cannot be self-contained, and a worker that has to guess what
-    // was meant spends its whole budget guessing. Cheaper to say so now.
-    if (r.task.trim().length < 24) {
-      return {
-        ok: false,
-        error: 'task is too short to stand on its own — the worker cannot see this ' +
-          'conversation, so say which files, symbols or behaviour you mean',
+    validate(raw) {
+      const r = raw as Partial<DelegateArgs>
+      if (typeof r?.role !== 'string' || !names.includes(r.role)) {
+        return { ok: false, error: `role must be one of: ${names.join(', ')}` }
       }
-    }
-    return { ok: true, args: { role: r.role, task: r.task.trim() } }
-  },
-  permissionKey(args): PermissionKey {
-    return { tool: 'delegate', command: `${args.role}: ${args.task.slice(0, 120)}` }
-  },
-  approvalPreview(args): ApprovalPreview {
-    const oneLine = args.task.replace(/\s+/g, ' ').trim()
-    return {
-      summary: `${args.role}: ${oneLine.length > 64 ? `${oneLine.slice(0, 61)}...` : oneLine}`,
-      detail: `Run a read-only ${args.role} worker on:\n${args.task}`,
-    }
-  },
-  async execute(args, ctx) {
-    // Absent for every host that has no model to run one with — the one-shot CLI, most
-    // tests. Said plainly rather than thrown: the caller can do the reading itself.
-    if (ctx.delegate === undefined) {
-      return { ok: false, content: 'No worker is available here; do the reading yourself.' }
-    }
-    const outcome = await ctx.delegate(args.role, args.task, ctx.signal)
-    const cost = `[${outcome.role}: ${outcome.steps} steps, ${(outcome.ms / 1000).toFixed(1)}s]`
-    if (outcome.problem !== undefined && outcome.text === '') {
-      return { ok: false, content: `${cost} the worker could not finish: ${outcome.problem}` }
-    }
-    // A worker that stopped early still read something, and what it got to is worth more
-    // than nothing — labelled, so a partial answer is never mistaken for a complete one.
-    const caveat = outcome.problem !== undefined
-      ? `\n\n(incomplete — ${outcome.problem}; treat this as partial)`
-      : ''
-    return { ok: true, content: `${cost}\n${outcome.text}${caveat}` }
-  },
+      if (typeof r?.task !== 'string' || r.task.trim() === '') {
+        return { ok: false, error: 'task must be a non-empty description of the job' }
+      }
+      // A task shorter than this cannot be self-contained, and a worker that has to guess what
+      // was meant spends its whole budget guessing. Cheaper to say so now.
+      if (r.task.trim().length < 24) {
+        return {
+          ok: false,
+          error: 'task is too short to stand on its own — the worker cannot see this ' +
+            'conversation, so say which files, symbols or behaviour you mean',
+        }
+      }
+      return { ok: true, args: { role: r.role, task: r.task.trim() } }
+    },
+    permissionKey(args): PermissionKey {
+      return { tool: 'delegate', command: `${args.role}: ${args.task.slice(0, 120)}` }
+    },
+    approvalPreview(args): ApprovalPreview {
+      const oneLine = args.task.replace(/\s+/g, ' ').trim()
+      const role = roles.find((r) => r.name === args.role)
+      const kind = role?.tools !== undefined && role.mode === 'plan' ? 'a read-only' : 'a'
+      return {
+        summary: `${args.role}: ${oneLine.length > 64 ? `${oneLine.slice(0, 61)}...` : oneLine}`,
+        detail: `Run ${kind} ${args.role} worker on:\n${args.task}`,
+      }
+    },
+    async execute(args, ctx) {
+      // Absent for every host that has no model to run one with — the one-shot CLI, most
+      // tests. Said plainly rather than thrown: the caller can do the reading itself.
+      if (ctx.delegate === undefined) {
+        return { ok: false, content: 'No worker is available here; do the reading yourself.' }
+      }
+      const outcome = await ctx.delegate(args.role, args.task, ctx.signal)
+      const cost = `[${outcome.role}: ${outcome.steps} steps, ${(outcome.ms / 1000).toFixed(1)}s]`
+      if (outcome.problem !== undefined && outcome.text === '') {
+        return { ok: false, content: `${cost} the worker could not finish: ${outcome.problem}` }
+      }
+      // A worker that stopped early still read something, and what it got to is worth more
+      // than nothing — labelled, so a partial answer is never mistaken for a complete one.
+      const caveat = outcome.problem !== undefined
+        ? `\n\n(incomplete — ${outcome.problem}; treat this as partial)`
+        : ''
+      return { ok: true, content: `${cost}\n${outcome.text}${caveat}` }
+    },
+  }
 }
+
+/** The built-in roles alone. */
+export const delegateTool: Tool<DelegateArgs> = createDelegateTool(ROLES)

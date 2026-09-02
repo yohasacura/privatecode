@@ -61,6 +61,9 @@ export interface SubAgentRole {
    * narrowness that pays is in the question, not in taking tools away.
    */
   tools?: readonly string[]
+  /** The other way round: everything the caller has EXCEPT these. A plugin agent's
+   * `disallowedTools`. Ignored when `tools` is set. */
+  disallowedTools?: readonly string[]
   /** Absent means the caller's own mode, so a worker is no more and no less trusted than the
    * session it was spawned from. */
   mode?: AgentMode
@@ -213,7 +216,11 @@ export async function runSubAgent(
     transcript,
     ...(role.mode !== undefined ? { mode: role.mode } : {}),
     ...(deps.permissions !== undefined ? { permissions: deps.permissions } : {}),
-    ...(role.tools !== undefined ? { allowedTools: [...role.tools] } : {}),
+    ...(role.tools !== undefined
+      ? { allowedTools: [...role.tools] }
+      : role.disallowedTools !== undefined
+        ? { allowedTools: deps.registry.names().filter((n) => !role.disallowedTools!.includes(n)) }
+        : {}),
     maxSteps: role.maxSteps,
     // Load-bearing rather than cosmetic: streaming is opt-in on one of these being present,
     // and the step clock measures SILENCE by re-arming on every delta. Without it the

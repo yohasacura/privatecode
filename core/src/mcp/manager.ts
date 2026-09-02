@@ -165,6 +165,27 @@ function buildMcpTool(
 export class McpManager {
   private readonly clients = new Map<string, McpClient>()
   private readonly statuses: ServerStatus[] = []
+  /** The registry names each server's tools were registered under, so `close` can take them back. */
+  private readonly toolNames = new Map<string, string[]>()
+
+  /** Whether a server of this name is connected (or failed and recorded). */
+  has(name: string): boolean {
+    return this.statuses.some((s) => s.name === name)
+  }
+
+  /**
+   * Disconnects one server and unregisters its tools — a plugin's server after the plugin
+   * was disabled. Never throws.
+   */
+  async close(name: string, registry: ToolRegistry): Promise<void> {
+    const client = this.clients.get(name)
+    this.clients.delete(name)
+    for (const tool of this.toolNames.get(name) ?? []) registry.unregister(tool)
+    this.toolNames.delete(name)
+    const at = this.statuses.findIndex((s) => s.name === name)
+    if (at !== -1) this.statuses.splice(at, 1)
+    if (client !== undefined) await client.close().catch(() => {})
+  }
 
   /** What connected, what failed and why. Read by `status` so the app can show it. */
   servers(): ServerStatus[] {
@@ -217,6 +238,7 @@ export class McpManager {
           continue
         }
         if (built.problem) problems.push(built.problem)
+        this.toolNames.set(config.name, [...(this.toolNames.get(config.name) ?? []), name])
         registered++
         count++
       }
@@ -253,6 +275,7 @@ export class McpManager {
   async closeAll(): Promise<void> {
     const clients = [...this.clients.values()]
     this.clients.clear()
+    this.toolNames.clear()
     this.statuses.length = 0
     await Promise.all(clients.map((c) => c.close().catch(() => {})))
   }

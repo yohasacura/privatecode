@@ -29,12 +29,15 @@ import { PRIVATE_DIR } from '../private-dir.js'
  * else wrong becomes a problem string beside a safe default.
  */
 
-export type SkillScope = 'user' | 'project'
+export type SkillScope = 'user' | 'project' | 'plugin'
 
 export interface Skill {
-  /** The DIRECTORY name. See `parseFrontmatter` for why this, not the frontmatter field. */
+  /** The DIRECTORY name, prefixed `plugin:` for a plugin's skill. See `parseFrontmatter`
+   * for why the directory and not the frontmatter field. */
   name: string
   scope: SkillScope
+  /** The plugin it came from, when `scope` is `plugin`. */
+  plugin?: string
   /** Absolute path of the skill's own directory — the root of everything it may read. */
   dir: string
   /** Absolute path of its `SKILL.md`. */
@@ -43,6 +46,32 @@ export interface Skill {
   description: string
   /** Other files in the directory, relative to it — what `use_skill` can be asked for. */
   files: string[]
+  /** Listed to the model. Off when the frontmatter says `disable-model-invocation: true`:
+   * the skill is then reachable only as a slash command, which is what its author asked. */
+  modelInvocable: boolean
+  /** Reachable as `/name`. Off when the frontmatter says `user-invocable: false`. */
+  userInvocable: boolean
+  argumentHint?: string
+}
+
+/**
+ * A folder of skills to read besides the two built-in ones — a plugin's `skills/`, or
+ * Claude Code's `.claude/skills`. Read BEFORE the built-in folders, so those win a clash.
+ */
+export interface SkillSource {
+  scope: SkillScope
+  dir: string
+  /** Namespaces every skill in the folder: `prefix:name`. A plugin's name. */
+  prefix?: string
+  /** The plugin the skills belong to, when `prefix` is not it (a single-skill plugin is
+   * named after the plugin, with no prefix to repeat). */
+  plugin?: string
+  /** For problem messages. */
+  label?: string
+  /** Only these folder names. */
+  only?: string[]
+  /** The name to give the single folder `only` names. */
+  rename?: string
 }
 
 export interface LoadedSkills {
@@ -103,7 +132,7 @@ export function projectSkillsDir(root: string): string {
  * disagrees with its folder is the classic copy-paste error, and silently preferring either
  * one gives a skill the model cannot invoke by the name it was shown.
  */
-function parseFrontmatter(text: string): { fields: Record<string, string>; body: string } | null {
+export function parseFrontmatter(text: string): { fields: Record<string, string>; body: string } | null {
   const normalized = (text.startsWith(BOM) ? text.slice(1) : text).replace(/\r\n/g, '\n')
   if (!normalized.startsWith('---\n')) return null
   const end = normalized.indexOf('\n---', 3)
@@ -141,15 +170,17 @@ function parseFrontmatter(text: string): { fields: Record<string, string>; body:
 function readOneSkill(
   scope: SkillScope,
   parent: string,
-  name: string,
+  folder: string,
   problems: string[],
+  naming: { prefix?: string; rename?: string; plugin?: string } = {},
 ): Skill | null {
+  const name = (naming.rename ?? folder).toLowerCase()
   if (!VALID_NAME.test(name)) {
-    problems.push(`Skill folder "${name}" was ignored: a skill name may only use lowercase ` +
+    problems.push(`Skill folder "${folder}" was ignored: a skill name may only use lowercase ` +
       'letters, digits and dashes, and must start with a letter or digit.')
     return null
   }
-  const dir = join(parent, name)
+  const dir = join(parent, folder)
   const path = join(dir, 'SKILL.md')
 
   let raw: string
@@ -174,16 +205,23 @@ function readOneSkill(
     return null
   }
   const declared = parsed.fields['name']
-  if (declared !== undefined && declared !== '' && declared !== name) {
+  if (declared !== undefined && declared !== '' && declared !== name && naming.rename === undefined) {
     problems.push(`${path} declares name "${declared}" but sits in a folder called "${name}". ` +
       `The folder wins — the model was shown "${name}" — but one of the two is a typo.`)
   }
-  const description = (parsed.fields['description'] ?? '').trim()
+  let description = (parsed.fields['description'] ?? '').trim()
+  // Claude Code's `when_to_use` is the other half of the same line.
+  const whenToUse = (parsed.fields['when_to_use'] ?? '').trim()
+  if (whenToUse !== '') description = description === '' ? whenToUse : `${description} ${whenToUse}`
   if (description === '') {
     problems.push(`${path} has no "description" in its frontmatter. That line is the only ` +
       `thing the model sees until it opens the skill, so "${name}" was not loaded.`)
     return null
   }
+  const fullName = naming.prefix !== undefined ? `${naming.prefix}:${name}` : name
+  const modelInvocable = (parsed.fields['disable-model-invocation'] ?? '').trim().toLowerCase() !== 'true'
+  const userInvocable = (parsed.fields['user-invocable'] ?? '').trim().toLowerCase() !== 'false'
+  const argumentHint = (parsed.fields['argument-hint'] ?? '').trim()
 
   let files: string[] = []
   try {
@@ -195,14 +233,18 @@ function readOneSkill(
   } catch { /* the listing is a convenience; a skill with no readable extras still works */ }
 
   return {
-    name,
+    name: fullName,
     scope,
+    ...((naming.plugin ?? naming.prefix) !== undefined ? { plugin: (naming.plugin ?? naming.prefix) as string } : {}),
     dir,
     path,
     description: description.length > MAX_DESCRIPTION_CHARS
       ? `${description.slice(0, MAX_DESCRIPTION_CHARS)}…`
       : description,
     files,
+    modelInvocable,
+    userInvocable,
+    ...(argumentHint !== '' ? { argumentHint } : {}),
   }
 }
 
@@ -247,11 +289,19 @@ function frame(skills: Skill[], omitted: number): string {
  * because two skills with one name is either intentional or a surprise, and the user is the
  * only one who can tell which.
  */
-export function loadSkills(root: string, userDir = userSkillsDir()): LoadedSkills {
+export function loadSkills(root: string, userDir = userSkillsDir(), extra: readonly SkillSource[] = []): LoadedSkills {
   const problems: string[] = []
   const byName = new Map<string, Skill>()
 
-  for (const [scope, parent] of [['user', userDir], ['project', projectSkillsDir(root)]] as const) {
+  // The extra sources first — a plugin's folder, Claude Code's `.claude/skills` — so the
+  // two built-in folders win a name clash, the project one last of all.
+  const sources: SkillSource[] = [
+    ...extra,
+    { scope: 'user', dir: userDir },
+    { scope: 'project', dir: projectSkillsDir(root) },
+  ]
+  for (const source of sources) {
+    const { scope, dir: parent } = source
     let entries: string[]
     try {
       entries = readdirSync(parent, { withFileTypes: true })
@@ -264,20 +314,26 @@ export function loadSkills(root: string, userDir = userSkillsDir()): LoadedSkill
       }
       continue
     }
+    if (source.only !== undefined) entries = entries.filter((e) => source.only!.includes(e))
     if (entries.length > MAX_SKILLS) {
       problems.push(`${parent} holds ${entries.length} folders; only the first ${MAX_SKILLS} ` +
         'were considered.')
       entries = entries.slice(0, MAX_SKILLS)
     }
-    for (const name of entries) {
-      const skill = readOneSkill(scope, parent, name, problems)
+    const naming = {
+      ...(source.prefix !== undefined ? { prefix: source.prefix } : {}),
+      ...(source.rename !== undefined ? { rename: source.rename } : {}),
+      ...(source.plugin !== undefined ? { plugin: source.plugin } : {}),
+    }
+    for (const folder of entries) {
+      const skill = readOneSkill(scope, parent, folder, problems, naming)
       if (skill === null) continue
-      const shadowed = byName.get(name)
+      const shadowed = byName.get(skill.name)
       if (shadowed !== undefined) {
-        problems.push(`Skill "${name}" is defined twice; the project one (${skill.path}) is ` +
+        problems.push(`Skill "${skill.name}" is defined twice; ${skill.path} is ` +
           `the one in use and ${shadowed.path} is ignored.`)
       }
-      byName.set(name, skill)
+      byName.set(skill.name, skill)
     }
   }
 
@@ -286,15 +342,18 @@ export function loadSkills(root: string, userDir = userSkillsDir()): LoadedSkill
 
   // Fit as many as the budget allows, and SAY how many did not fit. A catalogue that
   // silently stopped listing would read to the model as "there is no such skill".
+  // A skill whose author turned model invocation off is not listed at all: it is a slash
+  // command for the person, by design.
+  const listable = all.filter((s) => s.modelInvocable)
   const kept: Skill[] = []
   let used = 0
-  for (const s of all) {
+  for (const s of listable) {
     const cost = s.name.length + s.description.length + 8
     if (used + cost > CATALOGUE_BUDGET) break
     kept.push(s)
     used += cost
   }
-  const omitted = all.length - kept.length
+  const omitted = listable.length - kept.length
   if (omitted > 0) {
     problems.push(`${omitted} skill(s) are installed but not listed in the prompt: the ` +
       `catalogue's ${CATALOGUE_BUDGET}-byte budget was reached.`)

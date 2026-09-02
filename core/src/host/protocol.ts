@@ -1111,7 +1111,9 @@ export interface PermissionsAddResult { problem: string | null }
 export type SkillsListParams = Empty
 export interface SkillView {
   name: string
-  scope: 'user' | 'project'
+  scope: 'user' | 'project' | 'plugin'
+  /** The plugin it came from, when `scope` is `plugin`. */
+  plugin?: string
   description: string
   /** Its SKILL.md, shown so the edit is never to a mystery location. */
   path: string

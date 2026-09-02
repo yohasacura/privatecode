@@ -5,7 +5,7 @@ import {
   type AgentEvents, type AgentOptions, type StepInfo, type StepPreamble, type TurnResult,
 } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
-import { ROLES, ROLE_NAMES, runSubAgent, type SubAgentOutcome } from '../agent/subagent.js'
+import { ROLES, runSubAgent, type SubAgentOutcome, type SubAgentRole } from '../agent/subagent.js'
 import type { Checkpoint } from '../checkpoints/store.js'
 import { CheckpointSet } from '../checkpoints/set.js'
 import { soleUnit, type SnapshotUnit } from '../checkpoints/units.js'
@@ -282,6 +282,14 @@ export interface SessionOptions {
   formatRules?: FormatRule[]
   /** After-tool hooks from the settings layers, already parsed by the host. */
   hooks?: HookSpec[]
+  /**
+   * `delegate` roles besides the built-in three: the agents enabled plugins ship, and the
+   * `.claude/agents/` files, already read by the host (`plugins/agents.ts`). The tool the
+   * registry offers lists them; this is what `runWorker` resolves a name against.
+   */
+  roles?: readonly SubAgentRole[]
+  /** Folders prepended to PATH for `run_command`: the `bin/` of every enabled plugin. */
+  extraPath?: readonly string[]
   /**
    * The project's own check, run after any turn that wrote something. Absent means the
    * feature is off, which is the right default: a verify command is a promise about how
@@ -4398,11 +4406,12 @@ export class Session {
   private async runWorker(
     role: string, task: string, context: ToolContext, events: AgentEvents, signal?: AbortSignal,
   ): Promise<SubAgentOutcome> {
-    const found = ROLES.find((r) => r.name === role)
+    const roles = [...ROLES, ...(this.opts.roles ?? [])]
+    const found = roles.find((r) => r.name === role)
     if (found === undefined) {
       return {
         role, text: '', steps: 0, ms: 0,
-        problem: `no such worker: ${role}. Available: ${ROLE_NAMES.join(', ')}`,
+        problem: `no such worker: ${role}. Available: ${roles.map((r) => r.name).join(', ')}`,
       }
     }
     return await runSubAgent(
@@ -4451,6 +4460,7 @@ export class Session {
     // The LIST, not the catalogue text: `use_skill` resolves a name to a folder and reads
     // the body from disk itself.
     if (this.opts.skills && this.opts.skills.skills.length > 0) context.skills = this.opts.skills
+    if (this.opts.extraPath !== undefined && this.opts.extraPath.length > 0) context.extraPath = this.opts.extraPath
     // The queueing wrapper, when this is an unattended run. Both the tool context (which
     // `ask_user` reads) and the agent's own gate get the SAME port: a question that parks in
     // one place and blocks in the other would stall the run on whichever path came first.

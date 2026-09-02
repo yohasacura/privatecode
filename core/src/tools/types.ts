@@ -76,6 +76,11 @@ export interface ToolContext {
    * rather than failing: the caller can do the reading itself.
    */
   delegate?: (role: string, task: string, signal?: AbortSignal) => Promise<SubAgentOutcome>
+  /**
+   * Folders prepended to PATH for `run_command`: the `bin/` of every enabled plugin, as
+   * Claude Code puts them on PATH for Bash. Absent means the process's own PATH.
+   */
+  extraPath?: readonly string[]
 }
 
 export interface ToolResult {

@@ -1,6 +1,17 @@
 import { stat } from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
 import { execa } from 'execa'
+import { delimiter } from 'node:path'
+
+/**
+ * PATH with the enabled plugins' `bin/` folders in front (docs/PLUGINS-2026-09.md §4). The
+ * variable keeps whatever case the process has (`Path` on Windows), so the child does not
+ * end up with two spellings of it and the OS picking one.
+ */
+function withExtraPath(extra: readonly string[]): Record<string, string> {
+  const key = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+  return { [key]: [...extra, process.env[key] ?? ''].filter((p) => p !== '').join(delimiter) }
+}
 import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import { countLines, headLines, overflowNotice, spillToLog } from './output-log.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
@@ -326,6 +337,7 @@ export const runCommandTool: Tool<RunCommandArgs> = {
         reject: false,
         windowsHide: true,
         all: true,
+        ...(ctx.extraPath !== undefined && ctx.extraPath.length > 0 ? { env: withExtraPath(ctx.extraPath) } : {}),
       },
     )
 

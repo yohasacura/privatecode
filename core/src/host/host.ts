@@ -20,10 +20,16 @@ import { loadHooks } from '../hooks/hooks.js'
 import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory } from '../memory/project-memory.js'
 import { loadProjectNotes } from '../memory/project-notes.js'
-import { loadSkills, projectSkillsDir, userSkillsDir } from '../skills/skills.js'
+import { loadSkills, projectSkillsDir, userSkillsDir, type SkillSource } from '../skills/skills.js'
 import { stopNavProcess } from '../csharp/nav-process.js'
 import { stopSqlProcess } from '../sql/sql-process.js'
-import { expandCommand, listCommands } from '../commands/custom.js'
+import { expandCommand, listCommands, type CommandSource } from '../commands/custom.js'
+import { ROLES, type SubAgentRole } from '../agent/subagent.js'
+import { createDelegateTool } from '../tools/delegate.js'
+import {
+  PluginStore, adoptDeclaredMarketplaces, ensureDefaultMarketplaces, loadPluginComponents, mergeServers,
+  standaloneComponents, type PluginComponents, type StandaloneComponents,
+} from '../plugins/index.js'
 import {
   DEFAULT_TRIGGER_TOKENS, Session, type GateProfile, type SessionOptions,
 } from '../session/session.js'
@@ -361,6 +367,17 @@ export class SessionHost {
    */
   private mcp: McpManager | undefined
 
+  /**
+   * The plugin store, what the enabled plugins contribute to this workspace, and what Claude
+   * Code's own folders (`.claude/skills` and the rest) contribute — loaded in `init` and
+   * again by `reloadPlugins`. See docs/PLUGINS-2026-09.md §4.
+   */
+  private pluginStore: PluginStore | undefined
+  private plugins: PluginComponents | undefined
+  private standalone: StandaloneComponents | undefined
+  /** Problems from the last plugin load, reported beside `externalProblems`. */
+  private pluginProblems: string[] = []
+
   /** Problems from loading MCP servers and browser settings, gathered once in `init` and
    * reported by every `buildSession` — including the ones a later session switch triggers,
    * which never re-reads them. */
@@ -601,6 +618,9 @@ export class SessionHost {
     this.client = new LlamaClient({ baseUrl: params.serverUrl, model: this.model })
     const browserSettings = loadBrowserSettings(params.workspaceRoot)
     this.toolset = createToolset({ browser: browserSettings.options, workspaceRoot: params.workspaceRoot })
+    // The plugins enabled for this workspace, and Claude Code's own folders: their skills,
+    // commands, agents, servers and hooks arrive through the loaders that already exist.
+    this.pluginProblems = this.loadPlugins(params.workspaceRoot)
     this.store = new SessionStore(params.workspaceRoot)
     this.serverUrl = params.serverUrl
     phase('settings')
@@ -691,19 +711,118 @@ export class SessionHost {
   }
 
   /**
+   * Reads the plugin store and what the enabled plugins contribute to this workspace, and
+   * Claude Code's standalone folders. The `delegate` tool is rebuilt with the agents found,
+   * so the model can name them. Returns the problems; never throws.
+   */
+  private loadPlugins(workspaceRoot: string): string[] {
+    const store = this.pluginStore ?? new PluginStore()
+    this.pluginStore = store
+    const problems: string[] = []
+    try {
+      ensureDefaultMarketplaces(store)
+      problems.push(...adoptDeclaredMarketplaces(store, workspaceRoot).problems)
+    } catch (e) {
+      problems.push(`plugins: the store at ${store.root} could not be prepared: ${describeFailure(e)}`)
+    }
+    const plugins = loadPluginComponents(store, workspaceRoot)
+    const standalone = standaloneComponents(workspaceRoot)
+    this.plugins = plugins
+    this.standalone = standalone
+    problems.push(...plugins.problems, ...plugins.ignored, ...standalone.problems)
+    this.registerDelegate()
+    return problems
+  }
+
+  /** The `delegate` tool with every role this workspace has: built-in, `.claude/agents/`, the plugins'. */
+  private registerDelegate(): void {
+    if (this.toolset === undefined) return
+    const { registry } = this.toolset
+    registry.unregister('delegate')
+    registry.register(createDelegateTool([...ROLES, ...this.roles()]))
+  }
+
+  /** Roles besides the built-in ones, first definition of a name winning. */
+  private roles(): SubAgentRole[] {
+    const seen = new Set(ROLES.map((r) => r.name))
+    const out: SubAgentRole[] = []
+    for (const role of [...(this.standalone?.agents ?? []), ...(this.plugins?.agents ?? [])]) {
+      if (seen.has(role.name)) continue
+      seen.add(role.name)
+      out.push(role)
+    }
+    return out
+  }
+
+  private skillSources(): SkillSource[] {
+    return [...(this.standalone?.skillSources ?? []), ...(this.plugins?.skillSources ?? [])]
+  }
+
+  /**
+   * Where `/name` may come from besides `.privatecode/commands/`: Claude Code's folders, the
+   * plugins', and PrivateCode's own two skill folders — a skill is a slash command too, as in
+   * Claude Code, and ours are listed last so they win a clash.
+   */
+  private commandSources(): CommandSource[] {
+    const root = this.workspaceRoot
+    return [
+      ...(this.standalone?.commandSources ?? []),
+      ...(this.plugins?.commandSources ?? []),
+      { dir: userSkillsDir(), kind: 'skills', label: 'skills (user)' },
+      ...(root !== undefined ? [{ dir: projectSkillsDir(root), kind: 'skills' as const, label: `${PRIVATE_DIR}/skills` }] : []),
+    ]
+  }
+
+  /**
+   * `/reload-plugins`: re-reads the enabled set and applies what a running workspace can
+   * take — the servers of plugins now enabled connect, those of plugins now disabled go,
+   * commands and `delegate` roles change at once. Skills are listed in a session's message
+   * 0, so a new skill reaches the NEXT session; the report says so.
+   */
+  async reloadPlugins(): Promise<{ problems: string[]; connected: string[]; closed: string[]; plugins: string[] }> {
+    const { workspaceRoot, toolset } = this.requireInitialized()
+    const before = new Map((this.plugins?.mcpServers ?? []).map((s) => [s.name, s]))
+    const problems = this.loadPlugins(workspaceRoot)
+    this.pluginProblems = problems
+    const after = new Map((this.plugins?.mcpServers ?? []).map((s) => [s.name, s]))
+    const closed: string[] = []
+    const connected: string[] = []
+    for (const [name, spec] of before) {
+      const now = after.get(name)
+      if (now !== undefined && JSON.stringify(now.spec) === JSON.stringify(spec.spec)) continue
+      if (this.mcp !== undefined && this.mcp.has(name)) {
+        await this.mcp.close(name, toolset.registry)
+        closed.push(name)
+      }
+    }
+    const toConnect = [...after.values()].filter((s) => !(this.mcp?.has(s.name) ?? false))
+    if (toConnect.length > 0) {
+      this.mcp ??= new McpManager()
+      problems.push(...await this.mcp.connectAll(toConnect, toolset.registry))
+      connected.push(...toConnect.map((s) => s.name))
+    }
+    return { problems, connected, closed, plugins: (this.plugins?.plugins ?? []).map((p) => p.id) }
+  }
+
+  /**
    * Connects the workspace's MCP servers and registers their tools.
    *
    * Done HERE, in `init`, and not in `buildSession`: the servers belong to the WORKSPACE.
    * A session switch rebuilds the session, the settings layers and the permission engine —
    * restarting a set of server processes on every click of Resume would be slow, visible,
    * and would drop whatever state those servers were holding.
+   *
+   * Claude Code's files first (`.mcp.json`, `.claude/settings*.json`), then the enabled
+   * plugins', then PrivateCode's own settings — later wins by name, so a server defined in
+   * both `.mcp.json` and `.privatecode/settings.json` is the latter's.
    */
   private async connectMcpServers(workspaceRoot: string): Promise<string[]> {
     const { servers, problems } = loadServers(workspaceRoot)
-    if (servers.length === 0) return problems
+    const all = mergeServers(this.standalone?.mcpServers ?? [], this.plugins?.mcpServers ?? [], servers)
+    if (all.length === 0) return problems
     const manager = new McpManager()
     this.mcp = manager
-    return [...problems, ...await manager.connectAll(servers, this.requireInitialized().toolset.registry)]
+    return [...problems, ...await manager.connectAll(all, this.requireInitialized().toolset.registry)]
   }
 
   /**
@@ -887,7 +1006,7 @@ export class SessionHost {
     // Beside memory for the same reason, and read per session build rather than once per
     // app: a skill added while the window is open should arrive with the next New session,
     // which is the same contract AGENTS.md has.
-    const skills = loadSkills(workspaceRoot)
+    const skills = loadSkills(workspaceRoot, undefined, this.skillSources())
     // Re-checked against the code on every session build, which is what keeps it honest: a
     // note whose files moved since it was written is dropped here, not carried forward.
     const notes = loadProjectNotes(workspaceRoot, this.workspace)
@@ -952,6 +1071,11 @@ export class SessionHost {
     }
     if (memory.layers.length > 0) sessionOpts.memory = memory
     if (skills.skills.length > 0) sessionOpts.skills = skills
+    // The agents plugins and `.claude/agents/` ship, and the plugins' `bin/` folders.
+    const roles = this.roles()
+    if (roles.length > 0) sessionOpts.roles = roles
+    const binDirs = this.plugins?.binDirs ?? []
+    if (binDirs.length > 0) sessionOpts.extraPath = binDirs
     if (notes.text !== '') sessionOpts.notes = notes.text
     if (this.repoMap !== '') sessionOpts.repoMap = this.repoMap
     // The map the session gets at a compaction swap: same index, re-ranked around whatever
@@ -1073,6 +1197,7 @@ export class SessionHost {
       ...hooking.problems,
       ...verifying.problems,
       ...this.externalProblems,
+      ...this.pluginProblems,
       // A folder that failed to attach is invisible in the tree, and an invisible folder is
       // indistinguishable from an empty one. Repeated on every session switch, like the
       // external problems above and for the same reason.
@@ -1346,7 +1471,7 @@ export class SessionHost {
       // typed while the model receives the whole template. A `/name` matching no command
       // expands to null and is sent verbatim -- most lines starting with `/` are a path.
       const { workspaceRoot, workspace } = this.requireInitialized()
-      const expanded = expandCommand(workspaceRoot, params.text)
+      const expanded = expandCommand(workspaceRoot, params.text, this.commandSources())
       // Attachments are added AFTER command expansion, so `@file` works with a slash
       // command too, and each problem (missing, clipped, over budget) is emitted on the
       // channel the app already renders rather than being swallowed.
@@ -2113,10 +2238,11 @@ export class SessionHost {
   /** What is on disk right now — see the protocol's note on why not the running session. */
   private skillsList(): SkillsListResult {
     const { workspaceRoot } = this.requireInitialized()
-    const loaded = loadSkills(workspaceRoot)
+    const loaded = loadSkills(workspaceRoot, undefined, this.skillSources())
     return {
       skills: loaded.skills.map((s) => ({
         name: s.name, scope: s.scope, description: s.description, path: s.path, files: s.files,
+        ...(s.plugin !== undefined ? { plugin: s.plugin } : {}),
       })),
       problems: loaded.problems,
       dirs: [
@@ -2301,7 +2427,7 @@ export class SessionHost {
    * on every call -- these files are edited by hand while the app is open. */
   private commandsList(): CommandsListResult {
     if (this.workspaceRoot === undefined) return { commands: [] }
-    const { commands } = listCommands(this.workspaceRoot)
+    const { commands } = listCommands(this.workspaceRoot, this.commandSources())
     return { commands: commands.map((c) => ({ name: c.name, description: c.description })) }
   }
 

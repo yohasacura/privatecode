@@ -57,9 +57,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * `${GH_TOKEN}` as a bearer token -- produces a 401 that explains nothing.
  */
 function expandEnv(value: string, where: string, problems: string[]): string {
-  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
+  // `${VAR:-default}` is Claude Code's form for a variable that may be unset; honoured here
+  // so a plugin's `.mcp.json` written against it reads the same way.
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (_match, name: string, fallback: string | undefined) => {
     const found = process.env[name]
     if (found === undefined) {
+      if (fallback !== undefined) return fallback
       problems.push(`${where} refers to \${${name}}, which is not set in the environment`)
       return ''
     }
@@ -152,6 +155,19 @@ function readServer(
 
   problems.push(`${where} needs either a "command" (a local server) or a "url" (a remote one)`)
   return null
+}
+
+/**
+ * The `mcpServers` object of any file that carries one — a settings layer, a project's
+ * `.mcp.json`, a plugin's — read with the rules above. Exported for the plugin loader.
+ */
+export function readServersObject(servers: Record<string, unknown>, source: string, problems: string[]): ServerConfig[] {
+  const out: ServerConfig[] = []
+  for (const [name, entry] of Object.entries(servers)) {
+    const config = readServer(name, entry, source, problems)
+    if (config) out.push(config)
+  }
+  return out
 }
 
 function readFile(path: string, scope: string, problems: string[]): Map<string, ServerConfig> {

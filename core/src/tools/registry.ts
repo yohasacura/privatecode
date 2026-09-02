@@ -13,6 +13,14 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool)
   }
 
+  /**
+   * Removes a tool. For the two things that change under a running workspace: an MCP server
+   * a plugin brought that was disabled, and `delegate`, rebuilt when the roles change.
+   */
+  unregister(name: string): boolean {
+    return this.tools.delete(name)
+  }
+
   get(name: string): Tool<any> | undefined {
     return this.tools.get(name)
   }
