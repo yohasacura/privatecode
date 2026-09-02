@@ -25,8 +25,8 @@
   --border-soft: #212127;
 
   --text: #ececee;
-  --text-dim: #9a9aa4;
-  --text-faint: #6b6b76;
+  --text-dim: #a8a8b2;
+  --text-faint: #7d7d88;
   --text-ghost: #4d4d57;
 
   --accent: #d97757;
@@ -461,7 +461,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 8px 0 12px;
+  padding: 0 0 0 12px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border-soft);
   user-select: none;
@@ -497,8 +497,8 @@ kbd {
   border-radius: 4px;
   background: var(--bg-raised);
   color: var(--text-dim);
-  font-size: 11.5px;
-  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -637,7 +637,7 @@ kbd {
 .rail-section {
   margin-top: 4px;
   padding: 0 3px;
-  font-size: 10.5px;
+  font-size: 11px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -761,7 +761,7 @@ kbd {
   font-size: 10.5px;
   color: var(--text-faint);
 }
-.rail-item-mode { font-family: var(--mono); }
+.rail-item-mode { text-transform: capitalize; }
 
 .rail-settings {
   display: flex;
@@ -1046,14 +1046,14 @@ kbd {
 }
 /* Sized on the svg, not via transform -- see .welcome-logo. */
 .empty-mark .icon { width: 34px; height: 34px; }
-.empty-state h2 { margin: 0 0 6px; font-size: 16px; font-weight: 550; color: var(--text); }
+.empty-state h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; color: var(--text); }
 .empty-state p { margin: 0; font-size: 12.5px; }
 .empty-keys {
   display: flex;
   justify-content: center;
   gap: 18px;
   margin-top: 22px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -1117,12 +1117,15 @@ kbd {
 
 .tool-card {
   position: relative;
-  border: 1px solid var(--border-soft);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--bg-panel);
+  background: transparent;
   overflow: hidden;
+  transition: border-color 120ms ease;
 }
-.tool-fail .tool-card { border-color: rgba(224, 105, 108, 0.4); }
+.tool-card:hover, .tool-card:focus-within { border-color: var(--border-soft); }
+.tool-fail .tool-verb { color: var(--red); }
+.tool-fail .tool-card:hover { border-color: rgba(224, 105, 108, 0.35); }
 
 /* The whole header is the expand control -- a 6px chevron is not a target anyone aims at. */
 .tool-head {
@@ -1130,11 +1133,12 @@ kbd {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 6px 34px 6px 10px;
+  padding: 5px 34px 5px 8px;
   border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
   font: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
 }
@@ -1150,7 +1154,7 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-dim);
 }
 .tool-toggle { display: flex; color: var(--text-faint); }
@@ -1299,23 +1303,29 @@ kbd {
 .tool-card:hover .tool-open { opacity: 1; }
 .tool-open:hover { color: var(--accent); background: var(--bg-hover); }
 
-.tool-body { border-top: 1px solid var(--border-soft); }
+.tool-body {
+  margin: 2px 0 4px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  overflow: hidden;
+}
 .tool-output {
   margin: 0;
   padding: 9px 12px;
   max-height: 380px;
   overflow: auto;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--text-dim);
   white-space: pre-wrap;
   word-break: break-word;
 }
 .tool-preview {
-  padding: 0 10px 7px 31px;
+  padding: 0 10px 6px 29px;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1544,10 +1554,10 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   gap: 8px;
   max-width: var(--read);
   margin: 0 auto;
-  padding: 8px 6px 8px 11px;
-  border: 1px solid var(--yellow);
+  padding: 7px 6px 7px 11px;
+  border: 1px solid color-mix(in srgb, var(--yellow) 30%, transparent);
   border-radius: var(--radius-sm);
-  background: rgba(217, 178, 94, 0.09);
+  background: color-mix(in srgb, var(--yellow) 6%, transparent);
   font-size: 12.5px;
   color: var(--text-dim);
 }
@@ -1657,9 +1667,10 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   display: inline-flex;
   flex: 0 1 auto;
   min-width: 0;
-  gap: 2px;
+  gap: 1px;
   padding: 2px;
-  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
   background: var(--bg);
   overflow-x: auto;
   scrollbar-width: none;
@@ -1671,15 +1682,15 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   flex: 1;
   min-width: 0;
   text-align: right;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .composer-meta kbd { padding: 0 4px; }
-.status-live { color: var(--accent); font-family: var(--mono); }
-.status-idle { font-family: var(--mono); }
+.status-live { color: var(--accent); }
+.status-idle { color: var(--text-faint); }
 
 /* Discovery only: expansion happens host-side. Without it a feature the user configured
    in a directory would be invisible in the window. */
@@ -1868,11 +1879,11 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   flex: none;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: 8px;
   background: var(--accent);
   color: #1a1207;
   cursor: pointer;
@@ -1884,18 +1895,27 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 .composer-send-stop:hover { background: var(--red-hover); }
 
 .mode-chip {
-  padding: 3px 9px;
+  padding: 3px 10px;
   border: none;
-  border-radius: 999px;
+  border-radius: 5px;
   background: transparent;
-  color: var(--text-faint);
+  color: var(--text-dim);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
   cursor: pointer;
   white-space: nowrap;
 }
 .mode-chip:hover:not(:disabled):not(.mode-chip-active) { background: var(--bg-hover); color: var(--text); }
-.mode-chip-active { background: var(--bg-active); color: var(--text); }
+.mode-chip-active { background: var(--bg-active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+/* The two toggles beside the modes are switches, not segments: an edge of their own. */
+.run-chip, .gate-chip {
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 2px 9px;
+}
+.run-chip:hover:not(:disabled), .gate-chip:hover:not(:disabled) { border-color: var(--border); }
 .mode-chip.mode-plan.mode-chip-active { color: var(--blue); }
 .mode-chip.mode-auto-edit.mode-chip-active { color: var(--yellow); }
 .mode-chip.mode-autopilot.mode-chip-active { background: var(--red-soft); color: var(--red); }
@@ -2304,8 +2324,8 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   padding: 0 12px;
   background: var(--bg-panel);
   border-top: 1px solid var(--border-soft);
-  font-size: 11.5px;
-  color: var(--text-faint);
+  font-size: 12px;
+  color: var(--text-dim);
   user-select: none;
 }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
@@ -2318,15 +2338,14 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
    edge in a half-screen window. The full name lives in the tooltip; the flash shrinks
    last so fixed-width readings keep their place. Same failure the titlebar documents. */
 .status-model {
-  font-family: var(--mono);
   min-width: 0;
   max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.status-mode { font-family: var(--mono); }
-.status-context { display: flex; align-items: center; gap: 6px; font-family: var(--mono); flex: none; }
+.status-mode { text-transform: capitalize; }
+.status-context { display: flex; align-items: center; gap: 6px; flex: none; }
 /* `flex: none` on both, and it was missing here alone. Every other item in the status row
    either has it or is text that resists shrinking; the bar is a flex item with a definite
    width and nothing else, so under width pressure it is the first thing to be squeezed —
@@ -2334,7 +2353,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 .ctx-bar { width: 54px; height: 3px; border-radius: 2px; background: var(--bg-active); overflow: hidden; flex: none; }
 .ctx-fill { display: block; height: 100%; background: var(--blue); }
 .ctx-high { background: var(--yellow); }
-.status-item { font-family: var(--mono); }
+.status-item { }
 .status-flash {
   color: var(--accent);
   min-width: 0;
@@ -3399,3 +3418,27 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 /* "Updated to 0.3.1 from 0.3.0" — the one thing an update says afterwards. Same green strip
    as the offer; it is the offer's other end. */
 .updated-strip { border-color: var(--green); background: var(--green-soft); }
+
+
+/* --- window controls ------------------------------------------------------------------
+   The OS frame is off (tauri.conf.json `decorations: false`): a second title bar under the
+   native one read as a window inside a window. The three controls Windows draws are drawn
+   here instead, Windows-sized (46px targets, close turns red), and the header stays the
+   drag region. Absent in the browser dev bridge, where there is no window to control. */
+.win-controls { display: flex; flex: none; align-self: stretch; margin-left: 2px; }
+.win-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: default;
+}
+.win-btn:hover { background: var(--bg-hover); color: var(--text); }
+.win-btn:active { background: var(--bg-active); }
+.win-btn-close:hover { background: #c42b1c; color: #fff; }
+.win-btn-close:active { background: #b3261a; color: #fff; }
+.win-btn .icon { width: 10px; height: 10px; }
+.titlebar-no-controls { padding-right: 8px; }

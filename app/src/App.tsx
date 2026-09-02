@@ -137,6 +137,65 @@ function saveLayout(key: string, value: unknown): void {
  * a way back. This replaces the state the app was actually in the first time it was run for
  * real — "starting the agent…" forever, with no error, no diagnostics and no recovery.
  */
+/**
+ * Minimize, maximize/restore, close — drawn by the window because the OS frame is off. Each
+ * reaches the Tauri window API lazily and swallows its absence: in the browser dev bridge
+ * there is no window to control, and the controls are not rendered there at all.
+ */
+function WindowControls(): VNode {
+  const [maximized, setMaximized] = useState(false)
+  useEffect(() => {
+    let gone = false
+    let unlisten: (() => void) | undefined
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window')
+        const w = getCurrentWindow()
+        setMaximized(await w.isMaximized())
+        const off = await w.onResized(() => {
+          void w.isMaximized().then((m) => { if (!gone) setMaximized(m) })
+        })
+        if (gone) off()
+        else unlisten = off
+      } catch {
+        // Not inside Tauri.
+      }
+    })()
+    return () => { gone = true; unlisten?.() }
+  }, [])
+  const act = (what: 'minimize' | 'toggle' | 'close'): void => {
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window')
+        const w = getCurrentWindow()
+        if (what === 'minimize') await w.minimize()
+        else if (what === 'toggle') await w.toggleMaximize()
+        else await w.close()
+      } catch {
+        // Not inside Tauri.
+      }
+    })()
+  }
+  return (
+    <div class="win-controls">
+      <button class="win-btn" onClick={() => act('minimize')} title="Minimize" aria-label="Minimize">
+        {Icon.winMin()}
+      </button>
+      <button
+        class="win-btn"
+        onClick={() => act('toggle')}
+        title={maximized ? 'Restore' : 'Maximize'}
+        aria-label={maximized ? 'Restore' : 'Maximize'}
+      >
+        {maximized ? Icon.winRestore() : Icon.winMax()}
+      </button>
+      <button class="win-btn win-btn-close" onClick={() => act('close')} title="Close" aria-label="Close">
+        {Icon.winClose()}
+      </button>
+    </div>
+  )
+}
+
 function AgentDown({
   phase, isDevBridge,
 }: {
@@ -720,7 +779,7 @@ export default function App() {
 
   return (
     <div class="shell">
-      <header class="titlebar" data-tauri-drag-region>
+      <header class={`titlebar ${isDevBridge ? 'titlebar-no-controls' : ''}`} data-tauri-drag-region>
         <span class="brand" data-tauri-drag-region>
           <span class="brand-mark" aria-hidden="true">{Icon.shield()}</span>
           PrivateCode
@@ -763,6 +822,7 @@ export default function App() {
         >
           {Icon.panelRight()}
         </button>
+        {!isDevBridge && <WindowControls />}
       </header>
 
       {/* One grid item, because `.shell` declares exactly three rows and a fourth child would

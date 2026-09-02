@@ -113,6 +113,11 @@ export const Icon = {
   gear: () => <Svg><circle cx="8" cy="8" r="2.2" /><path d="M8 1.6v1.6M8 12.8v1.6M14.4 8h-1.6M3.2 8H1.6M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1M12.5 12.5l-1.1-1.1M4.6 4.6 3.5 3.5" /></Svg>,
   sidebar: () => <Svg><rect x="1.5" y="2.5" width="13" height="11" rx="2" /><path d="M6 2.5v11" /></Svg>,
   panelRight: () => <Svg><rect x="1.5" y="2.5" width="13" height="11" rx="2" /><path d="M10 2.5v11" /></Svg>,
+  // The window's own controls, at Windows' 10px glyph size (see .win-btn).
+  winMin: () => <Svg><path d="M2 8h12" /></Svg>,
+  winMax: () => <Svg><rect x="2.5" y="2.5" width="11" height="11" rx="1" /></Svg>,
+  winRestore: () => <Svg><rect x="2.5" y="5" width="8.5" height="8.5" rx="1" /><path d="M5 5V3.5A1 1 0 0 1 6 2.5h6.5a1 1 0 0 1 1 1V10a1 1 0 0 1-1 1H11" /></Svg>,
+  winClose: () => <Svg><path d="M3 3l10 10M13 3 3 13" /></Svg>,
   arrowDown: () => <Svg><path d="M8 3v10M4 9l4 4 4-4" /></Svg>,
   arrowLeft: () => <Svg><path d="M13 8H3M7 4 3 8l4 4" /></Svg>,
   /** A line that turns back on itself: wrapping. */

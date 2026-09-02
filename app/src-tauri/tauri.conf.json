@@ -15,7 +15,11 @@
         "title": "PrivateCode",
         "width": 1280,
         "height": 800,
-        "theme": "Dark"
+        "minWidth": 720,
+        "minHeight": 480,
+        "theme": "Dark",
+        "decorations": false,
+        "shadow": true
       }
     ],
     "security": {
