@@ -264,6 +264,13 @@ function lastErrorLines(output: string): string {
 }
 
 function compactArgs(args: unknown): string {
+  // The session hands the call's arguments over as the JSON text the model wrote, not as an
+  // object; before this parse every call logged as `name()` and the self-run count was
+  // always zero.
+  if (typeof args === 'string') {
+    const text = args
+    try { args = JSON.parse(text) } catch { return text.slice(0, 80) }
+  }
   if (typeof args !== 'object' || args === null) return ''
   return Object.entries(args as Record<string, unknown>)
     .filter(([k]) => k !== 'content' && k !== 'new_text' && k !== 'old_text')
@@ -272,8 +279,8 @@ function compactArgs(args: unknown): string {
 }
 
 function table(results: TaskResult[]): string {
-  const head = '| task | result | steps | seconds | model s | gates s | reads | writes | builds | checks | stopped |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|'
-  const body = results.map((r) => `| ${r.id} | ${r.pass ? 'PASS' : 'FAIL'} | ${r.steps} | ${r.totalSeconds} | ${r.modelSeconds} | ${r.gateSeconds} | ${r.readCalls} | ${r.writeCalls} | ${r.verifyRuns} | ${r.compilerChecks} | ${r.stoppedBecause}${r.timedOut ? ' (timeout)' : ''} |`)
+  const head = '| task | result | steps | seconds | model s | gates s | reads | writes | builds | checks | self-runs | stopped |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|'
+  const body = results.map((r) => `| ${r.id} | ${r.pass ? 'PASS' : 'FAIL'} | ${r.steps} | ${r.totalSeconds} | ${r.modelSeconds} | ${r.gateSeconds} | ${r.readCalls} | ${r.writeCalls} | ${r.verifyRuns} | ${r.compilerChecks} | ${r.selfChecks} | ${r.stoppedBecause}${r.timedOut ? ' (timeout)' : ''} |`)
   const passed = results.filter((r) => r.pass).length
   const total = results.reduce((n, r) => n + r.totalSeconds, 0)
   return `${head}\n${body.join('\n')}\n\n**${passed}/${results.length} passed**, ${Math.round(total)} s of wall clock, gates ${GATES}.`
