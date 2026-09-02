@@ -1,17 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from 'preact/hooks'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { ArrowLeftRight, CheckCheck, FolderPlus, GitBranch, ListFilter, Search, X } from 'lucide-preact'
 import type { GitRepoView, WorkspaceFolderView } from '@core/host/protocol'
 import type { ChatItem } from '../lib/state'
 import type { ProtocolClient } from '../lib/client'
-import { Icon } from '../components/icons'
 import { DiffStatBadge, diffStat } from '../lib/diff'
 import { decorateChanges } from '../lib/path-tree'
 import { ghostRows, gitMarks, letterOf } from '../lib/git-scm'
+import { PanelError, PanelNote } from '../components/panel'
+import { Button, IconButton } from '../ui/button'
+import { Chip } from '../ui/chip'
+import { cn } from '../ui/cn'
+import { Input } from '../ui/input'
 import { type ChangeEntry, splitReviewed } from './changes-tab'
 import { TreePanel, type GitRowActions, type MountActions, type MountInfo } from './tree'
 
 /**
- * The Workspace tab: ONE tree, wearing everything — including git.
+ * The Workspace tab (docs/UI-REDESIGN-2026-09.md §7): ONE tree, wearing everything —
+ * including git.
  *
  * The working tree used to be its own section below the files: a second list of the same
  * files, with checkboxes. The owner's ruling was that git lives ON the tree — the working
@@ -25,7 +31,8 @@ import { TreePanel, type GitRowActions, type MountActions, type MountInfo } from
  * opens the DIFF as a tab beside the chat.
  *
  * The header owns the workspace's lifecycle: rename by clicking the name, add a folder,
- * switch, close. Folder rows on the tree carry their own access/rename/remove.
+ * switch, close, and a find box (Ctrl+P inside the panel) that asks the host's file index.
+ * Folder rows on the tree carry their own access/rename/remove.
  */
 export function WorkspaceTab({
   client, items, changes, onOpenFile, workspaceRoot, workspaceName, folderCount,
@@ -62,6 +69,8 @@ export function WorkspaceTab({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [filterChanged, setFilterChanged] = useState(false)
+  const [find, setFind] = useState<string | null>(null)
+  const findRef = useRef<HTMLInputElement>(null)
 
   // Git, ON the tree. Loaded here because this tab owns the reload rhythm: every
   // resolved write-tool bumps `reloadKey`, and every stage/unstage/commit reloads too.
@@ -183,6 +192,11 @@ export function WorkspaceTab({
     if (typeof result === 'string') addFolder(result)
   }
 
+  function openFind(): void {
+    setFind((f) => f ?? '')
+    requestAnimationFrame(() => { findRef.current?.focus(); findRef.current?.select() })
+  }
+
   const mounts: MountInfo[] = folders.map((f) => ({
     name: f.name, primary: f.primary, access: f.access, git: f.git,
   }))
@@ -267,14 +281,25 @@ export function WorkspaceTab({
       .finally(() => { setGitBusy(false); loadGit() })
   }
 
+  const shownName = wsName === '' ? workspaceName : wsName
+
   return (
-    <div class="workspace-tab">
-      <div class="workspace-head">
+    <div
+      data-panel="workspace"
+      tabIndex={-1}
+      class="flex h-full min-h-0 flex-col font-ui outline-none"
+      onKeyDown={(e) => {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) { e.preventDefault(); e.stopPropagation(); openFind() }
+      }}
+    >
+      <div class="flex shrink-0 items-center gap-2 px-2.5 pb-1 pt-2">
         {nameDraft !== null
           ? (
-            <input
-              class="input input-small workspace-name-input"
+            <Input
+              data-workspace-name=""
+              class="h-6 max-w-[220px] text-[12.5px]"
               value={nameDraft}
+              aria-label="Workspace name"
               // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
               onInput={(e) => setNameDraft(e.currentTarget.value)}
@@ -286,67 +311,89 @@ export function WorkspaceTab({
             )
           : (
             <button
-              class="workspace-title"
+              type="button"
+              data-workspace-title=""
+              class="min-w-0 shrink cursor-pointer truncate border-0 bg-transparent p-0 text-left text-[13px] font-semibold text-fg hover:underline hover:decoration-dotted focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
               title={`${workspaceRoot} — click to rename the workspace`}
               onClick={() => setNameDraft(wsName)}
             >
-              {wsName === '' ? workspaceName : wsName}
+              {shownName}
             </button>
             )}
-        <span class="workspace-meta">
+        <span class="shrink-0 whitespace-nowrap text-[11.5px] text-dim">
           {folderCount} {folderCount === 1 ? 'folder' : 'folders'}
         </span>
-        <span class="workspace-head-actions">
-          <button
-            class="icon-button"
+        <span class="ml-auto flex shrink-0 gap-0.5">
+          <IconButton size="sm" label="Find a file (Ctrl+P)" active={find !== null} onClick={() => (find === null ? openFind() : setFind(null))}>
+            <Search />
+          </IconButton>
+          <IconButton
+            size="sm"
+            label="Add a folder to the workspace"
             disabled={busy}
             onClick={() => (isDevBridge ? setAddingPath((v) => (v === null ? '' : null)) : void pickFolder())}
-            title="Add a folder to the workspace"
           >
-            {Icon.plus()}
-          </button>
-          <button
-            class="icon-button"
-            onClick={onSwitchWorkspace}
-            title="Switch workspace — recents and the folder picker"
-          >
-            {Icon.swap()}
-          </button>
-          <button
-            class="icon-button"
-            onClick={onCloseWorkspace}
-            title="Close the workspace — back to the start screen (sessions and files stay)"
-          >
-            {Icon.x()}
-          </button>
+            <FolderPlus />
+          </IconButton>
+          <IconButton size="sm" label="Switch workspace — recents and the folder picker" onClick={onSwitchWorkspace}>
+            <ArrowLeftRight />
+          </IconButton>
+          <IconButton size="sm" label="Close the workspace — back to the start screen (sessions and files stay)" onClick={onCloseWorkspace}>
+            <X />
+          </IconButton>
         </span>
       </div>
-      {addingPath !== null && (
-        <input
-          class="input input-small workspace-add-input"
-          value={addingPath}
-          placeholder="paste a folder path — Enter adds it"
-          // eslint-disable-next-line jsx-a11y/no-autofocus
-          autoFocus
-          onInput={(e) => setAddingPath(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') addFolder(addingPath)
-            if (e.key === 'Escape') { e.stopPropagation(); setAddingPath(null) }
-          }}
-        />
+
+      {find !== null && (
+        <div class="shrink-0 px-2.5 pb-1.5">
+          <Input
+            ref={findRef}
+            data-find-file=""
+            class="h-6 text-[12px]"
+            value={find}
+            placeholder="find a file by name — Esc closes"
+            aria-label="Find a file"
+            onInput={(e) => setFind(e.currentTarget.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setFind(null) } }}
+          />
+        </div>
       )}
-      {error !== null && <div class="workspace-error">{error}</div>}
+
+      {addingPath !== null && (
+        <div class="shrink-0 px-2.5 pb-1.5">
+          <Input
+            data-add-folder=""
+            class="h-6 text-[12px]"
+            value={addingPath}
+            placeholder="paste a folder path — Enter adds it"
+            aria-label="Folder to add"
+            // eslint-disable-next-line jsx-a11y/no-autofocus
+            autoFocus
+            onInput={(e) => setAddingPath(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') addFolder(addingPath)
+              if (e.key === 'Escape') { e.stopPropagation(); setAddingPath(null) }
+            }}
+          />
+        </div>
+      )}
+      {error !== null && <PanelError message={error} />}
 
       {/* The commit box, above the tree it commits from. Only when git is actually
           there — a workspace under no version control gets the tree and nothing else. */}
       {repo !== undefined && (
-        <div class="scm">
+        <div data-scm="" class="flex shrink-0 flex-col gap-1.5 border-b border-border-soft px-2.5 py-2">
           {repos.length > 1 && (
-            <div class="scm-repos">
+            <div class="flex flex-wrap gap-1" role="group" aria-label="Repository">
               {repos.map((r) => (
                 <button
                   key={r.root}
-                  class={`scm-repo ${r.root === repo.root ? 'scm-repo-on' : ''}`}
+                  type="button"
+                  aria-pressed={r.root === repo.root}
+                  class={cn(
+                    'cursor-pointer rounded-full border border-border bg-transparent px-2 py-px text-[11.5px] text-dim transition-colors duration-(--duration-fast) hover:border-accent-line hover:text-fg',
+                    r.root === repo.root && 'border-accent text-fg',
+                  )}
                   onClick={() => setRepoChoice(r.root)}
                   title={r.root}
                 >
@@ -355,80 +402,76 @@ export function WorkspaceTab({
               ))}
             </div>
           )}
-          <input
-            class="input scm-message"
+          <Input
+            class="h-7 text-[12.5px]"
             value={message}
             placeholder={repo.suggestion !== '' ? repo.suggestion : 'Commit message'}
+            aria-label="Commit message"
             onInput={(e) => setMessage(e.currentTarget.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && stagedCount > 0) commit() }}
           />
-          <div class="scm-actions">
-            <button
-              class="btn btn-primary btn-small"
+          <div class="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="primary"
               disabled={gitBusy || stagedCount === 0}
+              loading={gitBusy}
               onClick={commit}
+              data-action="commit"
               title={stagedCount === 0
                 ? 'Nothing staged yet — + on a changed row, or Stage all'
                 : `Commit ${stagedCount} staged file${stagedCount === 1 ? '' : 's'}`}
             >
-              {gitBusy ? 'Working…' : `Commit${stagedCount > 0 ? ` ${stagedCount}` : ''}`}
-            </button>
+              Commit{stagedCount > 0 ? ` ${stagedCount}` : ''}
+            </Button>
             {dirtyPaths.length > 0 && (
-              <button
-                class="btn btn-small"
-                disabled={gitBusy}
-                onClick={() => gitApply('git.stage', dirtyPaths)}
-                title="Stage every change in this repository"
-              >
+              <Button size="sm" disabled={gitBusy} onClick={() => gitApply('git.stage', dirtyPaths)} title="Stage every change in this repository">
                 Stage all
-              </button>
+              </Button>
             )}
             {stagedPaths.length > 0 && (
-              <button
-                class="btn btn-small"
-                disabled={gitBusy}
-                onClick={() => gitApply('git.unstage', stagedPaths)}
-                title="Take everything back out of the commit — changes stay on disk"
-              >
+              <Button size="sm" disabled={gitBusy} onClick={() => gitApply('git.unstage', stagedPaths)} title="Take everything back out of the commit — changes stay on disk">
                 Unstage all
-              </button>
+              </Button>
             )}
-            <span class="scm-branch" title={repo.root}>
-              {Icon.branch()}
-              {repo.branch ?? 'no branch'}
-            </span>
+            <Chip class="ml-auto min-w-0" icon={<GitBranch />} title={repo.root}>
+              <span class="truncate">{repo.branch ?? 'no branch'}</span>
+            </Chip>
           </div>
           {conflicted.length > 0 && (
-            <div class="workspace-error">
+            <PanelNote tone="bad" inset>
               {conflicted.length} conflicted file{conflicted.length === 1 ? '' : 's'} — resolve
               {conflicted.length === 1 ? ' it' : ' them'} in an editor first; git will not
               commit over a conflict.
-            </div>
+            </PanelNote>
           )}
           {stagedCount === 0 && repo.files.length > 0 && conflicted.length === 0 && gitNote === null && (
-            <div class="scm-hint">
+            <div class="text-[11.5px] leading-[1.5] text-faint">
               Stage what the commit should carry — <b>+</b> on a row, or Stage all. Staged
               rows highlight.
             </div>
           )}
           {gitNote !== null && (
-            <div class={gitNote.kind === 'ok' ? 'scm-outcome' : 'workspace-error'}>{gitNote.text}</div>
+            <PanelNote tone={gitNote.kind === 'ok' ? 'good' : 'bad'} inset>{gitNote.text}</PanelNote>
           )}
-          {repo.problem !== undefined && <div class="history-note">{repo.problem}</div>}
+          {repo.problem !== undefined && <PanelNote inset>{repo.problem}</PanelNote>}
           {unversioned.length > 0 && (
-            <div class="history-note">
-              Not under version control: {unversioned.map((u) => u.mount).join(', ')}.
-            </div>
+            <PanelNote inset>Not under version control: {unversioned.map((u) => u.mount).join(', ')}.</PanelNote>
           )}
         </div>
       )}
-      {gitProblem !== null && <div class="workspace-error">{gitProblem}</div>}
+      {gitProblem !== null && (
+        <PanelNote tone="warn" title="Git is not available for this workspace, so the tree carries no marks">{gitProblem}</PanelNote>
+      )}
 
       {unionCount > 0 && (
-        <div class="workspace-changes-strip">
-          <button
-            class={filterChanged ? 'ws-view ws-view-active' : 'ws-view'}
+        <div class="flex shrink-0 items-center gap-1.5 border-b border-border-soft px-2.5 pb-2 pt-0.5">
+          <Button
+            size="sm"
+            variant={filterChanged ? 'secondary' : 'ghost'}
+            icon={<ListFilter />}
             aria-pressed={filterChanged}
+            data-action="filter-changed"
             onClick={() => setFilterChanged((v) => !v)}
             title={filterChanged
               ? 'Show every file again'
@@ -436,20 +479,22 @@ export function WorkspaceTab({
           >
             {unionCount} changed
             {changes.length > 0 && <DiffStatBadge stat={total} />}
-          </button>
+          </Button>
           {changes.length > reviewedPaths.size && (
-            <button
-              class="btn btn-small"
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<CheckCheck />}
               onClick={() => onMarkReviewed(changes)}
               title="Dim every current change's badge; a newer write brings its badge back"
             >
               All reviewed
-            </button>
+            </Button>
           )}
         </div>
       )}
 
-      <div class="files-tree">
+      <div class="min-h-0 flex-1 overflow-auto py-1.5">
         <TreePanel
           client={client}
           toolItems={items}
@@ -465,6 +510,8 @@ export function WorkspaceTab({
           gitActions={gitActions}
           ghosts={ghosts}
           reloadKey={reloadKey}
+          find={find}
+          onReveal={() => setFind(null)}
         />
       </div>
     </div>

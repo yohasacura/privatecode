@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { AgentMode } from '@core/permissions/engine'
 import type { ProtocolClient } from '../lib/client'
@@ -635,12 +635,29 @@ export function Composer({
 
   // Grow with the content up to a cap, then scroll -- a fixed two-line box makes writing a
   // real instruction (which is most of them) an exercise in scrolling blind.
-  useEffect(() => {
+  const fit = useCallback(() => {
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 260)}px`
-  }, [input])
+  }, [])
+  useEffect(fit, [input, fit])
+  // And again when the box changes width: measured at first paint, before the columns had
+  // settled, a narrow box wrapped its placeholder into enough lines to hit the cap, and the
+  // empty composer opened 260px tall. A width change is the only thing that moves the
+  // measurement without the text changing.
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let width = el.clientWidth
+    const watch = new ResizeObserver(() => {
+      if (el.clientWidth === width) return
+      width = el.clientWidth
+      fit()
+    })
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [fit])
 
   // Re-focus the moment a turn ends: the next thing anyone does is type again.
   useEffect(() => {

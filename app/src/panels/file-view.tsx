@@ -1,15 +1,21 @@
-import { useEffect, useMemo, useState } from 'preact/hooks'
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { AlignLeft, Check, FileDiff, FileX, Search, Undo2 } from 'lucide-preact'
 import type { FsReadResult, GitRepoView } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
 import { highlight } from '../lib/highlight'
-import { Icon } from '../components/icons'
-import { PanelError } from '../components/panel'
+import { Button, IconButton } from '../ui/button'
+import { Chip } from '../ui/chip'
+import { cn } from '../ui/cn'
+import { Input } from '../ui/input'
+import { Segmented } from '../ui/segmented'
+import { PanelEmpty, PanelError, PanelLoading, PanelNote } from '../components/panel'
 import type { ChangeEntry } from './changes-tab'
 
 /**
- * One opened file, as a TAB beside the chat.
+ * One opened file, as a TAB beside the chat (docs/UI-REDESIGN-2026-09.md §7 "File and diff
+ * tabs").
  *
  * The preview used to be an overlay inside the 420px side panel, which made reading code
  * the narrowest activity in the app. The owner's ruling: files and diffs are siblings of
@@ -17,9 +23,10 @@ import type { ChangeEntry } from './changes-tab'
  * and the chat keeps streaming underneath its own tab.
  *
  * Two faces. FILE is the content as it is now (read-only, jailed through `fs.read` like
- * every path the sidecar accepts). DIFF is what changed: the session's own change when
- * this session touched the file (with Put back and Reviewed), otherwise whatever is
- * uncommitted in git — so the letter on the tree always has a diff behind it.
+ * every path the sidecar accepts), with line numbers, a wrap toggle and find-in-file. DIFF
+ * is what changed: the session's own change when this session touched the file (with Put
+ * back and Reviewed), otherwise whatever is uncommitted in git — so the letter on the tree
+ * always has a diff behind it.
  */
 
 type Loaded =
@@ -43,29 +50,66 @@ export function loadedFrom(result: FsReadResult): Loaded {
     : { kind: 'loaded', lines: result.lines, truncated: result.truncated }
 }
 
+/** The host's "there is no such file", in the words each layer uses for it. */
+export function isMissing(message: string): boolean {
+  return /ENOENT|no such file|not found|does not exist|no longer exists/i.test(message)
+}
+
 function extensionOf(path: string): string {
   const dot = path.lastIndexOf('.')
   return dot === -1 ? '' : path.slice(dot + 1).toLowerCase()
 }
+
+const NO_LINES: string[] = []
 
 /**
  * Split out purely so the highlight can be memoised — re-tokenising the whole file into
  * thousands of objects on every streamed token is the sustained-allocation pattern that
  * took the renderer out of memory once already.
  */
-function PreviewBody({ lines, ext, wrap }: { lines: string[]; ext: string; wrap: boolean }): VNode {
+function PreviewBody({ lines, ext, wrap, jump }: {
+  lines: string[]
+  ext: string
+  wrap: boolean
+  /** A find hit to bring into view; `seq` makes the same line jumpable twice. */
+  jump: { line: number; seq: number } | null
+}): VNode {
   const parts = useMemo(() => highlight(lines.join('\n'), ext), [lines, ext])
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const codeRef = useRef<HTMLPreElement>(null)
+  // A hit scrolls into view by arithmetic rather than by a DOM node per line: the code is
+  // one <pre>, so a line's offset is its index times the pre's line height.
+  useEffect(() => {
+    if (jump === null) return
+    const el = scrollRef.current
+    const pre = codeRef.current
+    if (el === null || pre === null || lines.length === 0) return
+    const lineHeight = pre.scrollHeight / lines.length
+    el.scrollTop = Math.max(0, jump.line * lineHeight - el.clientHeight / 3)
+  }, [jump, lines.length])
   return (
-    <div class="preview-scroll">
+    <div ref={scrollRef} data-preview="" class="flex min-h-0 flex-1 items-start overflow-auto">
       {/* Numbers are their own unselectable column against ONE `<pre>`, so copying the code
           never picks them up. Hidden while wrapping: a wrapped line occupies two rows and a
           numbers column beside it would lie from there down. */}
       {!wrap && (
-        <pre class="preview-nums" aria-hidden="true">
+        <pre
+          aria-hidden="true"
+          class="sticky left-0 m-0 shrink-0 select-none bg-bg py-2 pl-2.5 pr-2 text-right font-mono text-[11.5px] leading-[1.55] text-ghost"
+        >
           {lines.map((_, i) => i + 1).join('\n')}
         </pre>
       )}
-      <pre class={`preview-code ${wrap ? 'preview-wrap' : ''}`}><code>{parts}</code></pre>
+      <pre
+        ref={codeRef}
+        data-code=""
+        class={cn(
+          'm-0 min-w-0 flex-1 py-2 pl-1 pr-3 font-mono text-[11.5px] leading-[1.55] text-dim',
+          wrap && 'whitespace-pre-wrap break-words',
+        )}
+      >
+        <code>{parts}</code>
+      </pre>
     </div>
   )
 }
@@ -77,9 +121,9 @@ function PreviewBody({ lines, ext, wrap }: { lines: string[]; ext: string; wrap:
 function PathLabel({ path }: { path: string }): VNode {
   const cut = path.lastIndexOf('/')
   return (
-    <span class="preview-path" title={path}>
-      {cut !== -1 && <span class="preview-dir">{path.slice(0, cut + 1)}</span>}
-      <span class="preview-name">{cut === -1 ? path : path.slice(cut + 1)}</span>
+    <span class="flex min-w-0 flex-1 font-mono text-[11.5px]" title={path}>
+      {cut !== -1 && <span class="truncate text-faint">{path.slice(0, cut + 1)}</span>}
+      <span class="shrink-0 text-fg">{cut === -1 ? path : path.slice(cut + 1)}</span>
     </span>
   )
 }
@@ -161,48 +205,53 @@ function DiffFace({
   }
 
   return (
-    <div class="diff-face">
-      <div class="diff-face-actions">
+    <div data-face="diff" class="flex min-h-0 flex-1 flex-col">
+      <div class="flex shrink-0 items-center gap-1.5 border-b border-border-soft px-2.5 py-1.5">
         {entry.ok && shownOutcome === null && (
-          <button class="btn btn-small" disabled={asking || busy} onClick={() => setAsking(true)}>
+          <Button size="sm" icon={<Undo2 />} disabled={asking || busy} onClick={() => setAsking(true)} data-action="put-back">
             Put back
-          </button>
+          </Button>
         )}
         {onMarkReviewed !== undefined && !reviewed && (
-          <button
-            class="btn btn-small"
+          <Button
+            size="sm"
+            icon={<Check />}
             onClick={() => onMarkReviewed(entry)}
             title="Dim this change's badge on the tree — you have seen it and it is fine. A newer write brings it back."
           >
-            {Icon.check()} Reviewed
-          </button>
+            Reviewed
+          </Button>
         )}
-        {reviewed && <span class="tag">reviewed</span>}
+        {reviewed && <Chip tone="green" icon={<Check />}>reviewed</Chip>}
       </div>
-      {shownOutcome !== null && <div class="revert-outcome">{shownOutcome}</div>}
+      {shownOutcome !== null && <PanelNote tone="good">{shownOutcome}</PanelNote>}
       {asking && (
-        <div class="revert-box">
-          <p>
+        <div
+          data-confirm="put-back"
+          class="mx-2.5 mt-2 rounded-md border border-red-line bg-red-soft p-2.5 font-ui text-[12.5px] leading-[1.45] text-fg"
+        >
+          <p class="m-0 mb-2">
             Restore <code>{entry.path}</code> to how it was before this session started, and
             tell the agent why. A file that did not exist then is <b>deleted</b>. Nothing
             else is touched.
           </p>
-          {shownFailure !== null && <div class="panel-error">{shownFailure}</div>}
-          <div class="revert-actions">
-            <input
-              class="input"
+          {shownFailure !== null && <PanelError message={shownFailure} />}
+          <div class="flex flex-wrap items-center gap-1.5">
+            <Input
+              class="min-w-[150px] flex-1"
               value={note}
               placeholder="why it goes back (travels to the agent)"
+              aria-label="Why it goes back"
               onInput={(e) => setNote(e.currentTarget.value)}
             />
-            <button class="btn btn-small btn-danger" disabled={busy} onClick={() => void revert()}>
-              {busy ? 'Putting back…' : 'Put back'}
-            </button>
-            <button class="btn btn-small" disabled={busy} onClick={() => setAsking(false)}>Cancel</button>
+            <Button size="sm" variant="danger" disabled={busy} loading={busy} onClick={() => void revert()}>
+              Put back
+            </Button>
+            <Button size="sm" disabled={busy} onClick={() => setAsking(false)}>Cancel</Button>
           </div>
         </div>
       )}
-      <div class="diff-face-body">
+      <div class="min-h-0 overflow-auto px-3.5 pb-3 pt-2">
         {entry.ok
           ? <DiffView content={entry.content} />
           : <PanelError message={entry.content} />}
@@ -255,6 +304,7 @@ export function wantsUntrackedDiff(repos: readonly GitRepoView[], path: string):
 function GitDiffFace({ client, path }: { client: ProtocolClient; path: string }): VNode {
   const [diff, setDiff] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
+  const [tries, setTries] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -271,12 +321,18 @@ function GitDiffFace({ client, path }: { client: ProtocolClient; path: string })
       .then((d) => { if (!cancelled) setDiff(d) })
       .catch((e: Error) => { if (!cancelled) setFailed(e.message) })
     return () => { cancelled = true }
-  }, [client, path])
+  }, [client, path, tries])
 
-  if (failed !== null) return <PanelError message={failed} />
-  if (diff === null) return <div class="panel-placeholder loading-quiet">loading…</div>
-  if (diff.trim() === '') return <div class="panel-placeholder">nothing uncommitted in this file</div>
-  return <div class="diff-face"><div class="diff-face-body"><DiffView content={diff} /></div></div>
+  if (failed !== null) return <PanelError message={failed} onRetry={() => setTries((n) => n + 1)} />
+  if (diff === null) return <PanelLoading />
+  if (diff.trim() === '') {
+    return <PanelEmpty icon={<FileDiff />} title="Nothing uncommitted in this file" hint="Git has the same bytes as the disk." />
+  }
+  return (
+    <div data-face="diff" class="flex min-h-0 flex-1 flex-col">
+      <div class="min-h-0 overflow-auto px-3.5 pb-3 pt-2"><DiffView content={diff} /></div>
+    </div>
+  )
 }
 
 export function FileView({
@@ -297,6 +353,12 @@ export function FileView({
 }): VNode {
   const [loaded, setLoaded] = useState<Loaded>({ kind: 'loading' })
   const [wrap, setWrap] = useState(false)
+  const [reads, setReads] = useState(0)
+  // Find in file: null while closed, the query while open.
+  const [find, setFind] = useState<string | null>(null)
+  const [at, setAt] = useState(0)
+  const [jump, setJump] = useState<{ line: number; seq: number } | null>(null)
+  const findRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     setLoaded({ kind: 'loading' })
@@ -313,46 +375,113 @@ export function FileView({
         }
       })
     return () => { cancelled = true }
-  }, [client, path])
+  }, [client, path, reads])
+
+  const lines = loaded.kind === 'loaded' ? loaded.lines : NO_LINES
+  const matches = useMemo(() => {
+    const q = (find ?? '').trim().toLowerCase()
+    if (q === '') return []
+    const out: number[] = []
+    lines.forEach((line, i) => { if (line.toLowerCase().includes(q)) out.push(i) })
+    return out
+  }, [lines, find])
+
+  function goTo(index: number): void {
+    if (matches.length === 0) return
+    const i = ((index % matches.length) + matches.length) % matches.length
+    setAt(i)
+    setJump((j) => ({ line: matches[i]!, seq: (j?.seq ?? 0) + 1 }))
+  }
+  // A new query lands on its first hit.
+  useEffect(() => {
+    setAt(0)
+    if (matches.length > 0) setJump((j) => ({ line: matches[0]!, seq: (j?.seq ?? 0) + 1 }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the hits, not the setter
+  }, [matches])
+
+  function openFind(): void {
+    setFind((f) => f ?? '')
+    requestAnimationFrame(() => { findRef.current?.focus(); findRef.current?.select() })
+  }
+
+  const missing = loaded.kind === 'error' && isMissing(loaded.message)
+  const faces = [
+    { value: 'file' as const, label: 'File', hint: 'The file as it is now' },
+    {
+      value: 'diff' as const,
+      label: 'Diff',
+      hint: entry !== undefined && entry.ok ? 'What this session changed' : 'What is uncommitted in this file',
+    },
+  ]
 
   return (
-    <div class="file-view">
-      <div class="preview-head">
+    <div
+      data-file-view=""
+      tabIndex={-1}
+      class="flex min-h-0 min-w-0 flex-1 flex-col outline-none"
+      onKeyDown={(e) => {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F') && face === 'file') {
+          e.preventDefault()
+          openFind()
+        }
+      }}
+    >
+      <div class="flex shrink-0 items-center gap-2 border-b border-border-soft bg-panel py-1 pl-2.5 pr-2 font-ui">
         <PathLabel path={path} />
-        {face === 'file' && loaded.kind === 'loaded' && loaded.truncated && <span class="tag">truncated</span>}
-        {/* The face toggle. With a session change it wears the diff stat; without one it
-            is a plain diff glyph that answers with git. */}
-        {entry !== undefined && entry.ok
-          ? (
-            <button
-              class={`preview-face ${face === 'diff' ? 'preview-face-on' : ''}`}
-              onClick={() => onFaceChange(face === 'diff' ? 'file' : 'diff')}
-              title={face === 'diff' ? 'Show the file as it is now' : 'Show what this session changed'}
-            >
-              <DiffStatBadge stat={diffStat(entry.content)} />
-              {entry.revisions > 1 && <span class="tag">{entry.revisions}×</span>}
-            </button>
-            )
-          : (
-            <button
-              class={`icon-button ${face === 'diff' ? 'icon-button-on' : ''}`}
-              onClick={() => onFaceChange(face === 'diff' ? 'file' : 'diff')}
-              title={face === 'diff' ? 'Show the file as it is now' : 'Show what is uncommitted in this file'}
-            >
-              {Icon.diff()}
-            </button>
-            )}
-        {entry !== undefined && entry.lastFailed === true && <span class="tag tag-danger">last write failed</span>}
+        {face === 'file' && loaded.kind === 'loaded' && loaded.truncated && (
+          <Chip tone="yellow" title="The host reads the first 2,000 lines of a file into a tab">first 2,000 lines</Chip>
+        )}
+        {entry !== undefined && entry.lastFailed === true && <Chip tone="red">last write failed</Chip>}
+        {entry !== undefined && entry.ok && (
+          <Chip mono title={entry.revisions > 1 ? `Written ${entry.revisions} times this session` : 'What this session changed'}>
+            <DiffStatBadge stat={diffStat(entry.content)} />
+            {entry.revisions > 1 && <span class="ml-1">{entry.revisions}×</span>}
+          </Chip>
+        )}
+        <Segmented size="sm" label="Show the file or its diff" options={faces} value={face} onChange={onFaceChange} />
         {face === 'file' && loaded.kind === 'loaded' && (
-          <button
-            class={`icon-button ${wrap ? 'icon-button-on' : ''}`}
-            onClick={() => setWrap((w) => !w)}
-            title={wrap ? 'Stop wrapping long lines' : 'Wrap long lines'}
-          >
-            {Icon.wrap()}
-          </button>
+          <>
+            <IconButton
+              size="sm"
+              label={find === null ? 'Find in file (Ctrl+F)' : 'Close find'}
+              active={find !== null}
+              onClick={() => (find === null ? openFind() : setFind(null))}
+            >
+              <Search />
+            </IconButton>
+            <IconButton
+              size="sm"
+              label={wrap ? 'Stop wrapping long lines' : 'Wrap long lines'}
+              active={wrap}
+              onClick={() => setWrap((w) => !w)}
+            >
+              <AlignLeft />
+            </IconButton>
+          </>
         )}
       </div>
+
+      {face === 'file' && find !== null && loaded.kind === 'loaded' && (
+        <div data-find="" class="flex shrink-0 items-center gap-2 border-b border-border-soft bg-panel px-2 py-1 font-ui">
+          <Input
+            ref={findRef}
+            class="h-6 max-w-[260px] text-[12px]"
+            value={find}
+            placeholder="find in file"
+            aria-label="Find in file"
+            onInput={(e) => setFind(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); goTo(at + (e.shiftKey ? -1 : 1)) }
+              else if (e.key === 'Escape') { e.stopPropagation(); setFind(null) }
+            }}
+          />
+          <span class="text-[11.5px] tabular-nums text-faint" data-find-count="" aria-live="polite">
+            {find.trim() === '' ? '' : matches.length === 0 ? 'no matches' : `${at + 1} of ${matches.length}`}
+          </span>
+          <span class="text-[11px] text-faint">Enter next · Shift+Enter previous · Esc closes</span>
+        </div>
+      )}
+
       {face === 'diff'
         ? entry !== undefined
           ? (
@@ -367,17 +496,33 @@ export function FileView({
           : <GitDiffFace client={client} path={path} />
         : (
           <>
-            {loaded.kind === 'loading' && <div class="panel-placeholder loading-quiet">loading…</div>}
-            {loaded.kind === 'error' && <PanelError message={loaded.message} />}
+            {loaded.kind === 'loading' && <PanelLoading />}
+            {loaded.kind === 'error' && (missing
+              ? (
+                <PanelEmpty
+                  icon={<FileX />}
+                  title="This file no longer exists"
+                  hint={entry !== undefined
+                    ? 'It was deleted or moved since it was opened. The diff face still shows what this session did to it.'
+                    : 'It was deleted or moved since it was opened.'}
+                  action={
+                    <span class="flex gap-1.5">
+                      <Button size="sm" onClick={() => setReads((n) => n + 1)}>Try again</Button>
+                      {entry !== undefined && <Button size="sm" variant="ghost" onClick={() => onFaceChange('diff')}>Show the diff</Button>}
+                    </span>
+                  }
+                />
+                )
+              : <PanelError message={loaded.message} onRetry={() => setReads((n) => n + 1)} />)}
             {loaded.kind === 'loaded' && (
-              <PreviewBody lines={loaded.lines} ext={extensionOf(path)} wrap={wrap} />
+              <PreviewBody lines={loaded.lines} ext={extensionOf(path)} wrap={wrap} jump={jump} />
             )}
             {/* The image itself, at its own size inside the same scroller the text face
                 uses — `.shot img` caps it at the pane's width. The caption carries the byte
                 size because that is the one thing about an image the picture cannot say,
                 and it is what tells a screenshot apart from a 4 MB asset. */}
             {loaded.kind === 'image' && (
-              <div class="preview-scroll">
+              <div class="flex min-h-0 flex-1 items-start overflow-auto">
                 <figure class="shot">
                   <img src={loaded.dataUrl} alt={path} />
                   <figcaption>{Math.max(1, Math.round(loaded.bytes / 1024))} KB</figcaption>

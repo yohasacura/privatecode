@@ -24,6 +24,8 @@ import { TitleBar } from './shell/titlebar'
 import { Welcome } from './shell/welcome'
 import { AgentDown } from './shell/agent-down'
 import { Toaster } from './ui/toast'
+import { EditorTab } from './shell/editor-tabs'
+import { FileDiff, FileText, MessageSquare } from 'lucide-preact'
 import { WorkspaceSwitch } from './panels/workspace-switch'
 import { Palette, type PaletteAction } from './panels/palette'
 import { Transcript } from './panels/transcript'
@@ -104,7 +106,7 @@ const ESCAPE_OWNERS =
  * would reach the composer's abort listener instead of doing nothing.
  */
 const INLINE_EDITS =
-  '.workspace-name-input, .workspace-add-input, .tree-mount-controls-open input'
+  '[data-workspace-name], [data-add-folder], [data-rename-folder], [data-find-file], [data-find] input'
 
 /**
  * The recents list after opening `root` — newest first, no duplicate — mirroring what the
@@ -810,38 +812,29 @@ export default function App() {
                   one-tab bar would be chrome with no decision behind it. The chat is
                   the first tab and never closes; it keeps streaming while hidden. */}
               {tabs.length > 0 && (
-                <div class="editor-tabs" role="tablist">
-                  <button
-                    class={`editor-tab ${activeTab === null ? 'editor-tab-active' : ''}`}
-                    onClick={() => setActiveTab(null)}
-                    role="tab"
-                    aria-selected={activeTab === null}
+                <div
+                  role="tablist"
+                  aria-label="Open files"
+                  data-editor-tabs=""
+                  class="flex shrink-0 items-end gap-0.5 overflow-x-auto border-b border-border-soft bg-panel px-2 pt-1 font-ui [scrollbar-width:none]"
+                >
+                  <EditorTab
+                    active={activeTab === null}
+                    icon={<MessageSquare />}
+                    name="Chat"
                     title="The conversation (Esc)"
-                  >
-                    {Icon.chat()}
-                    <span class="editor-tab-name">Chat</span>
-                  </button>
+                    onSelect={() => setActiveTab(null)}
+                  />
                   {tabs.map((t) => (
-                    <button
+                    <EditorTab
                       key={t.path}
-                      class={`editor-tab ${activeTab === t.path ? 'editor-tab-active' : ''}`}
-                      onClick={() => setActiveTab(t.path)}
-                      onAuxClick={(e) => { if (e.button === 1) closeTab(t.path) }}
-                      role="tab"
-                      aria-selected={activeTab === t.path}
+                      active={activeTab === t.path}
+                      icon={t.face === 'diff' ? <FileDiff /> : <FileText />}
+                      name={baseName(t.path)}
                       title={t.path}
-                    >
-                      {t.face === 'diff' ? Icon.diff() : Icon.file()}
-                      <span class="editor-tab-name">{baseName(t.path)}</span>
-                      <span
-                        class="editor-tab-close"
-                        role="button"
-                        title="Close"
-                        onClick={(e) => { e.stopPropagation(); closeTab(t.path) }}
-                      >
-                        {Icon.x()}
-                      </span>
-                    </button>
+                      onSelect={() => setActiveTab(t.path)}
+                      onClose={() => closeTab(t.path)}
+                    />
                   ))}
                 </div>
               )}

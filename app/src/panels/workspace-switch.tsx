@@ -1,3 +1,4 @@
+import { PanelError } from '../components/panel'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
@@ -172,7 +173,7 @@ export function WorkspaceSwitch({
             </button>
             )}
 
-        {error !== null && <div class="panel-error">{error}</div>}
+        {error !== null && <PanelError message={error} />}
 
         <div class="field-hint">
           Opening a workspace picks up its most recent session. The current one keeps its

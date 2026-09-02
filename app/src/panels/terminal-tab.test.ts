@@ -30,6 +30,16 @@ describe('a command the step never executed', () => {
     expect(agentCommands([skipped])).toEqual([])
   })
 
+  it('a command the permission engine refused is shown as refused, never as failed', () => {
+    // The person deciding what to allow needs to see what was asked. Its own tone, its own
+    // word, and the rule as the output — not a red "failed" over a command that never ran.
+    const refused = command(4, 'rm -rf build', false, 'Not run: denied by the rule "Bash(rm *)" for this workspace.')
+    const lines = agentCommands([refused])
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({ state: 'refused', tone: 'refused' })
+    expect(lines[0]?.output).toContain('denied by the rule')
+  })
+
   it('does not hide a command that genuinely ran and failed', () => {
     // "Never ran" and "ran and failed" are different, and only the first is not a command.
     const failed = command(2, 'npm test', false, '$ npm test\nexit code 1\n3 tests failing')

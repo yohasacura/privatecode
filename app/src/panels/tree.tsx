@@ -1,17 +1,32 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import {
+  ChevronDown, ChevronRight, FileText, Folder, FolderOpen, Lock, LockOpen, Minus, MoreHorizontal,
+  PencilLine, Plus, Search, Trash2, TriangleAlert,
+} from 'lucide-preact'
 import type { ProtocolClient } from '../lib/client'
 import { compareTreeRows, type ChangeDecor } from '../lib/path-tree'
 import type { ChatItem } from '../lib/state'
-import { describeMark, type GhostRow, type GitMark } from '../lib/git-scm'
+import { describeMark, type GhostRow, type GitLetter, type GitMark } from '../lib/git-scm'
 import { Icon } from '../components/icons'
+import { PanelEmpty, PanelLoading } from '../components/panel'
 import { DRAG_THRESHOLD_PX, beginPathDrag, endPathDrag, movePathDrag } from '../lib/drag'
+import { Button, IconButton } from '../ui/button'
+import { Chip } from '../ui/chip'
+import { cn } from '../ui/cn'
+import { Input } from '../ui/input'
+import { Menu } from '../ui/menu'
 
 /**
- * The file tree panel (Plan 4 Task 7): lazy-loaded directories over `fs.tree`, refreshed
- * automatically when a write-family tool succeeds against a directory the tree has
- * already loaded, and a click on a file hands its path to `onOpenFile` (wired by `App.tsx`
- * to the diffs panel's preview area -- the tree itself never calls `fs.read`).
+ * The file tree (docs/UI-REDESIGN-2026-09.md §7 "Files"): lazy-loaded directories over
+ * `fs.tree`, refreshed automatically when a write-family tool succeeds against a directory
+ * the tree has already loaded, and a click on a file hands its path to `onOpenFile` (wired
+ * by `App.tsx` to a tab beside the chat -- the tree itself never calls `fs.read`).
+ *
+ * Rows are 28px, folders open, files carry their kind, a changed file wears its diff shape
+ * and its git letter on the right, staged rows are tinted. A mount's row carries its own
+ * management in a menu. A folder that cannot be read says "access denied" and offers a
+ * retry; a find box searches the host's index rather than the rows on screen.
  */
 
 /** One directory's lazily-fetched listing. `entries: null` means "never fetched, or a
@@ -30,25 +45,23 @@ function dirOf(path: string): string {
 }
 
 /**
- * The tree-refresh path parser (Task 7's own name for it, in the plan's verification
- * bullet): given a write-family tool's name and its raw `tool.call` args JSON, returns the
- * workspace-relative directories a successful call just changed the CONTENTS of --
- * `edit_file`/`write_file`/`delete_file` each name one directory (the parent of `path`);
- * `move_file` can name up to two (the parent of `from` AND of `to`, deduplicated -- a move
- * within the same directory returns just one). Any other tool name, or JSON that does not
- * parse or does not carry the expected string field(s), returns `[]` rather than throwing
- * -- a malformed or unrecognized call is simply nothing to refresh, not a crash.
+ * The tree-refresh path parser: given a write-family tool's name and its raw `tool.call`
+ * args JSON, returns the workspace-relative directories a successful call just changed the
+ * CONTENTS of -- `edit_file`/`write_file`/`delete_file` each name one directory (the parent
+ * of `path`); `move_file` can name up to two (the parent of `from` AND of `to`,
+ * deduplicated -- a move within the same directory returns just one). Any other tool name,
+ * or JSON that does not parse or does not carry the expected string field(s), returns `[]`
+ * rather than throwing.
  */
-export function affectedDirectories(name: string, argsJson: string): string[] {
-  let parsed: unknown
+export function affectedDirectories(name: string, args: string): string[] {
+  let obj: Record<string, unknown>
   try {
-    parsed = JSON.parse(argsJson)
+    const parsed: unknown = JSON.parse(args)
+    if (typeof parsed !== 'object' || parsed === null) return []
+    obj = parsed as Record<string, unknown>
   } catch {
     return []
   }
-  if (typeof parsed !== 'object' || parsed === null) return []
-  const obj = parsed as Record<string, unknown>
-
   if (name === 'move_file') {
     const from = obj['from']
     const to = obj['to']
@@ -161,12 +174,31 @@ export interface GitRowActions {
   busy: boolean
 }
 
+/** One row's chrome. `group/row` lets the hover-only controls inside it appear. */
+const ROW = cn(
+  'group/row flex h-7 w-full min-w-0 cursor-pointer select-none items-center gap-1.5 whitespace-nowrap',
+  'border-0 bg-transparent pr-1 text-left font-ui text-[13px] text-dim',
+  'transition-colors duration-(--duration-fast) hover:bg-raised hover:text-fg',
+  'focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent',
+)
+/* Staged = chosen for the commit — the row itself says so (the owner asked for staged files
+   highlighted, not a checkbox column). */
+const STAGED = 'bg-(--user-wash) shadow-[inset_2px_0_0_var(--accent)] hover:bg-accent-soft'
+
+const NAME_TONE: Record<GitLetter, string> = {
+  M: 'text-yellow', R: 'text-yellow', A: 'text-green', U: 'text-green', D: 'text-red', '!': 'text-red font-semibold',
+}
+
+function indent(depth: number): { paddingLeft: string } {
+  return { paddingLeft: `${depth * 12 + 6}px` }
+}
+
 /**
  * The git cluster on a changed file's row: hover actions first, then the letter.
  *
  * Spans with click handlers, not buttons — the row itself is a button and buttons cannot
- * nest. The letter is always visible; `+`/`−` appear on row hover (CSS gates
- * pointer-events with opacity, so an invisible control is also an unclickable one).
+ * nest. The letter is always visible; `+`/`−` appear on row hover, and an invisible
+ * control is also an unclickable one (pointer-events), so a blind click cannot stage.
  */
 function GitCluster({
   path, mark, actions,
@@ -175,16 +207,20 @@ function GitCluster({
   mark: GitMark
   actions: GitRowActions | undefined
 }): VNode {
+  const act = 'inline-flex items-center rounded-sm text-dim opacity-0 pointer-events-none transition-opacity duration-(--duration-fast) ' +
+    'group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-focus-visible/row:opacity-100 group-focus-visible/row:pointer-events-auto ' +
+    'hover:bg-raised hover:text-fg [&>svg]:size-[13px]'
   return (
-    <span class="tree-git">
+    <span class="inline-flex shrink-0 items-center gap-0.5" data-git={mark.letter}>
       {actions !== undefined && mark.dirty && mark.letter !== '!' && (
         <span
-          class="tree-git-act"
+          class={act}
           role="button"
+          tabIndex={-1}
           title="Stage — include this file in the next commit"
           onClick={(e) => { e.stopPropagation(); if (!actions.busy) actions.stage(path) }}
         >
-          {Icon.plus()}
+          <Plus />
         </span>
       )}
       {/* A conflict is not a thing to stage or unstage from a hover: `git add` would
@@ -192,20 +228,20 @@ function GitCluster({
           throw away the merge bookkeeping. The letter alone, loudly. */}
       {actions !== undefined && mark.staged && mark.letter !== '!' && (
         <span
-          class="tree-git-act"
+          class={act}
           role="button"
+          tabIndex={-1}
           title="Unstage — keep the change, take it out of the commit"
           onClick={(e) => { e.stopPropagation(); if (!actions.busy) actions.unstage(path) }}
         >
-          {Icon.minus()}
+          <Minus />
         </span>
       )}
       {/* Last in the row, and a fixed-width box: every mark in the tree then lands on the
           same x whatever else the row carries — a diff stat, a read-only tag, the hover
-          actions that appear to its left. A ragged right edge was the first thing the
-          owner noticed about the old letter chips. */}
+          actions that appear to its left. */}
       <span
-        class={`tree-git-mark tree-git-${mark.letter === '!' ? 'conflict' : mark.letter.toLowerCase()}`}
+        class={cn('inline-flex h-4 w-[18px] shrink-0 items-center justify-center [&>svg]:size-[13px]', NAME_TONE[mark.letter])}
         title={describeMark(mark)}
       >
         {Icon.gitMark(mark.letter, mark.staged)}
@@ -216,7 +252,7 @@ function GitCluster({
 
 export function TreePanel({
   client, toolItems, onOpenFile, workspaceRoot, decor, mounts, mountActions,
-  filterChanged, reviewedPaths, onOpenDiff, git, gitActions, ghosts, reloadKey,
+  filterChanged, reviewedPaths, onOpenDiff, git, gitActions, ghosts, reloadKey, find, onReveal,
 }: {
   client: ProtocolClient
   /**
@@ -263,6 +299,12 @@ export function TreePanel({
   gitActions?: GitRowActions
   /** Deleted files, grouped by parent directory — rows the disk listing cannot have. */
   ghosts?: ReadonlyMap<string, GhostRow[]>
+  /** A name to find. Non-empty replaces the tree with what the host's index matches;
+   * null or empty shows the tree. The index, not the rows: a tree of fifty thousand files
+   * has loaded a few hundred of them. */
+  find?: string | null
+  /** A found folder was chosen: the tree has opened the way to it and the find can close. */
+  onReveal?: () => void
 }) {
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']))
@@ -348,8 +390,36 @@ export function TreePanel({
     })
   }
 
+  /** Open every folder on the way to `path`, loading the ones the tree has not seen. */
+  function reveal(path: string): void {
+    const parts = path.split('/')
+    const ancestors: string[] = []
+    for (let i = 1; i <= parts.length; i++) ancestors.push(parts.slice(0, i).join('/'))
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      for (const a of ancestors) {
+        next.add(a)
+        if (dirsRef.current[a] === undefined) loadDir(a)
+      }
+      return next
+    })
+    onReveal?.()
+  }
+
+  const query = (find ?? '').trim()
+  if (query !== '') {
+    return (
+      <FindResults
+        client={client}
+        query={query}
+        onOpenFile={onOpenFile}
+        onOpenFolder={reveal}
+      />
+    )
+  }
+
   return (
-    <div class="tree-panel">
+    <div data-tree="" class="font-ui text-[13px]">
       <DirChildren
         path="" dirs={dirs} expanded={expanded} onToggle={toggle} onOpenFile={onOpenFile}
         onRetry={loadDir} depth={0} decor={decor}
@@ -363,81 +433,132 @@ export function TreePanel({
         {...(ghosts !== undefined ? { ghosts } : {})}
       />
       {filterChanged === true && decor !== undefined && decor.files.size === 0 && (
-        <div class="tree-empty">nothing changed this session</div>
+        <div class="px-2 py-1 text-[11.5px] text-faint">nothing changed this session</div>
       )}
     </div>
   )
 }
 
 /**
- * The management cluster on a mount's own row. Hidden until the row is hovered — the
- * tree stays a tree — and the remove is a two-click arm ("Remove?") rather than a
- * confirm dialog: a stray click must not silently unmount a project, and a dialog for
- * an action this reversible would be ceremony.
+ * What the host's file index says matches the query: files and folders, as rows that open
+ * or reveal. Asked after a short pause so a name typed at speed costs one round trip.
+ */
+function FindResults({
+  client, query, onOpenFile, onOpenFolder,
+}: {
+  client: ProtocolClient
+  query: string
+  onOpenFile: (path: string) => void
+  onOpenFolder: (path: string) => void
+}): VNode {
+  const [hits, setHits] = useState<{ path: string; dir: boolean }[] | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    setFailed(null)
+    const id = setTimeout(() => {
+      client.call('fs.find', { query, limit: 60 })
+        .then((r) => { if (!cancelled) setHits(r.entries) })
+        .catch((e: unknown) => { if (!cancelled) setFailed(e instanceof Error ? e.message : String(e)) })
+    }, 120)
+    return () => { cancelled = true; clearTimeout(id) }
+  }, [client, query])
+
+  if (failed !== null) {
+    return <div data-tree-find="" class="px-2.5 py-2 font-ui text-[12px] text-red">{failed}</div>
+  }
+  if (hits === null) return <div data-tree-find=""><PanelLoading what="looking…" /></div>
+  if (hits.length === 0) {
+    return (
+      <div data-tree-find="">
+        <PanelEmpty icon={<Search />} title={`No files match “${query}”`} hint="Names are matched anywhere in the path." />
+      </div>
+    )
+  }
+  return (
+    <div data-tree-find="" class="font-ui text-[13px]">
+      {hits.map((h) => (
+        <button
+          key={h.path}
+          type="button"
+          data-tree-row={h.path}
+          class={ROW}
+          style={indent(0)}
+          title={h.dir ? `${h.path} — open it in the tree` : h.path}
+          onClick={() => (h.dir ? onOpenFolder(h.path) : onOpenFile(h.path))}
+        >
+          <span class={cn('flex shrink-0 [&>svg]:size-3.5', h.dir ? 'text-blue opacity-75' : 'text-faint')}>
+            {h.dir ? <Folder /> : <FileText />}
+          </span>
+          <span data-tree-name="" class="min-w-0 flex-1 truncate font-mono text-[12px]">{h.path}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The management cluster on a mount's own row: a menu, hidden until the row is hovered so
+ * the tree stays a tree, and a two-step remove that is an inline question rather than a
+ * dialog — a stray click must not silently unmount a project, and a dialog for an action
+ * this reversible would be ceremony.
  */
 function MountControls({ mount, actions }: { mount: MountInfo; actions: MountActions }): VNode {
   const [renaming, setRenaming] = useState<string | null>(null)
-  const [armed, setArmed] = useState(false)
-  useEffect(() => {
-    if (!armed) return
-    const id = setTimeout(() => setArmed(false), 3_000)
-    return () => clearTimeout(id)
-  }, [armed])
+  const [confirming, setConfirming] = useState(false)
 
   if (mount.primary) {
     return (
-      <span class="tree-mount-controls tree-mount-controls-open">
-        <span class="tag" title="The main folder — sessions, checkpoints and workspace settings live here">main</span>
-      </span>
+      <Chip class="mr-1.5 h-4 shrink-0 px-1.5 text-[10px]" title="The main folder — sessions, checkpoints and workspace settings live here">
+        main
+      </Chip>
     )
   }
   if (renaming !== null) {
     return (
-      <span class="tree-mount-controls tree-mount-controls-open">
-        <input
-          class="input input-small"
-          value={renaming}
-          // eslint-disable-next-line jsx-a11y/no-autofocus
-          autoFocus
-          onInput={(e) => setRenaming(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && renaming.trim() !== '') { actions.rename(mount.name, renaming.trim()); setRenaming(null) }
-            if (e.key === 'Escape') { e.stopPropagation(); setRenaming(null) }
-          }}
-        />
+      <Input
+        data-rename-folder=""
+        class="mr-1.5 h-6 w-40 text-[12px]"
+        value={renaming}
+        aria-label="New name for the folder"
+        // eslint-disable-next-line jsx-a11y/no-autofocus
+        autoFocus
+        onInput={(e) => setRenaming(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && renaming.trim() !== '') { actions.rename(mount.name, renaming.trim()); setRenaming(null) }
+          if (e.key === 'Escape') { e.stopPropagation(); setRenaming(null) }
+        }}
+      />
+    )
+  }
+  if (confirming) {
+    return (
+      <span data-confirm="remove-folder" class="mr-1.5 flex shrink-0 items-center gap-1 font-ui text-[11.5px]">
+        <span class="text-fg">Remove from the workspace?</span>
+        <Button size="sm" variant="danger" disabled={actions.busy} onClick={() => { setConfirming(false); actions.remove(mount.name) }}>
+          Remove
+        </Button>
+        <Button size="sm" disabled={actions.busy} onClick={() => setConfirming(false)}>Keep</Button>
       </span>
     )
   }
   return (
-    <span class={armed ? 'tree-mount-controls tree-mount-controls-open' : 'tree-mount-controls'}>
-      <button
-        class="tree-mount-btn"
-        disabled={actions.busy}
-        title={mount.access === 'read'
-          ? 'Read-only: the agent reads and searches here, and cannot write. Click to allow writes.'
-          : 'Writable. Click to make this folder read-only.'}
-        onClick={() => actions.toggleAccess(mount.name)}
-      >
-        {mount.access === 'read' ? 'read-only' : 'writable'}
-      </button>
-      <button
-        class="tree-mount-btn"
-        disabled={actions.busy}
-        title="Rename — this is the name the agent sees the folder under"
-        onClick={() => setRenaming(mount.name)}
-      >
-        ✎
-      </button>
-      <button
-        class={armed ? 'tree-mount-btn tree-mount-danger' : 'tree-mount-btn'}
-        disabled={actions.busy}
-        title="Remove the folder from the workspace — files on disk are untouched"
-        onClick={() => {
-          if (armed) { setArmed(false); actions.remove(mount.name) } else setArmed(true)
-        }}
-      >
-        {armed ? 'Remove?' : Icon.x()}
-      </button>
+    <span class="mr-1 shrink-0 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/mount:opacity-100">
+      <Menu
+        label={`Actions for ${mount.name}`}
+        items={[
+          {
+            id: 'access',
+            label: mount.access === 'read' ? 'Allow writes' : 'Make read-only',
+            icon: mount.access === 'read' ? <LockOpen /> : <Lock />,
+            disabled: actions.busy,
+            onSelect: () => actions.toggleAccess(mount.name),
+          },
+          { id: 'rename', label: 'Rename…', icon: <PencilLine />, disabled: actions.busy, onSelect: () => setRenaming(mount.name) },
+          { id: 'remove', label: 'Remove from workspace…', icon: <Trash2 />, danger: true, disabled: actions.busy, onSelect: () => setConfirming(true) },
+        ]}
+        trigger={(p) => <IconButton size="sm" label={`Actions for ${mount.name}`} {...p}><MoreHorizontal /></IconButton>}
+      />
     </span>
   )
 }
@@ -453,8 +574,8 @@ function DirChildren({
   onOpenFile: (path: string) => void
   /** A directory that failed to load (most commonly: the root, fetched before `init` has
    * ever been called -- there is no session yet to answer `fs.tree` with) is not a dead
-   * end: clicking the error retries the SAME fetch. Nothing here knows about `init`
-   * events specifically (the protocol has none for it -- init is a request/reply, not a
+   * end: the row offers the SAME fetch again. Nothing here knows about `init` events
+   * specifically (the protocol has none for it -- init is a request/reply, not a
    * broadcast), so "let the user ask again" is the general-purpose fix rather than one
    * more special case wired to session lifecycle. */
   onRetry: (path: string) => void
@@ -472,19 +593,21 @@ function DirChildren({
   const state = dirs[path]
   if (!state) return null
   if (state.error) {
+    // "access denied" in two words, because that is the one reason a person can act on —
+    // the rest of the message is the OS's spelling of it, kept in the tooltip.
+    const denied = /EACCES|EPERM|denied|not permitted/i.test(state.error)
     return (
-      <button
-        class="tree-error"
-        style={{ paddingLeft: `${depth * 12 + 6}px` }}
-        onClick={() => onRetry(path)}
-        title="Click to retry"
-      >
-        ⚠ {state.error} (click to retry)
-      </button>
+      <div data-tree-error="" class="flex items-center gap-1.5 py-0.5 pr-1 font-ui text-[11.5px] text-red" style={indent(depth)}>
+        <span class="inline-flex shrink-0 [&>svg]:size-3.5">{denied ? <Lock /> : <TriangleAlert />}</span>
+        <span class="min-w-0 flex-1 truncate" title={state.error}>{denied ? 'access denied' : state.error}</span>
+        <Button size="sm" variant="ghost" onClick={() => onRetry(path)}>Retry</Button>
+      </div>
     )
   }
   if (state.entries === null) {
-    return state.loading ? <div class="tree-loading loading-quiet" style={{ paddingLeft: `${depth * 12 + 6}px` }}>loading…</div> : null
+    return state.loading
+      ? <div class="py-1 font-ui text-[11.5px] text-faint motion-safe:animate-pulse" style={indent(depth)}>loading…</div>
+      : null
   }
   const entries = state.entries
 
@@ -517,7 +640,7 @@ function DirChildren({
 
   // A directory emptied BY deletions is not "empty" — it is where the ghosts live.
   if (entries.length === 0 && ghostList.length === 0 && path !== '') {
-    return <div class="tree-empty" style={{ paddingLeft: `${depth * 12 + 28}px` }}>empty</div>
+    return <div class="py-1 font-ui text-[11.5px] text-faint" style={{ paddingLeft: `${depth * 12 + 28}px` }}>empty</div>
   }
 
   // ONE view, filtered — not a second view: with the filter on, a row renders only when
@@ -555,24 +678,18 @@ function DirChildren({
         const mount = depth === 0 && entry.dir ? mounts?.find((m) => m.name === entry.name) : undefined
         const fileChange = !entry.dir ? decor?.files.get(childPath) : undefined
         const mark = !entry.dir ? git?.get(childPath) : undefined
+        const count = entry.dir && decor !== undefined ? (decor.dirs.get(childPath) ?? 0) : 0
         const rowNode = (
           /* A button, not a div with onClick: bare divs cannot take focus, so the whole
               tree was unreachable by keyboard — not one directory could be expanded, not
               one file opened, without a mouse. A button gets Tab, Enter and Space for
               free, and aria-expanded tells a screen reader which rows unfold. */
           <button
-            class={[
-              'tree-row',
-              entry.dir ? 'tree-dir' : 'tree-file',
-              mount !== undefined ? 'tree-mount-main' : '',
-              // Staged = selected for the commit — the row itself says so (the owner
-              // asked for staged files highlighted, not a checkbox column). Conflicts
-              // are excluded by `gitMarks`, not by a test here: the highlight and the
-              // commit box's count must be the same judgement, and when the row made its
-              // own, a `UU` file wore the accent bar while the box said "Nothing staged".
-              mark?.staged === true ? 'tree-row-staged' : '',
-            ].filter(Boolean).join(' ')}
-            style={{ paddingLeft: `${depth * 12 + 6}px` }}
+            type="button"
+            data-tree-row={childPath}
+            data-kind={entry.dir ? 'dir' : 'file'}
+            class={cn(ROW, mark?.staged === true && STAGED, mount !== undefined && 'flex-1')}
+            style={indent(depth)}
             onClick={() => (entry.dir ? onToggle(childPath) : onOpenFile(childPath))}
             title={childPath}
             aria-expanded={entry.dir ? isExpanded : undefined}
@@ -587,31 +704,38 @@ function DirChildren({
                a preference. */
             onPointerDown={(e) => startRowDrag(e, childPath)}
           >
-            <span class="tree-chevron">
-              {entry.dir ? (isExpanded ? Icon.chevronDown() : Icon.chevronRight()) : null}
+            <span class="flex w-4 shrink-0 text-faint [&>svg]:size-3.5">
+              {entry.dir ? (isExpanded ? <ChevronDown /> : <ChevronRight />) : null}
             </span>
-            <span class="tree-icon">{entry.dir ? Icon.folder() : Icon.file()}</span>
-            <span class={`tree-name${mark !== undefined ? ` tree-name-git-${mark.letter === '!' ? 'conflict' : mark.letter.toLowerCase()}` : ''}`}>
+            <span class={cn('flex shrink-0 [&>svg]:size-3.5', entry.dir ? 'text-blue opacity-75' : 'text-faint')}>
+              {entry.dir ? (isExpanded ? <FolderOpen /> : <Folder />) : <FileText />}
+            </span>
+            <span data-tree-name="" class={cn('min-w-0 flex-1 truncate', mark !== undefined && NAME_TONE[mark.letter])}>
               {entry.name}
             </span>
             {mount !== undefined && mount.access === 'read' && (
-              <span class="tree-mount-ro" title="Read-only">read-only</span>
+              <Chip class="ml-1 h-4 shrink-0 px-1.5 text-[10px]" icon={<Lock />} title="Read-only: the agent reads and searches here, and cannot write">
+                read-only
+              </Chip>
             )}
             {/* The fingerprints, right on the tree: a changed file carries its diff
                 shape, a folder carries how many changed files hide under it. */}
-            {entry.dir && decor !== undefined && (decor.dirs.get(childPath) ?? 0) > 0 && (
-              <span class="tree-change-count">{decor.dirs.get(childPath)}</span>
+            {count > 0 && (
+              <span class="flex w-[18px] shrink-0 items-center justify-center text-[10.5px] tabular-nums text-accent" title={`${count} changed inside`}>
+                {count}
+              </span>
             )}
             {fileChange !== undefined && (
               // The badge is the door to the DIFF: a span with its own click (a button
               // cannot nest inside the row button), stopping propagation so the row's
               // open-the-file click stays separate. Reviewed changes dim.
               <span
-                class={[
-                  'tree-change-stat',
-                  fileChange.lastFailed ? 'tree-change-failed' : '',
-                  reviewedPaths?.has(childPath) ? 'tree-change-reviewed' : '',
-                ].filter(Boolean).join(' ')}
+                data-change=""
+                class={cn(
+                  'shrink-0 whitespace-nowrap text-[10.5px] tabular-nums text-dim',
+                  fileChange.lastFailed && 'text-red',
+                  reviewedPaths?.has(childPath) && 'opacity-45',
+                )}
                 title="Show the diff"
                 onClick={onOpenDiff !== undefined
                   ? (e) => { e.stopPropagation(); onOpenDiff(childPath) }
@@ -629,7 +753,7 @@ function DirChildren({
         return (
           <div key={childPath}>
             {mount !== undefined && mountActions !== undefined
-              ? <div class="tree-mount">{rowNode}<MountControls mount={mount} actions={mountActions} /></div>
+              ? <div class="group/mount flex items-center hover:bg-raised">{rowNode}<MountControls mount={mount} actions={mountActions} /></div>
               : rowNode}
             {entry.dir && isExpanded && (
               <DirChildren
@@ -657,18 +781,21 @@ function DirChildren({
     return (
       <button
         key={`ghost:${g.path}`}
+        type="button"
+        data-tree-row={g.path}
+        data-kind="ghost"
         // A staged deletion is as much "chosen for the commit" as a staged edit —
         // the ghost row wears the same highlight the living rows do.
-        class={`tree-row tree-file tree-ghost${mark?.staged === true ? ' tree-row-staged' : ''}`}
-        style={{ paddingLeft: `${depth * 12 + 6}px` }}
+        class={cn(ROW, 'opacity-75', mark?.staged === true && STAGED)}
+        style={indent(depth)}
         title={`${g.path} — deleted; click for the diff`}
         onClick={() => onOpenDiff?.(g.path)}
       >
-        <span class="tree-chevron" />
-        <span class="tree-icon">{Icon.file()}</span>
-        <span class="tree-name tree-name-ghost">{g.name}</span>
+        <span class="flex w-4 shrink-0" />
+        <span class="flex shrink-0 text-faint [&>svg]:size-3.5"><FileText /></span>
+        <span data-tree-name="" class="min-w-0 flex-1 truncate text-red line-through">{g.name}</span>
         {fileChange !== undefined && (
-          <span class="tree-change-stat">
+          <span class="shrink-0 whitespace-nowrap text-[10.5px] tabular-nums text-dim">
             +{fileChange.added} −{fileChange.removed}
           </span>
         )}

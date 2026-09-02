@@ -170,8 +170,8 @@ function pressEscape(target: EventTarget = window): void {
 
 /** Opens a file tab the way the transcript does, through the tree row's own click. */
 async function openFileTab(): Promise<void> {
-  const row = [...document.querySelectorAll('.tree-row')]
-    .find((r) => r.querySelector('.tree-name')?.textContent === 'a.ts')
+  const row = [...document.querySelectorAll('[data-tree-row]')]
+    .find((r) => r.querySelector('[data-tree-name]')?.textContent === 'a.ts')
   expect(row, 'the fake fs.tree entry should render a row').toBeTruthy()
   ;(row as HTMLElement).click()
   await settle()
@@ -213,18 +213,18 @@ test('a command picker left open in the HIDDEN chat does not eat the Escape', as
 
 test('Escape in the workspace rename box cancels the box and keeps the file tab fronted', async () => {
   await openFileTab()
-  const title = document.querySelector<HTMLElement>('.workspace-title')
+  const title = document.querySelector<HTMLElement>('[data-workspace-title]')
   expect(title, 'the workspace tab should offer its name for renaming').toBeTruthy()
   title!.click()
   await settle()
 
-  const input = document.querySelector<HTMLInputElement>('.workspace-name-input')
+  const input = document.querySelector<HTMLInputElement>('[data-workspace-name]')
   expect(input).not.toBeNull()
   pressEscape(input!)
   await settle()
 
   // The box closed itself — which it can only do if the key reached it.
-  expect(document.querySelector('.workspace-name-input')).toBeNull()
+  expect(document.querySelector('[data-workspace-name]')).toBeNull()
   // ...and the window did NOT jump back to the chat behind it.
   expect(document.querySelector('.chat-face-hidden')).not.toBeNull()
 })
@@ -274,10 +274,10 @@ test('a reopen after a folder edit uses the server URL the HOST has, not the one
   // back over the user's choice.
   savedServerUrl = 'http://127.0.0.1:9099'
 
-  const title = document.querySelector<HTMLElement>('.workspace-title')!
+  const title = document.querySelector<HTMLElement>('[data-workspace-title]')!
   title.click()
   await settle()
-  const input = document.querySelector<HTMLInputElement>('.workspace-name-input')!
+  const input = document.querySelector<HTMLInputElement>('[data-workspace-name]')!
   input.value = 'renamed'
   input.dispatchEvent(new Event('input', { bubbles: true }))
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))

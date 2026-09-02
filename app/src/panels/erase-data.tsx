@@ -1,3 +1,4 @@
+import { PanelError } from '../components/panel'
 import { useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import { Icon } from '../components/icons'
@@ -54,7 +55,7 @@ export function EraseEverything(): VNode {
       <div class="field-label">Everything this app has written on this computer</div>
 
       {scanning && <div class="field-hint loading-quiet">looking…</div>}
-      {error !== null && <div class="panel-error">{error}</div>}
+      {error !== null && <PanelError message={error} />}
 
       {scan !== null && (
         <>

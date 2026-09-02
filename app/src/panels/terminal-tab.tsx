@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { memo } from 'preact/compat'
 import type { VNode } from 'preact'
+import { Play, Square, Terminal } from 'lucide-preact'
 import type { JobInfo } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatItem } from '../lib/state'
 import { formatDuration } from '../lib/format'
 import { presentTool } from '../lib/tools'
 import { useJobs } from '../lib/use-jobs'
-import { Icon } from '../components/icons'
-import { PanelEmpty, PanelError, PanelRow, PanelSection } from '../components/panel'
+import { Button, IconButton } from '../ui/button'
+import { Chip } from '../ui/chip'
+import { PanelEmpty, PanelError, PanelNote, PanelRow, PanelSection } from '../components/panel'
 
 /**
  * Everything this workspace ran: the agent's commands, the agent's long-lived processes, and
- * the ones you started yourself — one console, in the order they happened.
+ * the ones you started yourself — one console, in the order they happened
+ * (docs/UI-REDESIGN-2026-09.md §7 "Terminal").
  *
  * This absorbed the Jobs tab. They were two tabs asking one question, and splitting it cost
  * twice: the column had five tabs where four fit (the fifth was clipped off the panel out of
@@ -38,7 +41,7 @@ interface Line {
   origin: 'agent' | 'you'
   command: string
   state: string
-  tone: 'running' | 'ok' | 'fail' | 'stopped'
+  tone: 'running' | 'ok' | 'fail' | 'stopped' | 'refused'
   output: string
   clipped: boolean
 }
@@ -48,9 +51,22 @@ interface Line {
  * is capped, in the sibling panel that was handed the same array and given neither guard. */
 const VISIBLE_COMMANDS = 200
 
-const TONE_CLASS: Record<Line['tone'], string> = {
-  running: 'job-running', ok: 'job-ok', fail: 'job-fail', stopped: 'job-stopped',
+/** Output past this many lines folds behind "show all"; the tail is what is shown, because
+ * the end of a build log is where the verdict is. */
+const OUTPUT_LINES = 40
+
+const TONE_TEXT: Record<Line['tone'], string> = {
+  running: 'text-accent', ok: 'text-green', fail: 'text-red', stopped: 'text-faint', refused: 'text-yellow',
 }
+
+/**
+ * The permission engine's "no", as the core words a `Not run:`. A batch skipped after an
+ * earlier failure is also `Not run:` and is NOT a command — it never happened, and a row
+ * for it read as "npm test — failed" to someone checking on an overnight run. A call the
+ * engine refused is different: the person deciding what to allow needs to see what was
+ * asked, so it gets a row in its own tone, never "failed".
+ */
+const REFUSED = /^Not run: (?=.*(?:permission|denied|deny|refus|not allowed|blocked|rule))/i
 
 /** The agent's own `run_command` calls, in transcript order. Its `background_task`
  * processes arrive through the job registry instead, which knows whether they are still
@@ -59,13 +75,21 @@ export function agentCommands(items: ChatItem[]): Line[] {
   const lines: Line[] = []
   for (const item of items) {
     if (item.kind !== 'tool' || item.name !== 'run_command') continue
-    // A call the step stopped before executing is not a command that ran and failed. The
-    // `Not run:` prefix is the codebase's contract for exactly that — `commandsFrom` tests
-    // it before writing the work log's "Ran" line, for the same reason. Without this check a
-    // batch whose earlier call failed put `npm test` in this console as `failed`, with the
-    // refusal sentence as its output, and someone reading it after an overnight run would
-    // conclude the suite is broken when it never executed.
-    if (item.result?.content.startsWith('Not run:')) continue
+    if (item.result?.content.startsWith('Not run:')) {
+      if (!REFUSED.test(item.result.content)) continue
+      const p = presentTool(item.name, item.args)
+      lines.push({
+        key: `t${item.id}`,
+        at: item.startedAtMs ?? 0,
+        origin: 'agent',
+        command: p.target,
+        state: 'refused',
+        tone: 'refused',
+        output: item.result.content.slice('Not run:'.length).trim(),
+        clipped: false,
+      })
+      continue
+    }
     const p = presentTool(item.name, item.args)
     lines.push({
       key: `t${item.id}`,
@@ -128,33 +152,50 @@ const CommandRow = memo(function CommandRow({
   onStop?: () => void
 }): VNode {
   const [open, setOpen] = useState(defaultOpen)
+  const [all, setAll] = useState(false)
+  const rows = line.output === '' ? [] : line.output.split('\n')
+  const folded = !all && rows.length > OUTPUT_LINES
+  const shown = folded ? rows.slice(-OUTPUT_LINES) : rows
   return (
     <PanelRow
       open={open}
       onToggle={() => setOpen((o) => !o)}
       label={
         <>
-          <span class={`term-origin term-origin-${line.origin}`}>{line.origin}</span>
-          <span class="term-prompt">$</span> {line.command}
+          <Chip tone={line.origin === 'agent' ? 'accent' : 'blue'} class="mr-1.5 h-4 px-1 text-[10px] uppercase tracking-[0.04em]">
+            {line.origin}
+          </Chip>
+          <span class="text-faint">$</span> {line.command}
         </>
       }
       mono
       title={line.command}
-      meta={<span class={TONE_CLASS[line.tone]}>{line.state}</span>}
+      meta={<span class={TONE_TEXT[line.tone]} data-tone={line.tone}>{line.state}</span>}
       {...(onStop !== undefined
         ? {
             actions: (
-              <button class="icon-button" onClick={onStop} title="Stop this process">
-                {Icon.stop()}
-              </button>
+              <IconButton size="sm" label="Stop this process" onClick={onStop}>
+                <Square />
+              </IconButton>
             ),
           }
         : {})}
     >
-      <pre class="term-output">
-        {line.clipped && <span class="dim">…earlier output dropped…{'\n'}</span>}
-        {line.output === '' ? '(no output yet)' : line.output}
+      <pre
+        data-output=""
+        class="m-0 max-h-[300px] overflow-auto whitespace-pre-wrap break-words border-l-2 border-border px-2.5 py-1.5 font-mono text-[11.5px] leading-[1.5] text-dim"
+      >
+        {line.clipped && <span class="text-faint">…earlier output dropped…{'\n'}</span>}
+        {folded && <span class="text-faint">…{rows.length - OUTPUT_LINES} earlier lines folded…{'\n'}</span>}
+        {rows.length === 0
+          ? (line.tone === 'running' ? '(no output yet)' : '(no output)')
+          : shown.join('\n')}
       </pre>
+      {rows.length > OUTPUT_LINES && (
+        <Button size="sm" variant="ghost" class="mt-1" onClick={() => setAll((v) => !v)} data-action="output-more">
+          {all ? `Show the last ${OUTPUT_LINES} lines` : `Show all ${rows.length} lines`}
+        </Button>
+      )}
     </PanelRow>
   )
 })
@@ -241,11 +282,11 @@ export function TerminalTab({
   }
 
   return (
-    <div class="terminal-tab">
+    <div data-panel="terminal" class="flex h-full min-h-0 flex-col">
       {/* Pinned, and above the console rather than inside it: after an eight-hour run the
           live dev server is what you need first and would otherwise be a thousand lines up. */}
       {running.length > 0 && (
-        <div class="terminal-running">
+        <div class="max-h-[45%] shrink-0 overflow-y-auto border-b border-border bg-raised">
           <PanelSection title="Running now" count={running.length}>
             {running.map((job) => (
               <CommandRow
@@ -259,19 +300,19 @@ export function TerminalTab({
         </div>
       )}
 
-      <div class="terminal-body" ref={bodyRef}>
+      <div class="flex min-h-0 flex-1 flex-col overflow-y-auto" ref={bodyRef}>
         {lines.length === 0 && running.length === 0 && (
           <PanelEmpty
-            icon={Icon.terminal()}
+            icon={<Terminal />}
             title="Nothing has run yet"
             hint="Commands the agent runs appear here, and so do the ones you type below."
           />
         )}
         {hiddenCommands > 0 && (
-          <div class="term-earlier">
+          <PanelNote>
             {hiddenCommands} earlier command{hiddenCommands === 1 ? '' : 's'} not shown — this
             console keeps the newest so a long run stays responsive.
-          </div>
+          </PanelNote>
         )}
         {lines.map((line) => <CommandRow key={line.key} line={line} defaultOpen={false} />)}
       </div>
@@ -279,19 +320,21 @@ export function TerminalTab({
       {error !== null && <PanelError message={error} />}
       {jobsError !== null && <PanelError message={jobsError} onRetry={refresh} />}
 
-      <div class="terminal-input-row">
-        <span class="term-prompt">$</span>
+      <div class="flex shrink-0 items-center gap-2 border-t border-border-soft bg-bg py-1.5 pl-3 pr-2 transition-colors duration-(--duration-fast) focus-within:border-accent-line">
+        <span class="font-mono text-[11.5px] text-faint" aria-hidden="true">$</span>
         <input
-          class="terminal-input"
+          data-terminal-input=""
+          class="min-w-0 flex-1 border-0 bg-transparent font-mono text-[11.5px] text-fg outline-none placeholder:font-ui placeholder:text-faint"
           value={command}
           disabled={!canRun}
+          aria-label="Run a command yourself"
           onInput={(e) => setCommand(e.currentTarget.value)}
           onKeyDown={onKeyDown}
           placeholder={canRun ? 'run a command yourself (not sent to the model)' : 'open a workspace first'}
         />
-        <button class="icon-button" onClick={run} disabled={!canRun || command.trim() === ''} title="Run">
-          {Icon.play()}
-        </button>
+        <IconButton size="sm" label="Run" onClick={run} disabled={!canRun || command.trim() === ''}>
+          <Play />
+        </IconButton>
       </div>
     </div>
   )

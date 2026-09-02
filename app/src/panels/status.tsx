@@ -1,3 +1,4 @@
+import { PanelError } from '../components/panel'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { ProtocolClient } from '../lib/client'
@@ -209,7 +210,7 @@ export function SettingsModal({
             />
             <div class="field-hint">Your llama.cpp server. Nothing is ever sent anywhere else.</div>
 
-            {error && <div class="panel-error">{error}</div>}
+            {error && <PanelError message={error} />}
 
             <button
               class="btn btn-primary modal-primary"

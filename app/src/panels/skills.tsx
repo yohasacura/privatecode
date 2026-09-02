@@ -65,7 +65,7 @@ export function Skills({ client }: { client: ProtocolClient }): VNode {
           </PanelRow>
         ))}
 
-      {data.problems.map((p) => <div key={p} class="panel-error">{p}</div>)}
+      {data.problems.map((p) => <PanelError key={p} message={p} />)}
 
       <div class="field-label">Read from</div>
       {data.dirs.map((d) => (

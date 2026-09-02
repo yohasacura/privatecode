@@ -27,8 +27,6 @@ it only changes shade. */
 button,
 .btn,
 .icon-button,
-.tab,
-.prow-label-button,
 .recent-item {
   transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
@@ -42,8 +40,7 @@ button,
 .todos-head:active,
 .jump-latest:active,
 .cmd-more:active,
-.recent-item:active,
-.tree-row:active {
+.recent-item:active {
   background: var(--bg-active);
 }
 /* Primary: hover lightens to --accent-hover, press drops back to base = depress. */
@@ -100,18 +97,16 @@ kbd {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.input:focus-visible, .composer-input:focus-visible, .terminal-input:focus-visible { outline: none; }
+.input:focus-visible,
+.composer-input:focus-visible { outline: none; }
 /* Rows that fill a scroller: the ring must live inside the row or the clip box eats it. */
 .rail-item:focus-visible,
 .rail-workspace:focus-visible,
 .rail-settings:focus-visible,
-.tree-row:focus-visible,
-.tree-error:focus-visible,
 .palette-item:focus-visible,
 .tool-head:focus-visible,
 .todos-head:focus-visible,
-.cmd-more:focus-visible,
-.tab:focus-visible {
+.cmd-more:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -191,108 +186,12 @@ kbd {
   color: var(--text-dim);
 }
 
-/* The unified Workspace tab: the workspace's identity and management at the top, one tree
- * below it wearing the session's changes as badges. */
-.workspace-tab { display: flex; flex-direction: column; min-height: 0; height: 100%; }
-.workspace-head {
-  display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px;
-}
-/* A button now — clicking the name renames the workspace in place. */
-.workspace-title {
-  flex: 0 1 auto; min-width: 0;
-  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  background: none; border: none; color: var(--text); cursor: pointer;
-  padding: 0; font-size: inherit; text-align: left;
-}
-.workspace-title:hover { text-decoration: underline dotted; }
-.workspace-name-input { max-width: 220px; }
-/* The tab-header's workspace lifecycle cluster, pinned right of the folder count. */
-.workspace-head-actions { margin-left: auto; display: flex; gap: 4px; }
 /* The switcher dialog: a list and a Browse button need less room than Settings. */
 .modal-narrow { max-width: 460px; }
-/* The bridge's add-folder path input, right under the header it belongs to. */
-.workspace-add-input { margin: 2px 10px 6px; width: calc(100% - 20px); }
-/* One line about how much moved: the filter chip and the reviewed sweep. */
-.workspace-changes-strip {
-  display: flex; align-items: center; gap: 6px; padding: 2px 10px 8px;
-  border-bottom: 1px solid var(--border-soft);
-}
-/* A change badge that has been looked at steps back; a newer write un-dims it. */
-.tree-change-reviewed { opacity: 0.45; }
-/* The File|Diff switch on an opened changed file's head. */
-.preview-face {
-  display: inline-flex; align-items: center; gap: 6px;
-  background: none; border: 1px solid var(--border); border-radius: 999px;
-  padding: 1px 8px; cursor: pointer; color: var(--text-dim);
-}
-.preview-face:hover { color: var(--text); border-color: var(--accent-line); }
-.preview-face-on { border-color: var(--accent); color: var(--text); }
-/* The diff face itself: actions above, the diff scrolling below. */
-.diff-face { display: flex; flex-direction: column; min-height: 0; flex: 1; }
-.diff-face-actions {
-  display: flex; align-items: center; gap: 6px; padding: 6px 10px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.diff-face-body { overflow: auto; min-height: 0; padding: 4px 10px 10px; }
-.workspace-meta { color: var(--text-dim); font-size: 11.5px; flex: none; white-space: nowrap; }
-.workspace-error { color: var(--red); font-size: 11.5px; padding: 2px 10px; }
-.workspace-manage { padding: 4px 10px; border-bottom: 1px solid var(--border); }
 
-/* Inline mount management: the controls live ON the folder's own row, revealed on
- * hover (or while armed/renaming) so the tree stays a tree. */
-.tree-mount { display: flex; align-items: center; }
-.tree-mount .tree-mount-main { flex: 1; min-width: 0; }
-.tree-mount-controls {
-  display: flex; align-items: center; gap: 4px; padding-right: 6px;
-  opacity: 0; pointer-events: none; transition: opacity 120ms ease;
-}
-.tree-mount:hover .tree-mount-controls,
-.tree-mount-controls:focus-within,
-.tree-mount-controls-open { opacity: 1; pointer-events: auto; }
-.tree-mount:hover { background: var(--bg-raised); }
-.tree-mount:hover .tree-mount-main { color: var(--text); }
-.tree-mount-controls .input { height: 22px; padding: 0 7px; font-size: 11.5px; }
-.tree-mount-btn {
-  font-size: 10.5px; padding: 1px 6px; border-radius: 999px; cursor: pointer;
-  background: none; border: 1px solid var(--border); color: var(--text-dim);
-}
-.tree-mount-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
-.tree-mount-btn:disabled { opacity: 0.4; cursor: default; }
-.tree-mount-danger { border-color: var(--red); color: var(--red); }
-.tree-mount-ro {
-  font-size: 10.5px; color: var(--text-dim); border: 1px solid var(--border);
-  border-radius: 999px; padding: 0 6px; margin-left: 6px;
-}
-.tree-add-folder { color: var(--text-faint); margin-top: 3px; }
-.tree-add-folder:hover:not(:disabled) { color: var(--text); }
-.tree-add-input { margin: 4px 10px; width: calc(100% - 20px); }
-.workspace-views { display: flex; gap: 6px; padding: 2px 10px 8px; border-bottom: 1px solid var(--border-soft); }
-.ws-view {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 11.5px; padding: 3px 11px; border-radius: 999px; cursor: pointer;
-  background: none; border: 1px solid var(--border); color: var(--text-dim);
-}
-.ws-view:hover:not(.ws-view-active) { color: var(--text); border-color: var(--border-strong); background: var(--bg-hover); }
-.ws-view-active { border-color: var(--accent); color: var(--text); }
 
 /* The session's fingerprints on the tree: a diff shape on a changed file, a count of
  * changed files on a folder — visible even while the folder is collapsed. */
-/* A folder's count sits in the SAME 18px trailing column a file's git mark does, so the
-   two read as one column down the tree instead of two ragged ones. No `margin-left: auto`
-   anywhere in the row any more — `.tree-name` takes the slack (below), which is what keeps
-   every trailing box at a fixed x. */
-.tree-change-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 18px;
-  font-size: 10.5px;
-  color: var(--accent);
-  font-variant-numeric: tabular-nums;
-}
-.tree-change-stat { flex: none; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.tree-change-failed { color: var(--red); }
 
 /* The improver's suggestion chips: toggleable additions BELOW the draft — on travels with
  * the send, off stays behind, a question opens its little answer box. Same row the lint
@@ -360,16 +259,6 @@ kbd {
 .field-hint { margin-top: 5px; font-size: 11.5px; color: var(--text-faint); }
 
 .panel-placeholder { padding: 18px 14px; color: var(--text-faint); font-size: 12.5px; }
-.panel-error {
-  margin: 10px 0;
-  padding: 8px 10px;
-  border: 1px solid var(--red);
-  border-radius: var(--radius-sm);
-  background: var(--red-soft);
-  color: var(--red);
-  font-size: 12.5px;
-  cursor: default;
-}
 
 /* --------------------------------------------------------------------- the shell ----- */
 
@@ -464,67 +353,10 @@ kbd {
 .column { display: flex; flex-direction: column; min-height: 0; }
 .column-chat { flex: 1; min-width: 0; background: var(--bg); }
 
-/* --- editor tabs: files and diffs as siblings of the chat ----------------------------- */
-
-.editor-tabs {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 8px 0;
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--bg-panel);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.editor-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 220px;
-  padding: 4px 8px;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 6px 6px 0 0;
-  background: none;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--text-dim);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: color 120ms ease, background 120ms ease;
-}
-.editor-tab:hover { color: var(--text); background: var(--bg-raised); }
-.editor-tab-active {
-  color: var(--text);
-  background: var(--bg);
-  border-color: var(--border-soft);
-}
-.editor-tab .icon { width: 13px; height: 13px; flex: none; color: var(--text-faint); }
-.editor-tab-active .icon { color: var(--accent); }
-.editor-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.editor-tab-close {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 4px;
-  color: var(--text-faint);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-.editor-tab-close .icon { width: 12px; height: 12px; }
-.editor-tab:hover .editor-tab-close, .editor-tab-active .editor-tab-close {
-  opacity: 1;
-  pointer-events: auto;
-}
-.editor-tab-close:hover { color: var(--text); background: var(--bg-raised); }
 
 /* The chat is the first tab: hidden, not unmounted, so the stream keeps folding in. */
 .chat-face { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
 .chat-face-hidden { display: none; }
-
-.file-view { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
-.file-view .diff-face-body { padding: 8px 14px 12px; }
 .column-rail { flex: none; background: var(--bg-panel); border-right: 1px solid var(--border-soft); }
 .column-context { flex: none; background: var(--bg-panel); border-left: 1px solid var(--border-soft); }
 
@@ -1103,13 +935,6 @@ kbd {
 }
 .earlier-text { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-dim); }
 
-/* The console's own version of the same note. */
-.term-earlier {
-  padding: 6px 10px;
-  font-size: 11.5px;
-  color: var(--text-faint);
-  border-bottom: 1px solid var(--border);
-}
 
 .tool-head-writing { cursor: default; }
 .tool-head-writing:hover { background: transparent; }
@@ -1495,14 +1320,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 .problem-icon { display: flex; color: var(--yellow); padding-top: 2px; }
 .problem-list { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; word-break: break-word; }
 
-/* What a Put back actually did, spoken on the row — success used to be silent and the row
-   unchanged, indistinguishable from nothing having happened. */
-.revert-outcome {
-  padding: 6px 8px;
-  font-size: 11.5px;
-  color: var(--text-dim);
-  word-break: break-word;
-}
 
 .composer {
   flex: none;
@@ -1664,196 +1481,9 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 
 /* ----------------------------------------------------------------- context panel ----- */
 
-/* Sized against ITSELF, not the window: the panel's width is the splitter's business, and
-   what fits inside it is nobody else's. */
-.context-panel { display: flex; flex-direction: column; height: 100%; container-type: inline-size; }
-
-.tabbar {
-  display: flex;
-  flex: none;
-  min-width: 0;
-  padding: 6px 6px 0;
-  gap: 2px;
-  border-bottom: 1px solid var(--border-soft);
-  /* A backstop, not the plan: four tabs fit even the 280px minimum panel width. It is here
-     because when five did not fit, nothing stopped them -- the bar simply grew 19px past
-     the window's right edge and made the ENTIRE shell scroll sideways, so clicking a tab
-     slid the whole application. Overflow belongs to the thing that overflows. */
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.tabbar::-webkit-scrollbar { height: 0; }
-.tab {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 1 auto;
-  min-width: 0;
-  padding: 6px 10px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--text-faint);
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-.tab:hover { color: var(--text-dim); }
-.tab-active { color: var(--text); border-bottom-color: var(--accent); }
-.tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Names give way before targets do. Ellipsising every label at once -- "Chang… Histo… Fi…
-   Termi…" -- keeps four unreadable words where three readable ones and an icon would do,
-   so the tabs you are NOT on drop their labels first and the one you are on keeps its
-   name for as long as there is room. */
-@container (max-width: 386px) {
-  .tab:not(.tab-active) .tab-label { display: none; }
-  .tab { padding: 6px 9px; }
-}
-@container (max-width: 250px) {
-  .tab-label { display: none; }
-}
-.tab-badge {
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 10.5px;
-  font-family: var(--mono);
-}
-
-.tab-body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 
 /* --- the panel vocabulary (components/panel.tsx) ------------------------------------- */
 
-/* An empty list is centred in the space it is given. These panels are 700px tall, and one
-   sentence pinned to the top-left corner of that much emptiness was the strongest
-   "unfinished" signal in the window. */
-.panel-empty {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 150px;
-  padding: 24px 26px;
-  text-align: center;
-  color: var(--text-faint);
-}
-.panel-empty-mark { display: flex; color: var(--border-strong); }
-.panel-empty-mark .icon { width: 22px; height: 22px; }
-.panel-empty-title { font-size: 12.5px; color: var(--text-dim); }
-.panel-empty-hint { max-width: 32ch; font-size: 11.5px; line-height: 1.5; }
-
-.panel-error-retry {
-  display: block;
-  width: 100%;
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-}
-.panel-error-retry:hover { background: var(--red-wash); }
-
-.prow { border-bottom: 1px solid var(--border-soft); }
-.prow:last-child { border-bottom: none; }
-.prow-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 28px;
-  padding: 4px var(--row-pad) 4px 4px;
-  transition: background-color 120ms ease;
-}
-.prow-head:hover { background: var(--bg-raised); }
-
-.prow-lead { display: flex; flex: none; justify-content: center; width: var(--row-lead); }
-.prow-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-faint);
-  cursor: pointer;
-}
-.prow-toggle:hover { color: var(--text); background: var(--bg-hover); }
-.prow-toggle .icon { width: 12px; height: 12px; }
-
-.prow-icon { display: flex; flex: none; color: var(--text-faint); }
-.prow-icon .icon { width: 13px; height: 13px; }
-
-.prow-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12.5px;
-  color: var(--text-dim);
-  text-align: left;
-}
-.prow-mono { font-family: var(--mono); font-size: 11.5px; }
-.prow-label-button {
-  border: none;
-  background: none;
-  padding: 0;
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-.prow-label-button.prow-mono { font-family: var(--mono); font-size: 11.5px; }
-.prow-label-button:hover { color: var(--accent); }
-
-.prow-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  font-size: 10.5px;
-  font-family: var(--mono);
-  color: var(--text-faint);
-}
-.prow-actions { display: flex; align-items: center; gap: 4px; flex: none; }
-.prow-bad .prow-label { color: var(--red); }
-
-/* Aligned to the label's left edge, not the row's: an expanded diff that started under the
-   chevron read as a separate block rather than as this row's detail. */
-.prow-body { padding: 2px var(--row-pad) 10px calc(var(--row-lead) + 27px); }
-
-.psection { display: flex; flex-direction: column; }
-.psection-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 9px var(--row-pad) 4px;
-}
-.psection-title {
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-.psection-count { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
-/* The path every row in the section shares, said once. Takes the rest of the line and
-   truncates from the LEFT, because the end of a path is what identifies it. */
-.psection-sub {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: right;
-}
 
 /* A directory heading inside a grouped list. Deliberately lighter than a row: it is a
    label, not something you can open, revert or tick. */
@@ -1878,182 +1508,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 }
 .pgroup-meta { flex: none; font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 
-/* files */
-.files-tree { flex: 1; min-height: 0; overflow: auto; padding: 6px 0; }
-.tree-panel { font-size: 13px; }
-/* Buttons now (keyboard reachability), so the button chrome is reset explicitly and the
-   focus ring is the visible kind the rest of the app uses. */
-.tree-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  /* Not cosmetic, and not about tidiness: a press-and-move over selectable text starts a
-     text selection, which Chromium then escalates into an OS-level drag — and an OS drag
-     loop captures the mouse and stops delivering `pointermove` to the page. That is exactly
-     what killed the first version of dragging a row onto the composer: the press arrived,
-     the moves did not. Watched live before this line existed. */
-  user-select: none;
-  /* No right padding: the trailing column's own 18px box IS the gutter, and padding on
-     top of it pushed the marks off the panel's optical right edge. */
-  padding: 2px 4px 2px 0;
-  border: none;
-  background: none;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-.tree-row:hover { background: var(--bg-raised); color: var(--text); }
-.tree-chevron { display: flex; flex: none; width: 16px; color: var(--text-faint); }
-.tree-icon { display: flex; color: var(--text-faint); }
-.tree-dir .tree-icon { color: var(--blue); opacity: 0.75; }
-.tree-file .tree-icon { color: var(--text-faint); }
-/* The name takes the slack: every trailing box (diff stat, git mark, folder count) is
-   `flex: none`, so they stack against the right edge in a fixed column and the name is
-   what shrinks under an ellipsis. */
-.tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.tree-loading, .tree-error, .tree-empty { padding: 3px 8px; font-size: 11.5px; color: var(--text-faint); }
-.tree-error {
-  display: block;
-  width: 100%;
-  border: none;
-  background: none;
-  font: inherit;
-  text-align: left;
-  color: var(--red);
-  cursor: pointer;
-}
-.tree-error:hover { background: var(--red-soft); }
-
-/* The opened file's chrome — worn by the chat-column FileView tabs now; the side panel
-   no longer previews anything itself. */
-.preview-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-  padding: 5px 8px 5px 4px;
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--bg-panel);
-}
-.preview-path {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 11.5px;
-}
-.preview-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); }
-.preview-name { flex: none; color: var(--text); }
-
-.preview-scroll { display: flex; flex: 1; min-height: 0; align-items: flex-start; overflow: auto; }
-.preview-nums {
-  position: sticky;
-  left: 0;
-  flex: none;
-  margin: 0;
-  padding: 8px 8px 8px 10px;
-  text-align: right;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.55;
-  color: var(--text-ghost);
-  background: var(--bg);
-  user-select: none;
-}
-.preview-code {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  padding: 8px 12px 8px 4px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.55;
-  color: var(--text-dim);
-}
-.preview-wrap { white-space: pre-wrap; word-break: break-word; }
-
-/* changes */
-.changes-tab { overflow-y: auto; }
-/* The total, once, at the top: the transcript already shows each diff where it happened,
-   and "how much of my workspace has moved" is the question a per-row stat never answers. */
-.changes-total {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px var(--row-pad);
-  border-bottom: 1px solid var(--border-soft);
-  font-size: 11.5px;
-  color: var(--text-dim);
-}
-
-/* terminal (and, since they were one question asked twice, the processes) */
-.terminal-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.terminal-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
-
-/* Pinned above the console, never scrolling with it. */
-.terminal-running {
-  flex: none;
-  max-height: 45%;
-  overflow-y: auto;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-raised);
-}
-
-.job-running { color: var(--accent); }
-.job-ok { color: var(--green); }
-.job-fail { color: var(--red); }
-.job-stopped { color: var(--text-faint); }
-
-.term-origin {
-  padding: 0 5px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.term-origin-agent { background: var(--accent-soft); color: var(--accent); }
-.term-origin-you { background: var(--blue-soft); color: var(--blue); }
-.term-prompt { color: var(--text-faint); }
-.term-output {
-  margin: 0;
-  padding: 6px 9px;
-  max-height: 300px;
-  overflow: auto;
-  border-left: 2px solid var(--border);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--text-dim);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.terminal-input-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-  padding: 7px 8px 7px 12px;
-  border-top: 1px solid var(--border-soft);
-  background: var(--bg);
-  transition: border-color 120ms ease;
-}
-.terminal-input-row:focus-within { border-top-color: var(--accent-line); }
-.terminal-input {
-  flex: 1;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  outline: none;
-  min-width: 0;
-}
-.terminal-input::placeholder { color: var(--text-faint); font-family: var(--ui); }
 
 /* ---------------------------------------------------------------------- statusbar ---- */
 
@@ -2315,59 +1769,11 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   word-break: break-word;
 }
 
-/* --- History: checkpoints and the work log ------------------------------------------- */
 
-.history { overflow-y: auto; }
-
-.history-note {
-  padding: 8px 10px;
-  margin: 8px;
-  border: 1px solid var(--border-soft);
-  border-radius: 6px;
-  background: var(--bg-raised);
-  font-size: 12.5px;
-}
-.link-button {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--accent);
-  cursor: pointer;
-  text-decoration: underline;
-  font: inherit;
-}
-.link-button:hover { color: var(--accent-hover); }
-
-.ckpt-when {
-  margin-right: 8px;
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 11.5px;
-  color: var(--text-faint);
-}
-
-/* The one destructive action in the app, so it explains itself before it happens --
-   including the part people do not expect (new files go) and the part that reassures
-   (ignored files stay, so no rebuild). */
-.ckpt-confirm {
-  margin-top: 8px;
-  padding: 8px;
-  border: 1px solid var(--red);
-  border-radius: 6px;
-  font-size: 12.5px;
-  line-height: 1.45;
-}
-.ckpt-confirm p { margin: 0 0 6px; }
-.ckpt-confirm-undo { color: var(--text-dim); }
-.ckpt-confirm-actions { display: flex; gap: 6px; }
 /* `.btn-danger` is declared once, with the controls at the top of this file. A second
    declaration lived here and quietly won, which is how the one destructive button in the
    app lost its red. */
 .btn-small { padding: 2px 8px; font-size: 11.5px; height: 22px; }
-
-.history-log-body { font-size: 12.5px; }
-.history-log-body h1 { font-size: 13.5px; }
-.history-log-body h2 { font-size: 12.5px; margin-top: 12px; }
 
 /* --- parked decisions ----------------------------------------------------------------- */
 
@@ -2421,106 +1827,6 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 
 /* --- git, worn by the tree ------------------------------------------------------------ */
 
-/* One glyph per changed file — a dot for modified, + added, − deleted, → renamed, ! for a
-   conflict — filled when staged. Colour says WHAT changed, weight says whether the next
-   commit carries it; see Icon.gitMark for why squares beat letters in a column.
-
-   THE COLUMN IS THE POINT. Every trailing element is a fixed-width box and the name takes
-   the slack, so the marks line up down the whole tree no matter what else a row carries.
-   Ragged right edges were what the owner saw first in the letter-chip version. */
-.tree-git { display: inline-flex; align-items: center; gap: 2px; flex: none; }
-.tree-git-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 18px;
-  height: 16px;
-}
-.tree-git-m, .tree-git-r { color: var(--yellow); }
-.tree-git-a, .tree-git-u { color: var(--green); }
-.tree-git-d { color: var(--red); }
-.tree-git-conflict { color: var(--red); }
-
-/* The file NAME carries the state colour too, the way editors do it. */
-.tree-name-git-m, .tree-name-git-r { color: var(--yellow); }
-.tree-name-git-a, .tree-name-git-u { color: var(--green); }
-.tree-name-git-d { color: var(--red); }
-.tree-name-git-conflict { color: var(--red); font-weight: 600; }
-
-/* Staged = chosen for the commit: the row itself says so. */
-.tree-row-staged { background: var(--user-wash); box-shadow: inset 2px 0 0 var(--accent); }
-.tree-row-staged:hover { background: var(--accent-soft); }
-
-/* Stage/unstage live on the row, visible on hover only — and unclickable while
-   invisible (pointer-events), so a blind click cannot stage anything. */
-.tree-git-act {
-  display: inline-flex;
-  align-items: center;
-  color: var(--text-dim);
-  opacity: 0;
-  pointer-events: none;
-  border-radius: 4px;
-  transition: opacity 120ms ease;
-}
-.tree-git-act .icon { width: 13px; height: 13px; }
-.tree-row:hover .tree-git-act, .tree-row:focus-visible .tree-git-act {
-  opacity: 1;
-  pointer-events: auto;
-}
-.tree-git-act:hover { color: var(--text); background: var(--bg-raised); }
-
-/* A deleted file's ghost row: the disk listing cannot contain it, the tree still must. */
-.tree-ghost { opacity: 0.75; }
-.tree-name-ghost { color: var(--red); text-decoration: line-through; }
-
-/* --- the commit box, above the tree it commits from ----------------------------------- */
-
-.scm {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px var(--row-pad);
-  border-bottom: 1px solid var(--border-soft);
-}
-.scm-repos { display: flex; flex-wrap: wrap; gap: 4px; }
-.scm-repo {
-  border: 1px solid var(--border);
-  background: none;
-  border-radius: 999px;
-  padding: 1px 8px;
-  font: inherit;
-  font-size: 11.5px;
-  color: var(--text-dim);
-  cursor: pointer;
-  transition: border-color 120ms ease, color 120ms ease;
-}
-.scm-repo:hover { color: var(--text); border-color: var(--accent-line); }
-.scm-repo-on { color: var(--text); border-color: var(--accent); }
-.scm-message { width: 100%; }
-.scm-actions { display: flex; align-items: center; gap: 6px; }
-.scm-branch {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  font-size: 11.5px;
-  color: var(--text-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.scm-branch .icon { width: 13px; height: 13px; flex: none; }
-.scm-hint { font-size: 11.5px; line-height: 1.5; color: var(--text-faint); }
-.scm-outcome { font-size: 11.5px; color: var(--green); }
-
-/* The one place a session's own change can be undone on its own. Deliberately reached
-   through a second click and never offered on a failed write, which changed nothing. */
-.revert-box { font-size: 12.5px; line-height: 1.45; }
-.revert-box p { margin: 0 0 8px; }
-.revert-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.revert-actions .input { flex: 1; min-width: 150px; }
 
 /* --- the command palette -------------------------------------------------------------- */
 

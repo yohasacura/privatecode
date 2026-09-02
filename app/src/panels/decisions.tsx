@@ -1,3 +1,4 @@
+import { PanelError } from '../components/panel'
 import { useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
 import type { DecisionInfo } from '@core/host/protocol'
@@ -196,7 +197,7 @@ export function DecisionsCard({
 
       {open && (
         <div class="decisions-body">
-          {error !== null && <div class="panel-error">{error}</div>}
+          {error !== null && <PanelError message={error} />}
           {decisions.map((d) => <OneDecision key={d.id} decision={d} onResolve={resolve} />)}
           <div class="card-note">
             These calls already came and went — the agent was told to do something else. What

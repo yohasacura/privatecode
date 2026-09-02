@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { FileText, History, RotateCcw } from 'lucide-preact'
 import type { CheckpointInfo } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { Markdown } from '../lib/markdown'
-import { Icon } from '../components/icons'
-import { PanelEmpty, PanelError, PanelRow, PanelSection } from '../components/panel'
+import { Button } from '../ui/button'
+import { toast } from '../ui/toast'
+import { PanelEmpty, PanelError, PanelLoading, PanelNote, PanelRow, PanelSection } from '../components/panel'
 
 /**
- * What the agent changed, and how to put it back.
+ * What the agent changed, and how to put it back (docs/UI-REDESIGN-2026-09.md §7 "History").
  *
  * Checkpoints and the work log share a tab because they are the same question asked twice:
  * "what happened" and "how far back can I go" are answered by the same list of moments.
@@ -37,6 +39,12 @@ function timeOf(iso: string): string {
   const today = new Date().toDateString() === at.toDateString()
   const time = at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
   return today ? time : `${at.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`
+}
+
+function moment(c: CheckpointInfo): string {
+  return c.turn === undefined
+    ? 'before anything changed'
+    : c.step === undefined ? `after turn ${c.turn}` : `during turn ${c.turn}, at step ${c.step}`
 }
 
 export function HistoryTab({
@@ -75,6 +83,12 @@ export function HistoryTab({
     try {
       const result = await client.call('checkpoints.rewind', { id })
       setRewind({ kind: 'done', undo: result.undo })
+      toast.push({
+        title: 'Rolled back',
+        description: 'Every file is as it was at that checkpoint.',
+        tone: 'success',
+        action: { label: 'Undo', onClick: () => { void doRewind(result.undo.id) } },
+      })
       load()
     } catch (e) {
       setRewind({ kind: 'failed', why: e instanceof Error ? e.message : String(e) })
@@ -82,24 +96,26 @@ export function HistoryTab({
   }
 
   if (error !== null) return <PanelError message={error} onRetry={load} />
-  if (checkpoints === null) return <div class="panel-placeholder loading-quiet">loading…</div>
+  if (checkpoints === null) return <PanelLoading />
 
   return (
-    <div class="history">
+    <div data-panel="history" class="overflow-y-auto">
       {rewind.kind === 'done' && (
-        <div class="history-note">
-          Rolled back.{' '}
-          <button class="link-button" onClick={() => void doRewind(rewind.undo.id)}>
-            Undo this rollback
-          </button>
-        </div>
+        <PanelNote tone="good">
+          <span class="flex flex-wrap items-center gap-2">
+            Rolled back.
+            <Button size="sm" variant="ghost" icon={<RotateCcw />} onClick={() => void doRewind(rewind.undo.id)}>
+              Undo this rollback
+            </Button>
+          </span>
+        </PanelNote>
       )}
       {rewind.kind === 'failed' && <PanelError message={rewind.why} />}
 
       {checkpoints.length === 0
         ? (
           <PanelEmpty
-            icon={Icon.history()}
+            icon={<History />}
             title="No checkpoints yet"
             hint="One is taken before the first turn, after any turn that changes a file, and as a long turn works."
           />
@@ -109,11 +125,11 @@ export function HistoryTab({
             {checkpoints.map((c, i) => (
               <PanelRow
                 key={c.id}
-                icon={Icon.history()}
+                icon={<History />}
                 label={
                   <>
-                    <span class="ckpt-when">{timeOf(c.at)}</span>
-                    {c.turn === undefined ? 'before anything changed' : c.step === undefined ? `after turn ${c.turn}` : `during turn ${c.turn}, at step ${c.step}`}
+                    <span class="mr-2 font-mono text-[11.5px] tabular-nums text-faint">{timeOf(c.at)}</span>
+                    {moment(c)}
                   </>
                 }
                 title={`checkpoint ${c.id}`}
@@ -125,31 +141,35 @@ export function HistoryTab({
                       // it would be a button that does nothing -- worse than absent,
                       // because it implies the others are different in kind.
                       actions: (
-                        <button
-                          class="btn btn-small"
+                        <Button
+                          size="sm"
+                          data-action="restore"
                           onClick={() => setRewind({ kind: 'confirming', id: c.id })}
                           disabled={rewind.kind === 'working'}
                         >
                           Restore
-                        </button>
+                        </Button>
                       ),
                     }
                   : {})}
               >
-                <div class="ckpt-confirm">
-                  <p>
+                <div
+                  data-confirm="restore"
+                  class="mt-1 rounded-md border border-red-line bg-red-soft p-2.5 font-ui text-[12.5px] leading-[1.45] text-fg"
+                >
+                  <p class="m-0 mb-1.5">
                     Put every file back as it was {c.turn === undefined ? 'at the start' : c.step === undefined ? `after turn ${c.turn}` : `at step ${c.step} of turn ${c.turn}`}.
                     Files created since are <b>deleted</b>. Ignored files — <code>node_modules</code>,
                     build output — are left alone, so this costs no rebuild.
                   </p>
-                  <p class="ckpt-confirm-undo">You will be able to undo it straight afterwards.</p>
-                  <div class="ckpt-confirm-actions">
-                    <button class="btn btn-danger btn-small" onClick={() => void doRewind(c.id)}>
+                  <p class="m-0 mb-2 text-dim">You will be able to undo it straight afterwards.</p>
+                  <div class="flex gap-1.5">
+                    <Button size="sm" variant="danger" data-autofocus onClick={() => void doRewind(c.id)}>
                       Restore it
-                    </button>
-                    <button class="btn btn-small" onClick={() => setRewind({ kind: 'idle' })}>
+                    </Button>
+                    <Button size="sm" onClick={() => setRewind({ kind: 'idle' })}>
                       Cancel
-                    </button>
+                    </Button>
                   </div>
                 </div>
               </PanelRow>
@@ -158,10 +178,10 @@ export function HistoryTab({
                 might be more behind it. A button that reloads the same rows would be a
                 button that lies about there being something further back. */}
             {checkpoints.length >= limit && (
-              <div class="history-note">
-                <button class="link-button" onClick={() => setLimit((n) => n + LIMIT_STEP)}>
+              <div class="px-2.5 py-2">
+                <Button size="sm" variant="ghost" onClick={() => setLimit((n) => n + LIMIT_STEP)}>
                   Look further back
-                </button>
+                </Button>
               </div>
             )}
           </PanelSection>
@@ -169,16 +189,18 @@ export function HistoryTab({
 
       <PanelSection title="Work log">
         {log === ''
-          ? <PanelRow icon={Icon.file()} label="Nothing recorded yet" />
+          ? <PanelRow icon={<FileText />} label="Nothing recorded yet" />
           : (
             <PanelRow
               open={showLog}
               onToggle={() => setShowLog((s) => !s)}
-              icon={Icon.file()}
+              icon={<FileText />}
               label="What each turn did"
               meta={`${log.trimEnd().split('\n').length} lines`}
             >
-              <div class="history-log-body"><Markdown text={log} /></div>
+              <div class="font-ui text-[12.5px] [&_h1]:text-[13.5px] [&_h2]:mt-3 [&_h2]:text-[12.5px]">
+                <Markdown text={log} />
+              </div>
             </PanelRow>
             )}
       </PanelSection>

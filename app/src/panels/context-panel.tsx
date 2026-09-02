@@ -1,8 +1,9 @@
 import { useState } from 'preact/hooks'
 import type { VNode } from 'preact'
+import { Files, History, Terminal } from 'lucide-preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatItem } from '../lib/state'
-import { Icon } from '../components/icons'
+import { Tabs, tabPanelId, type TabItem } from '../ui/tabs'
 import type { ChangeEntry } from './changes-tab'
 import { WorkspaceTab } from './workspace-tab'
 import { HistoryTab } from './history-tab'
@@ -10,25 +11,22 @@ import { TerminalTab } from './terminal-tab'
 import { useJobs } from '../lib/use-jobs'
 
 /**
- * The right column: everything about the workspace that is not the conversation.
+ * The right column: everything about the workspace that is not the conversation
+ * (docs/UI-REDESIGN-2026-09.md §7).
  *
  * Tabs rather than stacked panels because only one of these is ever the answer to what you
  * are looking at right now, and three permanently half-height panels was an earlier layout's
  * mistake. The tab bar carries live counts so the tab you are not on can still tell you
  * something happened.
  *
- * There were five tabs and there are now four. Jobs and Terminal were one question asked
- * twice, and the fifth tab did not fit: at the default panel width the bar was 398px of tabs
- * in a 380px panel, which put Terminal's right edge 19px past the window and made the whole
- * shell scroll sideways. Merging them fixed the layout by removing the reason for it rather
- * than by shrinking type until it squeezed in.
- *
- * Changes leads, and is the tab a new session opens on. This column answers "what has the
- * agent done to my workspace", and a file tree answers a question you could have asked
- * before it started.
+ * There were five tabs and there are now three. Jobs and Terminal were one question asked
+ * twice, and Files and Changes are one tree wearing the changes; the two extra bars did not
+ * fit the panel's minimum width and pushed the whole shell sideways.
  */
 
 export type ContextTab = 'workspace' | 'history' | 'terminal'
+
+export const INSPECTOR = 'inspector'
 
 export function ContextPanel({
   client, items, changes, reloadKey, onOpenFile, hasSession, workspaceRoot, workspaceName,
@@ -66,32 +64,22 @@ export function ContextPanel({
   const { jobs } = useJobs(client, hasSession, 2000)
   const runningJobs = jobs.filter((j) => j.running).length
 
-  const tabs: { id: ContextTab; label: string; icon: () => VNode; badge?: number }[] = [
-    { id: 'workspace', label: 'Workspace', icon: Icon.files, badge: changes.length },
-    { id: 'history', label: 'History', icon: Icon.history },
-    { id: 'terminal', label: 'Terminal', icon: Icon.terminal, badge: runningJobs },
+  const tabs: TabItem<ContextTab>[] = [
+    { id: 'workspace', label: 'Workspace', icon: <Files />, badge: changes.length },
+    { id: 'history', label: 'History', icon: <History /> },
+    { id: 'terminal', label: 'Terminal', icon: <Terminal />, badge: runningJobs },
   ]
 
   return (
-    <div class="context-panel">
-      <div class="tabbar" role="tablist">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            class={`tab ${tab === t.id ? 'tab-active' : ''}`}
-            onClick={() => setTab(t.id)}
-            title={t.label}
-            role="tab"
-            aria-selected={tab === t.id}
-          >
-            {t.icon()}
-            <span class="tab-label">{t.label}</span>
-            {t.badge !== undefined && t.badge > 0 && <span class="tab-badge">{t.badge}</span>}
-          </button>
-        ))}
-      </div>
+    <div data-inspector="" class="flex h-full flex-col font-ui">
+      <Tabs group={INSPECTOR} tabs={tabs} active={tab} onChange={setTab} label="Inspector" dense />
 
-      <div class="tab-body">
+      <div
+        role="tabpanel"
+        id={tabPanelId(INSPECTOR, tab)}
+        aria-labelledby={`${INSPECTOR}-tab-${tab}`}
+        class="flex min-h-0 flex-1 flex-col overflow-hidden"
+      >
         {tab === 'workspace' && (
           <WorkspaceTab
             client={client}
