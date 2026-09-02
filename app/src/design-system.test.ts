@@ -119,15 +119,33 @@ describe('colours', () => {
 })
 
 describe('class names', () => {
-  test('every static class a component asks for exists in the stylesheet', () => {
+  test('every static class a component asks for exists in the stylesheet or is a Tailwind utility', async () => {
+    // Two vocabularies now: the stylesheet's own classes, and Tailwind's utilities, which
+    // exist only if the compiler emits them — a typo like `text-dimm` emits nothing and is
+    // otherwise invisible. So the names the stylesheet does not define are handed to the
+    // compiler, over the same token file the app builds with, and each must come back.
     const defined = definedClasses(css)
-    const missing: string[] = []
+    const candidates = new Map<string, string[]>()
     for (const file of tsxFiles(SRC)) {
       const short = file.slice(SRC.length)
       for (const cls of staticClasses(readFileSync(file, 'utf8'))) {
-        if (!defined.has(cls)) missing.push(`${short}: .${cls}`)
+        if (!defined.has(cls)) candidates.set(cls, [...(candidates.get(cls) ?? []), short])
       }
     }
-    expect([...new Set(missing)]).toEqual([])
+    const missing: string[] = []
+    if (candidates.size > 0) {
+      const { compile } = await import('@tailwindcss/node')
+      const compiler = await compile(
+        '@import "tailwindcss/theme.css"; @import "tailwindcss/utilities.css";\n' +
+          tokensCss.replace(/@import[^;]+;/g, '').replace(/@layer theme, base, components, utilities;/, ''),
+        { base: join(SRC, 'styles'), onDependency: () => {} },
+      )
+      const out = compiler.build([...candidates.keys()])
+      for (const [cls, files] of candidates) {
+        const escaped = cls.replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`)
+        if (!out.includes(`.${escaped}`)) missing.push(`.${cls} (${[...new Set(files)].join(', ')})`)
+      }
+    }
+    expect(missing).toEqual([])
   })
 })
