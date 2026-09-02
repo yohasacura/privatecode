@@ -48,6 +48,14 @@ reasons. `--baseline` prints what changed against an earlier JSON.
 
 The exit code is 0 only when every task passed.
 
+## Are the tests right?
+
+Checked both ways, and worth re-running whenever a task or a hidden test changes:
+`spike/winopt-hidden-tests-try.mts` and `spike/bp-hidden-tests-try.mts` apply a hand-written
+reference solution to a copy (`--reference`: every hidden test passes) and then run the same
+tests against the untouched original with the bugfix tasks' bugs planted (`--untouched`:
+every hidden test fails, except the two that pin behaviour a fix must not change).
+
 ## Adding a task
 
 Add an entry to `tasks.ts` and a test class under `hidden/<task-id>/` — namespace
