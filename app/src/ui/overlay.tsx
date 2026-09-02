@@ -45,6 +45,7 @@ export function useFloating(
       const a = anchor.current
       const f = floating.current
       if (a === null || f === null) return
+      if (typeof a.getBoundingClientRect !== 'function' || typeof f.getBoundingClientRect !== 'function') return
       const r = a.getBoundingClientRect()
       const fr = f.getBoundingClientRect()
       setPos(place(

@@ -1,4 +1,5 @@
 import type { JSX, VNode } from 'preact'
+import { forwardRef } from 'preact/compat'
 import { cn } from './cn'
 
 const FIELD =
@@ -13,29 +14,31 @@ export interface InputProps extends JSX.InputHTMLAttributes<HTMLInputElement> {
 }
 
 /** A single-line field. Monospace for paths and URLs is the caller's `class="font-mono"`. */
-export function Input({ invalid = false, class: klass, ...rest }: InputProps): VNode {
+export const Input = forwardRef<HTMLInputElement, InputProps>(function Input({ invalid = false, class: klass, ...rest }, ref): VNode {
   return (
     <input
+      ref={ref}
       class={cn(FIELD, 'h-7 px-2.5', invalid ? 'border-red' : 'border-border', klass as string | undefined)}
       aria-invalid={invalid || undefined}
       {...rest}
     />
   )
-}
+})
 
 export interface TextareaProps extends JSX.TextareaHTMLAttributes<HTMLTextAreaElement> {
   invalid?: boolean
 }
 
-export function Textarea({ invalid = false, class: klass, ...rest }: TextareaProps): VNode {
+export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea({ invalid = false, class: klass, ...rest }, ref): VNode {
   return (
     <textarea
+      ref={ref}
       class={cn(FIELD, 'px-2.5 py-1.5 resize-y', invalid ? 'border-red' : 'border-border', klass as string | undefined)}
       aria-invalid={invalid || undefined}
       {...rest}
     />
   )
-}
+})
 
 /** A label above a field, 12 px, dim; `hint` goes beneath in the faint colour. */
 export function Field({ label, hint, error, htmlFor, children }: {

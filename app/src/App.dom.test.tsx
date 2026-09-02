@@ -496,6 +496,19 @@ test('after an update, the new version says where it came from — before any fo
   expect(host.querySelector('.updated-strip')).toBeNull()
 })
 
+/** The delete lives in the row's "…" menu now: open it, pick the item. */
+async function askToDelete(row: 'first' = 'first'): Promise<void> {
+  void row
+  const more = host.querySelector<HTMLButtonElement>('[aria-label^="Actions for"]')
+  expect(more, 'each session row should offer its actions').not.toBeNull()
+  more!.click()
+  await settle()
+  const item = document.querySelector<HTMLElement>('[role="menuitem"]')
+  expect(item, 'the actions menu should offer a delete').not.toBeNull()
+  item!.click()
+  await settle()
+}
+
 test('the delete control on a session row does not open that session', async () => {
   // The row used to BE a button, and adding a delete inside it would have been a button
   // inside a button — invalid markup that browsers resolve by dropping the inner element.
@@ -510,14 +523,10 @@ test('the delete control on a session row does not open that session', async () 
   await settle()
 
   const before = calls.filter((c) => c.method === 'sessions.read').length
-  const del = host.querySelector<HTMLButtonElement>('.rail-item-delete')
-  expect(del, 'each session row should offer a delete').not.toBeNull()
-
-  del!.click()
-  await settle()
+  await askToDelete()
 
   // It asked, rather than acting or navigating.
-  expect(host.querySelector('.rail-item-confirm')?.textContent).toContain('yesterday')
+  expect(host.querySelector('[data-confirm="session"]')?.textContent).toContain('yesterday')
   expect(calls.filter((c) => c.method === 'sessions.read').length).toBe(before)
   expect(calls.some((c) => c.method === 'sessions.delete')).toBe(false)
 })
@@ -530,10 +539,9 @@ test('and confirming is what actually deletes it', async () => {
   render(<App />, host)
   await settle()
 
-  host.querySelector<HTMLButtonElement>('.rail-item-delete')!.click()
-  await settle()
+  await askToDelete()
 
-  const confirm = [...host.querySelectorAll<HTMLButtonElement>('.rail-item-confirm button')]
+  const confirm = [...host.querySelectorAll<HTMLButtonElement>('[data-confirm="session"] button')]
     .find((b) => b.textContent === 'Delete')
   expect(confirm, 'the confirmation should offer a Delete').toBeTruthy()
   confirm!.click()
@@ -551,17 +559,16 @@ test('backing out of the confirmation deletes nothing', async () => {
   render(<App />, host)
   await settle()
 
-  host.querySelector<HTMLButtonElement>('.rail-item-delete')!.click()
-  await settle()
-  const keep = [...host.querySelectorAll<HTMLButtonElement>('.rail-item-confirm button')]
+  await askToDelete()
+  const keep = [...host.querySelectorAll<HTMLButtonElement>('[data-confirm="session"] button')]
     .find((b) => b.textContent === 'Keep')
   keep!.click()
   await settle()
 
-  expect(host.querySelector('.rail-item-confirm')).toBeNull()
+  expect(host.querySelector('[data-confirm="session"]')).toBeNull()
   expect(calls.some((c) => c.method === 'sessions.delete')).toBe(false)
   // And the row is back, not left as a gap in the list.
-  expect(host.querySelector('.rail-row')).not.toBeNull()
+  expect(host.querySelector('[data-session-row]')).not.toBeNull()
 })
 
 test('"delete all" is offered only when there is something to delete, and it too asks first',
@@ -569,7 +576,7 @@ test('"delete all" is offered only when there is something to delete, and it too
     render(null, host)
     render(<App />, host)
     await settle()
-    expect(host.querySelector('.rail-clear'), 'an empty rail offers nothing to clear').toBeNull()
+    expect(host.querySelector('[data-action="delete-all"]'), 'an empty rail offers nothing to clear').toBeNull()
 
     render(null, host)
     savedSessions = [
@@ -579,15 +586,15 @@ test('"delete all" is offered only when there is something to delete, and it too
     render(<App />, host)
     await settle()
 
-    host.querySelector<HTMLButtonElement>('.rail-clear')!.click()
+    host.querySelector<HTMLButtonElement>('[data-action="delete-all"]')!.click()
     await settle()
 
     // The count is in the question, because "delete all" without a number is a question
     // about an unknown quantity.
-    expect(host.querySelector('.rail-item-confirm')?.textContent).toContain('2 sessions')
+    expect(host.querySelector('[data-confirm="all"]')?.textContent).toContain('2 sessions')
     expect(calls.some((c) => c.method === 'sessions.deleteAll')).toBe(false)
 
-    const go = [...host.querySelectorAll<HTMLButtonElement>('.rail-item-confirm button')]
+    const go = [...host.querySelectorAll<HTMLButtonElement>('[data-confirm="all"] button')]
       .find((b) => b.textContent === 'Delete all')
     go!.click()
     await settle()

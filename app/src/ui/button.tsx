@@ -1,4 +1,5 @@
 import type { ComponentChildren, JSX, VNode } from 'preact'
+import { forwardRef } from 'preact/compat'
 import { cn } from './cn'
 
 /**
@@ -37,11 +38,13 @@ export interface ButtonProps extends Omit<JSX.ButtonHTMLAttributes<HTMLButtonEle
   children?: ComponentChildren
 }
 
-export function Button({
+/** A ref reaches the `<button>` itself (a menu anchors to it; a dialog returns focus to it). */
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({
   variant = 'secondary', size = 'md', icon, loading = false, class: klass, children, disabled, type, ...rest
-}: ButtonProps): VNode {
+}, ref): VNode {
   return (
     <button
+      ref={ref}
       type={type ?? 'button'}
       class={cn(BASE, VARIANT[variant], SIZE[size], klass as string | undefined)}
       disabled={disabled || loading}
@@ -52,7 +55,7 @@ export function Button({
       {children}
     </button>
   )
-}
+})
 
 /** A 14 px ring that turns; under reduced motion it is a static ring. */
 export function Spinner({ class: klass }: { class?: string }): VNode {
@@ -74,9 +77,12 @@ export interface IconButtonProps extends Omit<JSX.ButtonHTMLAttributes<HTMLButto
 }
 
 /** A square button holding one icon; never without a label. */
-export function IconButton({ label, size = 'md', active = false, class: klass, type, ...rest }: IconButtonProps): VNode {
+export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
+  { label, size = 'md', active = false, class: klass, type, ...rest }, ref,
+): VNode {
   return (
     <button
+      ref={ref}
       type={type ?? 'button'}
       class={cn(
         'inline-flex items-center justify-center shrink-0 rounded-sm border border-transparent bg-transparent',
@@ -94,4 +100,4 @@ export function IconButton({ label, size = 'md', active = false, class: klass, t
       {...rest}
     />
   )
-}
+})

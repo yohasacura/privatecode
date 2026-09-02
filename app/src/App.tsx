@@ -16,7 +16,8 @@ import { collectChanges } from './panels/changes-tab'
 import { Composer } from './panels/composer'
 import { ContextPanel } from './panels/context-panel'
 import { FileView } from './panels/file-view'
-import { SessionsRail, type SessionSwitch } from './panels/sessions-rail'
+import type { SessionSwitch } from './panels/sessions-rail'
+import { Sidebar } from './shell/sidebar'
 import { SettingsModal } from './panels/status'
 import { StatusBar } from './shell/statusbar'
 import { TitleBar } from './shell/titlebar'
@@ -789,7 +790,7 @@ export default function App() {
             {railShown && (
               <>
                 <aside class="column column-rail" style={{ width: `${columns.rail}px` }}>
-                  <SessionsRail
+                  <Sidebar
                     client={client}
                     activeSessionId={chatState.session?.sessionId ?? null}
                     viewingSessionId={chatState.viewing?.sessionId ?? null}
