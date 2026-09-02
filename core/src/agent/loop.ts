@@ -8,7 +8,21 @@ import type { ToolRegistry } from '../tools/registry.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } from '../tools/types.js'
 import { buildSystemPrompt } from './prompt.js'
 import type { LoopDetector } from './loop-detector.js'
-import type { HookRunner } from '../hooks/hooks.js'
+import type { PreToolOutcome, ToolHooks } from '../hooks/engine.js'
+
+/** A hook's lines for the model, folded into the tool result the transcript records. */
+function withNotes(result: ToolResult, notes: string[]): ToolResult {
+  const suffix = `\n\n${notes.join('\n')}`
+  return {
+    ...result,
+    content: `${result.content}${suffix}`,
+    ...(result.display !== undefined ? { display: `${result.display}${suffix}` } : {}),
+  }
+}
+
+/** What the model is told when a Stop hook asks it to carry on. `replay.ts` reads a
+ * bracketed note followed by a blank line as a note, so the shape is load-bearing. */
+const STOP_HOOK_PREFIX = '[A Stop hook asked you to continue]\n\n'
 
 /**
  * How long a step may go SILENT before it is abandoned.
@@ -251,8 +265,15 @@ export interface AgentOptions {
    * message 0 like `memory`, and for the same reason — which is why a skill's DESCRIPTION
    * needs a new session while its body does not. */
   skills?: string
-  /** User-configured after-tool hooks. Absent means none, the normal case. */
-  hooks?: HookRunner
+  /** User-configured hooks — before a tool (a veto, an `ask`, rewritten arguments) and
+   * after one (notes for the model). Absent means none, the normal case. */
+  hooks?: ToolHooks
+  /**
+   * Stop hooks (docs/PLUGINS-2026-09.md §5): consulted when the model ends its turn. A
+   * `block` is handed back to the model as a message and the turn goes on — once; the
+   * second answer ends the turn whatever the hook says, so a hook cannot loop it.
+   */
+  stopHook?: (finalText: string, active: boolean) => Promise<{ block?: string }>
   /**
    * Refuses a call that has already returned the same answer twice.
    *
@@ -699,6 +720,8 @@ export class Agent {
     // Carries a cold-cache budget across exactly ONE step boundary: the step that follows a
     // transcript swap pays for a full re-prefill, and the one after that is warm again.
     let coldTimeoutMs: number | undefined
+    /** Whether a Stop hook has already sent the model back once this turn. */
+    let stopHookActive = false
 
     for (let step = 1; step <= this.opts.maxSteps; step++) {
       if (this.opts.signal?.aborted) {
@@ -770,6 +793,17 @@ export class Agent {
       const calls = message.tool_calls ?? []
       if (calls.length === 0) {
         this.transcript.append(this.assistantMessage(message))
+        if (this.opts.stopHook !== undefined && !stopHookActive && !this.opts.signal?.aborted) {
+          let stop: { block?: string } = {}
+          try {
+            stop = await this.opts.stopHook(lastText, false)
+          } catch { /* a hook that falls over does not hold the turn */ }
+          if (stop.block !== undefined) {
+            stopHookActive = true
+            this.transcript.append({ role: 'user', content: `${STOP_HOOK_PREFIX}${stop.block}` })
+            continue
+          }
+        }
         return {
           steps: step,
           finalText: lastText || 'The model ended the turn without producing an answer.',
@@ -1336,8 +1370,9 @@ export class Agent {
       }
     }
 
-    const prepared = this.opts.registry.prepare(name, args)
-    if (!prepared.ok) return { ok: false, content: prepared.content }
+    const first = this.opts.registry.prepare(name, args)
+    if (!first.ok) return { ok: false, content: first.content }
+    let prepared: { tool: Tool<any>; args: any } = first
 
     // Before the permission gate, and deliberately: this call is not going to be run, so
     // there is nothing to ask the user about. Putting it after would surface an approval
@@ -1355,6 +1390,39 @@ export class Agent {
       return { ok: false, content: detector.refusal(name) }
     }
 
+    // PreToolUse hooks (docs/PLUGINS-2026-09.md §5), BEFORE the permission gate: a deny is
+    // a deny and reaches the model as one; `ask` sends the call to the approval card;
+    // `allow` skips the ask tier below but never a deny rule; rewritten arguments are
+    // validated again as if the model had sent them.
+    let hookVerdict: 'allow' | 'ask' | 'deny' | undefined
+    const hookNotes: string[] = []
+    const beforeTool = this.opts.hooks?.beforeTool
+    if (beforeTool !== undefined) {
+      const key: PermissionKey =
+        prepared.tool.permissionKey?.(prepared.args, this.toolContext()) ?? { tool: name }
+      let pre: PreToolOutcome
+      try {
+        pre = await beforeTool.call(this.opts.hooks, { name, args: prepared.args, raw: args, key, signal: this.opts.context.signal })
+      } catch (e) {
+        pre = { notes: [`[hook] PreToolUse hooks could not run: ${e instanceof Error ? e.message : String(e)}`] }
+      }
+      hookNotes.push(...pre.notes)
+      if (pre.verdict === 'deny') {
+        return this.remember(detector, name, args, {
+          ok: false,
+          content: `Not run. Refused by hook ${pre.by ?? ''}: ${pre.reason ?? 'no reason given'}`.replace('hook :', 'hook:'),
+        })
+      }
+      if (pre.updatedArgs !== undefined) {
+        const again = this.opts.registry.prepare(name, JSON.stringify(pre.updatedArgs))
+        if (!again.ok) {
+          return { ok: false, content: `Not run: a PreToolUse hook rewrote the arguments and they no longer validate. ${again.content}` }
+        }
+        prepared = again
+      }
+      hookVerdict = pre.verdict
+    }
+
     // The whole gate is wrapped: `port.requestApproval` is a host boundary (today an
     // in-process callback, tomorrow IPC/JSON), and a rejection from it must not propagate
     // out of `runTool`. Left unguarded, that throw would escape past the assistant message
@@ -1369,10 +1437,15 @@ export class Agent {
         const key: PermissionKey =
           prepared.tool.permissionKey?.(prepared.args, this.toolContext()) ?? { tool: name }
         const decision = engine.decide(key)
-        if (decision.verdict === 'deny') {
+        // A hook's `allow` skips the ask tier and never a deny; a hook's `ask` sends an
+        // allowed call to the card. The engine's deny is consulted first, as for every allow.
+        const verdict = decision.verdict === 'ask' && hookVerdict === 'allow' ? 'allow'
+          : decision.verdict === 'allow' && hookVerdict === 'ask' ? 'ask'
+          : decision.verdict
+        if (verdict === 'deny') {
           return this.remember(detector, name, args, { ok: false, content: `Not run. ${decision.reason}` })
         }
-        if (decision.verdict === 'ask') {
+        if (verdict === 'ask') {
           const port = this.opts.interaction
           if (!port) {
             return {
@@ -1457,8 +1530,9 @@ export class Agent {
                  'treated as a denial.',
       }
     }
-    const result = await this.opts.registry.executePrepared(prepared, this.toolContext(name))
-    detector?.record(name, args, result.content)
+    const executed = await this.opts.registry.executePrepared(prepared, this.toolContext(name))
+    detector?.record(name, args, executed.content)
+    const result = hookNotes.length === 0 ? executed : withNotes(executed, hookNotes)
 
     // After-tool hooks fire HERE: after the tool ran, before `runTurn` appends the tool
     // message. A hook's note is therefore folded into the result the transcript records,
@@ -1469,7 +1543,7 @@ export class Agent {
     if (!hooks) return result
     const key: PermissionKey =
       prepared.tool.permissionKey?.(prepared.args, this.toolContext()) ?? { tool: name }
-    return hooks.afterTool(key, result, this.opts.context.signal)
+    return hooks.afterTool(key, result, this.opts.context.signal, { name, args: prepared.args, raw: args })
   }
 
   /**

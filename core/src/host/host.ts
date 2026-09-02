@@ -17,6 +17,7 @@ import { loadDatabaseSettings } from '../sql/settings.js'
 import { loadSchemaBlock } from '../sql/schema-block.js'
 import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
+import { createHookEngine, type HookEngine } from '../hooks/engine.js'
 import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory } from '../memory/project-memory.js'
 import { loadProjectNotes } from '../memory/project-notes.js'
@@ -377,6 +378,8 @@ export class SessionHost {
   private standalone: StandaloneComponents | undefined
   /** Problems from the last plugin load, reported beside `externalProblems`. */
   private pluginProblems: string[] = []
+  /** The hook engine of the CURRENT session, kept so SessionEnd can be told. */
+  private hookEngine: HookEngine | undefined
 
   /** Problems from loading MCP servers and browser settings, gathered once in `init` and
    * reported by every `buildSession` — including the ones a later session switch triggers,
@@ -451,6 +454,7 @@ export class SessionHost {
       this.session.abortWarmup()
       await this.session.abortCompaction()
     }
+    await this.hookEngine?.sessionEnd('exit')
     await this.stopExternal()
   }
 
@@ -594,6 +598,7 @@ export class SessionHost {
       await this.session.abortCompaction()
     }
     this.denyAllPending()
+    await this.hookEngine?.sessionEnd('other')
     // Everything the OLD workspace owned, including its MCP servers and its browser: init
     // replaces the toolset below, and an orphan would otherwise run until app exit.
     await this.stopExternal()
@@ -944,6 +949,7 @@ export class SessionHost {
       await this.session.abortCompaction()
     }
     this.denyAllPending()
+    await this.hookEngine?.sessionEnd('clear')
     return this.buildSession(resumeId)
   }
 
@@ -956,7 +962,7 @@ export class SessionHost {
    * to the `InitResult.problems` this returns, stating that automatic compaction is off.
    */
   private async buildSession(resumeId: string | undefined): Promise<InitResult> {
-    const { toolset, store, workspaceRoot } = this.requireInitialized()
+    const { toolset, store, workspaceRoot, workspace } = this.requireInitialized()
 
     // Re-probed here, on every session build.
     //
@@ -1089,7 +1095,20 @@ export class SessionHost {
       sessionOpts.rerankRepoMap = (focus) => renderIndex(index, this.mapChars, focus, this.referenceEdges)
     }
     if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
-    if (hooking.hooks.length > 0) sessionOpts.hooks = hooking.hooks
+    // Every hook this workspace has — PrivateCode's own `[{ after, command }]` list, the
+    // Claude Code `hooks` objects in `.claude/settings*.json`, the enabled plugins' — in one
+    // engine (docs/PLUGINS-2026-09.md §5). Built per session so a hook's failure count and
+    // its session id are the session's.
+    const hookEngine = createHookEngine({
+      legacy: hooking.hooks,
+      sources: [...(this.standalone?.hookSources ?? []), ...(this.plugins?.hookSources ?? [])],
+      workspace,
+      sessionId: () => this.session?.id ?? resumeId ?? 'new',
+      permissionMode: () => this.session?.mode ?? profile.mode ?? 'normal',
+      onProblem: (text) => this.emit('settings.problem', { text }),
+    })
+    this.hookEngine = hookEngine
+    sessionOpts.hookEngine = hookEngine
     if (verifying.verify) sessionOpts.verify = verifying.verify
     // Wired whenever ANY folder has a check, not only when the settings files supply one.
     // Tying the callback to the settings-file source meant a workspace whose checks all came
@@ -1159,6 +1178,16 @@ export class SessionHost {
     // turns mid-task with "stopped after 40 steps without finishing".
     sessionOpts.maxSteps = MAX_STEPS_PER_TURN
 
+    // SessionStart hooks run before the session exists, so what they print can sit in the
+    // system message beside the project notes — the one place a later turn cannot add to.
+    if (hookEngine.has('SessionStart')) {
+      const started = await hookEngine.sessionStart(resumeId !== undefined ? 'resume' : 'startup')
+      for (const n of started.notes) this.emit('settings.problem', { text: n })
+      if (started.context !== '') {
+        const block = `--- Session hooks ---\n${started.context}\n--- end session hooks ---`
+        sessionOpts.notes = sessionOpts.notes !== undefined ? `${sessionOpts.notes}\n\n${block}` : block
+      }
+    }
     const session = new Session(sessionOpts)
     this.session = session
     // Prefill the prefix now, while the person is still reading the window or typing: the
@@ -1198,6 +1227,7 @@ export class SessionHost {
       ...verifying.problems,
       ...this.externalProblems,
       ...this.pluginProblems,
+      ...(this.hookEngine?.problems ?? []),
       // A folder that failed to attach is invisible in the tree, and an invisible folder is
       // indistinguishable from an empty one. Repeated on every session switch, like the
       // external problems above and for the same reason.

@@ -19,7 +19,8 @@ import type { DatabaseSettings } from '../sql/settings.js'
 import type { LoadedSkills } from '../skills/skills.js'
 import type { FormatRule } from '../format/config.js'
 import { createFormatRunner, type FormatRunner } from '../format/runner.js'
-import { createHookRunner, type HookRunner, type HookSpec } from '../hooks/hooks.js'
+import { createHookRunner, type HookSpec } from '../hooks/hooks.js'
+import type { HookEngine, ToolHooks } from '../hooks/engine.js'
 import type { VerifySpec } from '../verify/config.js'
 import {
   MIDTURN_VERIFY_PREFIX, STILL_FAILING_SUFFIX, runVerify, verifyFailureMessage,
@@ -282,6 +283,13 @@ export interface SessionOptions {
   formatRules?: FormatRule[]
   /** After-tool hooks from the settings layers, already parsed by the host. */
   hooks?: HookSpec[]
+  /**
+   * The Claude Code hook engine (`hooks/engine.ts`), built by the host over every hook this
+   * workspace has — PrivateCode's own list above included. When present it replaces the
+   * plain runner: PreToolUse, PostToolUse, UserPromptSubmit, Stop, the subagent and
+   * compaction events all run through it.
+   */
+  hookEngine?: HookEngine
   /**
    * `delegate` roles besides the built-in three: the agents enabled plugins ship, and the
    * `.claude/agents/` files, already read by the host (`plugins/agents.ts`). The tool the
@@ -769,7 +777,9 @@ export class Session {
   /** The project's formatter, when `.privatecode/settings.json` configures one. */
   private readonly formatRunner: FormatRunner | undefined
   /** Built once per Session so a hook's failure counter spans the session, not one turn. */
-  private readonly hookRunner: HookRunner | undefined
+  private readonly hookRunner: ToolHooks | undefined
+  /** What the PreCompact hooks are told: `forceCompact` is the one manual path. */
+  private compactTrigger: 'manual' | 'auto' = 'auto'
   /** Guard against concurrent send() calls. persistedCount and pendingModeNote are not concurrency-safe. */
   private sending = false
   /** The newest server-reported `usage.prompt_tokens`, from the latest completed step
@@ -825,9 +835,9 @@ export class Session {
     this.formatRunner = opts.formatRules && opts.formatRules.length > 0
       ? createFormatRunner(opts.formatRules, this.workspace)
       : undefined
-    this.hookRunner = opts.hooks && opts.hooks.length > 0
+    this.hookRunner = opts.hookEngine ?? (opts.hooks && opts.hooks.length > 0
       ? createHookRunner(opts.hooks, this.workspace)
-      : undefined
+      : undefined)
 
     if (opts.resume !== undefined) {
       if (!opts.store) {
@@ -2624,6 +2634,18 @@ export class Session {
       const note = this.pendingModeNote
       this.pendingModeNote = undefined
       const userText = note ? `${note}\n${text}` : text
+      // UserPromptSubmit hooks (docs/PLUGINS-2026-09.md §5): a hook may add context to the
+      // prompt or block it, in which case the model never sees it and the window rolls the
+      // message back — `delivered: false` is the signal the front ends already honour.
+      let promptText = userText
+      const hookEngine = this.opts.hookEngine
+      if (hookEngine !== undefined && hookEngine.has('UserPromptSubmit')) {
+        const checked = await hookEngine.userPrompt(userText, signal)
+        if (checked.blocked !== undefined) {
+          return { steps: 0, finalText: checked.blocked, stoppedBecause: 'done', delivered: false }
+        }
+        promptText = checked.text
+      }
 
       this.turnNumber += 1
       this.turnCommands = []
@@ -2676,7 +2698,7 @@ export class Session {
       // For the same rollback: a plan seeded for a message that never reached the
       // transcript describes work that was never asked for.
       const todosBefore = this.opts.toolset.todos?.list()
-      let turnText = userText
+      let turnText = promptText
       if (this.gateProfile !== 'off' && (sendOpts?.distill ?? looksLikeTask(text)) && looksLikeTask(text)) {
         // The very first thing a long message pays for, and it happens BEFORE the model
         // says a word — so on a task-shaped request the window's first ten to sixty
@@ -2703,7 +2725,7 @@ export class Session {
           // Folded INTO the user message, not appended beside it: two adjacent user
           // messages deviate from the chat template (the setMode note records the same
           // rule), and the note explicitly describes "the request that follows".
-          turnText = `[${renderContract(contract)}]\n\n${userText}`
+          turnText = `[${renderContract(contract)}]\n\n${promptText}`
         }
       }
       // Captured AFTER buildAgent() (which may append the system prompt on a fresh
@@ -3473,10 +3495,12 @@ export class Session {
       throw new Error('a turn is already running in this session')
     }
     this.sending = true
+    this.compactTrigger = 'manual'
     try {
       await this.compactNow(signal)
     } finally {
       this.sending = false
+      this.compactTrigger = 'auto'
     }
   }
 
@@ -3488,6 +3512,8 @@ export class Session {
    * is in progress — which, from inside `send()`, is always.
    */
   private async compactNow(signal?: AbortSignal): Promise<void> {
+    // PreCompact hooks (docs/PLUGINS-2026-09.md §5), told which kind, before anything moves.
+    await this.opts.hookEngine?.preCompact(this.compactTrigger, signal)
     {
       await this.abortInFlightCompaction()
       this.pendingSummary = undefined
@@ -4414,7 +4440,9 @@ export class Session {
         problem: `no such worker: ${role}. Available: ${roles.map((r) => r.name).join(', ')}`,
       }
     }
-    return await runSubAgent(
+    // SubagentStart and SubagentStop hooks bracket the worker (docs/PLUGINS-2026-09.md §5).
+    await this.opts.hookEngine?.subagent('start', role, task, signal)
+    const outcome = await runSubAgent(
       {
         client: this.opts.client,
         registry: this.opts.toolset.registry,
@@ -4431,6 +4459,8 @@ export class Session {
       task,
       signal,
     )
+    await this.opts.hookEngine?.subagent('stop', role, outcome.text, signal)
+    return outcome
   }
 
   /** Whether the model in this session's mode is actually offered `delegate`. */
@@ -4515,6 +4545,13 @@ export class Session {
     }
     if (port) agentOpts.interaction = port
     if (this.hookRunner) agentOpts.hooks = this.hookRunner
+    const hookEngine = this.opts.hookEngine
+    if (hookEngine !== undefined && hookEngine.has('Stop')) {
+      agentOpts.stopHook = async (text, active) => {
+        const r = await hookEngine.stop(text, active, signal)
+        return r.block !== undefined ? { block: r.block } : {}
+      }
+    }
     // Always composed, even when no host events were supplied: Session must keep tapping
     // onStepDone for contextUsage()/fillRatio() on every turn, host renderer or not (a
     // one-shot CLI call, or a test, may never pass `events` at all).
