@@ -1,12 +1,22 @@
 import { defineConfig } from "vite";
 import preact from "@preact/preset-vite";
+import tailwindcss from "@tailwindcss/vite";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [preact()],
+  plugins: [preact(), tailwindcss()],
+  // A React library can be adopted for one primitive through preact/compat without a
+  // framework change (docs/UI-REDESIGN-2026-09.md §1); nothing uses the alias until one is.
+  resolve: {
+    alias: {
+      react: "preact/compat",
+      "react-dom": "preact/compat",
+      "react/jsx-runtime": "preact/jsx-runtime",
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

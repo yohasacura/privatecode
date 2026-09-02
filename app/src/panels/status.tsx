@@ -6,6 +6,7 @@ import type { AgentMode } from '@core/permissions/engine'
 import type { ChatState } from '../lib/state'
 import { formatTokenCount } from '../lib/format'
 import { Icon } from '../components/icons'
+import type { ThemeSetting } from '../lib/theme'
 import type { SessionSwitch } from './sessions-rail'
 import { Permissions } from './permissions'
 import { McpEditor } from './mcp-editor'
@@ -228,11 +229,14 @@ function McpServers({ client }: { client: ProtocolClient }): VNode | null {
 }
 
 export function SettingsModal({
-  client, onClose, onSessionSwitched, liveMode,
+  client, onClose, onSessionSwitched, liveMode, themeSetting, onThemeChange,
 }: {
   client: ProtocolClient
   /** See Permissions.liveMode. */
   liveMode?: AgentMode
+  /** The window's theme setting and the way to change it; App owns the state. */
+  themeSetting: ThemeSetting
+  onThemeChange: (setting: ThemeSetting) => void
   onClose: () => void
   /** Opening a workspace is the one moment its name and folder count can change, so they
    * ride this callback rather than every session switch. */
@@ -246,7 +250,7 @@ export function SettingsModal({
   const [workspace, setWorkspace] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
-  const [tab, setTab] = useState<'server' | 'permissions' | 'skills' | 'mcp' | 'data'>('server')
+  const [tab, setTab] = useState<'server' | 'appearance' | 'permissions' | 'skills' | 'mcp' | 'data'>('server')
 
   useEffect(() => {
     client.call('config.get', {})
@@ -343,6 +347,7 @@ export function SettingsModal({
         <div class="modal-tabs" role="tablist">
           {([
             ['server', 'Server'],
+            ['appearance', 'Appearance'],
             ['permissions', 'Permissions'],
             ['skills', 'Skills'],
             ['mcp', 'MCP servers'],
@@ -389,6 +394,30 @@ export function SettingsModal({
               session is picked back up.
             </div>
           </>
+        )}
+
+        {tab === 'appearance' && (
+          <div class="appearance">
+            <label class="field-label">Theme</label>
+            <div class="choice-group" role="radiogroup" aria-label="Theme">
+              {([['system', 'System'], ['dark', 'Dark'], ['light', 'Light']] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  role="radio"
+                  aria-checked={themeSetting === value}
+                  class={`choice ${themeSetting === value ? 'choice-on' : ''}`}
+                  onClick={() => onThemeChange(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div class="field-hint">
+              {themeSetting === 'system'
+                ? 'Follows Windows, and changes when Windows does.'
+                : 'Stays this way whatever Windows is set to.'}
+            </div>
+          </div>
         )}
 
         {tab === 'permissions' && (

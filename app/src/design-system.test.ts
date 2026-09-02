@@ -19,7 +19,10 @@ import { describe, expect, test } from 'vitest'
  */
 
 const SRC = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
-const css = readFileSync(join(SRC, 'App.css'), 'utf8')
+/** The tokens (styles/tokens.css) are declared first, then the stylesheet that uses them. */
+const tokensCss = readFileSync(join(SRC, 'styles', 'tokens.css'), 'utf8')
+const appCss = readFileSync(join(SRC, 'App.css'), 'utf8')
+const css = `${tokensCss}\n${appCss}`
 
 /** Every `--token: value` declaration. */
 function declaredTokens(text: string): Set<string> {
@@ -98,6 +101,20 @@ describe('CSS custom properties', () => {
     expect(usedTokens('.x { color: var(--warn, var(--accent)); }')).toEqual([
       { token: '--accent', line: 1 },
     ])
+  })
+})
+
+describe('colours', () => {
+  test('App.css names no colour that is not a token', () => {
+    // A colour written where it is used is a colour the other theme never gets. The
+    // tokens file is the one place a hex or an rgb() may appear.
+    const withoutComments = appCss.replace(/\/\*[\s\S]*?\*\//g, '')
+    const raw = withoutComments
+      .split('\n')
+      .map((line, i) => ({ line: i + 1, text: line }))
+      .filter(({ text }) => /#[0-9a-f]{3,8}\b|rgba?\(/i.test(text))
+      .map(({ line, text }) => `App.css:${line}: ${text.trim()}`)
+    expect(raw).toEqual([])
   })
 })
 

@@ -23,9 +23,14 @@ export function uiConfigPath(): string {
   return join(appData, 'PrivateCode', 'ui.json')
 }
 
+/** The window's theme setting: follow the OS, or one of the two by hand. */
+export type ThemeSetting = 'system' | 'dark' | 'light'
+export const THEME_SETTINGS: readonly ThemeSetting[] = ['system', 'dark', 'light']
+
 export interface UiConfig {
   serverUrl?: string
   recentWorkspaces: string[]
+  theme?: ThemeSetting
 }
 
 function emptyUiConfig(): UiConfig {
@@ -79,6 +84,15 @@ export function loadUiConfig(path: string = uiConfigPath()): { config: UiConfig;
     else problems.push(`"serverUrl" in ui settings (${path}) is not a string; ignoring it`)
   }
 
+  const themeRaw = parsed['theme']
+  if (themeRaw !== undefined) {
+    if (typeof themeRaw === 'string' && (THEME_SETTINGS as readonly string[]).includes(themeRaw)) {
+      config.theme = themeRaw as ThemeSetting
+    } else {
+      problems.push(`"theme" in ui settings (${path}) is not one of system, dark, light; ignoring it`)
+    }
+  }
+
   const recentRaw = parsed['recentWorkspaces']
   if (recentRaw !== undefined) {
     if (Array.isArray(recentRaw)) {
@@ -113,10 +127,11 @@ const MAX_RECENT_WORKSPACES = 8
  * `Workspace`, matching `addRuleToSettings`'s own reasoning.
  */
 export function saveUiConfig(
-  patch: { serverUrl?: string; recentWorkspace?: string },
+  patch: { serverUrl?: string; recentWorkspace?: string; theme?: ThemeSetting },
   path: string = uiConfigPath(),
 ): void {
   const { config } = loadUiConfig(path)
+  if (patch.theme !== undefined) config.theme = patch.theme
 
   if (patch.serverUrl !== undefined) config.serverUrl = patch.serverUrl
 

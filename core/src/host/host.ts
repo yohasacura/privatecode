@@ -2355,6 +2355,7 @@ export class SessionHost {
     return {
       recentWorkspaces: config.recentWorkspaces,
       ...(config.serverUrl !== undefined ? { serverUrl: config.serverUrl } : {}),
+      ...(config.theme !== undefined ? { theme: config.theme } : {}),
     }
   }
 
@@ -2362,6 +2363,7 @@ export class SessionHost {
     saveUiConfig({
       ...(params.serverUrl !== undefined ? { serverUrl: params.serverUrl } : {}),
       ...(params.recentWorkspace !== undefined ? { recentWorkspace: params.recentWorkspace } : {}),
+      ...(params.theme !== undefined ? { theme: params.theme } : {}),
     })
     return {}
   }

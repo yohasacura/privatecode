@@ -14,6 +14,7 @@ import { baseName } from './lib/format'
 import { conversationAsMarkdown } from './lib/export'
 import { MIN_CONTEXT, MIN_RAIL, fitColumns } from './lib/layout'
 import { Icon } from './components/icons'
+import { applyTheme, isThemeSetting, resolveTheme, systemPrefersDark, watchSystemTheme, type ThemeSetting } from './lib/theme'
 import { Splitter } from './components/split'
 import { collectChanges } from './panels/changes-tab'
 import { Composer } from './panels/composer'
@@ -308,6 +309,15 @@ export default function App() {
     })
   }
   const [settingsOpen, setSettingsOpen] = useState(false)
+
+  /** The theme: `system` until `config.get` says otherwise, applied here and followed while
+   * it is `system`. `main.tsx` stamps the OS preference before the first paint. */
+  const [themeSetting, setThemeSetting] = useState<ThemeSetting>('system')
+  useEffect(() => {
+    applyTheme(resolveTheme(themeSetting, systemPrefersDark()))
+    if (themeSetting !== 'system') return
+    return watchSystemTheme((dark) => applyTheme(resolveTheme('system', dark)))
+  }, [themeSetting])
   const [switchOpen, setSwitchOpen] = useState(false)
   /** What this workspace is called and how many folders it spans. Kept beside `phase`
    * rather than inside it because it survives a session switch unchanged. */
@@ -584,6 +594,7 @@ export default function App() {
         const savedUrl = cfg.serverUrl ?? DEFAULT_SERVER_URL
         setServerInput(savedUrl)
         setRecents(cfg.recentWorkspaces)
+        if (isThemeSetting(cfg.theme)) setThemeSetting(cfg.theme)
         const last = cfg.recentWorkspaces[0]
         if (last) {
           setWorkspaceInput(last)
@@ -1159,6 +1170,11 @@ export default function App() {
       {settingsOpen && client && (
         <SettingsModal
           client={client}
+          themeSetting={themeSetting}
+          onThemeChange={(setting) => {
+            setThemeSetting(setting)
+            client.call('config.set', { theme: setting }).catch(() => { /* applied for this run anyway */ })
+          }}
           {...(chatState.session !== null ? { liveMode: chatState.session.mode } : {})}
           onClose={() => setSettingsOpen(false)}
           onSessionSwitched={(info) => { onWorkspaceOpened(info); setSettingsOpen(false) }}

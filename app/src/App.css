@@ -15,53 +15,8 @@
      bare <select> and unstyled <button> are why this is written down.
    ===================================================================================== */
 
-:root {
-  --bg: #121214;
-  --bg-panel: #171719;
-  --bg-raised: #1c1c20;
-  --bg-hover: #232329;
-  --bg-active: #2a2a31;
-  --border: #2b2b32;
-  --border-soft: #212127;
-
-  --text: #ececee;
-  --text-dim: #a8a8b2;
-  --text-faint: #7d7d88;
-  --text-ghost: #4d4d57;
-
-  --accent: #d97757;
-  --accent-hover: #e08a6e;
-  --accent-soft: rgba(217, 119, 87, 0.14);
-  --accent-line: rgba(217, 119, 87, 0.4);
-
-  --green: #7ec98f;
-  --green-soft: rgba(126, 201, 143, 0.13);
-  --red: #e0696c;
-  --red-hover: #ea7a7d;
-  --red-soft: rgba(224, 105, 108, 0.13);
-  --blue: #6fa8dc;
-  --yellow: #d9b25e;
-
-  --mono: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', Consolas, 'Liberation Mono', monospace;
-  --ui: -apple-system, 'Segoe UI Variable Text', 'Segoe UI', Inter, Roboto, system-ui, sans-serif;
-
-  --radius: 12px;
-  --radius-sm: 6px;
-  /* Two elevations, not four ad-hoc shadows: things that float a little (jump-to-latest,
-     the run-config popover) and things that own the screen (modal, palette). A surface
-     picks a level; it does not tune its own shadow. The inset hairline is the light
-     source — on a near-black UI it is what separates "layered" from "flat with borders". */
-  --shadow-pop: 0 6px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  --shadow-overlay: 0 24px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  --read: 860px;
-  /* The right column's rhythm. One row padding and one leading-control width for every
-     list in the column, so rows in different tabs line up with each other -- which is most
-     of what makes a column read as one instrument instead of five. */
-  --row-pad: 10px;
-  --row-lead: 18px;
-  /* The transcript's marker column. Every row aligns its content to the same edge. */
-  --gutter: 18px;
-}
+/* The tokens — colours for both themes, fonts, radii, motion — live in styles/tokens.css,
+   imported before this file. Nothing here may name a colour that is not one of them. */
 
 * { box-sizing: border-box; }
 
@@ -114,12 +69,12 @@ body {
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #33333b;
+  background: var(--scrollbar);
   border: 3px solid transparent;
   background-clip: content-box;
   border-radius: 6px;
 }
-::-webkit-scrollbar-thumb:hover { background: #45454f; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); background-clip: content-box; }
 ::-webkit-scrollbar-corner { background: transparent; }
 
 kbd {
@@ -191,13 +146,13 @@ kbd {
   cursor: pointer;
   white-space: nowrap;
 }
-.btn:hover:not(:disabled) { background: var(--bg-hover); border-color: #3a3a44; }
+.btn:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
 .btn:disabled { opacity: 0.4; cursor: default; }
 
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #1a1207;
+  color: var(--on-accent);
   font-weight: 550;
 }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
@@ -323,7 +278,7 @@ kbd {
   font-size: 11.5px; padding: 3px 11px; border-radius: 999px; cursor: pointer;
   background: none; border: 1px solid var(--border); color: var(--text-dim);
 }
-.ws-view:hover:not(.ws-view-active) { color: var(--text); border-color: #3a3a44; background: var(--bg-hover); }
+.ws-view:hover:not(.ws-view-active) { color: var(--text); border-color: var(--border-strong); background: var(--bg-hover); }
 .ws-view-active { border-color: var(--accent); color: var(--text); }
 
 /* The session's fingerprints on the tree: a diff shape on a changed file, a count of
@@ -658,7 +613,7 @@ kbd {
   font-size: 11.5px;
   cursor: pointer;
 }
-.rail-error:hover { background: rgba(224, 105, 108, 0.2); }
+.rail-error:hover { background: var(--red-wash); }
 
 /* The row is a container now, not the button. It has to be: it holds a delete control, and
    a button inside a button is invalid markup that browsers resolve by dropping the inner
@@ -848,11 +803,8 @@ kbd {
    The idiom is not invented — `.tree-row-staged` already marks "you chose this one" with
    a warm wash plus a solid left bar, and this is the same sentence said in the transcript.
    Everything tunable lives in the two tokens below. */
-:root {
-  /* Matched to the file tree's staged wash, deliberately. */
-  --user-wash: rgba(217, 119, 87, 0.085);
-  --user-bar: 3px;
-}
+/* `--user-wash` and `--user-bar` are tokens (styles/tokens.css), matched to the file tree's
+   staged wash deliberately. */
 
 /* AIR, asymmetric on purpose: a wide gap ABOVE cuts the new instruction away from the
    work that just finished, a tight one BELOW glues it to the work it causes. The message
@@ -882,7 +834,7 @@ kbd {
   border-left-color: transparent;
   /* A warm ground that dies out before the column does. No right edge to align to
      anything, so it cannot read as a card and cannot overflow a narrow window. */
-  background: linear-gradient(90deg, var(--user-wash), rgba(217, 119, 87, 0) 62%);
+  background: linear-gradient(90deg, var(--user-wash), transparent 62%);
 }
 
 /* THE BAR. Absolutely positioned, so it is out of flow and cannot move a single glyph:
@@ -930,7 +882,7 @@ kbd {
 .marker-brain { display: flex; }
 
 .user-text {
-  color: #f4f4f6;
+  color: var(--text-strong);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1125,7 +1077,7 @@ kbd {
 }
 .tool-card:hover, .tool-card:focus-within { border-color: var(--border-soft); }
 .tool-fail .tool-verb { color: var(--red); }
-.tool-fail .tool-card:hover { border-color: rgba(224, 105, 108, 0.35); }
+.tool-fail .tool-card:hover { border-color: var(--red-line); }
 
 /* The whole header is the expand control -- a 6px chevron is not a target anyone aims at. */
 .tool-head {
@@ -1355,9 +1307,9 @@ kbd {
 .diff-sign { flex: none; width: 16px; text-align: center; user-select: none; }
 .diff-text { flex: 1; padding-right: 12px; }
 
-.diff-add { background: var(--green-soft); color: #bfe6c8; }
+.diff-add { background: var(--green-soft); color: var(--diff-add-text); }
 .diff-add .diff-sign { color: var(--green); }
-.diff-del { background: var(--red-soft); color: #efc0c1; }
+.diff-del { background: var(--red-soft); color: var(--diff-del-text); }
 .diff-del .diff-sign { color: var(--red); }
 .diff-ctx { color: var(--text-faint); }
 .diff-meta { color: var(--text-ghost); padding-left: 12px; }
@@ -1535,7 +1487,7 @@ kbd {
    * five-point difference nobody can see — so the padding reads as a stray gap before the
    * next comma instead of as the edge of a chip. */
   background: var(--bg-hover);
-  color: #e6c9b6;
+  color: var(--code-text);
   font-family: var(--mono);
   font-size: 0.9em;
   line-height: inherit;
@@ -1618,7 +1570,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-sm);
 }
 
 /* Positioned wrapper the run-config popover anchors to — OUTSIDE the shell's clip box.
@@ -1636,9 +1588,9 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 }
 .composer-shell:focus-within {
   border-color: var(--accent-line);
-  box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.07);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
-.composer-shell-live { border-color: rgba(217, 119, 87, 0.28); }
+.composer-shell-live { border-color: var(--accent-line-soft); }
 
 /* A hairline that sweeps only while a turn is actually running. */
 .composer-activity { height: 1px; background: var(--border-soft); }
@@ -1888,13 +1840,13 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   border: none;
   border-radius: 8px;
   background: var(--accent);
-  color: #1a1207;
+  color: var(--on-accent);
   cursor: pointer;
   transition: background-color 120ms ease, opacity 120ms ease;
 }
 .composer-send:hover:not(:disabled) { background: var(--accent-hover); }
 .composer-send:disabled { opacity: 0.26; cursor: default; } /* deliberately dimmer than the 0.4 standard: this is the RESTING state whenever the box is empty, and a 0.4-strength accent square would spend the accent on nothing */
-.composer-send-stop { background: var(--red); color: #1a0708; }
+.composer-send-stop { background: var(--red); color: var(--on-red); }
 .composer-send-stop:hover { background: var(--red-hover); }
 
 .mode-chip {
@@ -2003,7 +1955,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   text-align: center;
   color: var(--text-faint);
 }
-.panel-empty-mark { display: flex; color: #3a3a44; }
+.panel-empty-mark { display: flex; color: var(--border-strong); }
 .panel-empty-mark .icon { width: 22px; height: 22px; }
 .panel-empty-title { font-size: 12.5px; color: var(--text-dim); }
 .panel-empty-hint { max-width: 32ch; font-size: 11.5px; line-height: 1.5; }
@@ -2016,7 +1968,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   text-align: left;
   cursor: pointer;
 }
-.panel-error-retry:hover { background: rgba(224, 105, 108, 0.2); }
+.panel-error-retry:hover { background: var(--red-wash); }
 
 .prow { border-bottom: 1px solid var(--border-soft); }
 .prow:last-child { border-bottom: none; }
@@ -2187,7 +2139,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   color: var(--red);
   cursor: pointer;
 }
-.tree-error:hover { background: rgba(224, 105, 108, 0.12); }
+.tree-error:hover { background: var(--red-soft); }
 
 /* The opened file's chrome — worn by the chat-column FileView tabs now; the side panel
    no longer previews anything itself. */
@@ -2278,7 +2230,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   letter-spacing: 0.04em;
 }
 .term-origin-agent { background: var(--accent-soft); color: var(--accent); }
-.term-origin-you { background: rgba(111, 168, 220, 0.15); color: var(--blue); }
+.term-origin-you { background: var(--blue-soft); color: var(--blue); }
 .term-prompt { color: var(--text-faint); }
 .term-output {
   margin: 0;
@@ -2427,7 +2379,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2479,7 +2431,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   padding: 1px 5px;
   border-radius: 4px;
   background: var(--bg-raised);
-  color: #e6c9b6;
+  color: var(--code-text);
 }
 .md-href { color: var(--text-faint); font-size: 11.5px; }
 
@@ -2500,7 +2452,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   justify-content: space-between;
   padding: 3px 6px 3px 11px;
   border-bottom: 1px solid var(--border-soft);
-  background: rgba(255, 255, 255, 0.015);
+  background: var(--surface-tint);
 }
 .md-lang { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
 .md-copy {
@@ -2518,10 +2470,10 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 .md-code code { background: none; padding: 0; color: var(--text); font-size: 11.5px; line-height: 1.55; }
 
 /* code highlighting (see lib/highlight.tsx: VNodes, never HTML) */
-.hl-comment { color: #6b6b76; font-style: italic; }
-.hl-string { color: #b9d4a0; }
-.hl-number { color: #d9b25e; }
-.hl-keyword { color: #c093d8; }
+.hl-comment { color: var(--hl-comment); font-style: italic; }
+.hl-string { color: var(--hl-string); }
+.hl-number { color: var(--hl-number); }
+.hl-keyword { color: var(--hl-keyword); }
 
 /* --- the browser's screenshots, and the MCP server list ------------------------------ */
 
@@ -2715,8 +2667,8 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 .tree-name-git-conflict { color: var(--red); font-weight: 600; }
 
 /* Staged = chosen for the commit: the row itself says so. */
-.tree-row-staged { background: rgba(217, 119, 87, 0.08); box-shadow: inset 2px 0 0 var(--accent); }
-.tree-row-staged:hover { background: rgba(217, 119, 87, 0.14); }
+.tree-row-staged { background: var(--user-wash); box-shadow: inset 2px 0 0 var(--accent); }
+.tree-row-staged:hover { background: var(--accent-soft); }
 
 /* Stage/unstage live on the row, visible on hover only — and unclickable while
    invisible (pointer-events), so a blind click cannot stage anything. */
@@ -3093,7 +3045,7 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
   border: 1px solid transparent;
 }
 .rule-allow { color: var(--green); background: var(--green-soft); border-color: var(--green-soft); }
-.rule-ask { color: var(--yellow); background: rgba(217, 178, 94, 0.13); border-color: rgba(217, 178, 94, 0.2); }
+.rule-ask { color: var(--yellow); background: var(--yellow-soft); border-color: var(--yellow-line); }
 .rule-deny { color: var(--red); background: var(--red-soft); border-color: var(--red-soft); }
 
 /* ---------------------------------------------------------------------------------------
@@ -3441,7 +3393,34 @@ button.file-ref:hover { background: var(--bg-active); color: var(--text); }
 }
 .win-btn:hover { background: var(--bg-hover); color: var(--text); }
 .win-btn:active { background: var(--bg-active); }
-.win-btn-close:hover { background: #c42b1c; color: #fff; }
-.win-btn-close:active { background: #b3261a; color: #fff; }
+.win-btn-close:hover { background: var(--danger-strong); color: var(--on-danger-strong); }
+.win-btn-close:active { background: var(--danger-strong-active); color: var(--on-danger-strong); }
 .win-btn .icon { width: 10px; height: 10px; }
 .titlebar-no-controls { padding-right: 8px; }
+
+/* --- a choice of a few, as radio buttons drawn as segments ---------------------------------
+   Settings → Appearance. Same shape as the composer's mode control, for the same reason:
+   one of a few, all visible, the chosen one raised. */
+.appearance { display: flex; flex-direction: column; gap: 6px; }
+.choice-group {
+  display: inline-flex;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--bg);
+  align-self: flex-start;
+}
+.choice {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.choice:hover:not(.choice-on) { background: var(--bg-hover); color: var(--text); }
+.choice-on { background: var(--bg-active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }

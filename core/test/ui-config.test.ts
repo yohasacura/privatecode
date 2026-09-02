@@ -110,3 +110,16 @@ test('saveUiConfig on top of a corrupt existing file does not throw, and writes 
   expect(config.serverUrl).toBe('http://127.0.0.1:9090')
   expect(problems).toEqual([])
 })
+
+test('the theme setting round-trips, and a value that is not one of the three is reported and dropped', () => {
+  const path = join(dir, 'ui.json')
+  saveUiConfig({ theme: 'light' }, path)
+  expect(loadUiConfig(path).config.theme).toBe('light')
+  // Saving something else leaves the theme alone.
+  saveUiConfig({ serverUrl: 'http://127.0.0.1:1' }, path)
+  expect(loadUiConfig(path).config.theme).toBe('light')
+  writeFileSync(path, JSON.stringify({ theme: 'sepia', recentWorkspaces: [] }), 'utf8')
+  const loaded = loadUiConfig(path)
+  expect(loaded.config.theme).toBeUndefined()
+  expect(loaded.problems.join(' ')).toContain('"theme"')
+})

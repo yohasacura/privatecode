@@ -580,10 +580,16 @@ export interface TerminalRunResult { id: string }
  * deliberately separate file with no layering.
  */
 export type ConfigGetParams = Empty
-export interface ConfigGetResult { serverUrl?: string; recentWorkspaces: string[] }
+export interface ConfigGetResult {
+  serverUrl?: string
+  recentWorkspaces: string[]
+  /** `system` (the default when absent), `dark` or `light`. */
+  theme?: 'system' | 'dark' | 'light'
+}
 
 export interface ConfigSetParams {
   serverUrl?: string
+  theme?: 'system' | 'dark' | 'light'
   /** Records this workspace path as most-recently-used (most-recent-first, deduplicated,
    * capped) -- the UI's own concern, not something `init` does implicitly, so a workspace
    * is only ever remembered when the UI explicitly asks to. */

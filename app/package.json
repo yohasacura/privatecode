@@ -12,11 +12,14 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-notification": "^2.3.3",
+    "lucide-preact": "^1.39.0",
     "marked": "^15.0.12",
-    "preact": "^10.25.1"
+    "preact": "^10.25.1",
+    "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.9.3",
