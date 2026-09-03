@@ -184,9 +184,11 @@ async function stageGitBash() {
     mkdirSync(join(out, 'tmp'), { recursive: true })
     writeFileSync(join(out, 'tmp', '.keep'), '')
     for (const tool of new Set(GIT_BASH_TOOLS)) {
-      const exe = join(srcBin, `${tool}.exe`)
-      if (!existsSync(exe)) throw new Error(`git-bash: ${tool}.exe is not in PortableGit ${version}`)
-      cpSync(exe, join(out, 'usr', 'bin', `${tool}.exe`))
+      // Most tools are executables; `egrep` and `fgrep` are shell scripts over grep.
+      const name = existsSync(join(srcBin, `${tool}.exe`)) ? `${tool}.exe`
+        : existsSync(join(srcBin, tool)) ? tool : null
+      if (name === null) throw new Error(`git-bash: ${tool} is not in PortableGit ${version}`)
+      cpSync(join(srcBin, name), join(out, 'usr', 'bin', name))
     }
     cpSync(join(srcBin, '[.exe'), join(out, 'usr', 'bin', '[.exe'))
     for (const f of readdirSync(srcBin)) {
