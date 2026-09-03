@@ -1649,6 +1649,21 @@ export function Composer({
           </div>
         </Popover>
 
+      {/* The status line — "Step 5 · reading…", "waiting on you", the gate that is
+          running — on a row of its own directly above the box, with the whole width. It
+          used to share the toolbar with the mode switch, the run button and the send
+          button, and on any window narrower than a desktop it was cut to its last few
+          words (the owner: "Step 5, reading, working, awaiting user input… usually gets
+          truncated"). Always rendered, empty or not, so the box does not jump when a turn
+          starts. */}
+      <div
+        data-status-line=""
+        class="min-h-[18px] truncate px-1 pb-1 font-ui text-[12px] leading-[1.4] text-dim"
+        aria-live="polite"
+      >
+        {statusLine()}
+      </div>
+
       <div class={`composer-shell ${state.turnRunning ? 'composer-shell-live' : ''}`}>
         <div class="composer-activity" aria-hidden="true" />
 
@@ -1973,11 +1988,10 @@ ${q}`}
             </Button>
           </span>
 
-          {/* Right-aligned and cut from the LEFT when it does not fit: the newest words of
-              a status line are the ones that matter. */}
-          <div data-status-line="" class="ml-auto min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-right text-[12px]" dir="rtl">
-            <span dir="ltr" class="inline">{statusLine()}</span>
-          </div>
+          {/* The status line lived here, between the run button and the attach button, and
+              was cut to its last words on any narrow window. It is the row above the box now;
+              this spacer keeps the buttons on the right. */}
+          <div class="ml-auto" />
 
           <IconButton size="sm" label="Attach a file or folder (@)" onClick={insertMention} disabled={locked !== undefined}>
             <Paperclip />

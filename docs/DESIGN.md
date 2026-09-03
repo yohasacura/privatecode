@@ -390,6 +390,18 @@ is a set of commits recorded in `.privatecode/checkpoints/sets.jsonl`. Verified 
 removed a file the agent had written inside a nested repository, and that repository's own git
 history was untouched.
 
+**And the repositories the scan does not reach (2026-09-03).** The unit scan skips `vendor/`,
+`build/`, `node_modules/` and the like, and stops six levels down, so a repository there gets
+no unit and no exclusion — and git sees it anyway. Reported by the owner as "checkpoints are
+not created when there are git repositories in the folders": a clone with no commit yet in
+such a folder makes `git add -A` fail outright (`does not have a commit checked out`), and
+with it every checkpoint of the workspace, baseline included. A repository with commits there
+became a gitlink, silently. Both now come from git's own stderr during the add: the path is
+excluded, a staged gitlink is dropped (`rm --cached -f`), the add runs again, and the folder
+is named once in the problems ("… is a git repository of its own inside this folder;
+checkpoints leave it out"). The exclusions persist in `info/exclude` under their own marker,
+so a launch does not rediscover them. Reproduced and fixed in `test/checkpoints.test.ts`.
+
 ## 8a. Speed (2026-09-02)
 
 Measured and rebuilt in `docs/SPEED-2026-09-02.md`. The decisions it records:
