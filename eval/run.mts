@@ -217,8 +217,8 @@ async function runTask(task: Task): Promise<TaskResult> {
   }
 
   const toolCalls = rows.filter((r) => r.kind === 'tool-call')
-  const isRead = (d: string): boolean => /^(\[[^\]]+\] )?(read_file|list_dir|find_files|search_code|symbol_outline|csharp_nav|git_status)\(/.test(d)
-  const isWrite = (d: string): boolean => /^(\[[^\]]+\] )?(edit_file|write_file)\(/.test(d)
+  const isRead = (d: string): boolean => /^(\[[^\]]+\] )?(Read|list_dir|Glob|Grep|symbol_outline|csharp_nav|git_status)\(/.test(d)
+  const isWrite = (d: string): boolean => /^(\[[^\]]+\] )?(Edit|Write)\(/.test(d)
   const stageSeconds = rows.filter((r) => r.kind === 'stage').reduce((n, r) => n + (r.seconds ?? 0), 0)
   const modelSeconds = rows.filter((r) => r.kind === 'step-done').reduce((n, r) => n + (r.seconds ?? 0), 0)
   const lastPrompt = [...rows].reverse().find((r) => r.promptTokens !== undefined)?.promptTokens
@@ -233,7 +233,7 @@ async function runTask(task: Task): Promise<TaskResult> {
     finalPromptTokens: lastPrompt ?? null,
     readCalls: toolCalls.filter((r) => isRead(r.detail)).length,
     writeCalls: toolCalls.filter((r) => isWrite(r.detail)).length,
-    selfChecks: toolCalls.filter((r) => /run_command\(.*dotnet (build|test)/.test(r.detail)).length,
+    selfChecks: toolCalls.filter((r) => /Bash\(.*dotnet (build|test)/.test(r.detail)).length,
     verifyRuns: rows.filter((r) => r.kind === 'verify' && r.detail.includes('build ')).length,
     compilerChecks: rows.filter((r) => r.kind === 'verify' && r.detail.includes('compiler check')).length,
     finalText: finalText.replace(/\s+/g, ' ').slice(0, 500),
