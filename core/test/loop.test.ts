@@ -1508,3 +1508,53 @@ test('a prefill counter that jumps backwards is a new request, not a stall', asy
   expect(result.stoppedBecause).toBe('done')
   expect(result.finalText).toBe('after long prefill')
 })
+
+import { CUT_CALL_NOTE, CUT_STEP_PREFIX } from '../src/agent/loop.js'
+
+// The output limit landing in the middle of a batch of calls used to throw the whole batch
+// away — three good edits gone with the one that was cut, four cards closed with "ran out of
+// room", and a continuation redoing them one by one.
+test('a step cut by the output limit keeps its complete calls and drops only the cut one', async () => {
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    if (n === 1) {
+      return {
+        choices: [{
+          finish_reason: 'length',
+          message: {
+            role: 'assistant', content: null, reasoning_content: 'three edits at once',
+            tool_calls: [
+              { id: 'c1', type: 'function', function: { name: 'ping', arguments: '{"value":"a"}' } },
+              { id: 'c2', type: 'function', function: { name: 'ping', arguments: '{"value":"b"}' } },
+              { id: 'c3', type: 'function', function: { name: 'ping', arguments: '{"value":"c' } },
+            ],
+          },
+        }],
+        usage: { completion_tokens: 8000 },
+      }
+    }
+    return textResponse('done')
+  })
+  stop = fake.close
+  const results: Array<[string, boolean, string, string | undefined]> = []
+  const agent = makeAgent(fake.url, { events: { onToolResult: (name, r, id) => { results.push([name, r.ok, r.content, id]) } } })
+
+  const result = await agent.runTurn('edit three files')
+  expect(result.stoppedBecause).toBe('done')
+
+  // The two complete calls ran and were answered; the cut one is not in the transcript.
+  const second = fake.requests[1].body
+  const assistant = second.messages.filter((m: any) => m.role === 'assistant').pop()
+  expect(assistant.tool_calls.map((c: any) => c.id)).toEqual(['c1', 'c2'])
+  expect(second.messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content)).toEqual(['pong:a', 'pong:b'])
+  // No forced continuation: the step did real work, so the model is told and carries on.
+  expect(second.tool_choice).not.toBe('required')
+  const note = second.messages.filter((m: any) => m.role === 'user').pop()
+  expect(note.content).toContain(`${CUT_STEP_PREFIX}2 complete tool calls`)
+  expect(note.content).toContain('the next one was cut mid-way')
+  // The window heard a result for the cut call too, so its card closes honestly.
+  expect(results.map(([name, ok, content, id]) => `${id}:${name}:${ok}:${content.slice(0, 12)}`)).toEqual([
+    'c1:ping:true:pong:a', 'c2:ping:true:pong:b', `c3:ping:false:${CUT_CALL_NOTE.slice(0, 12)}`,
+  ])
+})

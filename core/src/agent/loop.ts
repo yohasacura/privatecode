@@ -467,7 +467,12 @@ export interface TurnResult {
 
 /** What one step produced, once its model call(s) are over. */
 type StepOutcome =
-  | { kind: 'message'; message: ChatMessage }
+  /**
+   * `cut` is present when the output limit ended the generation after at least one complete
+   * tool call: `message` carries the complete ones, `dropped` the call that was cut mid-way.
+   * The caller runs what arrived, closes the cut call's card, and tells the model.
+   */
+  | { kind: 'message'; message: ChatMessage; cut?: { kept: number; dropped: ToolCall[] } }
   /**
    * The step produced two generations and no action. `message` is present when the second
    * one ENDED normally but called nothing — see the note at the continuation's guard: the
@@ -486,6 +491,30 @@ type ChatOutcome =
 export const CONTINUE_NUDGE =
   'You ran out of room while thinking. Stop deliberating and take the next action now, ' +
   'using one tool call.'
+
+/**
+ * A step cut by the output limit AFTER at least one complete tool call. The complete calls
+ * run; the cut one does not; this tells the model which is which. Exported for `replay.ts`,
+ * which must show it as the harness speaking, not the person.
+ */
+export const CUT_STEP_PREFIX = 'The output limit cut this step after '
+
+/** What the window is told about the call that was cut, so its card closes honestly. */
+export const CUT_CALL_NOTE =
+  'Not run: the output limit cut this call off while it was being written. The calls before ' +
+  'it ran; the model was asked to re-issue this one.'
+
+/** Whether a streamed call arrived whole: a name, and arguments that parse. A cut lands in
+ * the middle of the arguments and leaves them unparseable, which is what this reads. */
+function callIsComplete(call: ToolCall): boolean {
+  if (typeof call.function?.name !== 'string' || call.function.name === '') return false
+  try {
+    const parsed: unknown = JSON.parse(call.function.arguments)
+    return typeof parsed === 'object' && parsed !== null
+  } catch {
+    return false
+  }
+}
 
 /** How much of a looping ramble to keep: enough to show where it was heading, far too little
  * to prime the next step with. */
@@ -918,6 +947,28 @@ export class Agent {
         resultChars += result.content.length
         if (!result.ok) halted = `${call.function.name} failed earlier in this step`
       }
+
+      if (outcome.cut !== undefined) {
+        // The call the output limit cut is not in the transcript (no call, no reply — the
+        // turn stays valid), but the window streamed it and holds an open card for it. Told
+        // through the events only, so the card closes with the truth.
+        for (const call of outcome.cut.dropped) {
+          try {
+            this.opts.events?.onToolResult?.(call.function.name, { ok: false, content: CUT_CALL_NOTE }, call.id)
+          } catch { /* a window that cannot hear it still gets the next step */ }
+        }
+        const n = outcome.cut.kept
+        const missing = outcome.cut.dropped.length
+        this.transcript.append({
+          role: 'user',
+          content: `${CUT_STEP_PREFIX}${n} complete tool call${n === 1 ? '' : 's'}; ` +
+            (missing > 0
+              ? `the ${missing === 1 ? 'next one' : `next ${missing}`} ${missing === 1 ? 'was' : 'were'} cut mid-way and did not run. `
+              : 'nothing after them arrived. ') +
+            'The results above are real. Re-issue whatever is still missing now — one or two ' +
+            'calls per step when their arguments are long.',
+        })
+      }
     }
 
     this.transcript.append({
@@ -1002,6 +1053,20 @@ export class Agent {
 
       if (first.result.finishReason !== 'length') {
         return { kind: 'message', message: first.result.message }
+      }
+
+      // Cut by the output limit — but not necessarily before it did anything. The model
+      // batches several edits into one generation, and the limit lands in the middle of the
+      // fourth; the first three arrived whole. Throwing them all away (which this did) showed
+      // the person four cards closed with "ran out of room" and a continuation that redid
+      // the same edits one by one — reported as "it tries to edit 3–4 files in parallel and
+      // then all 4 calls fail". The complete ones run; only the cut one is dropped, and the
+      // model is told which.
+      const streamed = first.result.message.tool_calls ?? []
+      const kept = streamed.filter(callIsComplete)
+      if (kept.length > 0) {
+        const dropped = streamed.filter((c) => !callIsComplete(c))
+        return { kind: 'message', message: { ...first.result.message, tool_calls: kept }, cut: { kept: kept.length, dropped } }
       }
 
       continued = true

@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
-  CONTINUE_NUDGE, MAX_STEPS_PREFIX, STEP_TIMEOUT_PREFIX, TALKED_INSTEAD_OF_ACTING,
+  CONTINUE_NUDGE, CUT_STEP_PREFIX, MAX_STEPS_PREFIX, STEP_TIMEOUT_PREFIX, TALKED_INSTEAD_OF_ACTING,
   TRUNCATED_TWICE,
 } from '../agent/loop.js'
 import type { ChatMessage } from '../llama/types.js'
@@ -281,6 +281,8 @@ const HARNESS_OPENERS: readonly { opener: string; kind: HarnessKind }[] = [
   { opener: NUDGE_WITH_TODOS_PREFIX, kind: 'unattended-nudge' },
   { opener: NUDGE_PLAIN_PREFIX, kind: 'unattended-nudge' },
   { opener: TRUNCATED_TWICE, kind: 'truncation' },
+  // A step the output limit cut after some complete calls: the note that names which ran.
+  { opener: CUT_STEP_PREFIX, kind: 'truncation' },
   { opener: TALKED_INSTEAD_OF_ACTING, kind: 'talked-not-acted' },
   { opener: STEP_TIMEOUT_PREFIX, kind: 'step-timeout' },
   { opener: MAX_STEPS_PREFIX, kind: 'max-steps' },
