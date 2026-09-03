@@ -40,11 +40,40 @@ function sha256(buf) {
 }
 
 /** Fetch, and refuse to go further if the publisher's own hash does not match. */
+/**
+ * A fetch that tries again on a dropped connection. The 0.4.5 release build died on
+ * `read ECONNRESET` halfway through ripgrep — nothing wrong, a runner's network hiccup —
+ * and a 40-minute rebuild for that is the wrong price. Three attempts, a pause between,
+ * and only for network faults and server errors: a 404 or a hash mismatch fails at once.
+ */
+async function fetchBytesWithRetry(url, what) {
+  let last
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const res = await fetch(url)
+      if (!res.ok) {
+        const err = new Error(`${what}: ${url} -> HTTP ${res.status}`)
+        if (res.status < 500) throw err
+        last = err
+      } else {
+        // The body read is where a reset lands mid-archive; it is inside the try on purpose.
+        return Buffer.from(await res.arrayBuffer())
+      }
+    } catch (e) {
+      if (e instanceof Error && /HTTP [1-4]\d\d/.test(e.message)) throw e
+      last = e
+    }
+    if (attempt < 3) {
+      process.stdout.write(`retry ${attempt}… `)
+      await new Promise((r) => setTimeout(r, 3000 * attempt))
+    }
+  }
+  throw last
+}
+
 async function download(url, expected, what) {
   process.stdout.write(`  ${what}: downloading… `)
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`${what}: ${url} -> HTTP ${res.status}`)
-  const buf = Buffer.from(await res.arrayBuffer())
+  const buf = await fetchBytesWithRetry(url, what)
   const got = sha256(buf)
   if (got !== expected) {
     throw new Error(
