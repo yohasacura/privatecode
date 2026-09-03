@@ -42,6 +42,27 @@ if (!existsSync(sidecarSrc)) throw new Error(`no sidecar at ${sidecarSrc} — ru
 
 const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
 
+/**
+ * What `sidecar.tree` says in the manifest, as distinct from what the sidecar IS.
+ *
+ * Updaters up to 0.4.0 compare `tree` with the marker in their sidecar folder and, when the
+ * two differ, rename the whole tree while the agent is still running from it. Windows refuses
+ * that ("could not move the old sidecar aside: Access denied"), so those updaters cannot
+ * complete a sidecar change — every self-update to 0.3.2 and 0.4.0 failed exactly there. What
+ * they CAN do is the app-only path, which runs only when `tree` matches their marker.
+ *
+ * So `tree` is pinned to the identity every self-updated folder has carried since 0.1.0 (the
+ * tree did not change until 0.3.2), and the real identity goes in `identity`, which only
+ * 0.4.1+ reads. An old updater then takes the new app in a few MB, and the new app — whose
+ * updater stops the agent before the swap — offers the sidecar as a second step.
+ *
+ * Set to null once no folder with a pre-0.4.1 updater can be expected to exist; `tree` then
+ * says the truth again. A folder that was installed fresh from the 0.3.2 or 0.4.0 archive has
+ * a different marker and is not helped by the pin — it was never able to self-update past a
+ * sidecar change either, and unpacking the next full archive over it is its one-time fix.
+ */
+const TREE_FOR_OLD_UPDATERS = '8ae3f3357d2c21d5e5e487e238e26eae7795b8bc33deb3982658ceb885bd02a5'
+
 /** Every file under a directory, sorted, so the tree hash below is stable across machines. */
 function walk(dir, base = dir) {
   const out = []
@@ -147,8 +168,20 @@ const manifest = {
   // Each part carries its own hash. The updater downloads a part only when the hash it holds
   // differs from the one here, which is what makes a routine update ~15 MB instead of ~380.
   app: { file: appName, sha256: sha256(join(outDir, appName)), bytes: size(appName) },
-  sidecar: { file: sidecarName, sha256: sha256(join(outDir, sidecarName)), bytes: size(sidecarName), tree: sidecarHash },
+  sidecar: {
+    file: sidecarName,
+    sha256: sha256(join(outDir, sidecarName)),
+    bytes: size(sidecarName),
+    // Two fields for one fact, because two generations of updater read it — see
+    // TREE_FOR_OLD_UPDATERS above. `identity` is the truth; `tree` is what a 0.4.0-or-older
+    // updater must see to take the half of the update it is able to take.
+    identity: sidecarHash,
+    tree: TREE_FOR_OLD_UPDATERS ?? sidecarHash,
+  },
   full: { file: fullName, sha256: sha256(join(outDir, fullName)), bytes: size(fullName) },
+}
+if (TREE_FOR_OLD_UPDATERS !== null) {
+  console.log(`  manifest: sidecar.tree pinned to ${TREE_FOR_OLD_UPDATERS.slice(0, 12)} for pre-0.4.1 updaters; identity is ${sidecarHash.slice(0, 12)}`)
 }
 writeFileSync(join(outDir, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
 

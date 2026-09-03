@@ -20,11 +20,23 @@
 //!      daily, so a routine update moves 3 MB rather than 380
 //!   3. verify every downloaded byte against the manifest hash BEFORE anything on disk moves
 //!   4. stage the new files beside the old ones, still not touching what is running
-//!   5. rename the running exe out of the way, move the new one in, relaunch, exit
+//!   5. when the sidecar tree is being replaced, stop the agent first. A directory cannot be
+//!      renamed on Windows while any process runs from inside it, and `node.exe` and the
+//!      helpers it starts (`roslyn-nav.exe`, bash) all do. The agent comes back only if the
+//!      swap then fails; on success the whole process is replaced anyway
+//!   6. rename the running exe out of the way, move the new one in, relaunch, exit
 //!
-//! Step 5 is the only irreversible one, and it happens last, after everything that can fail
+//! Step 6 is the only irreversible one, and it happens last, after everything that can fail
 //! has already succeeded. If the app dies between the rename and the relaunch, the old binary
 //! is still on disk under `PrivateCode.old.exe` and the next launch cleans it up.
+//!
+//! Step 5 was missing for the first eleven releases and nothing showed it, because the
+//! sidecar tree did not change between 0.1.0 and 0.3.1: every update took the app-only path,
+//! which copies `agent.cjs` into the running tree — a thing Windows allows. 0.3.2 was the
+//! first release that replaced the tree, and every self-update to it and to 0.4.0 ended in
+//! `could not move the old sidecar aside: Access denied (os error 5)`, reported by the owner.
+//! Reproduced by renaming the folder by hand with the app open: refused while `node.exe` and
+//! `roslyn-nav.exe` ran from it, allowed the moment they were gone.
 //!
 //! Every step above reports itself to the window as an `update-progress` event, and a
 //! download reports as it streams. The first version did none of that: it pulled the whole
@@ -42,10 +54,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 
-/// Where the manifest lives. A GitHub release asset on a public repository, so no token, no
+/// Where the release lives: the manifest is `latest.json` under here and every part's file
+/// name resolves against it. A GitHub release asset on a public repository, so no token, no
 /// header and no account are involved — the reason the repository is public at all.
-const MANIFEST_URL: &str =
-    "https://github.com/yohasacura/privatecode/releases/latest/download/latest.json";
+const RELEASE_BASE: &str = "https://github.com/yohasacura/privatecode/releases/latest/download";
+
+/// Points the updater at a folder served over plain HTTP instead, so an update can be
+/// rehearsed end to end against a local build BEFORE it is published: package it, serve
+/// `release/`, run the app with this set, press Update. The sidecar swap — the step that had
+/// been broken for two releases without a test able to reach it — is exactly the kind of
+/// thing that only a real run proves. Nothing else reads the variable.
+const BASE_OVERRIDE: &str = "PRIVATECODE_UPDATE_BASE";
 
 /// The event the window listens to while an update runs. See `UpdateProgress`.
 const PROGRESS_EVENT: &str = "update-progress";
@@ -60,9 +79,14 @@ pub struct Part {
     /// Of the ARCHIVE, checked against the downloaded bytes before anything is swapped.
     pub sha256: String,
     pub bytes: u64,
-    /// The sidecar part only: its input-derived identity. See `sidecar_identity`.
+    /// The sidecar part only: its input-derived identity, as updaters up to 0.4.0 read it.
+    /// See `Manifest::sidecar_identity` for why a second field exists.
     #[serde(default)]
     pub tree: String,
+    /// The sidecar part only: the identity this updater compares against. Absent from
+    /// manifests written before 0.4.1, which is what the fallback to `tree` is for.
+    #[serde(default)]
+    pub identity: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -70,6 +94,22 @@ pub struct Manifest {
     pub version: String,
     pub app: Part,
     pub sidecar: Part,
+}
+
+impl Manifest {
+    /// Which sidecar this release ships.
+    ///
+    /// Two fields say it because two generations of updater read it. Updaters up to 0.4.0
+    /// compare `tree` with the marker on disk and, when they differ, rename the sidecar tree
+    /// while the agent still runs from it — which Windows refuses, so those updaters can
+    /// never complete a sidecar change. What they CAN do is the app-only path, which only
+    /// runs when `tree` matches their marker. So `package-release.mjs` keeps `tree` at the
+    /// identity every self-updated folder has had since 0.1.0 for as long as such folders may
+    /// exist, and puts the real identity in `identity`. An old updater then takes the app in
+    /// a few MB and hands over to this one, which stops the agent before the swap.
+    fn sidecar_identity(&self) -> &str {
+        if self.sidecar.identity.is_empty() { &self.sidecar.tree } else { &self.sidecar.identity }
+    }
 }
 
 /// What the window is told. `download_bytes` is what this update would actually cost, which is
@@ -81,6 +121,9 @@ pub struct UpdateCheck {
     pub new_version: String,
     pub download_bytes: u64,
     pub notes_url: String,
+    /// The version is already this one and only the sidecar tree differs: the second half of
+    /// an update an older updater could only do the first half of (see `Manifest`).
+    pub sidecar_only: bool,
 }
 
 /// Where an update has got to, for the window.
@@ -106,7 +149,15 @@ pub struct UpdateStartupInfo {
 }
 
 fn base_url() -> String {
-    "https://github.com/yohasacura/privatecode/releases/latest/download".to_string()
+    std::env::var(BASE_OVERRIDE)
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| RELEASE_BASE.to_string())
+}
+
+fn manifest_url() -> String {
+    format!("{}/latest.json", base_url())
 }
 
 /// The page for ONE release, not `/releases/latest`: by the time a person clicks the link the
@@ -225,7 +276,7 @@ pub fn space_shortfall(free: u64, needed: u64) -> Option<String> {
 }
 
 async fn manifest() -> Result<Manifest, String> {
-    let body = get(MANIFEST_URL).await?;
+    let body = get(&manifest_url()).await?;
     serde_json::from_slice(&body).map_err(|e| format!("manifest is not readable: {e}"))
 }
 
@@ -265,25 +316,37 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 pub async fn check_for_update(app: AppHandle) -> Result<UpdateCheck, String> {
     let current = app.package_info().version.to_string();
     let m = manifest().await?;
+    let on_disk = sidecar_identity(&install_dir()?.join("sidecar"));
+    Ok(decide(&m, &current, on_disk.as_deref()))
+}
 
-    let dir = install_dir()?;
-    let sidecar_dir = dir.join("sidecar");
-    let have_sidecar = sidecar_identity(&sidecar_dir);
-
-    // What this update would actually download: the app always, the sidecar only when the
-    // pinned binaries moved.
-    let mut bytes = m.app.bytes;
-    if have_sidecar.as_deref() != Some(m.sidecar.tree.as_str()) {
-        bytes += m.sidecar.bytes;
-    }
-
-    Ok(UpdateCheck {
-        available: is_newer(&m.version, &current),
-        current_version: current,
+/// The answer, from the three things it depends on: the release, the version running, and
+/// the marker in the sidecar folder. Pure, so every case can be exercised without a network.
+///
+/// A later release is offered whatever the sidecar says. The SAME release is offered when
+/// its sidecar tree differs from the one on disk — the folder an updater up to 0.4.0 leaves
+/// behind, having swapped the app and been unable to swap the tree (see `Manifest`). An
+/// older release is never offered, sidecar or not: a local build is newer than the latest
+/// release for as long as it is being worked on, and taking it would move backwards.
+///
+/// A folder with no marker at all is a developer's or a hand-assembled one. It is not told
+/// its 140 MB tree is "stale" every twelve hours; `apply_update` fetches the tree anyway when
+/// an update is taken, and leaves a marker behind.
+fn decide(m: &Manifest, current: &str, on_disk: Option<&str>) -> UpdateCheck {
+    let newer = is_newer(&m.version, current);
+    let same = m.version == current;
+    let sidecar_moves = on_disk != Some(m.sidecar_identity());
+    let sidecar_only = same && on_disk.is_some() && sidecar_moves;
+    UpdateCheck {
+        available: newer || sidecar_only,
+        current_version: current.to_string(),
         notes_url: notes_url_for(&m.version),
-        new_version: m.version,
-        download_bytes: bytes,
-    })
+        new_version: m.version.clone(),
+        // What this update would actually download: the app always, the sidecar only when
+        // the pinned binaries moved.
+        download_bytes: m.app.bytes + if sidecar_moves { m.sidecar.bytes } else { 0 },
+        sidecar_only,
+    }
 }
 
 /// Did the previous process update into this one? Answered once: the note is consumed.
@@ -411,7 +474,7 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
 
     // --- download and verify, touching nothing that is running ---------------------------
     let sidecar_dir = dir.join("sidecar");
-    let need_sidecar = sidecar_identity(&sidecar_dir).as_deref() != Some(m.sidecar.tree.as_str());
+    let need_sidecar = sidecar_identity(&sidecar_dir).as_deref() != Some(m.sidecar_identity());
 
     // Room first. An unpack that runs out of disk halfway fails with an IO error that reads
     // as corruption; the same fact asked up front reads as what it is.
@@ -437,7 +500,26 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
     // already succeeded by the time this line runs.
     report(&app, "installing", None, 0, 0);
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    install(&dir, &exe, &staging, need_sidecar)?;
+    let state = app.state::<crate::SidecarState>();
+    if need_sidecar {
+        // The old tree is about to be renamed, and Windows refuses that while anything runs
+        // from inside it — `node.exe` and every helper it started. So the agent goes down
+        // here, not after the swap, which is where two releases' worth of updates died with
+        // "could not move the old sidecar aside: Access denied". The window is told nothing
+        // extra: it already treats the agent going quiet during an update as expected.
+        crate::shutdown_sidecar(&state);
+    }
+    if let Err(e) = install(&dir, &exe, &staging, need_sidecar) {
+        if need_sidecar {
+            // Everything is back where it was, so the agent can be too. A failed update must
+            // leave a working app, not an "agent isn't running" screen.
+            match crate::start_sidecar(&app, &state) {
+                Ok(pid) => eprintln!("update: swap failed, sidecar restarted, pid={pid}"),
+                Err(spawn) => eprintln!("update: swap failed and the sidecar did not restart: {spawn}"),
+            }
+        }
+        return Err(e);
+    }
 
     let _ = fs::remove_dir_all(&staging);
     // The note the next process announces itself with. Best effort: a launch with no note is
@@ -460,7 +542,54 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
 /// left the folder with a new exe and no sidecar at all, so the next launch had no agent.
 /// Pure over paths, so it can be exercised on a scratch folder where nothing is running.
 fn install(dir: &Path, exe: &Path, staging: &Path, need_sidecar: bool) -> Result<(), String> {
-    install_with(dir, exe, staging, need_sidecar, &|from, to| fs::rename(from, to))
+    install_with(dir, exe, staging, need_sidecar, &retrying(&|from, to| fs::rename(from, to), RETRY))
+}
+
+/// How long a refused rename is retried, and how often.
+#[derive(Clone, Copy)]
+struct Retry {
+    attempts: u32,
+    pause: Duration,
+}
+
+/// Ten seconds in all. The agent's processes release their files within milliseconds of
+/// being stopped, but they are stopped by a job object closing, which is asynchronous; and
+/// Defender takes its time over 140 MB of freshly unpacked binaries. Both read as the same
+/// two errors: "access denied" (os error 5) and "sharing violation" (32).
+const RETRY: Retry = Retry { attempts: 50, pause: Duration::from_millis(200) };
+
+/// Windows saying "someone still has this open" — in either of its two voices.
+fn is_in_use(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(5) | Some(32) | Some(33))
+}
+
+/// `mv`, retried while Windows says the path is in use. Any other failure returns at once:
+/// a missing source or a full disk does not get better by waiting.
+fn retrying<'a>(
+    mv: &'a dyn Fn(&Path, &Path) -> std::io::Result<()>,
+    retry: Retry,
+) -> impl Fn(&Path, &Path) -> std::io::Result<()> + 'a {
+    move |from, to| {
+        let mut attempt = 1;
+        loop {
+            match mv(from, to) {
+                Err(e) if is_in_use(&e) && attempt < retry.attempts => {
+                    attempt += 1;
+                    std::thread::sleep(retry.pause);
+                }
+                other => return other,
+            }
+        }
+    }
+}
+
+/// The rename's error, plus the one fact that explains a refusal after all those retries.
+fn explain(e: &std::io::Error, tree: &Path) -> String {
+    if is_in_use(e) {
+        format!("{e}; something is still running from {}", tree.display())
+    } else {
+        e.to_string()
+    }
 }
 
 /// `install` over an injectable move, so the undo can be exercised: a rename that fails on
@@ -498,7 +627,7 @@ fn install_with(
             if had_sidecar {
                 if let Err(e) = mv(&sidecar_dir, &retired) {
                     undo_exe();
-                    return Err(format!("could not move the old sidecar aside: {e}"));
+                    return Err(format!("could not move the old sidecar aside: {}", explain(&e, &sidecar_dir)));
                 }
             }
             if let Err(e) = mv(&staged_sidecar, &sidecar_dir) {
@@ -506,7 +635,7 @@ fn install_with(
                     let _ = mv(&retired, &sidecar_dir);
                 }
                 undo_exe();
-                return Err(format!("could not move the new sidecar into place: {e}"));
+                return Err(format!("could not move the new sidecar into place: {}", explain(&e, &staged_sidecar)));
             }
             let _ = fs::remove_dir_all(&retired);
         }
@@ -619,12 +748,139 @@ pub fn clean_previous_update() {
 #[cfg(test)]
 mod tests {
     use super::{
-        install, install_with, is_newer, notes_url_for, space_needed, space_shortfall,
-        take_updated_from, write_updated_from, ProgressGate,
+        base_url, decide, install, install_with, is_newer, notes_url_for, retrying, space_needed,
+        space_shortfall, take_updated_from, write_updated_from, Manifest, Part, ProgressGate,
+        Retry, BASE_OVERRIDE, RELEASE_BASE,
     };
+    use std::cell::Cell;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
+
+    /// A release as the manifest describes it: `tree` is what pre-0.4.1 updaters read,
+    /// `identity` what this one reads, and an empty `identity` is a manifest from before the
+    /// split.
+    fn release(version: &str, tree: &str, identity: &str) -> Manifest {
+        let part = |file: &str, bytes: u64| Part {
+            file: file.to_string(), sha256: String::new(), bytes, tree: String::new(), identity: String::new(),
+        };
+        let mut sidecar = part("sidecar-abc.zip", 140_000_000);
+        sidecar.tree = tree.to_string();
+        sidecar.identity = identity.to_string();
+        Manifest { version: version.to_string(), app: part("app.zip", 5_000_000), sidecar }
+    }
+
+    #[test]
+    fn a_later_release_is_offered_whatever_the_sidecar_says() {
+        let m = release("0.4.1", "old", "new");
+        let c = decide(&m, "0.4.0", Some("new"));
+        assert!(c.available && !c.sidecar_only);
+        assert_eq!(c.download_bytes, 5_000_000, "the sidecar is already the right one");
+        let c = decide(&m, "0.4.0", Some("old"));
+        assert!(c.available && !c.sidecar_only);
+        assert_eq!(c.download_bytes, 145_000_000, "the tree moves, so it is counted");
+    }
+
+    #[test]
+    fn the_same_release_is_offered_when_only_its_sidecar_tree_differs() {
+        // The folder a pre-0.4.1 updater leaves behind: the new app, the old tree.
+        let m = release("0.4.1", "old", "new");
+        let c = decide(&m, "0.4.1", Some("old"));
+        assert!(c.available && c.sidecar_only, "{c:?}");
+        assert_eq!(c.new_version, "0.4.1");
+        assert_eq!(c.download_bytes, 145_000_000);
+        // And once the tree is in: nothing to offer.
+        let c = decide(&m, "0.4.1", Some("new"));
+        assert!(!c.available && !c.sidecar_only);
+    }
+
+    #[test]
+    fn a_folder_without_a_marker_is_not_nagged_about_its_tree() {
+        let m = release("0.4.1", "old", "new");
+        let c = decide(&m, "0.4.1", None);
+        assert!(!c.available);
+    }
+
+    #[test]
+    fn an_older_release_is_not_offered_even_with_a_stale_tree() {
+        let m = release("0.4.0", "old", "new");
+        let c = decide(&m, "0.4.1", Some("old"));
+        assert!(!c.available && !c.sidecar_only);
+    }
+
+    #[test]
+    fn a_manifest_from_before_the_split_is_read_by_its_tree() {
+        let m = release("0.4.1", "only", "");
+        assert_eq!(m.sidecar_identity(), "only");
+        let c = decide(&m, "0.4.0", Some("only"));
+        assert_eq!(c.download_bytes, 5_000_000);
+    }
+
+    #[test]
+    fn the_release_base_can_be_pointed_at_a_rehearsal() {
+        // The one test that touches the variable; nothing else in this binary reads it.
+        std::env::set_var(BASE_OVERRIDE, "http://127.0.0.1:8765/release/");
+        assert_eq!(base_url(), "http://127.0.0.1:8765/release");
+        std::env::set_var(BASE_OVERRIDE, "   ");
+        assert_eq!(base_url(), RELEASE_BASE, "blank means unset");
+        std::env::remove_var(BASE_OVERRIDE);
+        assert_eq!(base_url(), RELEASE_BASE);
+    }
+
+    /// A rename that is refused `refusals` times as "in use" (os error 5), then works.
+    fn held_open(refusals: u32, tree: PathBuf) -> (Box<dyn Fn(&Path, &Path) -> std::io::Result<()>>, std::rc::Rc<Cell<u32>>) {
+        let tries = std::rc::Rc::new(Cell::new(0));
+        let seen = tries.clone();
+        let mv = move |from: &Path, to: &Path| -> std::io::Result<()> {
+            if from == tree {
+                seen.set(seen.get() + 1);
+                if seen.get() <= refusals {
+                    return Err(std::io::Error::from_raw_os_error(5));
+                }
+            }
+            fs::rename(from, to)
+        };
+        (Box::new(mv), tries)
+    }
+
+    #[test]
+    fn a_tree_still_held_open_is_retried_until_it_is_let_go() {
+        // The agent's processes are ended by a job object closing, which is asynchronous:
+        // the first rename after the stop can find node.exe still on its way out.
+        let (dir, exe, staging) = scratch("retry", true);
+        let (mv, tries) = held_open(2, dir.join("sidecar"));
+        let quick = Retry { attempts: 5, pause: Duration::from_millis(5) };
+        install_with(&dir, &exe, &staging, true, &retrying(&*mv, quick)).unwrap();
+        assert_eq!(tries.get(), 3, "refused twice, then let through");
+        assert_eq!(read(&dir.join("sidecar").join("node.exe")), "new node");
+        assert_eq!(read(&exe), "new exe");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tree_that_stays_in_use_fails_after_the_retries_and_says_so() {
+        let (dir, exe, staging) = scratch("retry-exhausted", true);
+        let (mv, tries) = held_open(u32::MAX, dir.join("sidecar"));
+        let quick = Retry { attempts: 4, pause: Duration::from_millis(1) };
+        let err = install_with(&dir, &exe, &staging, true, &retrying(&*mv, quick)).unwrap_err();
+        assert_eq!(tries.get(), 4);
+        assert!(err.contains("old sidecar") && err.contains("still running from"), "{err}");
+        assert_eq!(read(&exe), "old exe", "put back");
+        assert_eq!(read(&dir.join("sidecar").join("node.exe")), "old node");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_refusal_that_is_not_in_use_is_not_retried() {
+        let tries = Cell::new(0);
+        let broken = |_: &Path, _: &Path| -> std::io::Result<()> {
+            tries.set(tries.get() + 1);
+            Err(std::io::Error::other("disk full"))
+        };
+        let mv = retrying(&broken, Retry { attempts: 10, pause: Duration::from_millis(1) });
+        assert!(mv(Path::new("a"), Path::new("b")).is_err());
+        assert_eq!(tries.get(), 1);
+    }
 
     /// A scratch portable folder: an "exe", a sidecar with an agent and a binary, and a
     /// staging area holding the new exe and whatever else the test wants in it.

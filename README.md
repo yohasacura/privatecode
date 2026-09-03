@@ -50,7 +50,11 @@ line saying what it replaced. The tick waits while a turn is running, and sendin
 an update runs. A stalled download ends in an error and a "try again" rather than a frozen
 bar; a failure after the swap puts the old version and the old sidecar back; "Not now" is
 remembered for that version. "Check for updates" in the command palette asks right away and
-says what it found, including "this is the latest".
+says what it found, including "this is the latest". When the pinned binaries do move, the
+agent is stopped for the swap (Windows will not rename a folder something is running from)
+and comes back if the swap fails. A folder whose app is current but whose binaries are not —
+what an updater older than 0.4.1 leaves, having been able to swap only the app — is offered
+the binaries on their own: "needs its agent runtime updated".
 
 ## Using it
 

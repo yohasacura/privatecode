@@ -31,6 +31,16 @@ export function UpdateCard({
 }): VNode {
   const step = updating && progress !== null ? describeProgress(progress) : null
   const fraction = step?.fraction ?? null
+  // The same version, with only the agent's runtime tree behind: the half of an update an
+  // older updater could not do. "PrivateCode 0.4.1 is available" would be a lie to someone
+  // already running 0.4.1, so it is named for what it is.
+  const runtimeOnly = update.sidecarOnly === true
+  const offer = runtimeOnly
+    ? <><span class="font-medium">PrivateCode {update.newVersion} needs its agent runtime updated</span> — {formatBytes(update.downloadBytes)} to download.</>
+    : <><span class="font-medium">PrivateCode {update.newVersion} is available</span> — {formatBytes(update.downloadBytes)} to download.</>
+  const doing = runtimeOnly
+    ? <>Updating the agent runtime for PrivateCode {update.newVersion} — {step?.text ?? 'starting…'}</>
+    : <>Updating to PrivateCode {update.newVersion} — {step?.text ?? 'starting…'}</>
   return (
     <div
       data-update=""
@@ -51,7 +61,7 @@ export function UpdateCard({
           : updating
             ? (
               <div>
-                <div>Updating to PrivateCode {update.newVersion} — {step?.text ?? 'starting…'}</div>
+                <div>{doing}</div>
                 {fraction !== null && (
                   <div
                     class="mt-1.5 h-1 overflow-hidden rounded-full bg-active"
@@ -71,7 +81,7 @@ export function UpdateCard({
               )
             : (
               <div>
-                <span class="font-medium">PrivateCode {update.newVersion} is available</span> — {formatBytes(update.downloadBytes)} to download.{' '}
+                {offer}{' '}
                 <span class="text-dim">{busy ? 'It can restart once this turn is over.' : 'The app restarts when it is done.'}</span>
               </div>
               )}
@@ -88,7 +98,9 @@ export function UpdateCard({
               ? 'A turn is running — the update can start once it is over'
               : error !== null
                 ? 'Try again'
-                : `Download ${formatBytes(update.downloadBytes)} and restart on ${update.newVersion}`}
+                : runtimeOnly
+                  ? `Download ${formatBytes(update.downloadBytes)} and restart with the updated agent runtime`
+                  : `Download ${formatBytes(update.downloadBytes)} and restart on ${update.newVersion}`}
           >
             {error !== null ? 'Try again' : 'Update'}
           </Button>

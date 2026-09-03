@@ -405,6 +405,61 @@ test('a running update shows each phase as the shell reports it, with a bar for 
   expect((host.querySelector('[data-update-bar]') as HTMLElement).style.width).toBe('100%')
 })
 
+test('an update that only brings the agent runtime is named for what it is', async () => {
+  // The folder a pre-0.4.1 updater leaves behind: the new app, the old runtime tree. Telling
+  // someone already on 0.4.1 that "0.4.1 is available" would read as a bug in the check.
+  render(null, host)
+  updateToOffer = {
+    currentVersion: '0.4.1',
+    newVersion: '0.4.1',
+    downloadBytes: 148_843_375,
+    notesUrl: 'https://example.invalid/releases/tag/v0.4.1',
+    sidecarOnly: true,
+  }
+  render(<App />, host)
+  await settle()
+
+  const strip = host.querySelector('[data-update]')
+  expect(strip?.textContent).toContain('PrivateCode 0.4.1 needs its agent runtime updated')
+  expect(strip?.textContent).toContain('142 MB')
+  expect(strip?.textContent).not.toContain('is available')
+
+  ;(host.querySelector('[data-update] button') as HTMLElement).click()
+  await settle()
+  expect(strip?.textContent).toContain('Updating the agent runtime for PrivateCode 0.4.1')
+})
+
+test('a failure carried across the reload is shown as the card it was, once', async () => {
+  // An update that stopped the agent to swap its tree and then could not: the shell restarts
+  // the agent, the window reloads, and the failure must not vanish with the old page.
+  render(null, host)
+  sessionStorage.setItem('privatecode.update-failure', JSON.stringify({
+    update: { currentVersion: '0.4.1', newVersion: '0.4.1', downloadBytes: 148_843_375, notesUrl: 'https://example.invalid/v0.4.1', sidecarOnly: true },
+    error: 'could not move the old sidecar aside: Access is denied. (os error 5); something is still running from C:\\PrivateCode\\sidecar',
+  }))
+  render(<App />, host)
+  await settle()
+
+  const strip = host.querySelector('[data-update]')
+  expect(strip?.getAttribute('data-state')).toBe('failed')
+  expect(strip?.textContent).toContain('Update failed.')
+  expect(strip?.textContent).toContain('still running from')
+  expect(strip?.querySelector('[data-action="update"]')?.textContent).toBe('Try again')
+  expect(sessionStorage.getItem('privatecode.update-failure')).toBeNull()
+})
+
+test('after a runtime-only update the note does not say the same version twice', async () => {
+  render(null, host)
+  savedRecents = []
+  updatedFromAnswer = { currentVersion: '0.4.1', updatedFrom: '0.4.1' }
+  render(<App />, host)
+  await settle()
+
+  const note = [...document.querySelectorAll('[role="status"]')].find((n) => n.textContent?.includes('agent runtime was updated'))
+  expect(note?.textContent).toContain('PrivateCode 0.4.1: the agent runtime was updated')
+  expect(note?.textContent).not.toContain('from 0.4.1')
+})
+
 test('while an update runs, nothing can be sent and the strip cannot be closed', async () => {
   // A send during an update starts a turn the restart then kills; and closing the strip
   // would not stop the update, so the window would vanish with nothing on screen to say why.

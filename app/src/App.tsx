@@ -3,8 +3,8 @@ import { createClient, sidecarStderr, withTimeout, wsUrlFromSearch, type Connect
 import { useChatSession } from './lib/use-chat-session'
 import { notify } from './lib/notify'
 import {
-  applyUpdate, checkForUpdate, onUpdateProgress, scheduleUpdateCheck,
-  updatedFrom, type UpdateAvailable, type UpdateProgress,
+  applyUpdate, checkForUpdate, onUpdateProgress, scheduleUpdateCheck, stashUpdateFailure,
+  takeUpdateFailure, updatedFrom, type UpdateAvailable, type UpdateProgress,
 } from './lib/update'
 import { baseName } from './lib/format'
 import { conversationAsMarkdown } from './lib/export'
@@ -162,6 +162,19 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateAvailable | null>(null)
   const [updating, setUpdating] = useState(false)
   const [updateError, setUpdateError] = useState<string | null>(null)
+  /** Read by the transport-closed effect: while an update runs, the agent going quiet is the
+   * shell stopping it to swap its runtime tree, not a death to announce. */
+  const updatingRef = useRef(false)
+  updatingRef.current = updating
+  /** The failure the previous load of this window carried across its reload — an update
+   * that had stopped the agent and then could not finish. Shown once, as the card it was. */
+  useEffect(() => {
+    const stashed = takeUpdateFailure()
+    if (stashed !== null) {
+      setUpdate(stashed.update)
+      setUpdateError(stashed.error)
+    }
+  }, [])
   /** "Not now" means this version, for this run of the window: the automatic check comes
    * back twice a day and must not re-offer what was just declined. A newer release than the
    * declined one is still offered, and a check asked for by name always is. */
@@ -187,7 +200,12 @@ export default function App() {
   const [updatedNote, setUpdatedNote] = useState<{ current: string; from: string } | null>(null)
   useEffect(() => {
     if (updatedNote === null) return
-    toast.push({ title: `Updated to PrivateCode ${updatedNote.current} from ${updatedNote.from}`, tone: 'success', duration: 8000 })
+    // The same version twice is the runtime-only update finishing (see update.rs): the
+    // number did not change, so saying it twice would read as a mistake.
+    const title = updatedNote.current === updatedNote.from
+      ? `PrivateCode ${updatedNote.current}: the agent runtime was updated`
+      : `Updated to PrivateCode ${updatedNote.current} from ${updatedNote.from}`
+    toast.push({ title, tone: 'success', duration: 8000 })
     setUpdatedNote(null)
   }, [updatedNote])
   useEffect(() => {
@@ -195,12 +213,23 @@ export default function App() {
       if (info?.updatedFrom) setUpdatedNote({ current: info.currentVersion, from: info.updatedFrom })
     })
   }, [])
+  const connStateRef = useRef(connState)
+  connStateRef.current = connState
   function startUpdate(): void {
+    const offered = update
     setUpdateError(null)
     setUpdateProgress(null)
     setUpdating(true)
     void applyUpdate().then((err) => {
       // Only returns on failure -- success replaces the process.
+      if (err !== null && connStateRef.current === 'closed' && offered !== null) {
+        // The shell stopped the agent to swap its runtime tree, could not, and started a
+        // fresh one. This window's transport died with the old one; the agent-down screen's
+        // own answer to that is a reload, and the failure rides across it (lib/update.ts).
+        stashUpdateFailure(offered, err)
+        window.location.reload()
+        return
+      }
       setUpdateError(err)
       setUpdating(false)
     })
@@ -534,6 +563,11 @@ export default function App() {
   // which is what the boot timeout above is for.)
   useEffect(() => {
     if (connState !== 'closed') return
+    // Not a death while an update runs: the shell stops the agent itself to swap its runtime
+    // tree, and either replaces this whole process or, if the swap fails, restarts the agent
+    // and `startUpdate` reloads the window. Announcing "the agent process stopped" over the
+    // update card, with a notification, would report the update as a crash.
+    if (updatingRef.current) return
     setPhase((current) => (current.kind === 'unreachable' ? current : { kind: 'unreachable', reason: 'the agent process stopped', stderr: [] }))
     // The one walk-away ending that never announced itself: every other terminal event
     // notifies (turn done, run ended, question parked), but the agent DYING at 2am during

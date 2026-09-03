@@ -33,6 +33,9 @@ export interface UpdateAvailable {
   /** What taking this update would cost in bytes, over the wire. */
   downloadBytes: number
   notesUrl: string
+  /** The version is already this one; only the agent's runtime tree is behind. The folder an
+   * updater up to 0.4.0 leaves: it could swap the app but never the tree (see update.rs). */
+  sidecarOnly?: boolean
 }
 
 /** One step of a running update, as the shell reports it. */
@@ -61,6 +64,7 @@ interface RawCheck {
   new_version: string
   download_bytes: number
   notes_url: string
+  sidecar_only?: boolean
 }
 
 /** What a check the person asked for comes back with — every outcome named, none silent. */
@@ -86,6 +90,7 @@ export async function checkForUpdate(): Promise<ManualCheck> {
         newVersion: raw.new_version,
         downloadBytes: raw.download_bytes,
         notesUrl: raw.notes_url,
+        sidecarOnly: raw.sidecar_only === true,
       },
     }
   } catch (e) {
@@ -130,6 +135,45 @@ export async function updatedFrom(): Promise<{ currentVersion: string; updatedFr
   try {
     const raw = await invoke<{ current_version: string; updated_from: string | null }>('update_startup_info')
     return { currentVersion: raw.current_version, updatedFrom: raw.updated_from }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * An update that stopped the agent to swap its runtime tree and then failed leaves the
+ * shell with a fresh agent and this window with a dead transport. The honest way back is
+ * the same one the agent-down screen takes — reload — and the failure is carried across the
+ * reload here so the card can say what happened instead of the update silently vanishing.
+ * `sessionStorage` because it lives exactly as long as this window and no longer.
+ */
+const FAILURE_KEY = 'privatecode.update-failure'
+
+export interface StashedFailure {
+  update: UpdateAvailable
+  error: string
+}
+
+export function stashUpdateFailure(update: UpdateAvailable, error: string): void {
+  try {
+    sessionStorage.setItem(FAILURE_KEY, JSON.stringify({ update, error }))
+  } catch {
+    // Storage refused: the reload still happens, the card just will not explain itself.
+  }
+}
+
+/** Read once and cleared, so the next launch of this window is an ordinary one. */
+export function takeUpdateFailure(): StashedFailure | null {
+  try {
+    const raw = sessionStorage.getItem(FAILURE_KEY)
+    if (raw === null) return null
+    sessionStorage.removeItem(FAILURE_KEY)
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const { update, error } = parsed as Partial<StashedFailure>
+    if (typeof error !== 'string' || typeof update !== 'object' || update === null) return null
+    if (typeof update.newVersion !== 'string' || typeof update.downloadBytes !== 'number') return null
+    return { update, error }
   } catch {
     return null
   }

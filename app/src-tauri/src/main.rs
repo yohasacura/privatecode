@@ -271,12 +271,21 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
 #[tauri::command]
 fn restart_sidecar(app: AppHandle, state: State<SidecarState>) -> Result<(), String> {
     shutdown_sidecar(&state);
-    state.stderr_ring.lock().unwrap().clear();
-    let running = spawn_sidecar(&app)?;
-    let pid = running.child.id();
-    *state.inner.lock().unwrap() = Some(running);
+    let pid = start_sidecar(&app, &state)?;
     eprintln!("main.rs: sidecar restarted, pid={pid}");
     Ok(())
+}
+
+/// Spawns a sidecar and makes it the one `SidecarState` holds, with the stderr ring cleared
+/// so what it shows is this process's. The one way a sidecar is started: at launch, from the
+/// agent-down screen's button, and by an update that stopped the agent to swap its tree and
+/// then could not (see `update::apply_update`).
+pub(crate) fn start_sidecar(app: &AppHandle, state: &SidecarState) -> Result<u32, String> {
+    state.stderr_ring.lock().unwrap().clear();
+    let running = spawn_sidecar(app)?;
+    let pid = running.child.id();
+    *state.inner.lock().unwrap() = Some(running);
+    Ok(pid)
 }
 
 /// Writes one already-framed protocol line (no trailing `\n` -- this command appends
@@ -381,9 +390,7 @@ fn main() {
             // the new one, which it is by now.
             update::clean_previous_update();
             let handle = app.handle().clone();
-            let running = spawn_sidecar(&handle).map_err(std::io::Error::other)?;
-            let pid = running.child.id();
-            *app.state::<SidecarState>().inner.lock().unwrap() = Some(running);
+            let pid = start_sidecar(&handle, &app.state::<SidecarState>()).map_err(std::io::Error::other)?;
             eprintln!("main.rs: sidecar spawned, pid={pid}");
             Ok(())
         })
