@@ -354,10 +354,25 @@ function normalize(raw, specPath) {
       break
     }
   }
-  const noNotes = spec.slides.filter((s) => !s.notes && !['title', 'section', 'quote', 'closing'].includes(s.type)).length
-  if (noNotes > 0 && noNotes === spec.slides.filter((s) => !['title', 'section', 'quote', 'closing'].includes(s.type)).length) {
-    p.warn('deck', 'no slide has speaker notes; "notes" is where the spoken argument goes')
+  const content = spec.slides.filter((s) => !['title', 'section', 'quote', 'closing'].includes(s.type))
+  const noNotes = content.filter((s) => !s.notes).length
+  if (noNotes > 0 && noNotes === content.length) {
+    p.warn('deck', 'no slide has speaker notes; "notes" is where the spoken argument goes — add two or three sentences to every content slide')
   }
+  const noCallout = content.filter((s) => !s.callout).length
+  if (content.length >= 3 && noCallout > content.length / 2) {
+    p.warn('deck', `${noCallout} of ${content.length} content slides have no "callout"; the takeaway strip is what the audience keeps — add one wherever the slide has a conclusion`)
+  }
+  // Section dividers: a divider is a pause before a run of slides. One that introduces a
+  // single slide is a slide spent on nothing, and four of them in a ten-slide deck is the
+  // shape the live model produced first time — so this one is an error, not advice.
+  const dividers = spec.slides.map((s, i) => (s.type === 'section' ? i : -1)).filter((i) => i >= 0)
+  for (const i of dividers) {
+    let run = 0
+    for (let j = i + 1; j < n && !['section', 'closing'].includes(spec.slides[j].type); j += 1) run += 1
+    if (run < 2) p.error(`slides[${i}] (section "${spec.slides[i].title}")`, `a section divider must be followed by at least two content slides; this one has ${run}. Drop the divider — in a deck under 12 slides, use none`)
+  }
+  if (dividers.length > 0 && n < 12) p.warn('deck', `${dividers.length} section divider${dividers.length > 1 ? 's' : ''} in a ${n}-slide deck: dividers earn their slide only in decks of 12 or more`)
   return { spec: p.errors.length === 0 ? spec : undefined, errors: p.errors, warnings: p.warnings }
 }
 

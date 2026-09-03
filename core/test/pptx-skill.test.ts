@@ -123,6 +123,30 @@ test('a spec with problems is refused with the slide, the field and the fix', ()
   expect(r.out).toContain('slides[5]: type "wat"')
 })
 
+test('a section divider that introduces a single slide is refused, and a short deck is told not to use them', () => {
+  // The shape the live model produced first time: four dividers in ten slides, each
+  // followed by one slide. A divider is a pause before a run; before one slide it is a
+  // slide spent on nothing.
+  const spec = {
+    title: 'Dividers',
+    slides: [
+      { type: 'title', title: 'Dividers' },
+      { type: 'section', title: 'Numbers', number: 1 },
+      { type: 'stats', title: 'Four numbers', stats: [{ value: '42%', label: 'of something' }], notes: 'say it', callout: 'keep it' },
+      { type: 'section', title: 'Plans', number: 2 },
+      { type: 'bullets', title: 'Next', bullets: ['one', 'two'], notes: 'say it', callout: 'keep it' },
+      { type: 'closing', title: 'Thanks' },
+    ],
+  }
+  const file = join(tmp, 'dividers.json')
+  writeFileSync(file, JSON.stringify(spec))
+  const r = run(['check', file])
+  expect(r.code).toBe(1)
+  expect(r.out).toContain('slides[1] (section "Numbers"): a section divider must be followed by at least two content slides; this one has 1')
+  expect(r.out).toContain('slides[3] (section "Plans")')
+  expect(r.out).toContain('2 section dividers in a 6-slide deck')
+})
+
 test('text that cannot fit stops the build, and --force writes it anyway', () => {
   // Eight full-length bullets alone still fit at 12pt across the whole slide; with four
   // sub-bullets under each, forty paragraphs cannot, whatever the size.

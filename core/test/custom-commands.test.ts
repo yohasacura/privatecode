@@ -61,11 +61,11 @@ test('a file named after a built-in is refused rather than silently shadowed', (
 })
 
 test('an oversized or empty template is refused with a reason', () => {
-  writeFileSync(join(dir, 'huge.md'), 'x'.repeat(9000))
+  writeFileSync(join(dir, 'huge.md'), 'x'.repeat(25_000))
   writeFileSync(join(dir, 'blank.md'), '   \n  ')
   const { commands, problems } = listCommands(root)
   expect(commands).toEqual([])
-  expect(problems.join(' ')).toContain('over the 8000')
+  expect(problems.join(' ')).toContain('over the 24000')
   expect(problems.join(' ')).toContain('empty')
 })
 

@@ -288,7 +288,10 @@ function table(slide, T, spec, b, { dark = false } = {}) {
   const cols = spec.columns
   const rows = spec.rows
   const nCols = cols.length
-  const size = rows.length > 8 ? 10.5 : rows.length > 6 || nCols > 5 ? 12 : 14
+  // Few rows read larger and sit in taller rows; a three-row table at 14pt in an empty slide
+  // looked like a footnote (seen in a live run).
+  const size = rows.length > 8 ? 10.5 : rows.length > 6 || nCols > 5 ? 12 : rows.length <= 4 && nCols <= 5 ? 16 : 14
+  const rowH = rows.length <= 5 ? Math.min(0.7, (b.h - 0.4) / (rows.length + 1)) : undefined
   const st = style(T, false, false)
   // Natural widths from the longest cell in each column, then squeezed into the box.
   const natural = cols.map((c, i) => {
@@ -305,8 +308,9 @@ function table(slide, T, spec, b, { dark = false } = {}) {
   const pad = 0.12
   let height = 0
   const rowLines = (cells, bold) => Math.max(...cells.map((c, i) => fit.lineCount(String(c ?? ''), (colW[i] - 0.16) * 72, size, { ...st, bold })))
-  height += rowLines(cols, true) * size * 1.2 / 72 + pad
-  for (const r of rows) height += rowLines(r, false) * size * 1.2 / 72 + pad
+  const rowHeight = (lines) => Math.max(rowH ?? 0, lines * size * 1.2 / 72 + pad)
+  height += rowHeight(rowLines(cols, true))
+  for (const r of rows) height += rowHeight(rowLines(r, false))
   const headFill = dark ? T.c.darkCard : T.c.dark
   const body = rows.map((r, ri) => cols.map((_, ci) => ({
     text: String(r[ci] ?? ''),
@@ -323,6 +327,7 @@ function table(slide, T, spec, b, { dark = false } = {}) {
   }))
   slide.addTable([head, ...body], {
     x: b.x, y: b.y, w: b.w, colW,
+    ...(rowH !== undefined ? { rowH } : {}),
     border: { type: 'solid', pt: 0.5, color: dark ? T.c.darkCard : T.c.rule },
     margin: 5, autoPage: false, fontFace: T.fonts.body, fontSize: size,
   })

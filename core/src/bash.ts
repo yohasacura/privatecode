@@ -4,6 +4,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execa } from 'execa'
 import { killTree } from './powershell.js'
+import { bundledSkillsDir } from './skills/skills.js'
 
 /**
  * The one place that knows how to find and launch bash.
@@ -75,9 +76,15 @@ export function bashEnv(bash: BashLocation, extraPath: readonly string[] = []): 
   // that never installed one. The bundled pptx skill is a node script, and a skill that only
   // works where node happens to be installed is a skill that works on the author's machine.
   const path = [bash.binDir, ...extraPath, dirname(process.execPath), process.env[key] ?? ''].filter((p) => p !== '').join(delimiter)
+  // Where the bundled skills are, as a variable the model can write literally:
+  // `node "$PRIVATECODE_SKILLS/pptx/pptx.cjs"`. Seen live: told the folder's path in prose,
+  // the model wrote `$SKILL/pptx.cjs` — a variable nobody had set, which bash expanded to
+  // nothing — and lost a step finding the absolute path. A variable that exists costs nothing.
+  const skills = bundledSkillsDir()
   return {
     ...process.env,
     [key]: path,
+    ...(skills !== null ? { PRIVATECODE_SKILLS: skills } : {}),
     HOME: process.env['HOME'] ?? process.env['USERPROFILE'] ?? homedir(),
     LANG: process.env['LANG'] ?? 'C.UTF-8',
     TERM: 'dumb',

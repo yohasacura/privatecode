@@ -29,7 +29,9 @@ const COMMANDS_DIR = `${PRIVATE_DIR}/commands`
 
 /** ~2k tokens, permanent in the transcript, spent per invocation. A template should be
  * instructions, not a pasted document. */
-const MAX_TEMPLATE_CHARS = 8_000
+// A skill that documents a real tool runs to nine or ten thousand characters (the bundled
+// pptx skill does); the limit guards against a stray 200 KB file, not against a thorough one.
+const MAX_TEMPLATE_CHARS = 24_000
 const MAX_COMMANDS = 200
 const MAX_DEPTH = 3
 

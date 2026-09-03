@@ -6,9 +6,11 @@ argument-hint: [deck.pptx, or what the deck should say]
 
 # PowerPoint decks
 
-One tool does everything: `node "$SKILL/pptx.cjs" <command>`. `$SKILL` is the folder the
-`Skill` reply names on its `Folder:` line. `node` is always present (PrivateCode ships its
-own). No Python, no npm install.
+One tool does everything: `node "$PRIVATECODE_SKILLS/pptx/pptx.cjs" <command>`, written
+exactly like that — `PRIVATECODE_SKILLS` is set in the `Bash` tool's environment and points
+at the bundled skills folder. If it is ever empty, use the absolute path from the `Folder:`
+line of the `Skill` reply instead. `node` is always present (PrivateCode ships its own). No
+Python, no npm install.
 
 | Command | Does |
 |---|---|
@@ -75,6 +77,20 @@ notes — the spoken argument, as long as needed). Slide types:
 | `closing` | `title`, `text`, `contacts` (≤5 lines) | the last slide, dark |
 
 `example deck.json` writes a 12-slide spec that uses all of them; copy its shapes.
+
+## The shape of a deck
+
+- 8–10 slides means: one `title`, six to eight content slides, one `closing`. No `section`
+  dividers — they earn their slide only in decks of 12 or more, and then each one must be
+  followed by at least two content slides (`check` refuses a divider that introduces one).
+- Material with numbers gets at least one `stats`, `chart` or `table` slide; a list of
+  reasons or drivers is `cards`; a before/after or pros/cons is `comparison`; dated plans are
+  a `timeline`. `bullets` is for the slide that is genuinely a list.
+- Every content slide carries `notes`: two or three sentences the speaker says. Most carry a
+  `callout`: the one sentence the audience keeps.
+- `check` prints `✖` for what it refuses and `!` for what will make the deck weaker. Fix
+  both before building; a `!` about notes, callouts or dividers is a required edit unless the
+  user asked for that shape.
 
 ## Writing rules the layouts assume
 
