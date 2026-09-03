@@ -27,7 +27,7 @@ describe('background_task', () => {
   })
 
   it('start returns an id; poll returns new output exactly once; exit is reported', async () => {
-    const started = await call({ command: 'Write-Output first; Start-Sleep -Milliseconds 400; Write-Output second' , action: 'start' })
+    const started = await call({ command: 'echo first; sleep 0.4; echo second', action: 'start' })
     expect(started.ok).toBe(true)
     const id = /id: (task-\d+)/.exec(started.content)?.[1]
     expect(id).toBeTruthy()
@@ -41,7 +41,7 @@ describe('background_task', () => {
   }, 30_000)
 
   it('stop kills a running task', async () => {
-    const started = await call({ action: 'start', command: 'Start-Sleep -Seconds 60' })
+    const started = await call({ action: 'start', command: 'sleep 60' })
     const id = /id: (task-\d+)/.exec(started.content)?.[1]
     const stopped = await call({ action: 'stop', id })
     expect(stopped.ok).toBe(true)
@@ -52,7 +52,7 @@ describe('background_task', () => {
   it('reports readiness when a log marker appears', async () => {
     const started = await call({
       action: 'start',
-      command: 'Start-Sleep -Milliseconds 300; Write-Output "SERVER READY"; Start-Sleep -Seconds 60',
+      command: 'sleep 0.3; echo "SERVER READY"; sleep 60',
       ready_when: { log_contains: 'SERVER READY' },
     })
     const id = /id: (task-\d+)/.exec(started.content)?.[1]

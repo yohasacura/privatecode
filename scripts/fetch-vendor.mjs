@@ -21,9 +21,9 @@
  * runtime into a privacy tool — which is the supply-chain hole the project exists to avoid.
  */
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import {
-  cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
+  cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -142,6 +142,81 @@ async function stageRipgrep() {
 }
 
 /**
+ * Git Bash and its coreutils — see vendor/git/PROVENANCE.md.
+ *
+ * Out of Git for Windows' own portable release: a 7-Zip self-extracting archive, unpacked
+ * by running it with 7-Zip's `-o`/`-y` switches (it is the publisher's binary, hash-verified
+ * first), then a curated subset copied across. Not the whole 94 MB `usr/bin`: perl, ssh,
+ * gpg and the editors stay behind; every `msys-*.dll` comes, so no tool starts without its
+ * library. Each staged tool is then started once — a missing DLL is a process that never
+ * runs, and that is caught here rather than by a model at 2 a.m.
+ */
+const GIT_BASH_TOOLS = [
+  'bash', 'sh', 'env', 'ls', 'cat', 'cp', 'mv', 'rm', 'mkdir', 'rmdir', 'touch', 'echo', 'printf', 'head', 'tail',
+  'wc', 'cut', 'tr', 'sort', 'uniq', 'grep', 'egrep', 'fgrep', 'sed', 'gawk', 'awk', 'find', 'xargs', 'which',
+  'pwd', 'dirname', 'basename', 'tee', 'date', 'sleep', 'diff', 'cmp', 'diff3', 'sdiff', 'du', 'df', 'ln', 'chmod',
+  'stat', 'realpath', 'readlink', 'sha256sum', 'sha1sum', 'sha512sum', 'md5sum', 'b2sum', 'cygpath', 'timeout',
+  'nproc', 'yes', 'fold', 'paste', 'join', 'split', 'nl', 'od', 'tac', 'less', 'patch', 'gzip', 'gunzip', 'zcat',
+  'bzip2', 'bunzip2', 'unzip', 'tar', 'id', 'whoami', 'hostname', 'ps', 'kill', 'tty', 'stty', 'install', 'mktemp',
+  'expr', 'getopt', 'uname', 'test', 'true', 'false', 'comm', 'seq', 'column', 'dos2unix', 'unix2dos', 'iconv',
+  'shuf', 'truncate', 'tsort', 'expand', 'unexpand', 'pr', 'fmt', 'numfmt', 'dircolors',
+]
+
+async function stageGitBash() {
+  const version = '2.55.0.5'
+  const tag = 'v2.55.0.windows.5'
+  const buf = await download(
+    `https://github.com/git-for-windows/git/releases/download/${tag}/PortableGit-${version}-64-bit.7z.exe`,
+    '5aa8a20f6e9abb2c755f0e73c91c687701a46b309ad84a0ca6509380fa4ae290',
+    'git-bash',
+  )
+  const tmp = mkdtempSync(join(tmpdir(), 'pc-git-'))
+  try {
+    const sfx = join(tmp, 'PortableGit.7z.exe')
+    writeFileSync(sfx, buf)
+    const extracted = join(tmp, 'x')
+    execFileSync(sfx, [`-o${extracted}`, '-y'], { stdio: 'ignore' })
+    const srcBin = join(extracted, 'usr', 'bin')
+    const out = join(vendor, 'git')
+    rmSync(join(out, 'usr'), { recursive: true, force: true })
+    mkdirSync(join(out, 'usr', 'bin'), { recursive: true })
+    mkdirSync(join(out, 'etc'), { recursive: true })
+    mkdirSync(join(out, 'tmp'), { recursive: true })
+    writeFileSync(join(out, 'tmp', '.keep'), '')
+    for (const tool of new Set(GIT_BASH_TOOLS)) {
+      const exe = join(srcBin, `${tool}.exe`)
+      if (!existsSync(exe)) throw new Error(`git-bash: ${tool}.exe is not in PortableGit ${version}`)
+      cpSync(exe, join(out, 'usr', 'bin', `${tool}.exe`))
+    }
+    cpSync(join(srcBin, '[.exe'), join(out, 'usr', 'bin', '[.exe'))
+    for (const f of readdirSync(srcBin)) {
+      if (/^msys-.*\.dll$/i.test(f)) cpSync(join(srcBin, f), join(out, 'usr', 'bin', f))
+    }
+    for (const f of ['fstab', 'nsswitch.conf']) cpSync(join(extracted, 'etc', f), join(out, 'etc', f))
+    cpSync(join(extracted, 'LICENSE.txt'), join(out, 'LICENSE.txt'))
+    verifyFile(
+      join(out, 'usr', 'bin', 'bash.exe'),
+      '5490d0da5e7cf9d92068cc48fcc590f2bcf8564add8ff91c3b5fe541eb2d72e3',
+      'bash.exe',
+    )
+    // Every tool must at least start: 0xC0000135 is Windows saying a DLL is missing.
+    const binDir = join(out, 'usr', 'bin')
+    const failed = []
+    for (const f of readdirSync(binDir)) {
+      if (!f.endsWith('.exe')) continue
+      const r = spawnSync(join(binDir, f), ['--version'], { timeout: 10_000, windowsHide: true, env: { ...process.env, PATH: binDir } })
+      if (r.error || r.status === null || r.status === 3221225781) failed.push(f)
+    }
+    if (failed.length > 0) throw new Error(`git-bash: these tools do not start: ${failed.join(', ')}`)
+    const hi = spawnSync(join(binDir, 'bash.exe'), ['-c', 'echo hi | tr a-z A-Z'], { encoding: 'utf8', windowsHide: true, env: { ...process.env, PATH: binDir } })
+    if (hi.stdout.trim() !== 'HI') throw new Error(`git-bash: bash answered ${JSON.stringify(hi.stdout)} instead of HI`)
+    console.log(`  git-bash: ${readdirSync(binDir).filter((f) => f.endsWith('.exe')).length} tools staged, all start`)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+/**
  * The tree-sitter runtime and the five grammars the outline tool supports.
  *
  * Copied out of `core/node_modules` rather than downloaded: both packages are already
@@ -189,6 +264,7 @@ async function main() {
   console.log('Staging vendor/ from its sources.\n')
   await stageNode()
   await stageRipgrep()
+  await stageGitBash()
   stageTreeSitter()
 
   if (downloadsOnly) {

@@ -22,6 +22,10 @@ tools/*/obj/
 vendor/*/*.exe
 vendor/*/*.dll
 vendor/*/*.wasm
+# Git Bash and its coreutils (vendor/git/PROVENANCE.md): 49 MB of Git for Windows' own
+# binaries, rebuilt by the same script. The licence and the provenance stay in git.
+vendor/git/usr/
+vendor/git/tmp/
 
 
 # Debug symbols from the sql-probe publish; never belonged in the tree.

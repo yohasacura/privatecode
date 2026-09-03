@@ -87,6 +87,12 @@ function verifyManifest() {
   if (existsSync(join(repoRoot, 'vendor', 'roslyn', 'roslyn-nav.exe'))) {
     manifest.push(join(sidecarDir, 'vendor', 'roslyn', 'roslyn-nav.exe'))
   }
+  // Optional the same way. bash without its runtime library is a bash that cannot start,
+  // so the pair is what the check names.
+  if (existsSync(join(repoRoot, 'vendor', 'git', 'usr', 'bin', 'bash.exe'))) {
+    manifest.push(join(sidecarDir, 'vendor', 'git', 'usr', 'bin', 'bash.exe'))
+    manifest.push(join(sidecarDir, 'vendor', 'git', 'usr', 'bin', 'msys-2.0.dll'))
+  }
   // Optional the same way, and checked as a PAIR. The SQL helper's native SNI library is
   // left beside the exe by a single-file publish, and an exe staged without it starts fine
   // and then cannot connect to anything -- a broken install that presents as a network
@@ -129,6 +135,12 @@ async function main() {
   // The skills PrivateCode ships (`skills/skills.ts`'s `bundledSkillsDir`): the whole
   // folder, scripts included, beside agent.cjs — where the sidecar looks for it.
   cpSync(join(coreRoot, 'skills'), join(sidecarDir, 'skills'), { recursive: true })
+  // Git Bash and its coreutils — what the `Bash` tool runs (`bash.ts`). Optional the way
+  // roslyn is: a checkout that has not run scripts/fetch-vendor.mjs still bundles, and the
+  // tool then falls back to the machine's Git for Windows or says bash is missing.
+  if (existsSync(join(repoRoot, 'vendor', 'git', 'usr', 'bin', 'bash.exe'))) {
+    cpSync(join(repoRoot, 'vendor', 'git'), join(sidecarDir, 'vendor', 'git'), { recursive: true })
+  }
   // Optional, and staged only when it has been published — see verifyManifest. 92 MB of
   // self-contained .NET buys semantic C# navigation on a machine with no SDK installed;
   // on a machine that never touches C# it is 92 MB of nothing.

@@ -157,6 +157,13 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
         })
         .map(|dir| dir.join("sql-probe.exe"));
 
+    // Optional too: the Git Bash the `Bash` tool runs (vendor/git, see core/src/bash.ts).
+    // Without it the sidecar looks for the machine's own Git for Windows.
+    let bash_exe = wasm_dir
+        .parent()
+        .map(|vendor| vendor.join("git").join("usr").join("bin").join("bash.exe"))
+        .filter(|p| p.exists());
+
     let mut cmd = Command::new(&node_exe);
     cmd.arg(&agent_cjs)
         .env("PRIVATECODE_RG", &rg_exe)
@@ -166,6 +173,9 @@ fn spawn_sidecar(app: &AppHandle) -> Result<RunningSidecar, String> {
         .stderr(Stdio::piped());
     if let Some(path) = &roslyn_exe {
         cmd.env("PRIVATECODE_ROSLYN", path);
+    }
+    if let Some(path) = &bash_exe {
+        cmd.env("PRIVATECODE_BASH", path);
     }
     if let Some(path) = &sql_exe {
         cmd.env("PRIVATECODE_SQL", path);

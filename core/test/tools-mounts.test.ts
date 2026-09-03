@@ -156,14 +156,16 @@ describe('where a command runs', () => {
   }
 
   test('a bare command starts in the first folder, and the reply says so', async () => {
-    const r = await run({ command: '(Get-Location).Path' })
+    // `cygpath -w` prints the Windows spelling of where bash is; `pwd` alone would print
+    // the /d/… form, which is not what the folder list is written in.
+    const r = await run({ command: 'cygpath -w "$PWD"' })
     expect(r.ok).toBe(true)
     // Canonicalised, because the two sides are spelled by different things: the shell prints
     // the name the filesystem reports, while `mounts[0].root` is however mkdtemp wrote it.
-    // On a GitHub runner those differ — TEMP is under `RUNNER~1` and PowerShell answers
+    // On a GitHub runner those differ — TEMP is under `RUNNER~1` and the shell answers
     // `runneradmin` — so written without this the test passed here and failed there. Which
     // is, exactly, the defect the code under test exists to fix.
-    expect(r.content).toContain(canonicalize(mounts[0]!.root))
+    expect(canonicalize(r.content.split('\n')[1] ?? '')).toBe(canonicalize(mounts[0]!.root))
     // The part that closes the loop. Without it a wrong guess about the directory and a
     // genuinely missing file are the same reply, and the only way to tell them apart is
     // another command.
@@ -174,10 +176,10 @@ describe('where a command runs', () => {
     async () => {
       // Measured, and the reason the system prompt now spends three lines on it: this is
       // exactly what a model taught `engine/src/x.ts` will write first.
-      const wrong = await run({ command: 'Test-Path engine/src/boot.ts' })
+      const wrong = await run({ command: 'test -e engine/src/boot.ts && echo True || echo False' })
       expect(wrong.content).toContain('False')
 
-      const right = await run({ command: 'Test-Path src/boot.ts', cwd: 'engine' })
+      const right = await run({ command: 'test -e src/boot.ts && echo True || echo False', cwd: 'engine' })
       expect(right.content).toContain('True')
       expect(right.content).toContain('· in engine/')
     }, 30_000)
@@ -187,7 +189,7 @@ describe('where a command runs', () => {
       // The refusal is the one part of this that already taught the rule. It is asserted so
       // it stays that way: an error that only said "denied" would send the model back to
       // probing.
-      const r = await run({ command: 'Get-Location', cwd: 'src' })
+      const r = await run({ command: 'pwd', cwd: 'src' })
       expect(r.ok).toBe(false)
       expect(r.content).toContain('app')
       expect(r.content).toContain('engine')
@@ -208,17 +210,17 @@ describe('where a command runs', () => {
       return tool.execute(v.args, { workspace: ws })
     }
     try {
-      const refused = await call({ action: 'start', command: 'Get-Location', cwd: 'src' })
+      const refused = await call({ action: 'start', command: 'pwd', cwd: 'src' })
       expect(refused.ok).toBe(false)
       expect(refused.content).toContain('app')
       expect(refused.content).toContain('engine')
 
-      const started = await call({ action: 'start', command: 'Get-Location', cwd: 'engine' })
+      const started = await call({ action: 'start', command: 'cygpath -w "$PWD"', cwd: 'engine' })
       expect(started.ok).toBe(true)
       const id = /id: (\S+?)\./.exec(started.content)?.[1]
       expect(id).toBeTruthy()
       const polled = await call({ action: 'poll', id, wait_seconds: 10 })
-      expect(polled.content).toContain(canonicalize(mounts[1]!.root))
+      expect(canonicalize(polled.content.split('\n').find((l) => /^[A-Za-z]:\\/.test(l.trim()))?.trim() ?? '')).toBe(canonicalize(mounts[1]!.root))
     } finally {
       await tasks.stopAll()
     }

@@ -17,8 +17,12 @@ it was built against. The live proof is `test/integration/plugins-live.test.ts`.
    longer exist: a hook matcher, an agent's `tools:` line and a permission rule name the
    tool itself. The old names are still read from settings files written before the rename
    (`permissions/rules.ts`, `LEGACY_TOOL_NAMES`) and from sessions recorded before it (the
-   window's `lib/tools.ts`). `Bash` runs Windows PowerShell 5.1, as `run_command` did; the
-   name is Claude Code's, the shell is this machine's.
+   window's `lib/tools.ts`). `Bash` runs bash — the Git for Windows bash and coreutils
+   vendored in `vendor/git` (its PROVENANCE.md, `scripts/fetch-vendor.mjs`), the shell
+   Claude Code itself uses on Windows — with Claude Code's arguments (`command`, `timeout`
+   in ms, `description`, `run_in_background`) plus `cwd`. `background_task` runs the model's
+   jobs under the same bash; the Terminal panel's own commands, and the `verify`, `format`
+   and `after` hooks a person writes in settings, stay PowerShell.
 3. Four skills ship with the app (`core/skills/`, staged beside the sidecar): `skill-creator`,
    `grill-me`, `mermaid` (the transcript renders ```mermaid blocks) and `pptx` (three
    python-pptx scripts beside it). Lowest precedence; a user or project skill of the same

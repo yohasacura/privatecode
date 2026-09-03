@@ -3,6 +3,7 @@ import { connect } from 'node:net'
 import { StringDecoder } from 'node:string_decoder'
 import { execa } from 'execa'
 import type { ResultPromise } from 'execa'
+import { findBash, spawnBash } from '../bash.js'
 import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import { clipOutput } from './run-command.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext } from './types.js'
@@ -106,13 +107,21 @@ export class BackgroundTasks {
   private readonly entries = new Map<string, Entry>()
   private nextId = 1
 
-  start(command: string, ready: ReadyWhen | null, cwd: string, origin: JobOrigin = 'agent'): Entry {
+  /**
+   * The model's jobs run under bash — the same shell `Bash` runs, so what it starts here is
+   * written the same way. A command the PERSON typed into the Terminal panel runs under
+   * PowerShell: it is their Windows shell, and what they type there is PowerShell.
+   */
+  start(command: string, ready: ReadyWhen | null, cwd: string, origin: JobOrigin = 'agent', extraPath: readonly string[] = []): Entry {
     const id = `task-${this.nextId++}`
-    const child = execa(
-      POWERSHELL_EXE,
-      powershellArgs(command),
-      { cwd, reject: false, windowsHide: true, all: true, buffer: false },
-    ) as unknown as ExecaChild
+    const bash = origin === 'agent' ? findBash() : null
+    const child = (bash !== null
+      ? spawnBash(bash, command, { cwd, extraPath, buffer: false })
+      : execa(
+        POWERSHELL_EXE,
+        powershellArgs(command),
+        { cwd, reject: false, windowsHide: true, all: true, buffer: false },
+      )) as unknown as ExecaChild
     const entry: Entry = {
       id, command, origin, child, buffer: '', dropped: 0, cursor: 0, markerSeen: false,
       ready, startedAt: Date.now(), exit: null,
@@ -200,8 +209,9 @@ export class BackgroundTasks {
    * Stops one process AND everything it started.
    *
    * The order is the whole point, and getting it backwards is what this fixes. A job is
-   * `powershell.exe -Command <whatever the user asked for>`, so the thing doing the work --
-   * a dev server, a watcher, a `node -e` loop -- is PowerShell's CHILD, not this process.
+   * `bash.exe -c <whatever was asked for>` (or `powershell.exe -Command …` for the Terminal
+   * panel), so the thing doing the work -- a dev server, a watcher, a `node -e` loop -- is
+   * the shell's CHILD, not this process.
    * `taskkill /T` walks the tree by parent-child links as they stand when it runs, so it has
    * to run while the parent is still alive. Killing the child first left the grandchild
    * reparented and unreachable, and `/T` then found nothing to walk: a stopped dev server
@@ -283,7 +293,7 @@ export function backgroundTaskTool(tasks: BackgroundTasks): Tool<BackgroundTaskA
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['start', 'poll', 'stop'] },
-        command: { type: 'string', description: 'start only: PowerShell command line.' },
+        command: { type: 'string', description: 'start only: a bash command line, exactly as Bash takes it.' },
         id: { type: 'string', description: 'poll/stop: the id returned by start.' },
         wait_seconds: {
           type: 'integer',
@@ -410,7 +420,7 @@ export function backgroundTaskTool(tasks: BackgroundTasks): Tool<BackgroundTaskA
             return { ok: false, content: (e as Error).message }
           }
         }
-        const entry = tasks.start(args.command!, args.ready_when ?? null, cwd)
+        const entry = tasks.start(args.command!, args.ready_when ?? null, cwd, 'agent', ctx.extraPath ?? [])
         const ready = args.ready_when
           ? ' Poll until it reports ready: YES before relying on it.'
           : ''

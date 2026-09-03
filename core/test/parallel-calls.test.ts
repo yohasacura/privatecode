@@ -133,8 +133,8 @@ test('two commands in one step are both recorded in the work log, each with its 
   const { host, transport } = await hostOver(root, (call) =>
     call === 1
       ? multiCallSSE([
-        { id: 'k1', name: 'Bash', args: JSON.stringify({ command: 'Write-Output first' }) },
-        { id: 'k2', name: 'Bash', args: JSON.stringify({ command: 'Write-Output second' }) },
+        { id: 'k1', name: 'Bash', args: JSON.stringify({ command: 'echo first' }) },
+        { id: 'k2', name: 'Bash', args: JSON.stringify({ command: 'echo second' }) },
       ])
       : undefined)
   try {
@@ -142,11 +142,11 @@ test('two commands in one step are both recorded in the work log, each with its 
     await host.handle({ id: 3, method: 'worklog.read', params: {} })
     const text: string = replyOf(transport, 3).text
 
-    expect(text).toContain('Write-Output first')
-    expect(text).toContain('Write-Output second')
+    expect(text).toContain('echo first')
+    expect(text).toContain('echo second')
     // And neither is written twice, which is what a shared slot produces: the same command
     // under two "Ran" lines reads as a command that ran twice.
-    expect(text.split('Write-Output second').length - 1).toBe(1)
+    expect(text.split('echo second').length - 1).toBe(1)
   } finally {
     await host.shutdown()
   }
@@ -169,8 +169,8 @@ test('one step writing into two folders verifies both of them', async () => {
       folders: [{ path: engine, name: 'engine', access: 'write' }],
       profile: {
         verify: {
-          [basename(root)]: 'Write-Output ran >> primary-verified.log',
-          engine: 'Write-Output ran >> engine-verified.log',
+          [basename(root)]: 'echo ran >> primary-verified.log',
+          engine: 'echo ran >> engine-verified.log',
         },
       },
     }),

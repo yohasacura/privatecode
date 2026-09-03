@@ -87,8 +87,13 @@ marketplace; a name that merely resembles one is accepted and noted.
 name the tool itself. The three names Claude Code retired — `Task` (now `Agent`),
 `MultiEdit` (now `Edit`), `LS` (`list_dir`) — are read as what they became.
 
-`Bash` runs Windows PowerShell 5.1 on this machine; the name is Claude Code's, the shell is
-the machine's, and the tool says so to the model.
+`Bash` is bash. PrivateCode ships Git for Windows' bash and coreutils (`vendor/git`, see its
+`PROVENANCE.md`) and runs the tool under them, as Claude Code does on Windows; a machine with
+Git for Windows installed is the fallback, `PRIVATECODE_BASH` the override. The arguments are
+Claude Code's: `command`, `timeout` (milliseconds), `description`, `run_in_background`, plus
+`cwd` for a workspace of several folders. The vendored coreutils come first on the command's
+PATH, a plugin's `bin/` next, the machine's PATH after that, so `git`, `node`, `python` and
+`dotnet` are the machine's own.
 
 Settings files written before 2026-09-03 keep working: `edit_file(src/**)` is read as
 `Edit(src/**)`, `run_command(npm test:*)` as `Bash(npm test:*)`, and so on. A session

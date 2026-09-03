@@ -1,6 +1,5 @@
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import { execa } from 'execa'
+import { bashArgs, bashEnv, findBash, type BashLocation } from '../bash.js'
 import { killTree, POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import { substitutePluginVars, type HookSource } from '../plugins/components.js'
 import { CLAUDE_CODE_OLD_NAMES } from '../tools/built-in-names.js'
@@ -129,25 +128,18 @@ export function parseHookConfig(source: HookSource, problems: string[]): HookDef
 
 // ---- the shell ----------------------------------------------------------------------------------
 
-export type HookShell = { kind: 'bash'; path: string } | { kind: 'powershell' }
+export type HookShell = { kind: 'bash'; bash: BashLocation } | { kind: 'powershell' }
 
-/** Git Bash, where Git for Windows puts it. Never WSL's `bash.exe`, which is a different machine. */
+/** The bash the `Bash` tool runs — the vendored Git Bash, else Git for Windows — as a path, or null. */
 export function findGitBash(): string | null {
-  if (process.platform !== 'win32') return existsSync('/bin/bash') ? '/bin/bash' : null
-  const roots = [process.env['ProgramFiles'], process.env['ProgramFiles(x86)'], process.env['LOCALAPPDATA'] !== undefined ? join(process.env['LOCALAPPDATA'], 'Programs') : undefined]
-  for (const root of roots) {
-    if (root === undefined) continue
-    const candidate = join(root, 'Git', 'bin', 'bash.exe')
-    if (existsSync(candidate)) return candidate
-  }
-  return null
+  return findBash()?.exe ?? null
 }
 
 /** Bash when it is there, PowerShell otherwise. `PRIVATECODE_HOOK_SHELL=powershell` forces the latter. */
 export function defaultHookShell(): HookShell {
   if (process.env['PRIVATECODE_HOOK_SHELL'] === 'powershell') return { kind: 'powershell' }
-  const bash = findGitBash()
-  return bash !== null ? { kind: 'bash', path: bash } : { kind: 'powershell' }
+  const bash = findBash()
+  return bash !== null ? { kind: 'bash', bash } : { kind: 'powershell' }
 }
 
 interface RunOutcome {
@@ -170,15 +162,15 @@ async function runHook(def: HookDefinition, input: Record<string, unknown>, shel
   const vars = def.vars !== undefined ? { root: path(def.vars.root), data: path(def.vars.data), project } : undefined
   const command = vars !== undefined ? substitutePluginVars(def.command, vars) : def.command.replace(/\$\{CLAUDE_PROJECT_DIR\}/g, project)
   const env: Record<string, string | undefined> = {
-    ...process.env,
+    ...(shell.kind === 'bash' ? bashEnv(shell.bash) : process.env),
     CLAUDE_PROJECT_DIR: project,
     ...(vars !== undefined ? { CLAUDE_PLUGIN_ROOT: vars.root, CLAUDE_PLUGIN_DATA: vars.data } : {}),
   }
-  const options = { cwd, env, input: JSON.stringify(input), reject: false as const, windowsHide: true, all: false as const, stripFinalNewline: false }
+  const options = { cwd, env, extendEnv: false, input: JSON.stringify(input), reject: false as const, windowsHide: true, all: false as const, stripFinalNewline: false }
   let child
   try {
     child = shell.kind === 'bash'
-      ? execa(shell.path, ['-c', command], options)
+      ? execa(shell.bash.exe, bashArgs(command), options)
       : execa(POWERSHELL_EXE, powershellArgs(command), options)
   } catch (e) {
     return { exitCode: null, stdout: '', stderr: '', timedOut: false, cancelled: false, spawnError: e instanceof Error ? e.message : String(e) }

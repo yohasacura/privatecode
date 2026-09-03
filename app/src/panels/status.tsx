@@ -100,6 +100,7 @@ type Probe =
 /** What is inside, for the About tab: the things a person may want to know they are running. */
 const CREDITS: readonly { name: string; what: string; licence: string }[] = [
   { name: 'llama.cpp', what: 'runs the model, on this machine', licence: 'MIT' },
+  { name: 'Git for Windows', what: 'bash and the coreutils the Bash tool runs', licence: 'GPL-3.0 / LGPL-3.0' },
   { name: 'Preact', what: 'the window', licence: 'MIT' },
   { name: 'Tailwind CSS', what: 'the styles', licence: 'MIT' },
   { name: 'Tauri', what: 'the shell', licence: 'MIT / Apache-2.0' },

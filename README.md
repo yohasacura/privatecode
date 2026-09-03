@@ -83,7 +83,10 @@ buttons: Installed, Discover (Anthropic's four catalogs are registered for you a
 on first use), Marketplaces. A plugin's skills, slash commands, agents, hooks and MCP
 servers all arrive. The tools carry Claude Code's names — `Read`, `Edit`, `Write`, `Bash`,
 `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Agent`, `Skill` — so a plugin's hook matchers and
-agent files mean here what they mean there. Four skills ship with the app: `/skill-creator`,
+agent files mean here what they mean there. `Bash` is bash: the app ships Git for Windows'
+bash and coreutils (`vendor/git`), the same shell Claude Code uses on Windows, so `&&`,
+pipes, `grep`, `sed` and `find` work as written; the model's PATH also reaches the
+machine's own `git`, `node`, `python` and `dotnet`. Four skills ship with the app: `/skill-creator`,
 `/grill-me`, `/mermaid` (diagrams render in the transcript) and `/pptx`. Details, the hook
 contract and what is not supported: [docs/PLUGINS.md](docs/PLUGINS.md).
 
@@ -136,7 +139,7 @@ server URL you configured.
 ```bash
 npm ci --prefix core
 npm ci --prefix app
-node scripts/fetch-vendor.mjs      # downloads and hash-verifies node/ripgrep, builds the two .NET helpers
+node scripts/fetch-vendor.mjs      # downloads and hash-verifies node, ripgrep and Git Bash; builds the two .NET helpers
 npm run bundle --prefix core       # stages the agent sidecar
 npm run tauri build --prefix app
 ```

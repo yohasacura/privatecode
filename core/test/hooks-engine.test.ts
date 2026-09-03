@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { findBash } from '../src/bash.js'
 import {
-  claudeToolInput, createHookEngine, findGitBash, fromClaudeToolInput, parseHookConfig, type HookEngineOptions, type HookShell,
+  claudeToolInput, createHookEngine, fromClaudeToolInput, parseHookConfig, type HookEngineOptions, type HookShell,
 } from '../src/hooks/engine.js'
 import { parseRule } from '../src/permissions/rules.js'
 import { Workspace } from '../src/workspace.js'
@@ -16,14 +17,14 @@ import type { HookSource } from '../src/plugins/components.js'
  * without it.
  */
 
-const bash = findGitBash()
+const bash = findBash()
 let root: string
 let bashShell: HookShell
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'pc-hook-engine-'))
   mkdirSync(join(root, '.privatecode'), { recursive: true })
-  bashShell = { kind: 'bash', path: bash ?? 'bash' }
+  bashShell = bash !== null ? { kind: 'bash', bash } : { kind: 'powershell' }
 })
 afterAll(() => { try { rmSync(root, { recursive: true, force: true }) } catch { /* a handle still open on Windows */ } })
 
