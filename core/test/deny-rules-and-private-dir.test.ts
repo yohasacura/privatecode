@@ -94,12 +94,67 @@ test('the display form agrees with the matcher about zero segments', () => {
  * `PRIVAT~1/settings.json` reached `Write` as `allow (mode)` in auto-edit and replaced
  * the real settings file, whose planted `format` command then ran.
  */
-test('the write jail refuses .privatecode however the path is spelled', () => {
+test('the write jail refuses .privatecode/state however the path is spelled', () => {
   const { ws } = workspace()
-  expect(() => ws.resolveForWrite('.privatecode/settings.json')).toThrow(WorkspaceViolation)
-  expect(() => ws.resolveForWrite('.privatecode/hooks/pre.ps1')).toThrow(WorkspaceViolation)
+  expect(() => ws.resolveForWrite('.privatecode/state/sessions/s1.jsonl')).toThrow(WorkspaceViolation)
+  expect(() => ws.resolveForWrite('.privatecode/state/logs/run.log')).toThrow(WorkspaceViolation)
+  // The names that lived at the top level before `state/` existed are state too.
+  expect(() => ws.resolveForWrite('.privatecode/sessions/s1.jsonl')).toThrow(WorkspaceViolation)
+  expect(() => ws.resolveForWrite('.privatecode/checkpoints.git/HEAD')).toThrow(WorkspaceViolation)
   // Case is not a defence on Windows and must not be one here either.
-  expect(() => ws.resolveForWrite('.PrivateCode/settings.json')).toThrow(WorkspaceViolation)
+  expect(() => ws.resolveForWrite('.PrivateCode/State/decisions.jsonl')).toThrow(WorkspaceViolation)
+})
+
+test('the rest of .privatecode is the user\'s, and the model may write it on their behalf', () => {
+  // The owner's ruling: "close only state". A skill the user asks for has to land in
+  // `.privatecode/skills/`; the settings are theirs to approve, and the permission engine
+  // asks for those in every mode (below) — the jail itself lets them through.
+  const { ws, root } = workspace()
+  expect(ws.resolveForWrite('.privatecode/skills/deck/SKILL.md')).toBe(join(root, '.privatecode', 'skills', 'deck', 'SKILL.md'))
+  expect(ws.resolveForWrite('.privatecode/agents/reviewer.md')).toBe(join(root, '.privatecode', 'agents', 'reviewer.md'))
+  expect(ws.resolveForWrite('.privatecode/settings.json')).toBe(join(root, '.privatecode', 'settings.json'))
+  expect(ws.resolveForWrite('.privatecode/hooks/pre.ps1')).toBe(join(root, '.privatecode', 'hooks', 'pre.ps1'))
+})
+
+test('the engine denies state, asks for the settings and hooks in every mode, and lets the rest through', () => {
+  const { root } = workspace()
+  const autopilot = new PermissionEngine({ mode: 'autopilot', workspaceRoot: root, layers: [] })
+  // The tool's own state: never, whatever the mode.
+  for (const path of ['.privatecode/state/logs/run.log', '.privatecode/state/sessions/s1.jsonl', 'app/.privatecode/state/x', '.PrivateCode/sessions/s.jsonl']) {
+    const d = autopilot.decide({ tool: 'Write', paths: [path] })
+    expect(d.verdict, path).toBe('deny')
+    expect(d.source, path).toBe('builtin')
+  }
+  // What decides the next session's rules: written only with the user watching, even
+  // where autopilot would otherwise wave every edit through.
+  for (const path of ['.privatecode/settings.json', '.privatecode/settings.local.json', '.privatecode/hooks/pre.ps1', 'app/.privatecode/hooks/x.sh']) {
+    const d = autopilot.decide({ tool: 'Edit', paths: [path] })
+    expect(d.verdict, path).toBe('ask')
+    expect(d.source, path).toBe('builtin')
+  }
+  // The user's own skills, agents, commands and notes: the ordinary gate.
+  for (const path of ['.privatecode/skills/deck/SKILL.md', '.privatecode/agents/reviewer.md', '.privatecode/commands/ship.md', '.privatecode/project-notes.md']) {
+    expect(autopilot.decide({ tool: 'Write', paths: [path] }).verdict, path).toBe('allow')
+  }
+  const normal = new PermissionEngine({ mode: 'normal', workspaceRoot: root, layers: [] })
+  expect(normal.decide({ tool: 'Write', paths: ['.privatecode/skills/deck/SKILL.md'] }).verdict).toBe('ask')
+  expect(normal.decide({ tool: 'Write', paths: ['.privatecode/skills/deck/SKILL.md'] }).source).toBe('mode')
+
+  // An allow rule covers a skill, and does NOT cover the settings: the ask sits above it.
+  const widened = new PermissionEngine({
+    mode: 'normal',
+    workspaceRoot: root,
+    layers: [{ scope: 'project', path: join(root, '.privatecode', 'settings.json'), permissions: { allow: ['Write(.privatecode/**)'], ask: [], deny: [] } }],
+  })
+  expect(widened.decide({ tool: 'Write', paths: ['.privatecode/skills/deck/SKILL.md'] }).verdict).toBe('allow')
+  expect(widened.decide({ tool: 'Write', paths: ['.privatecode/settings.json'] }).verdict).toBe('ask')
+  // A deny rule still wins over the ask.
+  const denied = new PermissionEngine({
+    mode: 'normal',
+    workspaceRoot: root,
+    layers: [{ scope: 'project', path: join(root, '.privatecode', 'settings.json'), permissions: { allow: [], ask: [], deny: ['Write(.privatecode/settings.json)'] } }],
+  })
+  expect(denied.decide({ tool: 'Write', paths: ['.privatecode/settings.json'] }).verdict).toBe('deny')
 })
 
 test('reading .privatecode is still allowed: this is a write guard, not a denylist entry', () => {
@@ -130,5 +185,11 @@ test.skipIf(process.platform !== 'win32')('the 8.3 alias for .privatecode is ref
   const listing = execFileSync('cmd', ['/c', 'dir', '/X', root], { encoding: 'utf8' })
   const alias = /(\w+~\d)\s+\.privatecode/.exec(listing)?.[1]
   if (alias === undefined) return // 8.3 generation is off on this volume; nothing to bypass.
-  expect(() => ws.resolveForWrite(`${alias}/settings.json`)).toThrow(WorkspaceViolation)
+  expect(() => ws.resolveForWrite(`${alias}/state/sessions/s1.jsonl`)).toThrow(WorkspaceViolation)
+  // And the alias is not a way around the ask either: the jail lets the settings through
+  // (they are the user's now) and the engine resolves the real name before deciding.
+  expect(() => ws.resolveForWrite(`${alias}/settings.json`)).not.toThrow()
+  const engine = new PermissionEngine({ mode: 'autopilot', workspaceRoot: root, layers: [] })
+  expect(engine.decide({ tool: 'Write', paths: [`${alias}/settings.json`] }).verdict).toBe('ask')
+  expect(engine.decide({ tool: 'Write', paths: [`${alias}/state/logs/x.log`] }).verdict).toBe('deny')
 })

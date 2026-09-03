@@ -74,6 +74,11 @@ export function Plugins({ client }: { client: ProtocolClient }): VNode {
         <Button size="sm" variant="ghost" class="ml-auto" icon={<RefreshCw />} onClick={load} data-action="plugins-refresh">
           Refresh
         </Button>
+        {/* The console's /reload-plugins: a new session with the plugins as they are on
+            disk now — for a plugin edited by hand, or one installed elsewhere. */}
+        <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void run('/reload-plugins')} data-action="plugins-reload" title="Re-read every plugin from disk and start a new session with them">
+          Reload plugins
+        </Button>
       </div>
 
       {busy !== null && (
@@ -317,6 +322,31 @@ function Discover({ client, data, run, busy, scope, onScope }: {
   )
 }
 
+/** The console's `/plugin validate <folder>`: a plugin being written checked before it is
+ * added anywhere — the manifest, the skills, the hooks, each problem named. */
+function ValidateFolder({ run, busy }: { run: Run; busy: boolean }): VNode {
+  const [folder, setFolder] = useState('')
+  const validate = (): void => {
+    const text = folder.trim()
+    if (text === '') return
+    void run(`/plugin validate ${text}`)
+  }
+  return (
+    <div class="mt-3 flex items-center gap-2" data-plugins-validate="">
+      <Input
+        placeholder="Validate a plugin folder you are writing: its path"
+        value={folder}
+        onInput={(e) => setFolder((e.currentTarget as HTMLInputElement).value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); validate() } }}
+        class="flex-1"
+      />
+      <Button size="sm" disabled={busy || folder.trim() === ''} onClick={validate} data-action="plugin-validate">
+        Validate
+      </Button>
+    </div>
+  )
+}
+
 function Marketplaces({ data, run, busy }: { data: PluginsListResult; run: Run; busy: boolean }): VNode {
   const [source, setSource] = useState('')
   const add = (): void => {
@@ -339,6 +369,8 @@ function Marketplaces({ data, run, busy }: { data: PluginsListResult; run: Run; 
           Add marketplace
         </Button>
       </div>
+
+      <ValidateFolder run={run} busy={busy} />
 
       <SettingLabel>Registered</SettingLabel>
       {data.marketplaces.length === 0 && <PanelEmpty icon={<Store />} title="No marketplaces" hint="Add one above." />}

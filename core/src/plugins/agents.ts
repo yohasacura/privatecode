@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { SubAgentRole } from '../agent/subagent.js'
+import { PRIVATE_DIR } from '../private-dir.js'
 import type { AgentMode } from '../permissions/engine.js'
 import { parseFrontmatter } from '../skills/skills.js'
 import { BOM } from '../tools/line-endings.js'
@@ -116,6 +118,21 @@ export function parseAgentMarkdown(text: string, fileName: string, prefix: strin
   const ignored = IGNORED_FIELDS.filter((f) => fields[f] !== undefined && fields[f] !== '')
   if (ignored.length > 0) problems.push(`${where}: ${ignored.join(', ')} ${ignored.length === 1 ? 'is' : 'are'} not acted on by PrivateCode`)
   return role
+}
+
+/**
+ * The user's own agents, beside their skills: `%APPDATA%\PrivateCode\agents\*.md` for every
+ * workspace, `.privatecode/agents/*.md` for this one. The same file format as a plugin's
+ * agents, un-namespaced, with a project agent shadowing a user one of the same name and both
+ * shadowing a plugin's — the precedence Claude Code gives `.claude/agents`.
+ */
+export function userAgentsDir(): string {
+  const appData = process.env['APPDATA'] ?? join(homedir(), 'AppData', 'Roaming')
+  return join(appData, 'PrivateCode', 'agents')
+}
+
+export function projectAgentsDir(workspaceRoot: string): string {
+  return join(workspaceRoot, PRIVATE_DIR, 'agents')
 }
 
 /** Every `*.md` in a folder, as roles. A missing folder is nothing; anything else is a problem. */

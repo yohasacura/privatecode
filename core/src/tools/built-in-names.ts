@@ -44,6 +44,7 @@ export const BUILT_IN_TOOL_NAMES: ReadonlySet<string> = new Set([
   'background_task',
   'browser',
   'csharp_nav',
+  'plugins',
   'database',
   'Agent',
   'delete_file',

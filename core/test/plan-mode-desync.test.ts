@@ -53,25 +53,32 @@ test('normal mode still asks rather than denying, so the fix did not widen the d
  * itself permissions. It sits above the rule layers so no rule can unwrite it; reading
  * stays allowed, because the model is deliberately told to read back its own output logs.
  */
-test('writes under .privatecode are denied in every mode', () => {
+test('writes under .privatecode/state are denied in every mode; the settings and hooks ask in every working mode', () => {
   for (const mode of ['normal', 'auto-edit', 'autopilot', 'plan'] as const) {
     const engine = new PermissionEngine({ layers: [], mode, workspaceRoot: root })
     // String.raw for the Windows separator: this is the spelling the tools actually
     // receive on this platform, and it must be caught as surely as the forward-slash one.
-    for (const p of ['.privatecode/settings.json', '.privatecode', String.raw`.PrivateCode\hooks.json`,
-                     'a/../.privatecode/settings.json',
+    for (const p of ['.privatecode/state/sessions/s.jsonl', String.raw`.PrivateCode\state\logs\run.log`,
+                     'a/../.privatecode/state/x',
                      // A MULTI-FOLDER workspace makes the folder name mandatory, so this is
                      // the only spelling the model can even write there -- and it is the one
-                     // a start-anchored test called allowed. The jail does not backstop it:
-                     // `.privatecode` is in no DENIED_SEGMENTS, so the write landed, and the
-                     // next session loaded those permissions, hooks and format commands --
-                     // hooks and format both run with no permission gate at all.
-                     'app/.privatecode/settings.json',
-                     String.raw`app\.privatecode\hooks.json`,
-                     'engine/.privatecode/settings.local.json']) {
+                     // a start-anchored test called allowed.
+                     'app/.privatecode/state/sessions/s.jsonl',
+                     String.raw`app\.privatecode\checkpoints.git\HEAD`]) {
       const d = engine.decide({ tool: 'Write', paths: [p] })
       expect(d.verdict, `${mode}: ${p}`).toBe('deny')
       expect(d.source, `${mode}: ${p}`).toBe('builtin')
+    }
+    // The owner's ruling narrowed the wall to `state/`. The files that decide what the
+    // next session runs under are still never written silently: an ask in every working
+    // mode — autopilot included, where it parks in the decision queue — and a refusal in
+    // plan mode, which is read-only.
+    for (const p of ['.privatecode/settings.json', String.raw`.PrivateCode\hooks\pre.ps1`,
+                     'a/../.privatecode/settings.json', 'app/.privatecode/settings.json',
+                     String.raw`app\.privatecode\hooks\x.sh`, 'engine/.privatecode/settings.local.json']) {
+      const d = engine.decide({ tool: 'Write', paths: [p] })
+      expect(d.verdict, `${mode}: ${p}`).toBe(mode === 'plan' ? 'deny' : 'ask')
+      expect(d.source, `${mode}: ${p}`).toBe(mode === 'plan' ? 'mode' : 'builtin')
     }
   }
 })

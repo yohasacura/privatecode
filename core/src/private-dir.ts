@@ -35,6 +35,40 @@ export const PRIVATE_DIR = '.privatecode'
 export const STATE_DIR = 'state'
 
 /**
+ * The part of `.privatecode/` that is the tool's own — `state/` and, for a folder that has
+ * not been migrated yet, the names that used to live at the top level — as a test on a path
+ * with any prefix and either slash. This is what a model-issued write may never touch, and
+ * what the window's own file editor refuses too. Everything else in the folder (skills,
+ * agents, commands, notes, the settings files) is the user's to edit, and the model's to
+ * edit on their behalf: the owner's ruling was "close only state", after a session that
+ * could not create a skill because the whole folder was walled off.
+ *
+ * `state` is spelled `\.privatecode[\\/]state(?:[\\/]|$)`; case-insensitive because NTFS is.
+ */
+const PROTECTED_PRIVATE = new RegExp(
+  `(^|[\\\\/])${PRIVATE_DIR.replace('.', '\\.')}[\\\\/](?:${STATE_DIR}|sessions|logs|checkpoints|checkpoints\\.git|decisions\\.jsonl|worklog\\.md)(?:[\\\\/]|$)`,
+  'i',
+)
+
+export function isProtectedPrivatePath(path: string): boolean {
+  return PROTECTED_PRIVATE.test(path)
+}
+
+/**
+ * The files under `.privatecode/` whose contents decide what runs without asking: the
+ * permission rules, the hooks, the format command. A model may write them (the owner asked
+ * for that), but never silently — the permission engine asks in every mode.
+ */
+const SENSITIVE_PRIVATE = new RegExp(
+  `(^|[\\\\/])${PRIVATE_DIR.replace('.', '\\.')}[\\\\/](?:settings(?:\\.local)?\\.json$|hooks(?:[\\\\/]|$))`,
+  'i',
+)
+
+export function isSensitivePrivatePath(path: string): boolean {
+  return SENSITIVE_PRIVATE.test(path)
+}
+
+/**
  * `*` — everything here, including this file.
  *
  * The `state/` split is about READABILITY, not about git. It was briefly narrowed to ignore

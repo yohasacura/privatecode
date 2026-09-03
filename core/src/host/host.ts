@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { readFile, readdir, stat } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import type {
+  AgentView, AgentsCreateParams, AgentsCreateResult, AgentsListResult, FsOpenExternalParams, FsOpenExternalResult,
+  FsWriteParams, FsWriteResult, MemoryListResult, SkillsCreateParams, SkillsCreateResult,
+} from './protocol.js'
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AgentEvents } from '../agent/loop.js'
 import { HEALTH_CHECK_TIMEOUT_MS } from '../cli/render.js'
@@ -22,6 +27,7 @@ import { loadVerify } from '../verify/config.js'
 import { loadProjectMemory } from '../memory/project-memory.js'
 import { loadProjectNotes } from '../memory/project-notes.js'
 import { bundledSkillSources, loadSkills, projectSkillsDir, userSkillsDir, type SkillSource } from '../skills/skills.js'
+import { projectAgentsDir, readAgentsDir, userAgentsDir } from '../plugins/agents.js'
 import { stopNavProcess } from '../csharp/nav-process.js'
 import { stopSqlProcess } from '../sql/sql-process.js'
 import { expandCommand, listCommands, type CommandSource } from '../commands/custom.js'
@@ -557,6 +563,12 @@ export class SessionHost {
       case 'plugins.list': return this.pluginsList()
       case 'plugins.catalog': return this.pluginsCatalog(params as PluginsCatalogParams)
       case 'plugins.command': return this.pluginsCommand(params as PluginsCommandParams)
+      case 'skills.create': return this.skillsCreate(params as SkillsCreateParams)
+      case 'agents.list': return this.agentsList()
+      case 'agents.create': return this.agentsCreate(params as AgentsCreateParams)
+      case 'fs.write': return this.fsWrite(params as FsWriteParams)
+      case 'fs.openExternal': return this.fsOpenExternal(params as FsOpenExternalParams)
+      case 'memory.list': return this.memoryList()
       case 'mcp.rawRead': return this.mcpRawRead()
       case 'mcp.rawSave': return this.mcpRawSave(params as McpRawSaveParams)
       case 'run.start': return this.runStart(params as RunStartParams)
@@ -741,9 +753,19 @@ export class SessionHost {
     const plugins = loadPluginComponents(store, workspaceRoot)
     this.plugins = plugins
     problems.push(...plugins.problems, ...plugins.ignored)
+    // The user's own agents, project first: `.privatecode/agents/*.md`, then
+    // `%APPDATA%\PrivateCode\agents\*.md`, in the format a plugin's agents use. Read here,
+    // with the plugins, so `/reload-plugins` and a settings save pick up a new file too.
+    this.workspaceAgents = [
+      ...readAgentsDir(projectAgentsDir(workspaceRoot), null, 'project agents', problems),
+      ...readAgentsDir(userAgentsDir(), null, 'user agents', problems),
+    ]
     this.registerDelegate()
     return problems
   }
+
+  /** `.privatecode/agents` and the user folder's, project first. See `loadPlugins`. */
+  private workspaceAgents: SubAgentRole[] = []
 
   /** The `Agent` tool with every role this workspace has: the built-in ones and the plugins'. */
   private registerDelegate(): void {
@@ -753,11 +775,12 @@ export class SessionHost {
     registry.register(createDelegateTool([...ROLES, ...this.roles()]))
   }
 
-  /** Roles besides the built-in ones, first definition of a name winning. */
+  /** Roles besides the built-in ones, first definition of a name winning: the project's
+   * own agents, then the user's, then the plugins'. */
   private roles(): SubAgentRole[] {
     const seen = new Set(ROLES.map((r) => r.name))
     const out: SubAgentRole[] = []
-    for (const role of this.plugins?.agents ?? []) {
+    for (const role of [...this.workspaceAgents, ...(this.plugins?.agents ?? [])]) {
       if (seen.has(role.name)) continue
       seen.add(role.name)
       out.push(role)
@@ -1086,6 +1109,15 @@ export class SessionHost {
     // The agents plugins and `.claude/agents/` ship, and the plugins' `bin/` folders.
     const roles = this.roles()
     if (roles.length > 0) sessionOpts.roles = roles
+    // The `plugins` tool runs the same `/plugin …` lines the composer does, store, reload
+    // and all — the owner's ruling that the model may install and manage plugins when
+    // asked, behind the permission gate (an ask in normal mode, like a command).
+    sessionOpts.plugins = {
+      run: async (line) => {
+        const r = await this.pluginsCommand({ line })
+        return { ok: r.ok, text: r.text }
+      },
+    }
     const binDirs = this.plugins?.binDirs ?? []
     if (binDirs.length > 0) sessionOpts.extraPath = binDirs
     if (notes.text !== '') sessionOpts.notes = notes.text
@@ -2271,6 +2303,157 @@ export class SessionHost {
   }
 
   /** What is on disk right now — see the protocol's note on why not the running session. */
+  // -----------------------------------------------------------------------------------
+  // The window's editor for skills, agents and the files beside them (parity with the
+  // console, where these are edited with $EDITOR): create from a template, write whole,
+  // open with the OS. The owner's ruling that the window must do everything the console
+  // does, and that only `.privatecode/state/` is off limits.
+  // -----------------------------------------------------------------------------------
+
+  /** The user's PrivateCode folder — skills and agents that apply to every workspace. */
+  private static userFolder(): string {
+    return dirname(userSkillsDir())
+  }
+
+  /**
+   * Where an editor write may land: inside a mount, under the same rule as the model's
+   * writes (`resolveForWrite` refuses `.privatecode/state/`), or inside the user's own
+   * skills/agents folders, which lie outside every workspace.
+   */
+  private editablePath(path: string): string {
+    const { workspace } = this.requireInitialized()
+    const user = SessionHost.userFolder()
+    if (isAbsolute(path)) {
+      const abs = resolve(path)
+      const rel = relative(user, abs)
+      if (rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)) {
+        const top = rel.split(sep)[0]
+        if (top === 'skills' || top === 'agents') return abs
+        throw new Error(`${abs} is under the PrivateCode folder but not in skills/ or agents/; nothing else there is edited by hand`)
+      }
+    }
+    return workspace.resolveForWrite(path)
+  }
+
+  private fsWrite(params: FsWriteParams): FsWriteResult {
+    if (typeof params.path !== 'string' || params.path.trim() === '') throw new Error('fs.write needs a path')
+    if (typeof params.text !== 'string') throw new Error('fs.write needs the text')
+    const abs = this.editablePath(params.path)
+    mkdirSync(dirname(abs), { recursive: true })
+    writeFileSync(abs, params.text, 'utf8')
+    return { path: abs, bytes: Buffer.byteLength(params.text, 'utf8') }
+  }
+
+  /**
+   * `explorer` for a folder, the file's own association for a file — through `cmd /c start`,
+   * which is what "open with the default app" is on Windows. Only for paths inside the
+   * workspace, the user's PrivateCode folder or the plugin store; anywhere else is refused.
+   */
+  private fsOpenExternal(params: FsOpenExternalParams): FsOpenExternalResult {
+    if (typeof params.path !== 'string' || params.path.trim() === '') throw new Error('fs.openExternal needs a path')
+    const { workspace, workspaceRoot } = this.requireInitialized()
+    const abs = isAbsolute(params.path) ? resolve(params.path) : workspace.resolve(params.path)
+    const inside = (root: string): boolean => {
+      const rel = relative(root, abs)
+      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    }
+    const allowed = [workspaceRoot, SessionHost.userFolder(), ...(this.pluginStore ? [this.pluginStore.root] : [])]
+    if (!allowed.some(inside)) throw new Error(`${abs} is outside the workspace, the PrivateCode folder and the plugin store, so the window will not open it`)
+    if (!existsSync(abs)) throw new Error(`${abs} does not exist`)
+    if (process.platform !== 'win32') throw new Error('opening files with the OS is only wired up on Windows')
+    // `start ""` — the empty title is not optional: without it `start` reads the first quoted
+    // argument as the window title and opens nothing.
+    const child = spawn('cmd', ['/c', 'start', '', abs], { detached: true, stdio: 'ignore', windowsHide: true })
+    child.unref()
+    return { opened: abs }
+  }
+
+  private static validName(name: string, what: string): string {
+    const n = name.trim().toLowerCase()
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(n)) throw new Error(`a ${what} name is lowercase letters, digits and dashes (got "${name}")`)
+    return n
+  }
+
+  private skillsCreate(params: SkillsCreateParams): SkillsCreateResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const name = SessionHost.validName(params.name ?? '', 'skill')
+    const dir = join(params.scope === 'user' ? userSkillsDir() : projectSkillsDir(workspaceRoot), name)
+    const path = join(dir, 'SKILL.md')
+    if (existsSync(path)) throw new Error(`a skill called "${name}" already exists at ${path}`)
+    const description = (params.description ?? '').trim() || `What this skill is for and when to use it — one or two sentences the model reads to decide.`
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path, [
+      '---',
+      `name: ${name}`,
+      `description: ${description.replace(/\s+/g, ' ')}`,
+      'argument-hint: [what to pass after the slash command]',
+      '---',
+      '',
+      `# ${name}`,
+      '',
+      'Say what to do, step by step, in the imperative. Name the files and commands exactly;',
+      'give one complete example of the input and of the output; say what to check before',
+      'reporting back. Files beside this one can be run in place — the `Skill` reply names',
+      'the folder.',
+      '',
+    ].join('\n'), 'utf8')
+    return { path }
+  }
+
+  private agentsList(): AgentsListResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const problems: string[] = []
+    const agents: AgentView[] = []
+    const seen = new Set<string>()
+    const add = (dir: string, scope: 'project' | 'user'): void => {
+      for (const role of readAgentsDir(dir, null, `${scope} agents`, problems)) {
+        if (seen.has(role.name)) continue
+        seen.add(role.name)
+        agents.push({ name: role.name, scope, purpose: role.purpose, path: join(dir, `${role.name}.md`) })
+      }
+    }
+    add(projectAgentsDir(workspaceRoot), 'project')
+    add(userAgentsDir(), 'user')
+    for (const role of this.plugins?.agents ?? []) {
+      if (seen.has(role.name)) continue
+      seen.add(role.name)
+      const plugin = role.name.includes(':') ? role.name.slice(0, role.name.indexOf(':')) : undefined
+      agents.push({ name: role.name, scope: 'plugin', purpose: role.purpose, ...(plugin !== undefined ? { plugin } : {}) })
+    }
+    return { agents, problems, dirs: [{ scope: 'project', path: projectAgentsDir(workspaceRoot) }, { scope: 'user', path: userAgentsDir() }] }
+  }
+
+  private agentsCreate(params: AgentsCreateParams): AgentsCreateResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const name = SessionHost.validName(params.name ?? '', 'agent')
+    const dir = params.scope === 'user' ? userAgentsDir() : projectAgentsDir(workspaceRoot)
+    const path = join(dir, `${name}.md`)
+    if (existsSync(path)) throw new Error(`an agent called "${name}" already exists at ${path}`)
+    const description = (params.description ?? '').trim() || 'What this agent is for — the one line the Agent tool shows the model when it picks a role.'
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path, [
+      '---',
+      `name: ${name}`,
+      `description: ${description.replace(/\s+/g, ' ')}`,
+      '# tools: Read, Grep, Glob        (leave out for everything the caller has)',
+      '# permissionMode: plan           (read-only worker)',
+      '# maxTurns: 20',
+      '---',
+      '',
+      `You are the ${name} agent. Say here what the worker must do, what it must not touch, and`,
+      'what shape its report takes. The brief is everything it knows beyond the task it is given.',
+      '',
+    ].join('\n'), 'utf8')
+    return { path }
+  }
+
+  /** The console's `/memory`: the AGENTS.md files and notes a session loads, as they are now. */
+  private memoryList(): MemoryListResult {
+    const { workspaceRoot } = this.requireInitialized()
+    const memory = loadProjectMemory(workspaceRoot)
+    return { layers: memory.layers.map((l) => ({ scope: l.scope, path: l.path, bytes: l.bytes, truncated: l.truncated })) }
+  }
+
   private skillsList(): SkillsListResult {
     const { workspaceRoot } = this.requireInitialized()
     const loaded = loadSkills(workspaceRoot, undefined, this.skillSources())

@@ -135,3 +135,22 @@ describe('Marketplaces', () => {
     expect(commands).toEqual(['/plugin marketplace add acme/tools', '/plugin marketplace add obra/superpowers-marketplace'])
   })
 })
+
+describe('the console commands the tab did not have', () => {
+  it('Reload plugins runs /reload-plugins, and Validate runs /plugin validate on the folder typed', async () => {
+    draw()
+    await settle()
+    button('Reload plugins').click()
+    await settle()
+    expect(commands).toContain('/reload-plugins')
+    ;([...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Marketplaces') as HTMLElement).click()
+    await settle()
+    const input = host.querySelector<HTMLInputElement>('[data-plugins-validate] input')!
+    input.value = 'D:\work\my-plugin'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await settle()
+    button('Validate').click()
+    await settle()
+    expect(commands).toContain('/plugin validate D:\work\my-plugin')
+  })
+})

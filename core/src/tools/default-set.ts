@@ -11,6 +11,7 @@ import { deleteFileTool } from './delete-file.js'
 import { delegateTool } from './delegate.js'
 import { createBashTool } from './run-command.js'
 import { BackgroundTasks, backgroundTaskTool } from './background-task.js'
+import { pluginsTool } from './plugins.js'
 import { gitStatusTool } from './git-tool.js'
 import { TodoStore } from '../interaction.js'
 import { todoWriteTool } from './todo-write.js'
@@ -84,7 +85,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   // `buildSystemPrompt` under `delegation:`, which is computed from THIS registration —
   // remove the tool and the paragraph goes with it.
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webSearchTool, webFetchTool, csharpNavTool, databaseTool,
-                   editFileTool, writeFileTool, moveFileTool, deleteFileTool, createBashTool({ background }), sqlDeployTool,
+                   editFileTool, writeFileTool, moveFileTool, deleteFileTool, createBashTool({ background }), sqlDeployTool, pluginsTool,
                    backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
                    symbolOutlineTool, browserTool, useSkillTool, rememberTool, recallTool, sessionsTool,
                    delegateTool]) {

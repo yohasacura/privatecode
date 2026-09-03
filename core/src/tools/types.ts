@@ -7,6 +7,11 @@ import type { ReadMemory } from './read-memory.js'
 import type { DatabaseSettings } from '../sql/settings.js'
 import type { SubAgentOutcome } from '../agent/subagent.js'
 
+/** What the `plugins` tool can do: one `/plugin …` line, answered the way the composer is. */
+export interface PluginPort {
+  run(line: string): Promise<{ ok: boolean; text: string }>
+}
+
 export interface ToolContext {
   workspace: Workspace
   /**
@@ -63,6 +68,13 @@ export interface ToolContext {
    * what a one-shot caller and most tests want. See `read-memory.ts`.
    */
   reads?: ReadMemory
+  /**
+   * Runs a `/plugin …` line — add a marketplace, install, enable, update — on the user's
+   * behalf, exactly as the composer and the REPL run it. Provided by the host, which owns
+   * the store and reloads the plugins afterwards; absent for hosts with no store, and the
+   * `plugins` tool says so. See `tools/plugins.ts`.
+   */
+  plugins?: PluginPort
   /**
    * Runs one narrow job in a worker with its own conversation, and returns what it
    * concluded. See `agent/subagent.ts`.

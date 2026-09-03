@@ -35,7 +35,7 @@ import {
   BROWSER_TOOL, MCP_TOOL_PREFIX, type AgentMode, type PermissionEngine,
 } from '../permissions/engine.js'
 import type { Toolset } from '../tools/default-set.js'
-import type { ToolContext } from '../tools/types.js'
+import type { PluginPort, ToolContext } from '../tools/types.js'
 import { attachmentUserText } from './attachment-text.js'
 import { REVERT_FILE_PREFIX, ROLLBACK_PREFIX } from './checkpoint-notices.js'
 import { Transcript, transcriptChars } from '../transcript/transcript.js'
@@ -298,6 +298,8 @@ export interface SessionOptions {
   roles?: readonly SubAgentRole[]
   /** Folders prepended to PATH for `Bash`: the `bin/` of every enabled plugin. */
   extraPath?: readonly string[]
+  /** The host's `/plugin …` runner, for the `plugins` tool. See `ToolContext.plugins`. */
+  plugins?: PluginPort
   /**
    * The project's own check, run after any turn that wrote something. Absent means the
    * feature is off, which is the right default: a verify command is a promise about how
@@ -4480,6 +4482,7 @@ export class Session {
       browser: this.opts.toolset.browser,
       webRenderer: this.opts.toolset.webRenderer,
       reads: this.opts.toolset.reads,
+      ...(this.opts.plugins !== undefined ? { plugins: this.opts.plugins } : {}),
     }
     // Built once per Session, so the circuit breaker inside it counts failures across the
     // whole session rather than resetting every turn.

@@ -9,6 +9,7 @@ import {
   sep,
 } from 'node:path'
 import { type Mount, mountName } from './mounts.js'
+import { isProtectedPrivatePath } from './private-dir.js'
 
 export class WorkspaceViolation extends Error {
   constructor(message: string) {
@@ -61,20 +62,21 @@ const DENIED_SEGMENTS: RegExp[] = [
 const TRAILING_DOTS_AND_SPACES = /[. ]+$/
 
 /**
- * `.privatecode/` holds the file the next session reads its `permissions`, `hooks` and
- * `format` rules from — and hook and format commands run with no permission gate at all,
- * so a write there is a write to the permission system itself.
+ * `.privatecode/state/` is the tool's own — sessions, logs, checkpoints — and nothing
+ * edits it by hand; `resolveForWrite` refuses it (`isProtectedPrivatePath`). The rest of
+ * `.privatecode/` used to be refused too, on the reasoning that `settings.json` holds the
+ * permission rules and hooks run with no gate. It was narrowed on the owner's ruling
+ * ("close only state"): a skill the user asks the model to write has to land in
+ * `.privatecode/skills/`, and a settings change the user asks for is theirs to approve —
+ * the permission engine asks for those files in every mode (`isSensitivePrivatePath`).
  *
- * The permission engine denies those writes already, but it matches the path the model
- * SPELLED after a purely lexical canonicalize. On NTFS the same directory also answers to
- * its 8.3 alias: measured, `Write({path:'PRIVAT~1/settings.json'})` was decided
- * `allow (mode)` in auto-edit and replaced the real `.privatecode/settings.json`, whose
- * planted `format` command then ran through powershell with no engine in the path.
+ * Matched on the path the filesystem reports, not the one the model spelled: on NTFS the
+ * directory also answers to its 8.3 alias — measured, `Write({path:'PRIVAT~1/…'})` was
+ * decided `allow (mode)` before the jail learned to look at the canonical name.
  *
  * Deliberately NOT added to `DENIED_SEGMENTS`: that list guards reads too, and reading
- * one's own settings is legitimate. This is the write chokepoint, and it denies writes.
+ * one's own settings is legitimate. This is the write chokepoint, and it refuses writes.
  */
-const ANY_PRIVATE_DIR_SEGMENT = /(^|[\\/])\.privatecode([\\/]|$)/i
 
 /**
  * Whether `abs` is a path the OS would open as `root` itself.
@@ -360,11 +362,14 @@ export class Workspace {
     // there. One extra realpath per write, against a write.
     const canonicalRel =
       mount === undefined ? abs : pathRelative(canonicalize(mount.root), canonicalize(abs))
-    if (ANY_PRIVATE_DIR_SEGMENT.test(canonicalRel)) {
+    // Only the tool's own state is walled off. Skills, agents, commands, notes and the
+    // settings files under `.privatecode/` are the user's, and the model edits them on the
+    // user's behalf through the same permission gate as any other file — the settings and
+    // hooks with an ask in every mode (`permissions/engine.ts`).
+    if (isProtectedPrivatePath(canonicalRel)) {
       throw new WorkspaceViolation(
-        `access denied to ${relativePath}: it is inside .privatecode, where this workspace ` +
-        'keeps its permission, hook and format settings. Those are the user\'s to change, ' +
-        'not yours — ask them, or use the settings UI.',
+        `access denied to ${relativePath}: it is inside .privatecode/state, where this ` +
+        'workspace keeps its sessions, logs and checkpoints. Nothing edits those by hand.',
       )
     }
     if (mount?.access === 'read') {

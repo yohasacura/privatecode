@@ -94,7 +94,13 @@ machine's own `git`, `node`, `python` and `dotnet`. Four skills ship with the ap
 `/grill-me`, `/mermaid` (diagrams render in the transcript) and `/pptx` — a JSON deck spec
 becomes a designed deck (six themes; cards, stats, charts, tables, timelines) with every text
 box checked to fit, rendered to PNG through PowerPoint; existing decks are outlined, edited and
-validated by the same tool, which is plain Node. Details, the hook
+validated by the same tool, which is plain Node. Everything the console does, the window
+does: Settings → Plugins adds marketplaces, browses and installs, reloads and validates;
+Settings → Skills makes a skill or an agent from a template and edits SKILL.md, the scripts
+beside it and the agent files in place; Settings → MCP servers edits the JSON. The model
+may do the same when asked — the `plugins` tool runs `/plugin …` lines behind the
+permission gate, and everything under `.privatecode/` except `state/` is writable
+(the settings and hooks always ask first). Details, the hook
 contract and what is not supported: [docs/PLUGINS.md](docs/PLUGINS.md).
 
 **Two numbers in `settings.json` shape how much the model is told up front.**

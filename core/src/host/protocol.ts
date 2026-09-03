@@ -476,6 +476,24 @@ export interface FsTreeEntry { name: string; dir: boolean }
 export interface FsTreeParams { path?: string }
 export interface FsTreeResult { entries: FsTreeEntry[] }
 
+/**
+ * The window's own file editor, for the files the console edits with `$EDITOR`: a skill's
+ * SKILL.md and the scripts beside it, an agent, a command template, the settings. Jailed like
+ * the model's writes — anything in the workspace except `.privatecode/state/` — plus the
+ * user's own skill and agent folders under `%APPDATA%\PrivateCode`, which lie outside every
+ * workspace. Written whole, as UTF-8, with the line endings the text carries.
+ */
+export interface FsWriteParams { path: string; text: string }
+export interface FsWriteResult { path: string; bytes: number }
+
+/**
+ * Opens a file with whatever Windows opens it with, or a folder in Explorer — the console's
+ * "edit it in your editor" for a window that has one of its own but is not it. Limited to
+ * the workspace, the user's PrivateCode folder and the plugin store: not a general launcher.
+ */
+export interface FsOpenExternalParams { path: string }
+export interface FsOpenExternalResult { opened: string }
+
 /** Jailed to the workspace root; the result is capped at 2000 lines (see `truncated`). */
 export interface FsReadParams { path: string }
 export interface FsReadResult {
@@ -682,6 +700,12 @@ export interface HostMethodMap {
   'permissions.remove': { params: PermissionsRemoveParams; result: PermissionsRemoveResult }
   'permissions.add': { params: PermissionsAddParams; result: PermissionsAddResult }
   'skills.list': { params: SkillsListParams; result: SkillsListResult }
+  'skills.create': { params: SkillsCreateParams; result: SkillsCreateResult }
+  'agents.list': { params: AgentsListParams; result: AgentsListResult }
+  'agents.create': { params: AgentsCreateParams; result: AgentsCreateResult }
+  'memory.list': { params: MemoryListParams; result: MemoryListResult }
+  'fs.write': { params: FsWriteParams; result: FsWriteResult }
+  'fs.openExternal': { params: FsOpenExternalParams; result: FsOpenExternalResult }
   'plugins.list': { params: PluginsListParams; result: PluginsListResult }
   'plugins.catalog': { params: PluginsCatalogParams; result: PluginsCatalogResult }
   'plugins.command': { params: PluginsCommandParams; result: PluginsCommandResult }
@@ -1123,6 +1147,37 @@ export interface SkillView {
   /** Files bundled beside it, which `Skill` can be asked for by name. */
   files: string[]
 }
+/**
+ * A new skill or agent from a template, in the project's `.privatecode/` or the user's
+ * `%APPDATA%\PrivateCode` folder — what `skill-creator` does with the model, done by hand.
+ * The name is the folder (skill) or file (agent) name: lowercase letters, digits, dashes.
+ * Refused, not overwritten, when one exists.
+ */
+export interface SkillsCreateParams { name: string; scope: 'project' | 'user'; description?: string }
+export interface SkillsCreateResult { path: string }
+export type AgentsListParams = Empty
+export interface AgentView {
+  name: string
+  scope: 'project' | 'user' | 'plugin'
+  plugin?: string
+  purpose: string
+  /** The `.md` behind it, for the editor. Absent for a plugin's agent that came from its cache. */
+  path?: string
+}
+export interface AgentsListResult {
+  agents: AgentView[]
+  problems: string[]
+  dirs: { scope: 'project' | 'user'; path: string }[]
+}
+export interface AgentsCreateParams { name: string; scope: 'project' | 'user'; description?: string }
+export interface AgentsCreateResult { path: string }
+
+/** The console's `/memory`: which AGENTS.md files (and the project notes) a session loads. */
+export type MemoryListParams = Empty
+export interface MemoryListResult {
+  layers: { scope: string; path: string; bytes: number; truncated: boolean }[]
+}
+
 export interface SkillsListResult {
   skills: SkillView[]
   problems: string[]

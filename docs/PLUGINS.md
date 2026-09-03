@@ -177,3 +177,31 @@ servers, monitors, output styles, themes, workflows, channels, `userConfig`,
 ```
 
 The design and its phases: `docs/PLUGINS-2026-09.md`.
+
+## The window does what the console does (2026-09-03)
+
+Everything the REPL's slash commands do has a place in the window, and the model may do it too
+when asked:
+
+| Console | Window | Model |
+|---|---|---|
+| `/plugin marketplace add|list|update|remove` | Settings → Plugins → Marketplaces | the `plugins` tool, gated like a command |
+| `/plugin install|uninstall|enable|disable|update|list|details` | Settings → Plugins → Discover / Installed | the `plugins` tool |
+| `/plugin validate <folder>` | Settings → Plugins → Marketplaces → Validate | the `plugins` tool |
+| `/reload-plugins` | Settings → Plugins → Reload plugins | after an install through the tool, automatic |
+| `/skills`, writing a skill by hand | Settings → Skills: New skill (project or user folder), Edit SKILL.md and the files beside it, Open folder | `Write`/`Edit` under `.privatecode/skills/` or the user folder; `skill-creator` guides it |
+| an agent file by hand | Settings → Skills → Agents: New agent, Edit, Open folder | `Write`/`Edit` under `.privatecode/agents/` |
+| `mcpServers` in `settings.json` | Settings → MCP servers (the JSON, in place) | `Edit` on `.privatecode/settings.json` — asked in every mode |
+
+**Agents of your own.** `.privatecode/agents/*.md` (this workspace) and
+`%APPDATA%\PrivateCode\agents\*.md` (every workspace) are read like a plugin's agents — the
+same frontmatter (`name`, `description`, `tools`, `permissionMode`, `maxTurns`) — and offered
+to the model through the `Agent` tool by name. A project agent shadows a user one, both
+shadow a plugin's.
+
+**What the model may write under `.privatecode/`.** Only `state/` (sessions, logs,
+checkpoints) is refused outright — the owner's ruling, after the model could not create a
+skill because the whole folder was walled off. Skills, agents, commands and notes go through
+the ordinary permission gate. `settings.json`, `settings.local.json` and `hooks/` are always
+put to the user first, in every mode (autopilot parks the question), because they decide what
+the next session runs without asking; a deny rule still wins, and plan mode refuses.

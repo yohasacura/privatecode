@@ -1,5 +1,48 @@
 import type { RememberLayer } from '../interaction.js'
+import { realpathSync } from 'node:fs'
+import { isAbsolute, join, relative } from 'node:path'
 import type { PermissionKey } from '../tools/types.js'
+import { isProtectedPrivatePath, isSensitivePrivatePath } from '../private-dir.js'
+
+/**
+ * The path as the filesystem knows it, relative to the workspace — or the lexical canonical
+ * form when the file does not exist yet (a new skill, say) or cannot be resolved.
+ *
+ * Both built-in checks below look at this rather than at what the model typed, for the
+ * reason the workspace jail does: on NTFS `.privatecode` also answers to its 8.3 alias
+ * (`PRIVAT~1`), and a purely lexical test sees nothing private in `PRIVAT~1/settings.json`.
+ * The jail used to be the backstop for the whole folder; now that the folder is largely
+ * writable, the ask for the settings has to see through the alias itself.
+ */
+function realRelative(workspaceRoot: string, p: string): string {
+  const lexical = canonicalizePath(p) ?? p
+  try {
+    const abs = isAbsolute(p) ? p : join(workspaceRoot, p)
+    const real = realpathSync.native(abs)
+    const root = realpathSync.native(workspaceRoot)
+    const rel = relative(root, real)
+    if (rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)) return rel
+    return lexical
+  } catch {
+    // Not there yet: resolve the deepest existing ancestor, so a NEW file under an aliased
+    // folder is still seen for what it is.
+    try {
+      const abs = isAbsolute(p) ? p : join(workspaceRoot, p)
+      const parts = abs.split(/[\\/]/)
+      for (let i = parts.length - 1; i > 0; i -= 1) {
+        const head = parts.slice(0, i).join('\\')
+        try {
+          const real = realpathSync.native(head)
+          const root = realpathSync.native(workspaceRoot)
+          const rel = relative(root, join(real, ...parts.slice(i)))
+          if (rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)) return rel
+          return lexical
+        } catch { /* one level up */ }
+      }
+    } catch { /* fall through */ }
+    return lexical
+  }
+}
 import {
   canonicalizePath,
   MCP_TOOL_PREFIX,
@@ -46,7 +89,9 @@ export interface Decision {
 const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'move_file', 'delete_file'])
 
 /** Tools whose grantable act is running something outside the workspace jail. */
-const EXEC_TOOLS: ReadonlySet<string> = new Set(['Bash', 'background_task'])
+// `plugins` runs `/plugin …` lines — an install fetches and enables code — so it is gated
+// like a command: asked in normal mode, allowed in autopilot, refused in plan mode.
+const EXEC_TOOLS: ReadonlySet<string> = new Set(['Bash', 'background_task', 'plugins'])
 
 /**
  * Tools whose grantable act changes state that is neither a workspace file nor a process:
@@ -185,52 +230,58 @@ function scopeLabel(scope: SettingsLayer['scope']): string {
 // workspace.ts) is the actual backstop against a tool reaching outside the workspace root
 // regardless of what this engine decides -- this check only hardens the path-bearing half
 // of the deny tier, not a substitute for the jail.
-/** `.privatecode/x`, `app/.privatecode/x`, `.PrivateCode\x` -- but not `privatecode.md`
- * or `src/.privatecoded/`. Case-insensitive because NTFS is.
- *
- * The same segment anywhere in a path -- which is also the case where canonicalization
- * gave up (an absolute path, say) and the only honest reading is "this mentions the
- * directory".
- *
- * Anywhere rather than only at the start, because a multi-folder workspace makes the
- * folder name mandatory: `app/.privatecode/settings.json` is the only spelling the model
- * can write there, and the start-anchored test this replaces called that one allowed. */
-const ANY_PRIVATE_DIR_SEGMENT = /(^|[\\/])\.privatecode([\\/]|$)/i
-
 /**
- * Denies a model-issued WRITE anywhere under `.privatecode/`. See `decide`'s doc comment
- * for why this is a built-in rather than a rule the user writes.
+ * Denies a model-issued WRITE under `.privatecode/state/`. See `decide`'s doc comment for
+ * why this is a built-in rather than a rule the user writes. The patterns live in
+ * `private-dir.ts`, shared with the workspace jail, so the two never disagree.
  *
  * Canonicalization failure denies too, rather than falling through: a path this engine
  * cannot reduce to a comparable form is exactly the shape an escape attempt takes, and
  * the cost of being wrong in that direction is one refused write.
  */
-function builtinPrivateDirDeny(key: PermissionKey): Decision | null {
+function builtinPrivateDirDeny(key: PermissionKey, workspaceRoot: string): Decision | null {
   if (!FILE_WRITE_TOOLS.has(key.tool) || key.paths === undefined) return null
-  const hit = key.paths.some((p) => {
-    // `canonicalizePath` returns null for an absolute path or one it cannot reduce -- it
-    // does not throw. A null is not a pass: an unreducible path is exactly the shape an
-    // escape attempt takes, so fall back to looking for the segment ANYWHERE in the raw
-    // text. The cost of being wrong in this direction is one refused write.
-    const canonical = canonicalizePath(p)
-    // ANY segment, not only a leading one. `PRIVATE_DIR_PATH` is start-anchored, and in a
-    // multi-folder workspace the folder name is MANDATORY -- so the only spelling the
-    // model can even write is `app/.privatecode/settings.json`, which canonicalizes
-    // perfectly well and then fails the anchored test. The deny simply did not exist
-    // there, and nothing else covers it: `.privatecode` is in no DENIED_SEGMENTS, so the
-    // jail lets it through, and the next session loads those `permissions`, `hooks` and
-    // `format` rules -- hooks and format commands both run with no permission gate at all.
-    if (canonical !== null) return ANY_PRIVATE_DIR_SEGMENT.test(canonical)
-    return ANY_PRIVATE_DIR_SEGMENT.test(p)
-  })
+  // Tested on the real name AND the spelling: `realRelative` sees through an 8.3 alias,
+  // and a spelling that mentions the folder is refused even when it resolves nowhere — an
+  // unreducible path is exactly the shape an escape attempt takes.
+  //
+  // ANY segment, not only a leading one: in a multi-folder workspace the folder name is
+  // mandatory, so `app/.privatecode/state/…` is the only spelling the model can write.
+  // Only `state/` (and the names that lived at the top level before `state/` existed) is
+  // denied. The rest of `.privatecode/` — skills, agents, commands, notes, the settings
+  // files — is the user's, and on the owner's ruling the model may edit it on their
+  // behalf: through the ordinary gate for most of it, and with an ask in every mode for
+  // the settings and hooks (`builtinSensitiveAsk`).
+  const hit = key.paths.some((p) => isProtectedPrivatePath(realRelative(workspaceRoot, p)) || isProtectedPrivatePath(p))
   if (!hit) return null
   return {
     verdict: 'deny',
     source: 'builtin',
     reason:
-      'Blocked by built-in protection: .privatecode/ holds the permission settings, hooks ' +
-      'and saved sessions this run is operating under, so nothing here may write to it. ' +
-      'Reading is allowed. If a change there is genuinely needed, ask the user to make it.',
+      'Blocked by built-in protection: .privatecode/state/ holds the sessions, logs and ' +
+      'checkpoints this run is operating under, so nothing here may write to it. Reading is ' +
+      'allowed, and the rest of .privatecode/ (skills, agents, commands, settings) can be edited.',
+  }
+}
+
+/**
+ * The files whose contents decide what runs without asking — `.privatecode/settings.json`,
+ * `settings.local.json`, anything under `hooks/` — may be written, but never silently: an
+ * ask in every mode, above the allow rules and the mode default, below an explicit deny.
+ * Autopilot parks the question in the decision queue rather than answering it itself,
+ * which is the point: a model that could grant itself permissions unattended would be
+ * writing the rule it is then judged by.
+ */
+function builtinSensitiveAsk(key: PermissionKey, workspaceRoot: string): Decision | null {
+  if (!FILE_WRITE_TOOLS.has(key.tool) || key.paths === undefined) return null
+  const hit = key.paths.some((p) => isSensitivePrivatePath(realRelative(workspaceRoot, p)) || isSensitivePrivatePath(p))
+  if (!hit) return null
+  return {
+    verdict: 'ask',
+    source: 'builtin',
+    reason:
+      'This file sets the permission rules, hooks or format command the next session runs ' +
+      'under, so the change is always put to the user first.',
   }
 }
 
@@ -343,7 +394,7 @@ export class PermissionEngine {
       }
     }
 
-    const ownState = builtinPrivateDirDeny(key)
+    const ownState = builtinPrivateDirDeny(key, this.workspaceRoot)
     if (ownState) return ownState
 
     for (const layer of this.layers) {
@@ -358,6 +409,14 @@ export class PermissionEngine {
           source: 'rule',
         }
       }
+    }
+
+    // Below a deny rule, above everything that could allow: the settings and hooks are
+    // written only with the user watching, whatever the mode or the allow rules say. Plan
+    // mode is read-only and stays so — a desynced plan-mode write is refused, not asked.
+    const sensitive = builtinSensitiveAsk(key, this.workspaceRoot)
+    if (sensitive) {
+      return this.mode === 'plan' ? { verdict: 'deny', reason: 'plan mode is read-only', source: 'mode' } : sensitive
     }
 
     for (const layer of this.layers) {
