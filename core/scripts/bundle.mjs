@@ -30,8 +30,9 @@
  * in place of a vitest file for "the bundle script's staging manifest".
  */
 import { build } from 'esbuild'
-import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { createHash } from 'node:crypto'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -60,6 +61,29 @@ function stageVendor(name, files) {
   for (const f of names) {
     copyFileSync(join(src, f), join(dst, f))
   }
+}
+
+/**
+ * The staged skills as the agent carries them: every file under `dir` (relative path with
+ * forward slashes → base64) and a stamp over the lot, so a folder whose stamp matches is left
+ * alone on start. Sorted, so the stamp is the same on every machine.
+ */
+function embedSkills(dir) {
+  const files = {}
+  const hash = createHash('sha256')
+  const walk = (d) => {
+    for (const name of readdirSync(d).sort()) {
+      const path = join(d, name)
+      if (statSync(path).isDirectory()) { walk(path); continue }
+      const rel = relative(dir, path).split('\\').join('/')
+      if (rel === '.stamp') continue
+      const bytes = readFileSync(path)
+      files[rel] = bytes.toString('base64')
+      hash.update(rel).update('\0').update(bytes).update('\0')
+    }
+  }
+  walk(dir)
+  return { stamp: hash.digest('hex').slice(0, 16), files }
 }
 
 /**
@@ -122,31 +146,17 @@ async function main() {
   rmSync(sidecarDir, { recursive: true, force: true })
   mkdirSync(sidecarDir, { recursive: true })
 
-  await build({
-    entryPoints: [join(coreRoot, 'src', 'host', 'stdio-main.ts')],
-    outfile: join(sidecarDir, 'agent.cjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'cjs',
-    minify: false,
-    sourcemap: true,
-    logLevel: 'info',
-  })
-
-  stageVendor('ripgrep', ['rg.exe'])
-  stageVendor('tree-sitter', null)
   // The skills PrivateCode ships (`skills/skills.ts`'s `bundledSkillsDir`): the whole
-  // folder, scripts included, beside agent.cjs — where the sidecar looks for it.
+  // folder, scripts included, beside agent.cjs — where the sidecar looks for it. Staged
+  // BEFORE the agent is built, because the agent carries a copy (below).
   cpSync(join(coreRoot, 'skills'), join(sidecarDir, 'skills'), { recursive: true })
   // The pptx skill's tool is JavaScript with dependencies (pptxgenjs, jszip, xmldom). From a
   // checkout it resolves them out of core/node_modules; beside the sidecar there is no such
   // folder, so the staged copy is rebuilt as one self-contained file and its lib/ dropped.
   // Same esbuild, same settings as agent.cjs, so `node skills/pptx/pptx.cjs` needs nothing.
-  const pptxTool = join(sidecarDir, 'skills', 'pptx', 'pptx.cjs')
   await build({
     entryPoints: [join(coreRoot, 'skills', 'pptx', 'pptx.cjs')],
-    outfile: pptxTool,
+    outfile: join(sidecarDir, 'skills', 'pptx', 'pptx.cjs'),
     bundle: true,
     platform: 'node',
     target: 'node20',
@@ -159,6 +169,36 @@ async function main() {
     allowOverwrite: true,
   })
   rmSync(join(sidecarDir, 'skills', 'pptx', 'lib'), { recursive: true, force: true })
+
+  // The agent carries the staged skills inside itself and writes them beside itself on
+  // start when the stamp there is not its own (`skills.ts`, `materializeEmbeddedSkills`).
+  // A routine update replaces agent.cjs and nothing else, so this is how a changed skill
+  // reaches a folder whose 140 MB of pinned binaries did not move. The generated module is
+  // real only for the duration of this build; the committed placeholder comes back after.
+  const embedded = embedSkills(join(sidecarDir, 'skills'))
+  writeFileSync(join(sidecarDir, 'skills', '.stamp'), `${embedded.stamp}\n`)
+  const generated = join(coreRoot, 'src', 'skills', 'embedded-skills.generated.ts')
+  const placeholder = readFileSync(generated, 'utf8')
+  writeFileSync(generated, `${placeholder.split('export const EMBEDDED_SKILLS')[0]}export const EMBEDDED_SKILLS: { stamp: string; files: Record<string, string> } = ${JSON.stringify(embedded)}\n`)
+  try {
+    await build({
+      entryPoints: [join(coreRoot, 'src', 'host', 'stdio-main.ts')],
+      outfile: join(sidecarDir, 'agent.cjs'),
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'cjs',
+      minify: false,
+      sourcemap: true,
+      logLevel: 'info',
+    })
+  } finally {
+    writeFileSync(generated, placeholder)
+  }
+  console.log(`bundle.mjs: agent.cjs carries ${Object.keys(embedded.files).length} skill files, stamp ${embedded.stamp}`)
+
+  stageVendor('ripgrep', ['rg.exe'])
+  stageVendor('tree-sitter', null)
   // Git Bash and its coreutils — what the `Bash` tool runs (`bash.ts`). Optional the way
   // roslyn is: a checkout that has not run scripts/fetch-vendor.mjs still bundles, and the
   // tool then falls back to the machine's Git for Windows or says bash is missing.

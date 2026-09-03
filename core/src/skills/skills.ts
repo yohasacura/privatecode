@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { EMBEDDED_SKILLS } from './embedded-skills.generated.js'
 import { homedir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -140,13 +141,60 @@ export function bundledSkillsDir(): string | null {
     candidates.push(join(here, 'skills'), join(here, '..', '..', 'skills'))
   }
   // The CommonJS bundle: `import.meta` is `{}` there, and the script's own path is the
-  // one thing the launcher always gives it.
+  // one thing the launcher always gives it. That bundle also CARRIES the skills, and writes
+  // them beside itself first — see `materializeEmbeddedSkills`.
   const script = process.argv[1]
-  if (script !== undefined) candidates.push(join(dirname(script), 'skills'))
+  if (script !== undefined) {
+    const beside = join(dirname(script), 'skills')
+    materializeOnce(beside)
+    candidates.push(beside)
+  }
   for (const c of candidates) {
     if (existsSync(join(c, 'skill-creator', 'SKILL.md'))) return c
   }
   return null
+}
+
+const STAMP_FILE = '.stamp'
+let materialized = false
+
+function materializeOnce(dir: string): void {
+  if (materialized) return
+  materialized = true
+  try {
+    materializeEmbeddedSkills(dir, EMBEDDED_SKILLS)
+  } catch (e) {
+    // A read-only install folder, or a file held open: the skills already there (if any) are
+    // what this run gets. Said once on stderr, where the shell's ring buffer keeps it.
+    process.stderr.write(`skills: could not write the bundled skills to ${dir}: ${(e as Error).message}\n`)
+  }
+}
+
+/**
+ * Writes the skills the agent carries into `dir`, when what is there is not this build's.
+ *
+ * The stamp decides: absent or different, every carried skill folder is replaced wholesale —
+ * a file the previous version shipped and this one does not (the pptx skill's python scripts,
+ * once) must not survive beside the new tool, where the `Skill` reply would list it. The stamp
+ * is written LAST, so a run interrupted halfway leaves a stamp that does not match and the
+ * next start does the work again. A folder that is not carried (a skill added by hand into
+ * the bundled folder) is left alone. Returns what happened, for the test and for nobody else.
+ */
+export function materializeEmbeddedSkills(dir: string, payload: { stamp: string; files: Record<string, string> }): 'nothing-carried' | 'current' | 'written' {
+  if (payload.stamp === '') return 'nothing-carried'
+  const stampPath = join(dir, STAMP_FILE)
+  try {
+    if (existsSync(stampPath) && readFileSync(stampPath, 'utf8').trim() === payload.stamp) return 'current'
+  } catch { /* unreadable stamp reads as "different" */ }
+  const skills = new Set(Object.keys(payload.files).map((rel) => rel.split('/')[0] as string))
+  for (const skill of skills) rmSync(join(dir, skill), { recursive: true, force: true })
+  for (const [rel, b64] of Object.entries(payload.files)) {
+    const target = join(dir, ...rel.split('/'))
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, Buffer.from(b64, 'base64'))
+  }
+  writeFileSync(stampPath, `${payload.stamp}\n`)
+  return 'written'
 }
 
 /** The bundled folder as a source for `loadSkills`, or none when it is not there. */
