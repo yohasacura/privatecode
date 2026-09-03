@@ -110,6 +110,19 @@ export interface ToolResult {
    * build cannot work without it.
    */
   display?: string
+  /**
+   * The step's prose IS the answer. When every call a step carried says so and the message
+   * had text, the loop ends the turn on that text after the results are appended, instead
+   * of asking the model for another step. Set by a tool whose call is a closing act —
+   * `TodoWrite` `clear` on a plan with nothing left open.
+   *
+   * Watched live: the model wrote its final summary and closed the plan in one message; the
+   * loop ran the call and asked for a further step, and the model wrote the same summary
+   * and closed the same, now absent, plan three more times before once sending the text
+   * alone. Nothing in front of it had changed between those steps but "There was no plan
+   * to close." — the repetition was the loop's, not the model's.
+   */
+  endsTurn?: boolean
 }
 
 export type Validation<A> = { ok: true; args: A } | { ok: false; error: string }

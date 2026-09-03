@@ -751,6 +751,29 @@ export class Agent {
     let coldTimeoutMs: number | undefined
     /** Whether a Stop hook has already sent the model back once this turn. */
     let stopHookActive = false
+    /**
+     * Ends the turn on `lastText`, or returns nothing when a Stop hook holds it — the hook's
+     * note is then in the transcript and the caller goes on to the next step. Shared by the
+     * step that called nothing and the step whose calls were all closing acts.
+     */
+    const finish = async (step: number): Promise<TurnResult | undefined> => {
+      if (this.opts.stopHook !== undefined && !stopHookActive && !this.opts.signal?.aborted) {
+        let stop: { block?: string } = {}
+        try {
+          stop = await this.opts.stopHook(lastText, false)
+        } catch { /* a hook that falls over does not hold the turn */ }
+        if (stop.block !== undefined) {
+          stopHookActive = true
+          this.transcript.append({ role: 'user', content: `${STOP_HOOK_PREFIX}${stop.block}` })
+          return undefined
+        }
+      }
+      return {
+        steps: step,
+        finalText: lastText || 'The model ended the turn without producing an answer.',
+        stoppedBecause: 'done',
+      }
+    }
 
     for (let step = 1; step <= this.opts.maxSteps; step++) {
       if (this.opts.signal?.aborted) {
@@ -822,22 +845,9 @@ export class Agent {
       const calls = message.tool_calls ?? []
       if (calls.length === 0) {
         this.transcript.append(this.assistantMessage(message))
-        if (this.opts.stopHook !== undefined && !stopHookActive && !this.opts.signal?.aborted) {
-          let stop: { block?: string } = {}
-          try {
-            stop = await this.opts.stopHook(lastText, false)
-          } catch { /* a hook that falls over does not hold the turn */ }
-          if (stop.block !== undefined) {
-            stopHookActive = true
-            this.transcript.append({ role: 'user', content: `${STOP_HOOK_PREFIX}${stop.block}` })
-            continue
-          }
-        }
-        return {
-          steps: step,
-          finalText: lastText || 'The model ended the turn without producing an answer.',
-          stoppedBecause: 'done',
-        }
+        const done = await finish(step)
+        if (done !== undefined) return done
+        continue
       }
 
       this.transcript.append(this.assistantMessage(message))
@@ -869,6 +879,9 @@ export class Agent {
       // the third halt condition, same shape as failure and abort: crossing it answers the
       // remaining calls instead of executing them.
       let resultChars = 0
+      // Whether every call this step carried was a closing act (`ToolResult.endsTurn`). A
+      // call that did not run, or ran without saying so, makes this an ordinary step.
+      let closing = true
       for (const call of calls) {
         // Re-read every iteration, not once: Esc lands wherever it lands, and a step running
         // four calls is four times the window it can land in. The remaining calls are still
@@ -905,6 +918,7 @@ export class Agent {
           // failure — but nothing told a WATCHING window, and once arguments streamed there
           // was a card open for it. Every unanswered call left a row pulsing forever: seen in
           // a live run as `-> Glob -> Glob -> Glob` against one `(ok)`.
+          closing = false
           this.announceCall(call)
           this.answer(call, { ok: false, content })
           continue
@@ -933,6 +947,7 @@ export class Agent {
         if (instead !== undefined) {
           this.answer(call, { ok: false, content: instead })
           resultChars += instead.length
+          closing = false
           // And the REST of the step stops with it. A step may batch several calls, and the
           // gate's message ends "Nothing was written" — true of the call it landed on and a
           // lie about the three edits queued behind it, which would have run anyway while the
@@ -945,6 +960,7 @@ export class Agent {
         const result = await this.runTool(call.function.name, call.function.arguments)
         this.answer(call, result)
         resultChars += result.content.length
+        if (result.endsTurn !== true) closing = false
         if (!result.ok) halted = `${call.function.name} failed earlier in this step`
       }
 
@@ -968,6 +984,16 @@ export class Agent {
             'The results above are real. Re-issue whatever is still missing now — one or two ' +
             'calls per step when their arguments are long.',
         })
+      }
+
+      // The step's prose was its answer and every call it carried was a closing act: the
+      // turn ends here, on that text, as it would have had the model sent the text alone.
+      // Asking for a further step instead is what produced "the answer, and close the
+      // plan" four times over (see `todo-write.ts`). Never on a cut step: the note above
+      // has just asked for the calls the output limit dropped.
+      if (closing && text !== '' && outcome.cut === undefined) {
+        const done = await finish(step)
+        if (done !== undefined) return done
       }
     }
 

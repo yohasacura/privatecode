@@ -184,14 +184,34 @@ test('clearing nothing says so rather than pretending', async () => {
   expect(r.content).toContain('no plan to close')
 })
 
-test('clear cannot be combined with edits to the plan it closes', async () => {
-  const s = new TodoStore()
-  s.set([{ text: 'one', status: 'pending' }])
+test('ticking the last step and closing the plan is one call, ticks first', async () => {
+  // Live, sent with the final answer: `complete: [4], clear: true`. Refusing it as "cannot
+  // be combined" cost a step to re-send the clear alone — and the answer it came with.
+  const s = store('a', 'b')
+  await call(s, { complete: [1] })
+  const r = await call(s, { clear: true, complete: [2] })
+  expect(r).toEqual({ ok: true, content: 'Plan closed; 2 steps are gone.', endsTurn: true })
+  expect(s.list()).toEqual([])
+})
 
-  // Two different intentions in one call: applying them needs an order, and either order is
-  // a guess about what was meant.
+test('a tick that still leaves steps open closes as an abandonment, not an answer', async () => {
+  const s = store('a', 'b', 'c')
   const r = await call(s, { clear: true, complete: [1] })
+  expect(r).toEqual({ ok: true, content: 'Plan closed; 3 steps are gone.' })
+  expect(s.list()).toEqual([])
+})
 
+test('a tick that fails leaves the plan open and unclosed', async () => {
+  const s = store('a')
+  const r = await call(s, { clear: true, complete: [3] })
+  expect(r.ok).toBe(false)
+  expect(r.content).toContain('no step 3')
+  expect(s.list()).toHaveLength(1)
+})
+
+test('clear cannot come with a whole new list', async () => {
+  const s = store('one')
+  const r = await call(s, { clear: true, todos: [{ text: 'two', status: 'pending' }] })
   expect(r.ok).toBe(false)
   expect(r.content).toContain('cannot be combined')
   expect(s.list()).toHaveLength(1)
@@ -207,4 +227,27 @@ test('an empty todos list is still refused, so the two ways cannot be confused',
 
   expect(r.ok).toBe(false)
   expect(s.list()).toHaveLength(1)
+})
+
+test('closing a plan with nothing left open says the step\'s prose was the answer', async () => {
+  // Watched live: the final summary and `clear` arrive in one message; asked for another
+  // step, the model sent the same summary and the same clear three more times. The result
+  // now says the step may end the turn (`ToolResult.endsTurn`), and the loop ends it.
+  const s = store('a', 'b')
+  await call(s, { complete: [1, 2] })
+  const r = await todoWriteTool.execute({ clear: true }, { todos: s } as never)
+  expect(r).toEqual({ ok: true, content: 'Plan closed; 2 steps are gone.', endsTurn: true })
+  expect(s.list()).toEqual([])
+})
+
+test('closing an absent plan is a closing act too — the call that live run repeated', async () => {
+  const r = await todoWriteTool.execute({ clear: true }, { todos: new TodoStore() } as never)
+  expect(r).toEqual({ ok: true, content: 'There was no plan to close.', endsTurn: true })
+})
+
+test('closing a plan with steps still open is an abandonment, and the turn goes on', async () => {
+  const s = store('a', 'b')
+  await call(s, { complete: [1] })
+  const r = await todoWriteTool.execute({ clear: true }, { todos: s } as never)
+  expect(r).toEqual({ ok: true, content: 'Plan closed; 2 steps are gone.' })
 })

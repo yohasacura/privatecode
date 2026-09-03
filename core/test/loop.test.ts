@@ -1558,3 +1558,97 @@ test('a step cut by the output limit keeps its complete calls and drops only the
     'c1:ping:true:pong:a', 'c2:ping:true:pong:b', `c3:ping:false:${CUT_CALL_NOTE.slice(0, 12)}`,
   ])
 })
+
+/** A closing act: its result says the step's prose was the answer (`ToolResult.endsTurn`). */
+const closePlan: Tool<Record<string, never>> = {
+  name: 'close_plan',
+  readOnly: true,
+  description: 'closes the plan',
+  parameters: { type: 'object', properties: {} },
+  validate: () => ({ ok: true, args: {} }),
+  execute: async () => ({ ok: true, content: 'Plan closed.', endsTurn: true }),
+}
+
+test('a step whose text came with a closing call ends the turn on that text', async () => {
+  // Watched live: the model sent its final summary and `TodoWrite clear` in one message, the
+  // loop ran the call and asked for another step, and the model sent the same summary with
+  // the same clear three more times before once sending the text alone.
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    return n === 1
+      ? toolCallResponse('close_plan', '{}', 'All four files are updated.')
+      : textResponse('a step that should never have been asked for')
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url, {}, [closePlan])
+  const result = await agent.runTurn('edit the files')
+  expect(result).toMatchObject({ steps: 1, finalText: 'All four files are updated.', stoppedBecause: 'done' })
+  expect(n).toBe(1)
+  // The call still ran and was answered, so the transcript the next turn builds on is
+  // valid: the assistant turn, its tool reply, then the new request.
+  await agent.runTurn('thanks')
+  const messages = fake.requests[1].body.messages
+  expect(messages.slice(-3).map((m: any) => m.role)).toEqual(['assistant', 'tool', 'user'])
+  expect(messages[messages.length - 2].content).toBe('Plan closed.')
+})
+
+test('a closing call without any text is an ordinary step', async () => {
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    return n === 1 ? toolCallResponse('close_plan', '{}', null) : textResponse('Done.')
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url, {}, [closePlan])
+  const result = await agent.runTurn('edit the files')
+  expect(result).toMatchObject({ steps: 2, finalText: 'Done.', stoppedBecause: 'done' })
+})
+
+test('a closing call beside an ordinary one does not end the turn', async () => {
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    if (n === 1) {
+      return {
+        choices: [{
+          finish_reason: 'tool_calls',
+          message: {
+            role: 'assistant', content: 'Nearly there.',
+            tool_calls: [
+              { id: 'c1', type: 'function', function: { name: 'close_plan', arguments: '{}' } },
+              { id: 'c2', type: 'function', function: { name: 'ping', arguments: '{"value":"a"}' } },
+            ],
+          },
+        }],
+        usage: { completion_tokens: 30 },
+      }
+    }
+    return textResponse('Done.')
+  })
+  stop = fake.close
+  const agent = makeAgent(fake.url, {}, [closePlan])
+  const result = await agent.runTurn('edit the files')
+  expect(result).toMatchObject({ steps: 2, finalText: 'Done.', stoppedBecause: 'done' })
+  expect(pingCalls).toBe(1)
+})
+
+test('a Stop hook holds a closing step exactly as it holds a plain answer', async () => {
+  let n = 0
+  const fake = await startFakeServer(() => {
+    n++
+    return n === 1
+      ? toolCallResponse('close_plan', '{}', 'All done.')
+      : textResponse('All done, and the tests pass.')
+  })
+  stop = fake.close
+  let asked = 0
+  const agent = makeAgent(fake.url, {
+    stopHook: async () => { asked++; return asked === 1 ? { block: 'run the tests first' } : {} },
+  }, [closePlan])
+  const result = await agent.runTurn('edit the files')
+  expect(result).toMatchObject({ steps: 2, finalText: 'All done, and the tests pass.', stoppedBecause: 'done' })
+  const note = fake.requests[1].body.messages.filter((m: any) => m.role === 'user').pop()
+  expect(note.content).toContain('A Stop hook asked you to continue')
+  expect(note.content).toContain('run the tests first')
+})

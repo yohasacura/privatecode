@@ -112,7 +112,9 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
     'remembers the shape of the work when the conversation no longer does.\n' +
     'To CLOSE it, send `clear: true` — when the task is done, or when it turned out not to ' +
     'need a plan. A finished plan left on screen is a card the person has to dismiss and a ' +
-    'shape the next task has to work around.',
+    'shape the next task has to work around. Send it with your final answer: once every ' +
+    'step is done, closing the plan ends the turn on that answer. `complete: [n], clear: true` ' +
+    'ticks the last step and closes in one call.',
   parameters: {
     type: 'object',
     properties: {
@@ -120,8 +122,8 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
         type: 'boolean',
         description:
           'Close the plan and remove it. Use when the work it described is finished, or ' +
-          'when it turned out not to need a plan at all. Cannot be combined with the other ' +
-          'fields — closing a plan and editing it are different intentions.',
+          'when it turned out not to need a plan at all. May come with `complete`/`start`/' +
+          '`add` (they land first, then the plan closes), never with `todos`.',
       },
       complete: {
         type: 'array',
@@ -183,15 +185,20 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
     // different intentions and a call that did both would have to pick an order to apply
     // them in, and either order is a guess about what was meant.
     if (r?.clear === true) {
-      if (r.todos !== undefined || r.complete !== undefined || r.start !== undefined
-        || r.add !== undefined) {
+      if (r.todos !== undefined) {
         return {
           ok: false,
-          error: 'clear closes the plan and cannot be combined with edits to it — send ' +
-            'the edits first, or send clear on its own',
+          error: 'clear closes the plan and cannot be combined with `todos` — send clear on its own',
         }
       }
-      return { ok: true, args: { clear: true } }
+      if (r.complete === undefined && r.start === undefined && r.add === undefined) {
+        return { ok: true, args: { clear: true } }
+      }
+      // With ticks it falls through to the patch checks below, and closes AFTER they land.
+      // "Finished the last step; close the plan" is one thought, and it was one call live —
+      // `complete: [4], clear: true`, sent with the final answer — refused here as "cannot
+      // be combined", then re-sent without the tick: a step spent on a rule. Only the order
+      // could be in question, and a closed plan cannot be edited, so there is only one.
     }
     // The index-sized edits, checked first because they are the common call. Several may
     // arrive together — "finished 2, starting 3" is one thought and should be one call.
@@ -232,7 +239,7 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
             '`todos` with the full list to create or restructure it',
         }
       }
-      return { ok: true, args: patch }
+      return { ok: true, args: r?.clear === true ? { ...patch, clear: true } : patch }
     }
     if (!Array.isArray(r?.todos)) {
       return { ok: false, error: 'todos must be an array' }
@@ -288,7 +295,15 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
     }
 
     if (args.clear === true) {
-      const had = ctx.todos.list().length
+      let before = ctx.todos.list()
+      if (args.complete !== undefined || args.start !== undefined || args.add !== undefined) {
+        // The ticks first: what closes is the plan as the model last described it.
+        const applied = applyPatch(before, args)
+        if (typeof applied === 'string') return { ok: false, content: applied }
+        before = applied
+      }
+      const had = before.length
+      const open = before.filter((t) => t.status !== 'completed').length
       ctx.todos.set([])
       ctx.interaction?.todosChanged?.(ctx.todos.list())
       return {
@@ -296,6 +311,14 @@ export const todoWriteTool: Tool<TodoWriteArgs> = {
         content: had === 0
           ? 'There was no plan to close.'
           : `Plan closed; ${had} ${had === 1 ? 'step is' : 'steps are'} gone.`,
+        // Closing a plan with nothing left open is the last act of a task, and the model
+        // performs it WITH its answer: watched live, the final summary and `clear` arrived
+        // in one message, the loop ran the call and asked for another step, and the model
+        // wrote the same summary and closed the same (now absent) plan three more times
+        // before once sending the text alone. Saying so lets the loop end the turn on that
+        // text — see `ToolResult.endsTurn`. A plan closed with steps still open is an
+        // abandonment or a restructure, and the turn goes on.
+        ...(open === 0 ? { endsTurn: true } : {}),
       }
     }
 

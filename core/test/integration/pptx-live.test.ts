@@ -99,9 +99,12 @@ describe.skipIf(!enabled)('the pptx skill against the live model', () => {
     const host = new SessionHost({ transport, prewarm: false })
     let id = 0
     const call = async <T,>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
-      id++
-      await host.handle({ id, method, params })
-      return resultOf<T>(transport, id)
+      // Captured here: the polling loop below bumps `id` for approval and question replies while
+      // a `send` is still in flight, and reading the shared counter after the await picked up
+      // the LAST reply (a bare `{}` from approval.reply) instead of the turn.
+      const reqId = ++id
+      await host.handle({ id: reqId, method, params })
+      return resultOf<T>(transport, reqId)
     }
     const started = Date.now()
     const log = (line: string): void => { process.stdout.write(`[pptx-live +${((Date.now() - started) / 1000).toFixed(0)}s] ${line}\n`) }
