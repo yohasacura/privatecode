@@ -123,7 +123,7 @@ command:
 | `/skill-creator` | writing a new skill: where it lives, the frontmatter, a description that fires, what to bundle |
 | `/grill-me` | interrogating a plan one question at a time, each with a recommended answer, reading the code first |
 | `/mermaid` | diagrams as Mermaid; a ```mermaid block in the reply is rendered in the transcript |
-| `/pptx` | PowerPoint decks with the three python-pptx scripts beside it: outline, build from Markdown, replace text |
+| `/pptx` | PowerPoint decks: a JSON deck spec becomes a designed deck (six themes, cards, stats, charts, tables, timelines, notes) with every text box checked to fit; existing decks are outlined, text-replaced, trimmed, validated and rendered to PNG through PowerPoint. One Node tool, `pptx.cjs`, beside the skill — no Python |
 
 A skill of the same name in `.privatecode/skills/` or `%APPDATA%\PrivateCode\skills\`
 replaces the bundled one.

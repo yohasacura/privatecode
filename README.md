@@ -91,7 +91,10 @@ agent files mean here what they mean there. `Bash` is bash: the app ships Git fo
 bash and coreutils (`vendor/git`), the same shell Claude Code uses on Windows, so `&&`,
 pipes, `grep`, `sed` and `find` work as written; the model's PATH also reaches the
 machine's own `git`, `node`, `python` and `dotnet`. Four skills ship with the app: `/skill-creator`,
-`/grill-me`, `/mermaid` (diagrams render in the transcript) and `/pptx`. Details, the hook
+`/grill-me`, `/mermaid` (diagrams render in the transcript) and `/pptx` — a JSON deck spec
+becomes a designed deck (six themes; cards, stats, charts, tables, timelines) with every text
+box checked to fit, rendered to PNG through PowerPoint; existing decks are outlined, edited and
+validated by the same tool, which is plain Node. Details, the hook
 contract and what is not supported: [docs/PLUGINS.md](docs/PLUGINS.md).
 
 **Two numbers in `settings.json` shape how much the model is told up front.**

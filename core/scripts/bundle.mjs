@@ -73,6 +73,10 @@ function verifyManifest() {
     join(sidecarDir, 'agent.cjs'),
     join(sidecarDir, 'vendor', 'ripgrep', 'rg.exe'),
     ...readdirSync(join(coreRoot, 'skills')).map((name) => join(sidecarDir, 'skills', name, 'SKILL.md')),
+    // The pptx tool as ONE file (its dependencies bundled in) plus the renderer it drives.
+    join(sidecarDir, 'skills', 'pptx', 'pptx.cjs'),
+    join(sidecarDir, 'skills', 'pptx', 'render.ps1'),
+    join(sidecarDir, 'skills', 'pptx', 'examples', 'sample.json'),
     ...readdirSync(join(sidecarDir, 'vendor', 'tree-sitter')).map((f) =>
       join(sidecarDir, 'vendor', 'tree-sitter', f)),
   ]
@@ -135,6 +139,26 @@ async function main() {
   // The skills PrivateCode ships (`skills/skills.ts`'s `bundledSkillsDir`): the whole
   // folder, scripts included, beside agent.cjs — where the sidecar looks for it.
   cpSync(join(coreRoot, 'skills'), join(sidecarDir, 'skills'), { recursive: true })
+  // The pptx skill's tool is JavaScript with dependencies (pptxgenjs, jszip, xmldom). From a
+  // checkout it resolves them out of core/node_modules; beside the sidecar there is no such
+  // folder, so the staged copy is rebuilt as one self-contained file and its lib/ dropped.
+  // Same esbuild, same settings as agent.cjs, so `node skills/pptx/pptx.cjs` needs nothing.
+  const pptxTool = join(sidecarDir, 'skills', 'pptx', 'pptx.cjs')
+  await build({
+    entryPoints: [join(coreRoot, 'skills', 'pptx', 'pptx.cjs')],
+    outfile: pptxTool,
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'cjs',
+    minify: false,
+    sourcemap: false,
+    // 'error', not 'warning': jszip's ESM shim mentions `import.meta`, which is empty in a
+    // CommonJS bundle and unused at runtime — six warnings per build that mean nothing.
+    logLevel: 'error',
+    allowOverwrite: true,
+  })
+  rmSync(join(sidecarDir, 'skills', 'pptx', 'lib'), { recursive: true, force: true })
   // Git Bash and its coreutils — what the `Bash` tool runs (`bash.ts`). Optional the way
   // roslyn is: a checkout that has not run scripts/fetch-vendor.mjs still bundles, and the
   // tool then falls back to the machine's Git for Windows or says bash is missing.

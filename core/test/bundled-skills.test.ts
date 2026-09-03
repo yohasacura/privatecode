@@ -32,10 +32,12 @@ test('the bundled folder is found from a checkout and holds the four skills', ()
     // The body reads back without its frontmatter and is a real procedure, not a stub.
     expect(readSkillText(s).length).toBeGreaterThan(1_000)
   }
-  // pptx ships its scripts beside it, and the tool can read them by name.
+  // pptx ships its tool and renderer beside it (lib/ and examples/ are folders, not listed),
+  // and the tool can read them by name.
   const pptx = loaded.skills.find((s) => s.name === 'pptx')!
-  expect(pptx.files).toEqual(['pptx_build.py', 'pptx_outline.py', 'pptx_replace.py'])
-  expect(readSkillText(pptx, 'pptx_outline.py')).toContain('from pptx import Presentation')
+  expect(pptx.files).toEqual(['pptx.cjs', 'render.ps1'])
+  expect(readSkillText(pptx, 'pptx.cjs')).toContain("node pptx.cjs check")
+  expect(readSkillText(pptx, 'examples/sample.json')).toContain('"slides"')
 })
 
 test('every bundled skill is a slash command, and the user folder wins a clash', () => {

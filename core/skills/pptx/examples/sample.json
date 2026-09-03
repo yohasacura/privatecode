@@ -1,0 +1,139 @@
+{
+  "title": "Northwind Logistics: the 2026 network review",
+  "subtitle": "Where the network stands after the Baltic expansion, and what the next year needs",
+  "author": "Operations analytics",
+  "organization": "Northwind Logistics",
+  "date": "September 2026",
+  "theme": "ocean",
+  "footer": "Northwind Logistics · network review 2026",
+  "slides": [
+    {
+      "type": "title",
+      "kicker": "OPERATIONS REVIEW · FY2026",
+      "title": "The 2026 network review",
+      "subtitle": "Where the network stands after the Baltic expansion, and what the next year needs",
+      "notes": "Open with the one number: on-time delivery is back above 94% for the first time since the expansion."
+    },
+    {
+      "type": "stats",
+      "title": "The year in four numbers",
+      "stats": [
+        { "value": "94.2%", "label": "on-time delivery, up from 89.7% in 2025" },
+        { "value": "1.8 млн", "label": "shipments handled, +23% year on year" },
+        { "value": "€42", "label": "cost per shipment, down 9%" },
+        { "value": "11", "label": "hubs in the network after Riga and Tallinn opened" }
+      ],
+      "text": "Volume grew faster than cost for the first time in three years. The two new hubs carried the growth; the older hubs absorbed it without new headcount.",
+      "callout": "Growth is no longer buying reliability at the expense of cost.",
+      "notes": "Pause on the cost figure — it is the one the board asked about last quarter."
+    },
+    {
+      "type": "section",
+      "number": 1,
+      "title": "What changed in the network",
+      "text": "Two hubs, one routing model, and a different way of promising delivery dates."
+    },
+    {
+      "type": "bullets",
+      "title": "Three decisions that moved the numbers",
+      "subtitle": "Each one was argued over; each one paid back inside the year",
+      "bullets": [
+        { "text": "Riga and Tallinn opened as full hubs, not cross-docks", "sub": ["Sorting capacity 40k parcels a day each", "Staffed from the Warsaw playbook"] },
+        "Routing moved to the new model in March: one plan per day instead of three",
+        "Promised dates are now computed from live capacity, not a fixed table",
+        "Peak-season surcharges replaced blanket price rises",
+        "Customer service got direct access to the routing plan"
+      ],
+      "stats": [
+        { "value": "−31%", "label": "late deliveries on Baltic routes" },
+        { "value": "6 weeks", "label": "from hub opening to break-even" }
+      ],
+      "callout": "The routing model did more for reliability than the new buildings did.",
+      "notes": "If asked about headcount: Riga 140, Tallinn 95, both within plan."
+    },
+    {
+      "type": "cards",
+      "title": "How each hub performed",
+      "cards": [
+        { "heading": "Warsaw", "icon": "★", "text": "Still the largest node: 38% of volume, on-time 95.1%. Capacity is the constraint from November." },
+        { "heading": "Riga", "icon": "↑", "text": "Opened in February, at target volume by June. On-time 93.4% and climbing since the second sorter arrived." },
+        { "heading": "Tallinn", "icon": "↑", "text": "Smaller and faster: 91% of parcels sorted within four hours of arrival." },
+        { "heading": "Prague", "icon": "→", "text": "Flat volume, best cost per shipment in the network. The model for the next two openings." },
+        { "heading": "Vienna", "icon": "!", "text": "On-time slipped to 90.8% after the carrier change; recovering since the August renegotiation." },
+        { "heading": "Kraków", "icon": "→", "text": "Handled the Warsaw overflow in peak without a single missed cut-off." }
+      ],
+      "notes": "Vienna is the one to watch; the carrier contract runs to March."
+    },
+    {
+      "type": "chart",
+      "title": "On-time delivery by quarter",
+      "subtitle": "Percent of shipments delivered on the promised date",
+      "chart": {
+        "kind": "column",
+        "categories": ["Q1 2025", "Q2 2025", "Q3 2025", "Q4 2025", "Q1 2026", "Q2 2026", "Q3 2026"],
+        "series": [{ "name": "On-time %", "values": [90.1, 89.4, 88.9, 90.3, 92.0, 93.6, 94.2] }],
+        "unit": "%",
+        "min": 85,
+        "max": 100
+      },
+      "insight": "The turn came with the routing model in March, one quarter before the new hubs reached volume. Buildings added capacity; the model added reliability.",
+      "callout": "Four consecutive quarters of improvement, each from a different lever.",
+      "notes": "The dip in Q3 2025 was the carrier change in Vienna."
+    },
+    {
+      "type": "table",
+      "title": "Cost per shipment by hub",
+      "columns": ["Hub", "2025", "2026", "Change", "Volume share"],
+      "rows": [
+        ["Warsaw", "€44", "€40", "−9%", "38%"],
+        ["Prague", "€39", "€36", "−8%", "14%"],
+        ["Kraków", "€45", "€42", "−7%", "11%"],
+        ["Vienna", "€48", "€47", "−2%", "9%"],
+        ["Riga", "—", "€43", "new", "8%"],
+        ["Tallinn", "—", "€41", "new", "6%"]
+      ],
+      "boldFirstColumn": true,
+      "callout": "Every established hub cut cost; the new hubs opened below the network average.",
+      "notes": "Riga's cost includes the second sorter, which is why it sits above Tallinn."
+    },
+    {
+      "type": "comparison",
+      "title": "Old routing versus the live model",
+      "left": { "heading": "Fixed daily plan (until March)", "bullets": ["Three plans a day, built the night before", "Delivery dates from a static table", "Exceptions handled by phone", "Late deliveries clustered on Mondays"] },
+      "right": { "heading": "Live capacity model (since March)", "bullets": ["One plan, re-cut every 20 minutes", "Dates promised from real capacity", "Exceptions re-routed automatically", "Monday backlog gone by week 3"] },
+      "callout": "Same trucks, same drivers — a different promise."
+    },
+    {
+      "type": "timeline",
+      "title": "The next twelve months",
+      "steps": [
+        { "label": "Nov 2026", "text": "Peak season with Warsaw at capacity; Kraków takes the overflow again" },
+        { "label": "Jan 2027", "text": "Vienna carrier contract renewed or replaced", "key": true },
+        { "label": "Mar 2027", "text": "Live model extended to last-mile partners" },
+        { "label": "Jun 2027", "text": "Decision on the seventh hub: Vilnius or Gdańsk", "key": true },
+        { "label": "Sep 2027", "text": "Network review 2027" }
+      ],
+      "callout": "Two decisions, in January and June, shape the year.",
+      "notes": "The Vilnius case is stronger on volume; Gdańsk on port access."
+    },
+    {
+      "type": "image",
+      "title": "Where the volume comes from",
+      "image": "figure.png",
+      "caption": "Shipments by origin region, 2026 (thousands)",
+      "bullets": ["Poland remains the base at 52% of origin volume", "The Baltics went from 4% to 14% in one year", "Austria and Czechia are flat, and profitable"],
+      "notes": "The figure is a placeholder; the real map comes from the BI team."
+    },
+    {
+      "type": "quote",
+      "text": "We stopped promising what the timetable said and started promising what the network could do. Customers noticed within a month.",
+      "attribution": "Head of customer service, Warsaw"
+    },
+    {
+      "type": "closing",
+      "title": "Thank you",
+      "text": "Questions on the routing model, the Vienna contract, or the seventh hub are welcome now; everything else by email.",
+      "contacts": ["operations.analytics@northwind.example", "Deck and data: intranet › Network review 2026"]
+    }
+  ]
+}

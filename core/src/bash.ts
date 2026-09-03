@@ -70,7 +70,11 @@ export function findBash(): BashLocation | null {
 /** The child's environment: the shell's coreutils first, then any extra folders, then PATH. */
 export function bashEnv(bash: BashLocation, extraPath: readonly string[] = []): NodeJS.ProcessEnv {
   const key = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
-  const path = [bash.binDir, ...extraPath, process.env[key] ?? ''].filter((p) => p !== '').join(delimiter)
+  // The runtime this very process runs on — the vendored node.exe beside agent.cjs in a
+  // release, the machine's node in a checkout — so `node` is on the tool's PATH on a machine
+  // that never installed one. The bundled pptx skill is a node script, and a skill that only
+  // works where node happens to be installed is a skill that works on the author's machine.
+  const path = [bash.binDir, ...extraPath, dirname(process.execPath), process.env[key] ?? ''].filter((p) => p !== '').join(delimiter)
   return {
     ...process.env,
     [key]: path,

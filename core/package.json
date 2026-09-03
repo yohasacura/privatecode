@@ -29,8 +29,12 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
+    "@xmldom/xmldom": "^0.9.12",
     "execa": "^9.5.0",
+    "image-size": "^1.2.1",
+    "jszip": "^3.10.1",
     "linkedom": "^0.18.13",
+    "pptxgenjs": "^4.0.1",
     "web-tree-sitter": "^0.24.7"
   }
 }
