@@ -1,8 +1,9 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync, type Dirent } from 'node:fs'
 import { homedir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execa } from 'execa'
+import { isWindowsDeviceName } from './device-names.js'
 import { killTree } from './powershell.js'
 import { bundledSkillsDir } from './skills/skills.js'
 
@@ -91,9 +92,57 @@ export function bashEnv(bash: BashLocation, extraPath: readonly string[] = []): 
   }
 }
 
-/** argv for `bash.exe <command>`: one string, read by bash exactly as typed. */
+/**
+ * A redirect to cmd.exe's `nul`, and the `/dev/null` it meant.
+ *
+ * To this shell a bare `nul` after `>`, `2>`, `>>`, `&>` or `<` is a relative path, and
+ * the file it creates is the one `device-names.ts` describes: real, and undeletable by
+ * anything that goes through Win32. Rewritten rather than refused, because the intention —
+ * discard this stream — is not in doubt, and a refusal would cost the step it takes to
+ * re-issue the command. Quoted `"nul"` and any case are the same mistake. `nul.txt` is not
+ * matched here: it is a different mistake, and `removeDeviceNamedFiles` catches the file.
+ */
+const DEVICE_REDIRECT = /((?:^|[\s;&|(])(?:\d?>>?|&>|<)\s*)(["']?)nul\2(?=$|[\s;&|)])/gi
+
+export function rewriteDeviceRedirects(command: string): { command: string; rewritten: boolean } {
+  let rewritten = false
+  const out = command.replace(DEVICE_REDIRECT, (_match, prefix: string) => {
+    rewritten = true
+    return `${prefix}/dev/null`
+  })
+  return { command: out, rewritten }
+}
+
+/**
+ * Deletes every file in `dir` that carries a Windows device name, and returns their names.
+ *
+ * The `\\?\` prefix is the one way to address such a file: it turns the reserved-name
+ * parsing off, which is why the file could be created through the NT API and cannot be
+ * touched without it. Windows only — elsewhere `nul` is an ordinary file and none of this
+ * code's business. Cheap: one directory listing.
+ */
+export function removeDeviceNamedFiles(dir: string): string[] {
+  if (process.platform !== 'win32') return []
+  let entries: Dirent[]
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const removed: string[] = []
+  for (const entry of entries) {
+    if (!entry.isFile() || !isWindowsDeviceName(entry.name)) continue
+    try {
+      rmSync(`\\\\?\\${resolve(dir, entry.name)}`, { force: true })
+      removed.push(entry.name)
+    } catch { /* still there; the note names only what is gone */ }
+  }
+  return removed.sort()
+}
+
+/** argv for `bash.exe <command>`: one string, read by bash as typed — bar cmd.exe's `nul`. */
 export function bashArgs(command: string): string[] {
-  return ['-c', command]
+  return ['-c', rewriteDeviceRedirects(command).command]
 }
 
 /** The spawn itself, split out so its concrete option types survive into `runBash`. */

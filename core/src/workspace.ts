@@ -8,6 +8,7 @@ import {
   resolve as pathResolve,
   sep,
 } from 'node:path'
+import { isWindowsDeviceName } from './device-names.js'
 import { type Mount, mountName } from './mounts.js'
 import { isProtectedPrivatePath } from './private-dir.js'
 
@@ -110,6 +111,16 @@ export function opensAsWorkspaceRoot(abs: string, root: string): boolean {
  * to name. Applied to the caller's spelling and again to the canonical one.
  */
 function assertSegmentAllowed(segment: string, path: string): void {
+  // A Windows device name — `nul`, `con`, `com1`, with or without an extension — is not
+  // a file Win32 will create: the write goes to the device and nothing lands, and a `Read`
+  // of it comes back empty, both without an error. (Git Bash CAN create one, through the
+  // NT API; `bash.ts` guards that side.) Windows only: elsewhere `aux/` is a folder.
+  if (process.platform === 'win32' && isWindowsDeviceName(segment)) {
+    throw new WorkspaceViolation(
+      `access denied to ${path} ("${segment}" is a Windows device name — NUL, CON, PRN, AUX, ` +
+      'COMn, LPTn, with any extension — so no file can be called that)',
+    )
+  }
   if (segment.includes(':')) {
     // `.env::$DATA` opens `.env`. No workspace-relative path needs an alternate data
     // stream, so the whole shape is refused rather than parsed.

@@ -1,6 +1,6 @@
 import { stat } from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
-import { findBash, spawnBash } from '../bash.js'
+import { findBash, removeDeviceNamedFiles, rewriteDeviceRedirects, spawnBash } from '../bash.js'
 import { killTree } from '../powershell.js'
 import type { BackgroundTasks } from './background-task.js'
 import { countLines, headLines, overflowNotice, spillToLog } from './output-log.js'
@@ -98,6 +98,23 @@ const NO_BASH =
   'Nothing was run.'
 
 /**
+ * The lines under a result when the command reached for cmd.exe's `nul` — see
+ * `device-names.ts` for why that is a file here and what it costs.
+ */
+function deviceNameNote(rewritten: boolean, removed: readonly string[]): string {
+  const parts: string[] = []
+  if (rewritten) {
+    parts.push('`nul` in a redirect was read as `/dev/null`: this is Git Bash, and to it `nul` ' +
+      'is a file — one that Windows can neither open nor delete. Write `/dev/null`.')
+  }
+  if (removed.length > 0) {
+    parts.push(`Removed ${removed.map((n) => `\`${n}\``).join(', ')} from the folder this ran in: ` +
+      'a file with a Windows device name, which this command created and nothing else could delete.')
+  }
+  return parts.length === 0 ? '' : `\n\n${parts.join(' ')}`
+}
+
+/**
  * The tool, built per toolset: `background` is what `run_in_background` hands the command to,
  * and a toolset without one (the one-shot CLI, most tests) says so rather than failing.
  */
@@ -108,6 +125,7 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
     description:
       'Run a bash command (Git Bash on this Windows machine) in the workspace and return its ' +
       'output and exit code. `&&`, `||`, pipes, `$(...)`, globs and redirects work as in bash; ' +
+      'discard a stream with `2>/dev/null`, never `2>nul` — that is cmd.exe syntax, and here `nul` is a file; ' +
       'write paths with forward slashes (`src/app.ts`, `D:/dir` or `/d/dir`). Each call starts ' +
       'in the workspace folder, or in `cwd`: a `cd` does not carry over to the next call, so ' +
       'set `cwd` rather than chaining `cd`. `git`, `node`, `python`, `dotnet` and the rest come ' +
@@ -212,6 +230,8 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
       }
       const bash = findBash()
       if (bash === null) return { ok: false, content: NO_BASH }
+      // `spawnBash` makes the same rewrite on its own; asked here only so the result can say so.
+      const { rewritten } = rewriteDeviceRedirects(args.command)
 
       if (args.run_in_background === true) {
         if (deps.background === undefined) {
@@ -221,7 +241,8 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
         return {
           ok: true,
           content: `Started in the background as ${entry.id}${whereRan(ctx.workspace, cwd, args.cwd)}. ` +
-            `Read its output with background_task (action: poll, id: ${entry.id}); stop it with action: stop.`,
+            `Read its output with background_task (action: poll, id: ${entry.id}); stop it with action: stop.` +
+            deviceNameNote(rewritten, []),
         }
       }
 
@@ -273,6 +294,9 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
         ctx.signal?.removeEventListener('abort', onAbort)
       })
       const seconds = ((performance.now() - started) / 1000).toFixed(1)
+      // Whatever the command did with a device name that the rewrite could not see — `touch
+      // nul`, `> nul.txt` — is gone before the model reads the result, and the result says so.
+      const deviceNote = deviceNameNote(rewritten, removeDeviceNamedFiles(cwd))
       const raw = (result.all ?? '').trim()
       // What a person sees. Still bounded -- a runaway build log must not be able to grow
       // the app's transcript without limit -- but two orders of magnitude above what the
@@ -300,8 +324,8 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
           'start it with run_in_background: true.'
         return {
           ok: false,
-          content: `${head}${out || '(none)'}${tail}`,
-          display: `${head}${full || '(none)'}${tail}`,
+          content: `${head}${out || '(none)'}${tail}${deviceNote}`,
+          display: `${head}${full || '(none)'}${tail}${deviceNote}`,
         }
       }
       const code = result.exitCode ?? -1
@@ -313,8 +337,8 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
         : ''
       return {
         ok: code === 0,
-        content: `${header}${out || '(no output)'}${hint}`,
-        display: `${header}${full || '(no output)'}${hint}`,
+        content: `${header}${out || '(no output)'}${hint}${deviceNote}`,
+        display: `${header}${full || '(no output)'}${hint}${deviceNote}`,
       }
     },
   }
