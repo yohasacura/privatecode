@@ -211,8 +211,15 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("could not set up the download: {e}"))
 }
 
+/// A request that asks every cache on the way to step aside. A proxy that served yesterday's
+/// `latest.json` next to today's archive would make the hash check fail with "downloaded
+/// bytes do not match the manifest" — true, and useless to the person reading it.
+fn fresh(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
+    client.get(url).header("Cache-Control", "no-cache").header("Pragma", "no-cache")
+}
+
 async fn get(url: &str) -> Result<Vec<u8>, String> {
-    let res = client()?.get(url).send().await.map_err(|e| format!("{url}: {e}"))?;
+    let res = fresh(&client()?, url).send().await.map_err(|e| format!("{url}: {e}"))?;
     if !res.status().is_success() {
         return Err(format!("{url}: HTTP {}", res.status()));
     }
@@ -414,7 +421,7 @@ impl ProgressGate {
 async fn download_to(
     app: &AppHandle, url: &str, into: &Path, part: &Part,
 ) -> Result<(), String> {
-    let mut res = client()?.get(url).send().await.map_err(|e| format!("{url}: {e}"))?;
+    let mut res = fresh(&client()?, url).send().await.map_err(|e| format!("{url}: {e}"))?;
     if !res.status().is_success() {
         return Err(format!("{url}: HTTP {}", res.status()));
     }
@@ -468,9 +475,29 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
     let m = manifest().await?;
     let current = app.package_info().version.to_string();
     let dir = install_dir()?;
+    // A second window of this same folder would go on running the old app against the new
+    // agent, and holds `PrivateCode.old.exe` from the last update so this one cannot move
+    // the running exe aside — "Access is denied", with nothing in the message to say why.
+    // Said plainly instead, before anything is downloaded.
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let others = processes_running_from(&exe);
+    if !others.is_empty() {
+        let pids: Vec<String> = others.iter().map(|(pid, _)| pid.to_string()).collect();
+        return Err(format!(
+            "another PrivateCode window is open from this folder (pid {}). Close it first, then update — both windows would otherwise be running different versions from one folder.",
+            pids.join(", "),
+        ));
+    }
     let staging = dir.join(".update-staging");
     let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    if let Err(e) = fs::create_dir_all(&staging) {
+        return Err(explain_unwritable(&dir, &e));
+    }
+    // Held open, exclusively, for as long as this runs. A second PrivateCode started from
+    // the same folder meanwhile — double-clicked because the first looked busy — sweeps old
+    // staging away as it starts, and would take a download in progress with it; the lock is
+    // what tells it not to (see `remove_stale_staging`).
+    let _lock = hold_staging_lock(&staging);
 
     // --- download and verify, touching nothing that is running ---------------------------
     let sidecar_dir = dir.join("sidecar");
@@ -499,7 +526,6 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
     // The running exe cannot be overwritten, but it can be renamed. Everything above has
     // already succeeded by the time this line runs.
     report(&app, "installing", None, 0, 0);
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let state = app.state::<crate::SidecarState>();
     if need_sidecar {
         // The old tree is about to be renamed, and Windows refuses that while anything runs
@@ -528,8 +554,19 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
     report(&app, "restarting", None, 0, 0);
     // Before the new process starts, so the two are never both talking to the same
     // `.privatecode/` at once.
-    crate::shutdown_sidecar(&app.state::<crate::SidecarState>());
-    relaunch_and_leave(&exe)
+    crate::shutdown_sidecar(&state);
+    if let Err(e) = spawn_replacement(&exe) {
+        // The new files are all in place; only the hand-over failed. This process is still
+        // a working PrivateCode, so it stays one — agent back, and the window told what
+        // happened — rather than ending with nothing on screen, which from the chair is an
+        // app that "closed itself during the update".
+        match crate::start_sidecar(&app, &state) {
+            Ok(pid) => eprintln!("update: the new version did not start, sidecar restarted, pid={pid}"),
+            Err(spawn) => eprintln!("update: the new version did not start and the sidecar did not restart: {spawn}"),
+        }
+        return Err(format!("{e}. The new version is installed: close PrivateCode and start it again."));
+    }
+    leave()
 }
 
 /// The swap itself, as one step with one undo.
@@ -542,7 +579,8 @@ pub async fn apply_update(app: AppHandle) -> Result<(), String> {
 /// left the folder with a new exe and no sidecar at all, so the next launch had no agent.
 /// Pure over paths, so it can be exercised on a scratch folder where nothing is running.
 fn install(dir: &Path, exe: &Path, staging: &Path, need_sidecar: bool) -> Result<(), String> {
-    install_with(dir, exe, staging, need_sidecar, &retrying(&|from, to| fs::rename(from, to), RETRY))
+    let mv = retrying(&|from, to| fs::rename(from, to), RETRY, Some(&end_what_runs_from));
+    install_with(dir, exe, staging, need_sidecar, &mv)
 }
 
 /// How long a refused rename is retried, and how often.
@@ -552,11 +590,18 @@ struct Retry {
     pause: Duration,
 }
 
-/// Ten seconds in all. The agent's processes release their files within milliseconds of
+/// Thirty seconds in all. The agent's processes release their files within milliseconds of
 /// being stopped, but they are stopped by a job object closing, which is asynchronous; and
-/// Defender takes its time over 140 MB of freshly unpacked binaries. Both read as the same
-/// two errors: "access denied" (os error 5) and "sharing violation" (32).
-const RETRY: Retry = Retry { attempts: 50, pause: Duration::from_millis(200) };
+/// Defender takes its time over 140 MB of freshly unpacked binaries — on a slow laptop more
+/// than the ten seconds this used to allow. Both read as the same two errors: "access
+/// denied" (os error 5) and "sharing violation" (32).
+const RETRY: Retry = Retry { attempts: 150, pause: Duration::from_millis(200) };
+
+/// After this many refusals in a row — three seconds — whatever still runs from the tree
+/// being moved is ended (see `retrying`). The agent was stopped before the swap began, so
+/// by then anything left is a straggler: a helper that missed the job object, a shell a
+/// background task was running in.
+const STUCK_AFTER: u32 = 15;
 
 /// Windows saying "someone still has this open" — in either of its two voices.
 fn is_in_use(e: &std::io::Error) -> bool {
@@ -564,16 +609,23 @@ fn is_in_use(e: &std::io::Error) -> bool {
 }
 
 /// `mv`, retried while Windows says the path is in use. Any other failure returns at once:
-/// a missing source or a full disk does not get better by waiting.
+/// a missing source or a full disk does not get better by waiting. `stuck`, when given, is
+/// called once with the source path after `STUCK_AFTER` refusals, to clear whatever holds it.
 fn retrying<'a>(
     mv: &'a dyn Fn(&Path, &Path) -> std::io::Result<()>,
     retry: Retry,
+    stuck: Option<&'a dyn Fn(&Path)>,
 ) -> impl Fn(&Path, &Path) -> std::io::Result<()> + 'a {
     move |from, to| {
         let mut attempt = 1;
         loop {
             match mv(from, to) {
                 Err(e) if is_in_use(&e) && attempt < retry.attempts => {
+                    if attempt == STUCK_AFTER {
+                        if let Some(clear) = stuck {
+                            clear(from);
+                        }
+                    }
                     attempt += 1;
                     std::thread::sleep(retry.pause);
                 }
@@ -583,12 +635,218 @@ fn retrying<'a>(
     }
 }
 
-/// The rename's error, plus the one fact that explains a refusal after all those retries.
+/// What the swap does to a tree that will not let go: ends every process whose executable
+/// lives inside it. Only a DIRECTORY, ever — the exe rename cannot be refused by the running
+/// app, and a file path here would mean ending another window of this very program.
+///
+/// This is the case the job object was meant to close and does not always: `taskkill /T`
+/// walks the tree from a live parent, and when `node.exe` has already gone on its own its
+/// helpers — `roslyn-nav.exe`, the shell behind a background task — are nobody's children
+/// and keep `sidecar/` open. Every self-update to 0.3.2 and 0.4.0 died on exactly that hold,
+/// and a machine where the job object cannot be created would die on it still.
+fn end_what_runs_from(path: &Path) {
+    if !path.is_dir() {
+        return;
+    }
+    for (pid, image) in terminate_running_from(path) {
+        eprintln!("update: ended {} (pid {pid}) so {} could be moved", image.display(), path.display());
+    }
+}
+
+/// The rename's error, plus the one fact that explains a refusal after all those retries:
+/// who has it — by name, when it is a process of ours; by kind, when it is not.
 fn explain(e: &std::io::Error, tree: &Path) -> String {
-    if is_in_use(e) {
-        format!("{e}; something is still running from {}", tree.display())
+    if !is_in_use(e) {
+        return e.to_string();
+    }
+    let holders = processes_running_from(tree);
+    if holders.is_empty() {
+        return format!(
+            "{e}; something is still running from {} — or an antivirus scan or a file indexer has it open; try again in a moment",
+            tree.display(),
+        );
+    }
+    let names: Vec<String> = holders
+        .iter()
+        .map(|(pid, image)| format!("{} (pid {pid})", image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))
+        .collect();
+    format!("{e}; still running from {}: {}", tree.display(), names.join(", "))
+}
+
+/// The refusal a folder gives when it is not the person's to write — Program Files, a
+/// folder unpacked by another account — worded for what to do about it.
+fn explain_unwritable(dir: &Path, e: &std::io::Error) -> String {
+    if e.raw_os_error() == Some(5) {
+        format!(
+            "PrivateCode cannot write to its own folder, {} (access denied), and the update has to put new files there. \
+             Move the folder somewhere you own — Documents, the Desktop, a folder on another drive — or start PrivateCode once as administrator to take this update.",
+            dir.display(),
+        )
     } else {
-        e.to_string()
+        format!("could not prepare the update in {}: {e}", dir.display())
+    }
+}
+
+/// The file another PrivateCode checks before sweeping staging away. Opened with no sharing
+/// at all, so that check — an exclusive open of the same file — fails for as long as this
+/// handle lives. `None` where the platform has no such thing, and on any refusal: a lock that
+/// cannot be taken must not stop the update it protects.
+#[cfg(windows)]
+fn hold_staging_lock(staging: &Path) -> Option<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    fs::OpenOptions::new().create(true).write(true).share_mode(0).open(staging.join(".lock")).ok()
+}
+
+#[cfg(not(windows))]
+fn hold_staging_lock(_staging: &Path) -> Option<fs::File> {
+    None
+}
+
+/// Is another process updating from this staging folder right now? True when its lock file
+/// exists and cannot be opened exclusively — which is what holding it open does.
+#[cfg(windows)]
+fn staging_is_live(staging: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    match fs::OpenOptions::new().read(true).share_mode(0).open(staging.join(".lock")) {
+        Ok(_) => false,
+        Err(e) => is_in_use(&e),
+    }
+}
+
+#[cfg(not(windows))]
+fn staging_is_live(_staging: &Path) -> bool {
+    false
+}
+
+/// Removes leftover staging — unless another PrivateCode is updating from it this minute.
+pub fn remove_stale_staging(staging: &Path) {
+    if staging_is_live(staging) {
+        return;
+    }
+    let _ = fs::remove_dir_all(staging);
+}
+
+/// Every process whose executable lives under `dir` — the agent and whatever it started,
+/// when `dir` is the sidecar tree — as (pid, image path). Never this process.
+#[cfg(windows)]
+pub fn processes_running_from(dir: &Path) -> Vec<(u32, PathBuf)> {
+    use std::os::windows::ffi::OsStringExt;
+    let me = std::process::id();
+    let mut out = Vec::new();
+    // SAFETY: the snapshot, entry struct and buffers are exactly the shapes the calls
+    // document; every handle opened here is closed here; nothing outlives the function.
+    unsafe {
+        let snap = winproc::CreateToolhelp32Snapshot(winproc::TH32CS_SNAPPROCESS, 0);
+        if snap == winproc::INVALID_HANDLE_VALUE {
+            return out;
+        }
+        let mut entry: winproc::ProcessEntry32W = std::mem::zeroed();
+        entry.dw_size = std::mem::size_of::<winproc::ProcessEntry32W>() as u32;
+        let mut more = winproc::Process32FirstW(snap, &mut entry) != 0;
+        while more {
+            let pid = entry.th32_process_id;
+            if pid != 0 && pid != me {
+                let process = winproc::OpenProcess(winproc::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                if !process.is_null() {
+                    let mut name = [0u16; 1024];
+                    let mut len = name.len() as u32;
+                    if winproc::QueryFullProcessImageNameW(process, 0, name.as_mut_ptr(), &mut len) != 0 {
+                        let image = PathBuf::from(std::ffi::OsString::from_wide(&name[..len as usize]));
+                        if is_under(&image, dir) {
+                            out.push((pid, image));
+                        }
+                    }
+                    winproc::CloseHandle(process);
+                }
+            }
+            more = winproc::Process32NextW(snap, &mut entry) != 0;
+        }
+        winproc::CloseHandle(snap);
+    }
+    out
+}
+
+#[cfg(not(windows))]
+pub fn processes_running_from(_dir: &Path) -> Vec<(u32, PathBuf)> {
+    Vec::new()
+}
+
+/// Ends every process running from `dir`, returning the ones it reached.
+#[cfg(windows)]
+pub fn terminate_running_from(dir: &Path) -> Vec<(u32, PathBuf)> {
+    let mut ended = Vec::new();
+    for (pid, image) in processes_running_from(dir) {
+        // SAFETY: a handle opened for termination only, used once, closed at once.
+        let ok = unsafe {
+            let process = winproc::OpenProcess(winproc::PROCESS_TERMINATE, 0, pid);
+            if process.is_null() {
+                false
+            } else {
+                let done = winproc::TerminateProcess(process, 1) != 0;
+                winproc::CloseHandle(process);
+                done
+            }
+        };
+        if ok {
+            ended.push((pid, image));
+        }
+    }
+    ended
+}
+
+#[cfg(not(windows))]
+pub fn terminate_running_from(_dir: &Path) -> Vec<(u32, PathBuf)> {
+    Vec::new()
+}
+
+/// Is `path` `dir` itself or inside it — by spelling, case-insensitively, with the `\\?\`
+/// prefix a canonicalised path carries stripped, since an image path never has one.
+fn is_under(path: &Path, dir: &Path) -> bool {
+    let flat = |p: &Path| {
+        p.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+            .replace('/', "\\")
+    };
+    let inner = flat(path);
+    let outer = flat(dir);
+    inner == outer || inner.starts_with(&format!("{outer}\\"))
+}
+
+#[cfg(windows)]
+mod winproc {
+    use std::ffi::c_void;
+
+    pub const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+    pub const PROCESS_TERMINATE: u32 = 0x0001;
+    pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    pub const INVALID_HANDLE_VALUE: *mut c_void = usize::MAX as *mut c_void;
+
+    /// `PROCESSENTRY32W`, field for field; `dw_size` must be the struct's own size.
+    #[repr(C)]
+    pub struct ProcessEntry32W {
+        pub dw_size: u32,
+        pub cnt_usage: u32,
+        pub th32_process_id: u32,
+        pub th32_default_heap_id: usize,
+        pub th32_module_id: u32,
+        pub cnt_threads: u32,
+        pub th32_parent_process_id: u32,
+        pub pc_pri_class_base: i32,
+        pub dw_flags: u32,
+        pub sz_exe_file: [u16; 260],
+    }
+
+    // Declared rather than pulled in with the `windows` crate — see `winexit` and `job.rs`.
+    extern "system" {
+        pub fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> *mut c_void;
+        pub fn Process32FirstW(snapshot: *mut c_void, entry: *mut ProcessEntry32W) -> i32;
+        pub fn Process32NextW(snapshot: *mut c_void, entry: *mut ProcessEntry32W) -> i32;
+        pub fn OpenProcess(access: u32, inherit: i32, process_id: u32) -> *mut c_void;
+        pub fn QueryFullProcessImageNameW(process: *mut c_void, flags: u32, name: *mut u16, size: *mut u32) -> i32;
+        pub fn TerminateProcess(process: *mut c_void, exit_code: u32) -> i32;
+        pub fn CloseHandle(handle: *mut c_void) -> i32;
     }
 }
 
@@ -602,8 +860,7 @@ fn install_with(
     need_sidecar: bool,
     mv: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<(), String> {
-    let old = exe.with_extension("old.exe");
-    let _ = fs::remove_file(&old);
+    let old = retired_name(exe);
     mv(exe, &old).map_err(|e| format!("could not move the running app aside: {e}"))?;
 
     let staged_exe = staging.join(exe.file_name().ok_or("executable has no file name")?);
@@ -621,8 +878,7 @@ fn install_with(
     if need_sidecar {
         let staged_sidecar = staging.join("sidecar");
         if staged_sidecar.exists() {
-            let retired = dir.join(".sidecar.old");
-            let _ = fs::remove_dir_all(&retired);
+            let retired = retired_tree(dir);
             let had_sidecar = sidecar_dir.exists();
             if had_sidecar {
                 if let Err(e) = mv(&sidecar_dir, &retired) {
@@ -641,15 +897,68 @@ fn install_with(
         }
     } else {
         // The app archive carries agent.cjs, which belongs inside the existing sidecar tree.
+        // Copied with the same patience as the renames: the file being written over is the
+        // one the running agent was started from, and a scanner can be holding the new one.
         let staged_agent = staging.join("sidecar").join("agent.cjs");
         if staged_agent.exists() {
-            if let Err(e) = fs::copy(&staged_agent, sidecar_dir.join("agent.cjs")) {
+            let copy = retrying(&|from, to| fs::copy(from, to).map(|_| ()), RETRY, None);
+            if let Err(e) = copy(&staged_agent, &sidecar_dir.join("agent.cjs")) {
                 undo_exe();
                 return Err(format!("could not install the new agent: {e}"));
             }
         }
     }
     Ok(())
+}
+
+/// Where the old sidecar tree goes: `.sidecar.old`, cleared first — whatever still runs from
+/// a tree retired by a PREVIOUS update is a leftover of that update and is ended, since a
+/// held file inside it is what stops the folder from being removed. Should it survive even
+/// that, the tree gets a name of its own: a rename onto a non-empty folder fails outright,
+/// with an error the retries never see, and that was the one refusal this path still had.
+fn retired_tree(dir: &Path) -> PathBuf {
+    let plain = dir.join(".sidecar.old");
+    if plain.exists() {
+        for (pid, image) in terminate_running_from(&plain) {
+            eprintln!("update: ended {} (pid {pid}), a leftover of an earlier update", image.display());
+        }
+        let _ = fs::remove_dir_all(&plain);
+    }
+    if !plain.exists() {
+        return plain;
+    }
+    dir.join(format!(".sidecar.old-{}", std::process::id()))
+}
+
+/// Every `.sidecar.old*` beside the running app: what runs from one is ended (nothing
+/// legitimate does — the agent starts from `sidecar/`), then the folder goes. One that
+/// still resists stays, silently, for the next launch.
+pub fn remove_retired_trees(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if !name.starts_with(".sidecar.old") {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            terminate_running_from(&path);
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
+}
+
+/// Where the running exe goes: `PrivateCode.old.exe`, unless that name is still taken by
+/// something that will not let go — the process of a previous version that never exited —
+/// in which case a name of its own, so the rename cannot be refused for a file this update
+/// has nothing to do with. Every `PrivateCode.old*.exe` is swept at the next launch.
+fn retired_name(exe: &Path) -> PathBuf {
+    let plain = exe.with_extension("old.exe");
+    let _ = fs::remove_file(&plain);
+    if !plain.exists() {
+        return plain;
+    }
+    exe.with_extension(format!("old-{}.exe", std::process::id()))
 }
 
 /// The outgoing version leaves its number beside the new binary, so the process that starts
@@ -674,7 +983,14 @@ pub fn take_updated_from(dir: &Path) -> Option<String> {
 /// the files it was holding had to go first.
 pub fn relaunch_and_leave_without_sidecar(_app: &AppHandle) -> ! {
     match std::env::current_exe() {
-        Ok(exe) => relaunch_and_leave(&exe),
+        Ok(exe) => {
+            if let Err(e) = spawn_replacement(&exe) {
+                // Nothing left to report to: the window is about to go, and the erase has
+                // already happened. The folder still has a working app to start by hand.
+                eprintln!("erase: {e}");
+            }
+            leave()
+        }
         Err(e) => {
             eprintln!("erase: could not find our own executable to restart: {e}");
             std::process::exit(0)
@@ -709,12 +1025,15 @@ pub fn relaunch_and_leave_without_sidecar(_app: &AppHandle) -> ! {
 /// it starts live in a kill-on-close job object (see `job.rs`), and the kernel closes the last
 /// handle to that job when this process dies BY ANY MEANS. Verified, not assumed — the
 /// leftover process was terminated by hand and its `node.exe` went with it.
-fn relaunch_and_leave(exe: &Path) -> ! {
-    if let Err(e) = std::process::Command::new(exe).spawn() {
-        // Nothing left to report to: the window is about to go. The old binary is still on
-        // disk under `.old.exe`, so the folder is not left without a working app.
-        eprintln!("update: could not start the new version: {e}");
-    }
+fn spawn_replacement(exe: &Path) -> Result<(), String> {
+    std::process::Command::new(exe)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not start the new version ({}): {e}", exe.display()))
+}
+
+/// The end of this process, the abrupt way, for the reasons above.
+fn leave() -> ! {
     // SAFETY: ends this process and nothing else. The job object above owns the child
     // processes and the kernel releases it as part of our death.
     unsafe { winexit::TerminateProcess(winexit::GetCurrentProcess(), 0) };
@@ -737,10 +1056,23 @@ mod winexit {
 /// holds it open any more. Failure is ignored: a leftover file is untidy, not broken.
 pub fn clean_previous_update() {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = fs::remove_file(exe.with_extension("old.exe"));
         if let Some(dir) = exe.parent() {
-            let _ = fs::remove_dir_all(dir.join(".sidecar.old"));
-            let _ = fs::remove_dir_all(dir.join(".update-staging"));
+            remove_retired_exes(dir, &exe);
+            remove_retired_trees(dir);
+            remove_stale_staging(&dir.join(".update-staging"));
+        }
+    }
+}
+
+/// Every `<name>.old*.exe` beside the running one that can be removed — the plain one, and
+/// any that `retired_name` had to invent. One still held by a process stays, silently.
+pub fn remove_retired_exes(dir: &Path, exe: &Path) {
+    let stem = exe.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if name.starts_with(&format!("{stem}.old")) && name.ends_with(".exe") {
+            let _ = fs::remove_file(entry.path());
         }
     }
 }
@@ -748,9 +1080,9 @@ pub fn clean_previous_update() {
 #[cfg(test)]
 mod tests {
     use super::{
-        base_url, decide, install, install_with, is_newer, notes_url_for, retrying, space_needed,
-        space_shortfall, take_updated_from, write_updated_from, Manifest, Part, ProgressGate,
-        Retry, BASE_OVERRIDE, RELEASE_BASE,
+        base_url, decide, explain_unwritable, install, install_with, is_newer, is_under, notes_url_for, retrying,
+        space_needed, space_shortfall, take_updated_from, write_updated_from, Manifest, Part, ProgressGate,
+        Retry, BASE_OVERRIDE, RELEASE_BASE, STUCK_AFTER,
     };
     use std::cell::Cell;
     use std::fs;
@@ -850,7 +1182,7 @@ mod tests {
         let (dir, exe, staging) = scratch("retry", true);
         let (mv, tries) = held_open(2, dir.join("sidecar"));
         let quick = Retry { attempts: 5, pause: Duration::from_millis(5) };
-        install_with(&dir, &exe, &staging, true, &retrying(&*mv, quick)).unwrap();
+        install_with(&dir, &exe, &staging, true, &retrying(&*mv, quick, None)).unwrap();
         assert_eq!(tries.get(), 3, "refused twice, then let through");
         assert_eq!(read(&dir.join("sidecar").join("node.exe")), "new node");
         assert_eq!(read(&exe), "new exe");
@@ -862,7 +1194,7 @@ mod tests {
         let (dir, exe, staging) = scratch("retry-exhausted", true);
         let (mv, tries) = held_open(u32::MAX, dir.join("sidecar"));
         let quick = Retry { attempts: 4, pause: Duration::from_millis(1) };
-        let err = install_with(&dir, &exe, &staging, true, &retrying(&*mv, quick)).unwrap_err();
+        let err = install_with(&dir, &exe, &staging, true, &retrying(&*mv, quick, None)).unwrap_err();
         assert_eq!(tries.get(), 4);
         assert!(err.contains("old sidecar") && err.contains("still running from"), "{err}");
         assert_eq!(read(&exe), "old exe", "put back");
@@ -877,9 +1209,140 @@ mod tests {
             tries.set(tries.get() + 1);
             Err(std::io::Error::other("disk full"))
         };
-        let mv = retrying(&broken, Retry { attempts: 10, pause: Duration::from_millis(1) });
+        let mv = retrying(&broken, Retry { attempts: 10, pause: Duration::from_millis(1) }, None);
         assert!(mv(Path::new("a"), Path::new("b")).is_err());
         assert_eq!(tries.get(), 1);
+    }
+
+    #[test]
+    fn a_tree_that_stays_held_gets_its_holders_ended_once_and_the_move_goes_on() {
+        // Refused for longer than the patience before ending the holders: the clearing
+        // hook fires exactly once, with the tree, and the retries carry on after it.
+        let (dir, exe, staging) = scratch("stuck", true);
+        let tree = dir.join("sidecar");
+        let (mv, tries) = held_open(STUCK_AFTER + 3, tree.clone());
+        let cleared = std::cell::RefCell::new(Vec::<PathBuf>::new());
+        let clear = |p: &Path| cleared.borrow_mut().push(p.to_path_buf());
+        let quick = Retry { attempts: STUCK_AFTER + 10, pause: Duration::from_millis(1) };
+        install_with(&dir, &exe, &staging, true, &retrying(&*mv, quick, Some(&clear))).unwrap();
+        assert_eq!(cleared.borrow().as_slice(), &[tree.clone()]);
+        assert_eq!(tries.get(), STUCK_AFTER + 4);
+        assert_eq!(read(&tree.join("node.exe")), "new node");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unwritable_folder_is_explained_and_anything_else_is_just_reported() {
+        let denied = std::io::Error::from_raw_os_error(5);
+        let msg = explain_unwritable(Path::new(r"C:\Program Files\PrivateCode"), &denied);
+        assert!(msg.contains("cannot write to its own folder") && msg.contains("Program Files") && msg.contains("administrator"), "{msg}");
+        let full = std::io::Error::other("disk full");
+        assert!(explain_unwritable(Path::new("D:\\x"), &full).contains("disk full"));
+    }
+
+    #[test]
+    fn under_is_by_spelling_and_by_component() {
+        assert!(is_under(Path::new(r"C:\pc\sidecar\node.exe"), Path::new(r"C:\PC\sidecar")));
+        assert!(is_under(Path::new(r"\\?\C:\pc\sidecar\vendor\rg.exe"), Path::new(r"C:\pc\sidecar\")));
+        assert!(is_under(Path::new(r"C:\pc\sidecar"), Path::new(r"C:\pc\sidecar")));
+        assert!(!is_under(Path::new(r"C:\pc\sidecar2\node.exe"), Path::new(r"C:\pc\sidecar")));
+        assert!(!is_under(Path::new(r"C:\pc\PrivateCode.exe"), Path::new(r"C:\pc\sidecar")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_old_exe_still_held_open_does_not_stop_the_next_update_and_is_swept_later() {
+        use super::{remove_retired_exes, retired_name};
+        use std::os::windows::fs::OpenOptionsExt;
+        let (dir, exe, _staging) = scratch("held-old", false);
+        let plain = dir.join("PrivateCode.old.exe");
+        fs::write(&plain, "the previous version, still running somewhere").unwrap();
+        // Held with no sharing, the way a process holds its own image: it cannot be removed
+        // or renamed over.
+        let held = fs::OpenOptions::new().read(true).share_mode(0).open(&plain).unwrap();
+        let name = retired_name(&exe);
+        assert_ne!(name, plain, "a name of its own");
+        assert!(name.to_string_lossy().ends_with(".exe"));
+        assert!(fs::rename(&exe, &name).is_ok(), "the running exe can be moved to it");
+        fs::write(&exe, "new exe").unwrap();
+        remove_retired_exes(&dir, &exe);
+        assert!(plain.exists(), "the held one stays");
+        assert!(!name.exists(), "the free one goes");
+        drop(held);
+        remove_retired_exes(&dir, &exe);
+        assert!(!plain.exists(), "and the held one, once let go");
+        assert_eq!(read(&exe), "new exe");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_retired_tree_that_cannot_be_cleared_gets_a_name_of_its_own_and_the_swap_goes_on() {
+        use super::retired_tree;
+        use std::os::windows::fs::OpenOptionsExt;
+        let (dir, exe, staging) = scratch("retired-held", true);
+        let plain = dir.join(".sidecar.old");
+        fs::create_dir_all(&plain).unwrap();
+        fs::write(plain.join("node.exe"), "an earlier update's tree").unwrap();
+        // Held with no sharing: the folder cannot be emptied, so it cannot be removed.
+        let held = fs::OpenOptions::new().read(true).share_mode(0).open(plain.join("node.exe")).unwrap();
+        let name = retired_tree(&dir);
+        assert_ne!(name, plain, "a name of its own: {}", name.display());
+        assert!(plain.exists(), "the held one is left where it is");
+        // And the whole install goes through with the old tree retired under that name.
+        install(&dir, &exe, &staging, true).unwrap();
+        assert_eq!(read(&dir.join("sidecar").join("node.exe")), "new node");
+        drop(held);
+        super::remove_retired_trees(&dir);
+        assert!(!plain.exists() && !name.exists(), "both swept once let go");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_staging_folder_another_update_holds_is_left_alone_and_a_stale_one_is_swept() {
+        use super::{hold_staging_lock, remove_stale_staging};
+        let dir = std::env::temp_dir().join(format!("pc-staging-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("PrivateCode-app-9.9.9.zip"), "half a download").unwrap();
+        let lock = hold_staging_lock(&dir).expect("the lock is taken");
+        remove_stale_staging(&dir);
+        assert!(dir.join("PrivateCode-app-9.9.9.zip").exists(), "left alone while held");
+        drop(lock);
+        remove_stale_staging(&dir);
+        assert!(!dir.exists(), "swept once nobody holds it");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn what_runs_from_a_tree_is_named_and_can_be_ended() {
+        use super::{processes_running_from, terminate_running_from};
+        use std::os::windows::process::CommandExt;
+        // A copy of cmd.exe living in a scratch tree, kept busy: the shape of a helper the
+        // agent left behind. Ended by image path, not by name, so nothing else called
+        // cmd.exe on the machine is touched.
+        let dir = std::env::temp_dir().join(format!("pc-holders-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sidecar")).unwrap();
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let own_cmd = dir.join("sidecar").join("cmd.exe");
+        fs::copy(Path::new(&system).join("System32").join("cmd.exe"), &own_cmd).unwrap();
+        let mut child = std::process::Command::new(&own_cmd)
+            .args(["/c", "ping -n 30 127.0.0.1"])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let found = processes_running_from(&dir.join("sidecar"));
+        assert!(found.iter().any(|(pid, _)| *pid == child.id()), "{found:?}");
+        assert!(processes_running_from(&dir.join("elsewhere")).is_empty());
+        let ended = terminate_running_from(&dir.join("sidecar"));
+        assert!(ended.iter().any(|(pid, _)| *pid == child.id()), "{ended:?}");
+        let status = child.wait().unwrap();
+        assert!(!status.success(), "ended, not finished");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A scratch portable folder: an "exe", a sidecar with an agent and a binary, and a
