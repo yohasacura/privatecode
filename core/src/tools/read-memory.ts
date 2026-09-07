@@ -30,6 +30,8 @@ export class ReadMemory {
   private readonly seen = new Map<string, string>()
   /** Paths this session has written since the model was last shown them. See `wasWritten`. */
   private readonly written = new Set<string>()
+  /** Paths whose map note has been put in front of the model in this context. See `map/digest.ts`. */
+  private readonly noted = new Set<string>()
   /** Bounded so a long session cannot hold a workspace in memory. Oldest out first. */
   private readonly limit: number
 
@@ -82,10 +84,21 @@ export class ReadMemory {
     this.written.delete(path)
   }
 
+  /**
+   * True the first time a file's map note is shown in this context, false after: a note
+   * that rides along with every chunk of a file read in pieces would be paid for five times.
+   * Cleared with the rest at a compaction swap, when the note really is gone.
+   */
+  noteShown(path: string): boolean {
+    if (this.noted.has(path)) return false
+    this.noted.add(path)
+    return true
+  }
   /** Everything is unseen again — the only honest state after the context was replaced. */
   clear(): void {
     this.seen.clear()
     this.written.clear()
+    this.noted.clear()
   }
 
   size(): number {

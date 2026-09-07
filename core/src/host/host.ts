@@ -2998,7 +2998,7 @@ export class SessionHost {
 export function withMapHint(repoMap: string, workspaceRoot: string): string {
   if (!mapExists(mapDirOf(workspaceRoot))) return repoMap
   const hint = 'A project map exists — notes on what every file and module does, why, its contracts and traps, written from this code. ' +
-    'Read it with ProjectMap (no arguments: the project note; a path: that note; a query: a search) before opening files.'
+    'A Read of a noted file begins with its note. ProjectMap reads the rest: no arguments for the project note, a path for that note, a query to search the notes.'
   return repoMap === '' ? hint : `${repoMap}\n\n${hint}`
 }
 

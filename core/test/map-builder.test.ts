@@ -190,8 +190,10 @@ describe('reading the map', () => {
     expect(module.content).toContain('# src/')
     const hits = searchNotes(readIndex(dir)!, 'placeOrder formatted')
     expect(hits[0]?.path).toBe('src/orders.ts')
+    // A hit carries the note's lines that matched: the answer is in the hit, not behind it.
+    expect(hits[0]?.lines).toEqual(['  · contract: placeOrder — returns the formatted total'])
     const search = await projectMapTool.execute({ query: 'placeOrder' }, ctx)
-    expect(search.content).toContain('src/orders.ts — Handles src/orders.ts.')
+    expect(search.content).toContain('src/orders.ts — Handles src/orders.ts.\n  · contract: placeOrder — returns the formatted total')
     const missing = await projectMapTool.execute({ path: 'src/nothing.ts' }, ctx)
     expect(missing.ok).toBe(false)
   })

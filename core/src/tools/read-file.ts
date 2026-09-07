@@ -2,9 +2,11 @@ import { readFile, stat } from 'node:fs/promises'
 import { fsErrorReason } from './atomic-write.js'
 import { BOM } from './line-endings.js'
 import { notesPath } from '../memory/project-notes.js'
+import { fileDigest, mapIndexFor } from '../map/digest.js'
+import { mapDirOf } from '../map/tool.js'
 import { outlineFile } from '../outline/tree-sitter.js'
 import { renderDiff } from './edit-file.js'
-import type { Tool } from './types.js'
+import type { Tool, ToolContext } from './types.js'
 
 export interface ReadFileArgs {
   path: string
@@ -409,8 +411,13 @@ export const readFileTool: Tool<ReadFileArgs> = {
       }
     }
 
+    // The map's note on this file, when there is one about these exact bytes — on top of
+    // the text, once per context. See `map/digest.ts` for why it is delivered rather than
+    // offered: offered, it was never taken.
+    const noteAbove = mapNoteFor(ctx, args.path, decoded)
     if (wholeFile && text.length > WHOLE_FILE_LIMIT) {
-      return { ok: true, content: await shapeOf(abs, args.path, text, lines, total) }
+      const shape = await shapeOf(abs, args.path, text, lines, total)
+      return { ok: true, content: noteAbove === null ? shape : `${shape}\n\n${noteAbove}` }
     }
     // Recorded only here, where the model is about to be given the actual text.
     if (wholeFile) ctx.reads?.record(args.path, text)
@@ -483,7 +490,8 @@ export const readFileTool: Tool<ReadFileArgs> = {
         `call Read again with start_line=${next + 1}`
     }
 
-    const content = `${header}\n${rows.join('\n')}${notice}`
+    const content = `${header}\n${noteAbove === null ? '' : `\n${noteAbove}\n\n`}${rows.join('\n')}${notice}`
+    // What the app shows is the file, not the note: the note has its own tab.
     const display = `${header}\n${displayRows.join('\n')}`
     return {
       ok: true,
@@ -491,4 +499,20 @@ export const readFileTool: Tool<ReadFileArgs> = {
       ...(display !== content ? { display } : {}),
     }
   },
+}
+
+/**
+ * The digest of the map's note on a file, the first time this context is shown the file;
+ * null when there is no map, no note, a note about other bytes, or the note was shown
+ * already. `content` is the file as read, BOM and all — the hash the builder wrote was
+ * taken over the same bytes.
+ */
+function mapNoteFor(ctx: ToolContext, rawPath: string, content: string): string | null {
+  const index = mapIndexFor(mapDirOf(ctx.workspace.root))
+  if (index === null) return null
+  const path = rawPath.replace(/\\/g, '/').replace(/^\.\//, '')
+  const digest = fileDigest(index, path, content)
+  if (digest === null) return null
+  if (ctx.reads !== undefined && !ctx.reads.noteShown(path)) return null
+  return digest
 }

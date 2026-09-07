@@ -61,9 +61,16 @@ Open the folder as a vault in Obsidian: the graph view is the reference graph, a
 - **The Map tab** (inspector → Map): Build / Update with progress, the tree of modules and
   files with each note's state, a search over the notes, one note at a time with the links
   it carries. *Self-check* and *only under…* narrow a build.
-- **The agent**: the `ProjectMap` tool reads the project note (no arguments), a note by path,
-  or searches the notes; when a map exists the repo map says so, so the model reads a note
-  before opening files.
+- **The agent, without asking**: a `Read` of a file that has a note about these exact bytes
+  returns the note's digest on top of the text — what, contracts, invariants, traps, the
+  neighbours — once per context. Measured first (`spike/map-help-probe.mts`): told in the
+  repo map that a map exists and to read it first, the model read the code instead, one
+  question at 21 reads with the map unopened; when it did search the map it took the file
+  names from the hits and read the files anyway. Delivered where it already looks, the
+  note is read every time.
+- **The agent, asking**: the `ProjectMap` tool reads the project note (no arguments), a
+  note by path, or searches the notes — and a search hit carries the note's lines that
+  matched, not only the path. The repo map says a map exists.
 - **The model server has one slot.** A build never asks while a turn runs, and yields
   between notes, so a turn the person starts waits for at most one note.
 - **A workspace of several folders is one map.** Every writable folder is a top-level
@@ -72,6 +79,28 @@ Open the folder as a vault in Obsidian: the graph view is the reference graph, a
   parts of one product or unrelated projects that happen to be open together — from what
   the notes and the cross-folder links show, not from a guess. The map lives under the
   primary folder.
+
+## Does it help? Measured
+
+`spike/map-help-probe.mts` asks the same six questions about this repository with the map
+and without it (the folder moved aside, so nothing of it can reach the model), scores each
+answer against facts that are in the code, and counts every tool call. Three questions are
+about `core/src/map`, two about `core/src/session` (17 files noted), one about an area with
+no notes, as the control. Results live in `eval/results/map-help-*.md`.
+
+**Offered only** (2026-09-08, the repo map says a map exists and to read it first, the
+`ProjectMap` tool is there): the model called the tool in two questions of six and read the
+files anyway. Mean score 0.97 with, 0.93 without; reads 12.5 with, 15.8 without; the
+differences are inside the noise of single runs (the control question took 221 s one way
+and 58 s the other with the same answer). That is what turned "offered" into "delivered".
+
+**Delivered** (the same day, the note on top of every first `Read`, matching lines in
+search hits): mean score 0.94, reads 14.0, 105 s — again inside the noise. On a repository
+whose file names already say where things are, and on questions that ask for the exact
+rule and its line, this model reads the code whichever way the map is put in front of it,
+and it should. Six questions once each cannot tell a small effect from none; what would is
+the eval (`eval/README.md`): the same fifteen tasks with hidden tests, with a map built for
+the project and without, where a trap the note names is a bug the model does not write.
 
 ## Cost
 

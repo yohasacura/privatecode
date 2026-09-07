@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { PRIVATE_DIR } from '../private-dir.js'
 import type { Tool } from '../tools/types.js'
 import { readIndex } from './builder.js'
+import { matchingLines } from './digest.js'
 import { noteName, type MapIndex } from './notes.js'
 
 /**
@@ -39,10 +40,19 @@ function readNote(dir: string, kind: 'file' | 'module' | 'project', path = ''): 
 }
 
 /** Every note, scored by how many query words its text carries; symbols count double. */
-export function searchNotes(index: MapIndex, query: string): { kind: 'file' | 'module'; path: string; score: number; what: string }[] {
+export interface MapHit {
+  kind: 'file' | 'module'
+  path: string
+  score: number
+  what: string
+  /** The note's own lines that carry the words — the answer in the hit, not behind it. */
+  lines: string[]
+}
+
+export function searchNotes(index: MapIndex, query: string): MapHit[] {
   const words = query.toLowerCase().split(/[^a-z0-9_]+/i).filter((w) => w.length >= 3)
   if (words.length === 0) return []
-  const hits: { kind: 'file' | 'module'; path: string; score: number; what: string }[] = []
+  const hits: MapHit[] = []
   for (const note of Object.values(index.notes.files)) {
     const node = index.skeleton.files.find((f) => f.path === note.path)
     const text = [note.what, note.why, ...note.contracts.map((c) => `${c.symbol} ${c.guarantees}`), ...note.invariants, ...note.gotchas].join(' ').toLowerCase()
@@ -54,7 +64,7 @@ export function searchNotes(index: MapIndex, query: string): { kind: 'file' | 'm
       if (symbols.some((s) => s.includes(w))) score += 2
       if (pathWords.includes(w)) score += 2
     }
-    if (score > 0) hits.push({ kind: 'file', path: note.path, score, what: note.what })
+    if (score > 0) hits.push({ kind: 'file', path: note.path, score, what: note.what, lines: matchingLines(note, words) })
   }
   for (const note of Object.values(index.notes.modules)) {
     const text = [note.purpose, ...note.interactions, ...note.flows.map((f) => `${f.name} ${f.steps.join(' ')}`)].join(' ').toLowerCase()
@@ -63,7 +73,13 @@ export function searchNotes(index: MapIndex, query: string): { kind: 'file' | 'm
       if (text.includes(w)) score += 1
       if (note.path.toLowerCase().includes(w)) score += 2
     }
-    if (score > 0) hits.push({ kind: 'module', path: note.path, score, what: note.purpose })
+    if (score > 0) {
+      const lines = [
+        ...note.flows.filter((f) => words.some((w) => `${f.name} ${f.steps.join(' ')}`.toLowerCase().includes(w))).map((f) => `  · flow: ${f.name}`),
+        ...note.interactions.filter((i) => words.some((w) => i.toLowerCase().includes(w))).map((i) => `  · ${i.replace(/\s+/g, ' ').slice(0, 240)}`),
+      ].slice(0, 3)
+      hits.push({ kind: 'module', path: note.path, score, what: note.purpose, lines })
+    }
   }
   return hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, MAX_HITS)
 }
@@ -105,7 +121,10 @@ export const projectMapTool: Tool<ProjectMapArgs> = {
     if (args.query !== undefined) {
       const hits = searchNotes(index, args.query)
       if (hits.length === 0) return { ok: true, content: `Nothing in the map mentions "${args.query}". Try other words, or Grep the code.` }
-      return { ok: true, content: hits.map((h) => `${h.kind === 'module' ? `${h.path || '.'}/` : h.path} — ${h.what}`).join('\n') }
+      return {
+        ok: true,
+        content: hits.map((h) => [`${h.kind === 'module' ? `${h.path || '.'}/` : h.path} — ${h.what}`, ...h.lines].join('\n')).join('\n'),
+      }
     }
     if (args.path === undefined) {
       const project = readNote(dir, 'project')
