@@ -18,7 +18,7 @@ describe('the names the model sees', () => {
     }
     expect([...registered].sort()).toEqual([
       'Agent', 'AskUserQuestion', 'Bash', 'Browser', 'CSharpNav', 'Database', 'DeleteFile', 'Edit', 'GitStatus', 'Glob',
-      'Grep', 'LS', 'MoveFile', 'Plugin', 'Read', 'Recall', 'Remember', 'Sessions', 'Skill', 'SqlDeploy', 'SymbolOutline',
+      'Grep', 'LS', 'MoveFile', 'Plugin', 'ProjectMap', 'Read', 'Recall', 'Remember', 'Sessions', 'Skill', 'SqlDeploy', 'SymbolOutline',
       'TaskOutput', 'TaskStop', 'TodoWrite', 'WebFetch', 'WebSearch', 'Write',
     ])
   })

@@ -165,6 +165,10 @@ import {
 import { harvestReferenceEdges } from '../csharp/reference-edges.js'
 import { gitCommitStaged, gitDiff, gitStage, gitUnstage, stagedPaths, suggestCommitMessage } from './git.js'
 import { gitHandlers, isGitMethod } from './git-rpc.js'
+import { MapBuilder, mapExists, readIndex } from '../map/builder.js'
+import { mapTree, readMapNote } from '../map/read.js'
+import { mapDirOf, searchNotes } from '../map/tool.js'
+import { isMapMethod, type MapBuildParams, type MapMethodMap, type MapNoteParams, type MapSearchParams } from './map-protocol.js'
 import { describeFolder, discoverRepos, repoRootFor, resolvePanelPath, toRepoPaths } from './repos.js'
 import { searchSessions } from './session-search.js'
 
@@ -508,6 +512,8 @@ export class SessionHost {
   /** The `git.*` operations beyond the tree's own — see `git-rpc.ts`. Built lazily
    * against whichever workspace is open, since a workspace switch replaces it. */
   private readonly gitRpc = gitHandlers(() => this.requireInitialized().workspace)
+  /** The project map's builder, made on first use for the open workspace. */
+  private mapBuilder: MapBuilder | null = null
 
   private async dispatch(method: string, params: unknown): Promise<unknown> {
     // The repository operations — branches, history, remotes, stashes, conflicts — live in
@@ -515,6 +521,7 @@ export class SessionHost {
     if (isGitMethod(method) && method in this.gitRpc) {
       return this.gitRpc[method]((params ?? {}) as never)
     }
+    if (isMapMethod(method)) return this.mapCall(method, params)
     switch (method) {
       case 'init': return this.init(params as InitParams)
       case 'send': return this.send(params as SendParams)
@@ -690,7 +697,9 @@ export class SessionHost {
     // without touching the disk again.
     this.repoIndex = await indexRepo(loaded.mounts)
     this.mapChars = loadMapChars(params.workspaceRoot) ?? DEFAULT_MAP_BUDGET
-    this.repoMap = renderIndex(this.repoIndex, this.mapChars)
+    this.repoMap = withMapHint(renderIndex(this.repoIndex, this.mapChars), params.workspaceRoot)
+    // A workspace switch is a new builder: the old one would write the old folder's map.
+    this.mapBuilder = null
     phase('repo index')
     // Fire-and-forget: compiler-confirmed reference edges for the swap-time rerank. The
     // helper question is async and the rerank callback is not, so the edges are gathered
@@ -1140,7 +1149,10 @@ export class SessionHost {
       // `this.referenceEdges` is read at CALL time, not closure time: the harvest finishes
       // minutes before the first swap needs it, and a swap that outruns it gets the map
       // exactly as it was before edges existed.
-      sessionOpts.rerankRepoMap = (focus) => renderIndex(index, this.mapChars, focus, this.referenceEdges)
+      sessionOpts.rerankRepoMap = (focus) => {
+        const rendered = renderIndex(index, this.mapChars, focus, this.referenceEdges)
+        return this.workspaceRoot !== undefined ? withMapHint(rendered, this.workspaceRoot) : rendered
+      }
     }
     if (formatting.rules.length > 0) sessionOpts.formatRules = formatting.rules
     // Every hook this workspace has — PrivateCode's own `[{ after, command }]` list and the
@@ -2891,6 +2903,70 @@ export class SessionHost {
 
   // -----------------------------------------------------------------------------------
 
+  // ---- the project map -------------------------------------------------------------------------
+
+  private requireMapBuilder(): MapBuilder {
+    const { client, workspace, workspaceRoot } = this.requireInitialized()
+    if (this.mapBuilder === null) {
+      this.mapBuilder = new MapBuilder({
+        root: workspaceRoot,
+        // Every writable folder: a read-only one is reference material, not the project.
+        mounts: workspace.mounts.filter((m) => m.access !== 'read').map((m) => ({ name: m.name, root: m.root })),
+        dir: mapDirOf(workspaceRoot),
+        client,
+        model: this.model,
+        onProgress: (p) => this.emit('map.progress', p),
+        // The server has one slot; a build never asks while a turn holds it.
+        isBusy: () => this.sending,
+      })
+    }
+    return this.mapBuilder
+  }
+
+  private async mapCall<M extends keyof MapMethodMap>(method: M, params: unknown): Promise<MapMethodMap[M]['result']> {
+    const { workspaceRoot } = this.requireInitialized()
+    const dir = mapDirOf(workspaceRoot)
+    switch (method) {
+      case 'map.status':
+        return this.requireMapBuilder().status() as Promise<MapMethodMap[M]['result']>
+      case 'map.build': {
+        const builder = this.requireMapBuilder()
+        if (builder.isBuilding) return { started: false, reason: 'already building' } as MapMethodMap[M]['result']
+        const p = (params ?? {}) as MapBuildParams
+        // Fire and forget: the window follows `map.progress`, and the result lands in the
+        // final event's message. The promise is kept from rejecting so nothing goes unhandled.
+        void builder.build({
+          ...(p.scope !== undefined ? { scope: p.scope } : {}),
+          ...(p.limit !== undefined ? { limit: p.limit } : {}),
+          ...(p.verify !== undefined ? { verify: p.verify } : {}),
+        }).then((r) => {
+          if (r.phase === 'done' && this.repoIndex !== undefined) {
+            this.repoMap = withMapHint(renderIndex(this.repoIndex, this.mapChars), workspaceRoot)
+          }
+        }).catch(() => {})
+        return { started: true } as MapMethodMap[M]['result']
+      }
+      case 'map.stop':
+        this.mapBuilder?.cancel()
+        return { stopped: this.mapBuilder?.isBuilding === true } as MapMethodMap[M]['result']
+      case 'map.note': {
+        const index = readIndex(dir)
+        if (index === null) return { kind: 'missing', markdown: 'No map has been built yet.', links: [] } as MapMethodMap[M]['result']
+        return readMapNote(dir, index, (params as MapNoteParams).path) as MapMethodMap[M]['result']
+      }
+      case 'map.search': {
+        const index = readIndex(dir)
+        return { hits: index === null ? [] : searchNotes(index, (params as MapSearchParams).query) } as MapMethodMap[M]['result']
+      }
+      case 'map.tree': {
+        const index = readIndex(dir)
+        return (index === null ? { modules: [] } : mapTree(index)) as MapMethodMap[M]['result']
+      }
+      default:
+        throw new Error(`unknown map method ${String(method)}`)
+    }
+  }
+
   private requireInitialized(): {
     client: LlamaClient
     toolset: Toolset
@@ -2914,6 +2990,16 @@ export class SessionHost {
     if (!this.session) throw new Error('SessionHost: no active session (call "init" first)')
     return this.session
   }
+}
+
+/** What the repo map says when a project map exists: where it is and how to read it. The
+ * model learns the tool's name from its schema; this is what tells it the map is worth the
+ * call before the first file is opened. */
+export function withMapHint(repoMap: string, workspaceRoot: string): string {
+  if (!mapExists(mapDirOf(workspaceRoot))) return repoMap
+  const hint = 'A project map exists — notes on what every file and module does, why, its contracts and traps, written from this code. ' +
+    'Read it with ProjectMap (no arguments: the project note; a path: that note; a query: a search) before opening files.'
+  return repoMap === '' ? hint : `${repoMap}\n\n${hint}`
 }
 
 /** The queue's own entry, flattened for the wire. See `DecisionInfo`. */

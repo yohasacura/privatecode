@@ -105,6 +105,16 @@ permission gate, and everything under `.privatecode/` except `state/` is writabl
 (the settings and hooks always ask first). Details, the hook
 contract and what is not supported: [docs/PLUGINS.md](docs/PLUGINS.md).
 
+**A map of the project, written by the machine while it is idle.** The inspector's Map tab
+builds a wiki of the workspace from its code: the structure — files, symbols, who uses whose
+names, tests, what changes together in git — is computed by parsers and git, and the local
+model writes a typed note on top of every file (what, why, contracts, invariants, traps),
+every module (entry points, flows, interactions) and the project (subsystems, conventions,
+where to start). Notes carry the hash of what they describe, so an update re-notes only what
+changed; a self-check scores each note by the questions about the source it can answer. The
+vault is plain markdown with Obsidian links in `.privatecode/map`, and the agent reads it
+through `ProjectMap` before opening files. The design: [docs/MAP.md](docs/MAP.md).
+
 **Git, the way Visual Studio does it.** The inspector's Git tab is the *Git Changes* window:
 the branch with its picker, fetch / pull / push / sync, a commit box with Commit All, Commit
 Staged and their "and Push" / "and Sync" forms, Amend, stashes, and the Unmerged / Staged /

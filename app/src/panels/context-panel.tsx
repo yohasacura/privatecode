@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
-import { Files, GitBranch, History, Terminal } from 'lucide-preact'
+import { BookOpen, Files, GitBranch, History, Terminal } from 'lucide-preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatItem } from '../lib/state'
 import { Tabs, tabPanelId, type TabItem } from '../ui/tabs'
@@ -9,6 +9,7 @@ import { WorkspaceTab } from './workspace-tab'
 import { HistoryTab } from './history-tab'
 import { TerminalTab } from './terminal-tab'
 import { GitTab } from './git-tab'
+import { MapTab } from './map-tab'
 import { SHOW_GIT_EVENT, type GitView } from '../lib/git-views'
 import { useJobs } from '../lib/use-jobs'
 
@@ -26,7 +27,7 @@ import { useJobs } from '../lib/use-jobs'
  * fit the panel's minimum width and pushed the whole shell sideways.
  */
 
-export type ContextTab = 'workspace' | 'git' | 'history' | 'terminal'
+export type ContextTab = 'workspace' | 'git' | 'map' | 'history' | 'terminal'
 
 export const INSPECTOR = 'inspector'
 
@@ -78,6 +79,7 @@ export function ContextPanel({
   const tabs: TabItem<ContextTab>[] = [
     { id: 'workspace', label: 'Workspace', icon: <Files />, badge: changes.length },
     { id: 'git', label: 'Git', icon: <GitBranch /> },
+    { id: 'map', label: 'Map', icon: <BookOpen /> },
     { id: 'history', label: 'History', icon: <History /> },
     { id: 'terminal', label: 'Terminal', icon: <Terminal />, badge: runningJobs },
   ]
@@ -122,6 +124,7 @@ export function ContextPanel({
             {...(onOpenGitSettings !== undefined ? { onOpenSettings: onOpenGitSettings } : {})}
           />
         )}
+        {tab === 'map' && <MapTab client={client} active={tab === 'map'} onOpenFile={(p) => onOpenFile(p, 'file')} />}
         {tab === 'history' && <HistoryTab client={client} reloadKey={reloadKey} />}
         {tab === 'terminal' && (
           <TerminalTab client={client} items={items} active={tab === 'terminal'} canRun={hasSession} />

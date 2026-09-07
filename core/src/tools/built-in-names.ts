@@ -57,6 +57,7 @@ export const BUILT_IN_TOOL_NAMES: ReadonlySet<string> = new Set([
   'LS',
   'MoveFile',
   'Plugin',
+  'ProjectMap',
   'Read',
   'Recall',
   'Remember',
@@ -108,7 +109,7 @@ export const MCP_TOOL_PREFIX = 'mcp__'
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'AskUserQuestion', 'CSharpNav', 'Database', 'Glob', 'GitStatus', 'LS',
   'Read', 'Recall', 'Grep', 'Sessions', 'SymbolOutline', 'TodoWrite',
-  'Skill', 'TaskOutput',
+  'Skill', 'TaskOutput', 'ProjectMap',
 ])
 
 /**

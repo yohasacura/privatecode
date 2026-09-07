@@ -26,6 +26,7 @@ import { sqlDeployTool } from './sql-deploy.js'
 import { recallTool } from './recall.js'
 import { sessionsTool } from './sessions.js'
 import { rememberTool } from './remember.js'
+import { projectMapTool } from '../map/tool.js'
 import { BrowserManager, type BrowserOptions } from '../browser/manager.js'
 import { profileDir } from '../browser/launcher.js'
 
@@ -87,7 +88,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webSearchTool, webFetchTool, csharpNavTool, databaseTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, createBashTool({ background }), sqlDeployTool, pluginsTool,
                    taskOutputTool(background), taskStopTool(background), gitStatusTool, todoWriteTool, askUserTool,
-                   symbolOutlineTool, browserTool, useSkillTool, rememberTool, recallTool, sessionsTool,
+                   symbolOutlineTool, browserTool, useSkillTool, rememberTool, recallTool, sessionsTool, projectMapTool,
                    delegateTool]) {
     registry.register(t)
   }

@@ -44,6 +44,8 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
      'SymbolOutline',
      // Reads a background task's output; starting or stopping one is another tool.
      'TaskOutput', 'TodoWrite',
+     // Reads the project map's notes — written from the code, never changing it.
+     'ProjectMap',
      // Reads a file the user wrote and returns its text; it runs nothing. Read-only is
      // what makes it available in PLAN mode, which is where reading a procedure before
      // proposing a plan is most of the point.

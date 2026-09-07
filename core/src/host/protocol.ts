@@ -1,5 +1,7 @@
 import type { GitHeadInfo, GitMethodMap, GitOperation } from './git-protocol.js'
+import type { MapMethodMap, MapProgressEvent } from './map-protocol.js'
 export * from './git-protocol.js'
+export * from './map-protocol.js'
 /**
  * The wire contract between the (future) Tauri UI and the agent sidecar: a request/reply/
  * event envelope, one named params/result interface per method and one named data
@@ -657,7 +659,7 @@ export interface ServerProbeResult {
  * module reads it -- it exists so a typed RPC client/dispatcher elsewhere can look up both
  * shapes for one method name without importing a chain of individual types.
  */
-export interface HostMethodMap extends GitMethodMap {
+export interface HostMethodMap extends GitMethodMap, MapMethodMap {
   init: { params: InitParams; result: InitResult }
   send: { params: SendParams; result: SendResult }
   abort: { params: AbortParams; result: AbortResult }
@@ -982,6 +984,8 @@ export interface HostEventMap {
   'run.turn': RunTurnEvent
   'run.ended': RunEndedEvent
   'decisions.changed': DecisionsChangedEvent
+  /** The project map being built: one event per note, and one at the end. */
+  'map.progress': MapProgressEvent
 }
 export type HostEventName = keyof HostEventMap
 
