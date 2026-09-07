@@ -202,6 +202,8 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
   }
 
   const roots = [...byRoot.keys()]
+  // `byRoot` can grow while this runs (a repository git reports inside another one, below);
+  // a Map's iteration visits what is added to it, so the newcomer gets its own pass.
   for (const repo of byRoot.values()) {
     repo.label = describe(repo.relation, repo.root, repo.scopes, workspace)
     // Scoped to the subtrees that are in the workspace. `--porcelain` reports paths relative
@@ -231,6 +233,28 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
     repo.operation = await readOperation(repo.root)
     for (const file of parsed.files) {
       const abs = join(repo.root, file.path)
+      // A repository git found where the walk did not look — under `vendor`, which the
+      // walk skips, or past its depth limit. An unregistered clone comes back as ONE
+      // untracked directory (`-uall` lists untracked files one by one, so a directory
+      // entry can only be a repository boundary), a submodule as its gitlink; either way
+      // there is a `.git` inside. It becomes its own section, walked repositories' equal,
+      // and the entry leaves this listing, where it read as one file to stage — staging it
+      // would have committed a gitlink to the parent. Caught by vendoring a repository
+      // under `app/vendor/lib`: the walk found nothing, the panel offered `vendor/lib` as
+      // an untracked file.
+      if (existsSync(join(abs, '.git'))) {
+        const nested = canonicalize(resolve(abs))
+        const owner = workspace.mountFor(nested)
+        if (owner !== undefined && owner.access !== 'read' && !byRoot.has(nested)) {
+          // Visited later by this same loop: a Map iteration reaches entries added to it.
+          byRoot.set(nested, {
+            root: nested, label: '', branch: null, relation: 'nested',
+            scopes: [{ mount: owner.name, prefix: '' }], files: [], head: NO_HEAD, stashes: 0, operation: null,
+          })
+          roots.push(nested)
+        }
+        continue
+      }
       // A repository nested INSIDE this one, which git reports here as a single gitlink
       // entry. Its own section has the real story.
       //

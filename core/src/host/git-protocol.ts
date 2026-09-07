@@ -122,6 +122,14 @@ export interface GitConflictResult {
   operation: GitOperation | null
   problem?: string
 }
+/** Which repository holds a WORKSPACE path — the tree's and the editor tabs' spelling — and
+ * what git calls the file. Both null for a file under no repository the workspace touches. */
+export interface GitLocateParams { path: string }
+export interface GitLocateResult { root: string | null; repoPath: string | null }
+/** Repository-relative paths back to the workspace's spelling, one for one; null for a
+ * file outside every folder of the workspace (or inside a read-only one). */
+export interface GitAddressParams extends GitRootParams { paths: string[] }
+export interface GitAddressResult { paths: (string | null)[] }
 /** Writes the merged text and marks the path resolved (`git add`). */
 export interface GitResolveParams extends GitRootParams { path: string; text: string }
 /** Resolves a conflict wholesale with one side. */
@@ -178,4 +186,6 @@ export interface GitMethodMap {
   'git.conflict': { params: GitConflictParams; result: GitConflictResult }
   'git.resolve': { params: GitResolveParams; result: GitOutcome }
   'git.keepSide': { params: GitKeepSideParams; result: GitOutcome }
+  'git.locate': { params: GitLocateParams; result: GitLocateResult }
+  'git.address': { params: GitAddressParams; result: GitAddressResult }
 }

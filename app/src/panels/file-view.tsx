@@ -6,6 +6,7 @@ import type { ProtocolClient } from '../lib/client'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
 import { splitDiff, type DiffHunk } from '../lib/hunks'
 import { AlertDialog } from '../ui/dialog'
+import { useContextMenu } from '../ui/menu'
 import { toast } from '../ui/toast'
 import { highlight } from '../lib/highlight'
 import { Button, IconButton } from '../ui/button'
@@ -312,6 +313,7 @@ function GitDiffFace({ client, path, onChanged }: { client: ProtocolClient; path
   const [target, setTarget] = useState<{ root: string; repoPath: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [undoing, setUndoing] = useState<DiffHunk | null>(null)
+  const ctx = useContextMenu()
 
   useEffect(() => {
     let cancelled = false
@@ -367,7 +369,15 @@ function GitDiffFace({ client, path, onChanged }: { client: ProtocolClient; path
         ? (
           <div class="min-h-0 overflow-auto px-3.5 pb-3 pt-2" data-hunks={first.hunks.length}>
             {first.hunks.map((h, i) => (
-              <div key={h.header} class="mb-3 rounded-md border border-border-soft" data-hunk={i}>
+              <div
+                key={h.header}
+                class="mb-3 rounded-md border border-border-soft"
+                data-hunk={i}
+                onContextMenu={(e) => ctx.open(e, [
+                  { id: 'stage', label: 'Stage hunk', disabled: busy, onSelect: () => { void hunk(h, 'stage') } },
+                  { id: 'undo', label: 'Undo hunk…', icon: <Undo2 />, danger: true, disabled: busy, onSelect: () => setUndoing(h) },
+                ], `Hunk ${h.header}`)}
+              >
                 <div class="flex items-center gap-2 border-b border-border-soft bg-raised px-2 py-1 font-mono text-[11px] text-dim">
                   <span class="min-w-0 flex-1 truncate">{h.header}</span>
                   <span class="text-[10.5px]"><span class="text-green">+{h.added}</span> <span class="text-red">−{h.removed}</span></span>
@@ -391,6 +401,7 @@ function GitDiffFace({ client, path, onChanged }: { client: ProtocolClient; path
           danger
         />
       )}
+      {ctx.menu}
     </div>
   )
 }

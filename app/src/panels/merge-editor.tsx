@@ -8,6 +8,7 @@ import { PanelEmpty, PanelError, PanelLoading, PanelNote } from '../components/p
 import { Button, IconButton } from '../ui/button'
 import { cn } from '../ui/cn'
 import { Textarea } from '../ui/input'
+import { useContextMenu, type MenuItem } from '../ui/menu'
 import { toast } from '../ui/toast'
 
 /**
@@ -39,6 +40,7 @@ export function MergeEditor({ client, root, repoPath, path, onResolved }: {
   const [saving, setSaving] = useState(false)
   const [done, setDone] = useState(false)
   const [cursor, setCursor] = useState(0)
+  const ctx = useContextMenu()
 
   useEffect(() => {
     let cancelled = false
@@ -86,6 +88,18 @@ export function MergeEditor({ client, root, repoPath, path, onResolved }: {
     setManual(null)
     setChoices(new Map(parsed.conflicts.map((c) => [c.index, choice])))
   }
+  /** A right-click on one block: every answer the two checkboxes can give, by name. */
+  const blockMenu = (index: number): MenuItem[] => [
+    { id: 'theirs', label: 'Take Incoming', onSelect: () => choose(index, 'theirs') },
+    { id: 'ours', label: 'Keep Current', onSelect: () => choose(index, 'ours') },
+    { id: 'both', label: 'Take Both (incoming first)', onSelect: () => choose(index, 'both') },
+    { id: 'both-r', label: 'Take Both (current first)', onSelect: () => choose(index, 'both-reversed') },
+    { separator: true },
+    { id: 'none', label: 'Take neither', onSelect: () => choose(index, 'none') },
+    { separator: true },
+    { id: 'all-theirs', label: 'Take Incoming for every conflict', onSelect: () => takeAll('theirs') },
+    { id: 'all-ours', label: 'Keep Current for every conflict', onSelect: () => takeAll('ours') },
+  ]
 
   async function accept(): Promise<void> {
     if (!complete || saving) return
@@ -125,7 +139,7 @@ export function MergeEditor({ client, root, repoPath, path, onResolved }: {
         {parsed.segments.map((seg, i) => seg.kind === 'text'
           ? <pre key={i} class="whitespace-pre px-2.5 text-faint">{seg.lines.join('\n')}</pre>
           : (
-            <div key={i} data-conflict={side === 'theirs' ? seg.index : undefined} class={cn('my-0.5 border-y px-2 py-1', side === 'theirs' ? 'border-blue-line bg-blue-soft' : 'border-accent-line bg-accent-soft', cursor === seg.index && 'outline outline-1 outline-accent')}>
+            <div key={i} data-conflict={side === 'theirs' ? seg.index : undefined} data-conflict-side={side} class={cn('my-0.5 border-y px-2 py-1', side === 'theirs' ? 'border-blue-line bg-blue-soft' : 'border-accent-line bg-accent-soft', cursor === seg.index && 'outline outline-1 outline-accent')} onContextMenu={(e) => { setCursor(seg.index); ctx.open(e, blockMenu(seg.index), `Conflict ${seg.index + 1}`) }}>
               <label class="mb-0.5 flex cursor-pointer items-center gap-1.5 font-ui text-[11px] text-dim">
                 <input type="checkbox" checked={has(seg.index, side)} onChange={() => toggle(seg.index, side)} data-side={side} data-index={seg.index} />
                 {side === 'theirs' ? 'take incoming' : 'keep current'} · conflict {seg.index + 1}
@@ -171,6 +185,7 @@ export function MergeEditor({ client, root, repoPath, path, onResolved }: {
           onInput={(e) => setManual(e.currentTarget.value)}
         />
       </div>
+      {ctx.menu}
     </div>
   )
 }

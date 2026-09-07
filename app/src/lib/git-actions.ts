@@ -1,4 +1,5 @@
 import type { GitNetOutcome, GitOpOutcome, GitOutcome, GitRepoView } from '@core/host/protocol'
+import type { ProtocolClient } from './client'
 import { toast } from '../ui/toast'
 
 /**
@@ -79,4 +80,32 @@ export const OPERATION_LABEL: Record<string, string> = {
 /** The repository-relative spelling of a status row, which every `git.*` call takes. */
 export function repoPathOf(file: { path: string; repoPath?: string }): string {
   return file.repoPath ?? file.path
+}
+
+/**
+ * Opens a file the way git names it — repository-relative — as a tab. The host says where
+ * that is in the workspace: for a repository nested in a folder, or a folder that is a
+ * subdirectory of its repository, git's spelling and the workspace's are not the same
+ * string, and opening `src/app.ts` from a commit in `work/one` used to open `src/app.ts`
+ * at the workspace root, or nothing. A file outside every folder cannot be opened here,
+ * and says so.
+ */
+export async function openRepoFile(
+  client: ProtocolClient,
+  root: string,
+  repoPath: string,
+  face: 'file' | 'diff',
+  onOpenFile: (path: string, face?: 'file' | 'diff') => void,
+): Promise<void> {
+  try {
+    const r = await client.call('git.address', { root, paths: [repoPath] })
+    const path = Array.isArray(r.paths) ? r.paths[0] ?? null : null
+    if (path === null) {
+      toast.push({ title: `${repoPath} is outside this workspace's folders`, description: 'Add the folder that holds it to the workspace to open it here.', tone: 'error' })
+      return
+    }
+    onOpenFile(path, face)
+  } catch (e) {
+    toast.push({ title: 'Could not open the file', description: (e as Error).message, tone: 'error' })
+  }
 }

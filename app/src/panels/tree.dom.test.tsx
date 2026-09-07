@@ -139,3 +139,114 @@ test('find asks the host’s index, and a hit opens the file', async () => {
   // The tree itself is not on screen while a find is: the rows ARE the answer.
   expect(host.querySelector('[data-tree]')).toBeNull()
 })
+
+/** The right-click on the rows: the file's actions, the folder's worth of staging, and
+ * the Git items that ask the host where a clean file lives. */
+async function drawWithGit(opts: {
+  marks?: Map<string, import('../lib/git-scm').GitMark>
+  gitActions?: import('./tree').GitRowActions
+  onOpenView?: (v: import('../lib/git-views').GitView) => void
+  locate?: (path: string) => { root: string | null; repoPath: string | null }
+}): Promise<void> {
+  client = {
+    call: vi.fn(async (method: string, params: { path?: string }) => {
+      if (method === 'fs.tree') return { entries: params.path === 'src' ? [{ name: 'x.ts', dir: false }] : [{ name: 'a.ts', dir: false }, { name: 'src', dir: true }] }
+      if (method === 'git.locate') return opts.locate?.(params.path ?? '') ?? { root: null, repoPath: null }
+      return {}
+    }),
+    on: () => () => {},
+  } as unknown as ProtocolClient
+  render(
+    <TreePanel
+      client={client}
+      toolItems={[]}
+      onOpenFile={(p) => opened.push(p)}
+      workspaceRoot="D:/ws"
+      decor={undefined}
+      mounts={[]}
+      filterChanged={false}
+      reviewedPaths={new Set()}
+      onOpenDiff={() => {}}
+      reloadKey={0}
+      find={null}
+      {...(opts.marks !== undefined ? { git: opts.marks } : {})}
+      {...(opts.gitActions !== undefined ? { gitActions: opts.gitActions } : {})}
+      {...(opts.onOpenView !== undefined ? { onOpenView: opts.onOpenView } : {})}
+    />,
+    host,
+  )
+  await settle()
+}
+const rightClickRow = async (path: string): Promise<string[]> => {
+  const row = host.querySelector(`[data-tree-row="${path}"]`)!
+  row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 30, clientY: 40, button: 2 }))
+  await settle(2)
+  return [...document.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent?.trim() ?? '')
+}
+const choose = async (label: string): Promise<void> => {
+  const item = [...document.querySelectorAll('[role="menuitem"]')].find((i) => i.textContent?.trim() === label) as HTMLElement | undefined
+  expect(item, label).toBeDefined()
+  item!.click()
+  await settle(2)
+}
+const mark = (extra: Partial<import('../lib/git-scm').GitMark> = {}): import('../lib/git-scm').GitMark => ({
+  letter: 'M', staged: false, dirty: true, untracked: false, repoRoot: 'D:/ws', repoPath: 'a.ts', ...extra,
+})
+
+test('a changed file\'s right-click: open, diff, its git actions, history and blame, the path', async () => {
+  const stage = vi.fn()
+  const discard = vi.fn()
+  const views: unknown[] = []
+  await drawWithGit({
+    marks: new Map([['a.ts', mark()]]),
+    gitActions: { busy: false, stage, unstage: vi.fn(), discard, ignore: vi.fn() },
+    onOpenView: (v) => views.push(v),
+  })
+  const labels = await rightClickRow('a.ts')
+  expect(labels).toEqual(['Open', 'View diff', 'Stage', 'Undo Changes…', 'View history', 'Blame (annotate)', 'Copy path'])
+  await choose('Stage')
+  expect(stage).toHaveBeenCalledWith('a.ts')
+  await rightClickRow('a.ts')
+  await choose('Undo Changes…')
+  expect(discard).toHaveBeenCalledWith('a.ts')
+  await rightClickRow('a.ts')
+  await choose('View history')
+  expect(views).toEqual([{ kind: 'history', root: 'D:/ws', repoPath: 'a.ts', path: 'a.ts' }])
+})
+
+test('an untracked file offers to ignore it, by name or by extension', async () => {
+  const ignore = vi.fn()
+  await drawWithGit({
+    marks: new Map([['a.ts', mark({ letter: 'U', untracked: true, dirty: true })]]),
+    gitActions: { busy: false, stage: vi.fn(), unstage: vi.fn(), ignore },
+  })
+  const labels = await rightClickRow('a.ts')
+  expect(labels).toEqual(expect.arrayContaining(['Ignore this file', 'Ignore all *.ts files']))
+  await choose('Ignore all *.ts files')
+  expect(ignore).toHaveBeenCalledWith('a.ts', '*.ts')
+})
+
+test('a folder\'s right-click stages everything changed inside it, in one go', async () => {
+  const stageMany = vi.fn()
+  await drawWithGit({
+    marks: new Map([['src/x.ts', mark({ repoPath: 'src/x.ts' })], ['a.ts', mark({ staged: true, dirty: false })]]),
+    gitActions: { busy: false, stage: vi.fn(), unstage: vi.fn(), stageMany, unstageMany: vi.fn() },
+  })
+  const labels = await rightClickRow('src')
+  expect(labels).toEqual(['Stage all inside (1)', 'Unstage all inside', 'Copy path'])
+  await choose('Stage all inside (1)')
+  expect(stageMany).toHaveBeenCalledWith(['src/x.ts'])
+})
+
+test('View history on a clean file asks the host which repository holds it', async () => {
+  const views: unknown[] = []
+  await drawWithGit({
+    onOpenView: (v) => views.push(v),
+    locate: (path) => ({ root: 'D:/ws/nested', repoPath: path }),
+  })
+  const labels = await rightClickRow('a.ts')
+  expect(labels).toEqual(['Open', 'View history', 'Blame (annotate)', 'Copy path'])
+  await choose('Blame (annotate)')
+  await settle(2)
+  expect(views).toEqual([{ kind: 'blame', root: 'D:/ws/nested', repoPath: 'a.ts', path: 'a.ts' }])
+})

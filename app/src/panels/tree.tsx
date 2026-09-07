@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import type { VNode } from 'preact'
+import type { ComponentChildren, VNode } from 'preact'
 import {
-  ChevronDown, ChevronRight, FileText, Folder, FolderOpen, Lock, LockOpen, Minus, MoreHorizontal,
-  PencilLine, Plus, Search, Trash2, TriangleAlert,
+  ChevronDown, ChevronRight, FileDiff, FileText, Folder, FolderOpen, History, Lock, LockOpen, Minus, MoreHorizontal,
+  PencilLine, Plus, Search, Trash2, TriangleAlert, Undo2,
 } from 'lucide-preact'
 import type { ProtocolClient } from '../lib/client'
 import { compareTreeRows, type ChangeDecor } from '../lib/path-tree'
 import type { ChatItem } from '../lib/state'
 import { describeMark, type GhostRow, type GitLetter, type GitMark } from '../lib/git-scm'
+import type { GitView } from '../lib/git-views'
 import { Icon } from '../components/icons'
 import { PanelEmpty, PanelLoading } from '../components/panel'
 import { DRAG_THRESHOLD_PX, beginPathDrag, endPathDrag, movePathDrag } from '../lib/drag'
@@ -15,7 +16,11 @@ import { Button, IconButton } from '../ui/button'
 import { Chip } from '../ui/chip'
 import { cn } from '../ui/cn'
 import { Input } from '../ui/input'
-import { Menu } from '../ui/menu'
+import { Menu, useContextMenu, type MenuItem } from '../ui/menu'
+import { toast } from '../ui/toast'
+
+/** The tree's one right-click menu, made in `TreePanel` and handed to every level. */
+type ContextMenuHandle = ReturnType<typeof useContextMenu>
 
 /**
  * The file tree (docs/UI-REDESIGN-2026-09.md §7 "Files"): lazy-loaded directories over
@@ -170,6 +175,13 @@ export interface MountActions {
 export interface GitRowActions {
   stage(path: string): void
   unstage(path: string): void
+  /** A directory's worth at once — the right-click on a folder. */
+  stageMany?(paths: string[]): void
+  unstageMany?(paths: string[]): void
+  /** Undo Changes (or delete an untracked file): the tab asks first, then does it. */
+  discard?(path: string): void
+  /** Adds `pattern` to the .gitignore of the repository that holds `path`. */
+  ignore?(path: string, pattern: string): void
   /** True while a git call is in flight; the row actions ignore clicks. */
   busy: boolean
 }
@@ -252,9 +264,11 @@ function GitCluster({
 
 export function TreePanel({
   client, toolItems, onOpenFile, workspaceRoot, decor, mounts, mountActions,
-  filterChanged, reviewedPaths, onOpenDiff, git, gitActions, ghosts, reloadKey, find, onReveal,
+  filterChanged, reviewedPaths, onOpenDiff, git, gitActions, ghosts, reloadKey, find, onReveal, onOpenView,
 }: {
   client: ProtocolClient
+  /** Opens a file's history or blame as a tab — the right-click's Git items. */
+  onOpenView?: (view: GitView) => void
   /**
    * Bumped when something OUTSIDE this session touched the disk — a Put back, or the
    * window regaining focus after a branch switch in another editor.
@@ -406,6 +420,8 @@ export function TreePanel({
     onReveal?.()
   }
 
+  const ctx = useContextMenu()
+
   const query = (find ?? '').trim()
   if (query !== '') {
     return (
@@ -422,7 +438,7 @@ export function TreePanel({
     <div data-tree="" class="font-ui text-[13px]">
       <DirChildren
         path="" dirs={dirs} expanded={expanded} onToggle={toggle} onOpenFile={onOpenFile}
-        onRetry={loadDir} depth={0} decor={decor}
+        onRetry={loadDir} depth={0} decor={decor} client={client} ctx={ctx}
         {...(mounts !== undefined ? { mounts } : {})}
         {...(mountActions !== undefined ? { mountActions } : {})}
         {...(filterChanged !== undefined ? { filterChanged } : {})}
@@ -431,10 +447,12 @@ export function TreePanel({
         {...(git !== undefined ? { git } : {})}
         {...(gitActions !== undefined ? { gitActions } : {})}
         {...(ghosts !== undefined ? { ghosts } : {})}
+        {...(onOpenView !== undefined ? { onOpenView } : {})}
       />
       {filterChanged === true && decor !== undefined && decor.files.size === 0 && (
         <div class="px-2 py-1 text-[11.5px] text-faint">nothing changed this session</div>
       )}
+      {ctx.menu}
     </div>
   )
 }
@@ -503,19 +521,51 @@ function FindResults({
  * dialog — a stray click must not silently unmount a project, and a dialog for an action
  * this reversible would be ceremony.
  */
-function MountControls({ mount, actions }: { mount: MountInfo; actions: MountActions }): VNode {
+function MountRow({ mount, actions, ctx, extra, children }: {
+  mount: MountInfo
+  actions: MountActions
+  ctx: ContextMenuHandle
+  /** What any folder's right-click offers — staging its changes, its path — after the
+   * mount's own items. */
+  extra: MenuItem[]
+  children: ComponentChildren
+}): VNode {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
 
+  // The main folder cannot be renamed or removed: it is where the workspace lives.
+  const items: MenuItem[] = mount.primary ? [] : [
+    {
+      id: 'access',
+      label: mount.access === 'read' ? 'Allow writes' : 'Make read-only',
+      icon: mount.access === 'read' ? <LockOpen /> : <Lock />,
+      disabled: actions.busy,
+      onSelect: () => actions.toggleAccess(mount.name),
+    },
+    { id: 'rename', label: 'Rename…', icon: <PencilLine />, disabled: actions.busy, onSelect: () => setRenaming(mount.name) },
+    { id: 'remove', label: 'Remove from workspace…', icon: <Trash2 />, danger: true, disabled: actions.busy, onSelect: () => setConfirming(true) },
+  ]
+  /** The whole row answers the right-click with the same items the `…` button has. */
+  const wrap = (controls: VNode): VNode => (
+    <div
+      class="group/mount flex items-center hover:bg-raised"
+      data-mount-row={mount.name}
+      onContextMenu={(e) => ctx.open(e, [...items, ...(items.length > 0 && extra.length > 0 ? [{ separator: true } as MenuItem] : []), ...extra], `Actions for ${mount.name}`)}
+    >
+      {children}
+      {controls}
+    </div>
+  )
+
   if (mount.primary) {
-    return (
+    return wrap(
       <Chip class="mr-1.5 h-4 shrink-0 px-1.5 text-[10px]" title="The main folder — sessions, checkpoints and workspace settings live here">
         main
-      </Chip>
+      </Chip>,
     )
   }
   if (renaming !== null) {
-    return (
+    return wrap(
       <Input
         data-rename-folder=""
         class="mr-1.5 h-6 w-40 text-[12px]"
@@ -528,46 +578,39 @@ function MountControls({ mount, actions }: { mount: MountInfo; actions: MountAct
           if (e.key === 'Enter' && renaming.trim() !== '') { actions.rename(mount.name, renaming.trim()); setRenaming(null) }
           if (e.key === 'Escape') { e.stopPropagation(); setRenaming(null) }
         }}
-      />
+      />,
     )
   }
   if (confirming) {
-    return (
+    return wrap(
       <span data-confirm="remove-folder" class="mr-1.5 flex shrink-0 items-center gap-1 font-ui text-[11.5px]">
         <span class="text-fg">Remove from the workspace?</span>
         <Button size="sm" variant="danger" disabled={actions.busy} onClick={() => { setConfirming(false); actions.remove(mount.name) }}>
           Remove
         </Button>
         <Button size="sm" disabled={actions.busy} onClick={() => setConfirming(false)}>Keep</Button>
-      </span>
+      </span>,
     )
   }
-  return (
+  return wrap(
     <span class="mr-1 shrink-0 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/mount:opacity-100">
       <Menu
         label={`Actions for ${mount.name}`}
-        items={[
-          {
-            id: 'access',
-            label: mount.access === 'read' ? 'Allow writes' : 'Make read-only',
-            icon: mount.access === 'read' ? <LockOpen /> : <Lock />,
-            disabled: actions.busy,
-            onSelect: () => actions.toggleAccess(mount.name),
-          },
-          { id: 'rename', label: 'Rename…', icon: <PencilLine />, disabled: actions.busy, onSelect: () => setRenaming(mount.name) },
-          { id: 'remove', label: 'Remove from workspace…', icon: <Trash2 />, danger: true, disabled: actions.busy, onSelect: () => setConfirming(true) },
-        ]}
+        items={items}
         trigger={(p) => <IconButton size="sm" label={`Actions for ${mount.name}`} {...p}><MoreHorizontal /></IconButton>}
       />
-    </span>
+    </span>,
   )
 }
 
 function DirChildren({
   path, dirs, expanded, onToggle, onOpenFile, onRetry, depth, decor, mounts, mountActions,
-  filterChanged, reviewedPaths, onOpenDiff, git, gitActions, ghosts,
+  filterChanged, reviewedPaths, onOpenDiff, git, gitActions, ghosts, client, ctx, onOpenView,
 }: {
   path: string
+  client: ProtocolClient
+  ctx: ContextMenuHandle
+  onOpenView?: (view: GitView) => void
   dirs: Record<string, DirState>
   expanded: Set<string>
   onToggle: (path: string) => void
@@ -664,6 +707,104 @@ function DirChildren({
     ...ghostList.map((g) => ({ ghost: true as const, name: g.name, dir: false, path: g.path })),
   ].sort(compareTreeRows)
 
+  // ---- the right-click ---------------------------------------------------------------------
+  // What Visual Studio's Solution Explorer offers under Git, on the row itself: stage,
+  // unstage, undo, ignore for a changed file; history and blame for any file in a
+  // repository; the folder's worth of staging on a folder. A file the marks do not know
+  // (clean, or a session that has not loaded git yet) asks the host which repository holds
+  // it — `git.locate` — only when one of those items is chosen.
+
+  async function openGitView(kind: 'history' | 'blame', target: string, mark: GitMark | undefined): Promise<void> {
+    if (onOpenView === undefined) return
+    let root = mark?.repoRoot ?? null
+    let repoPath = mark?.repoPath ?? null
+    if (root === null || repoPath === null) {
+      try {
+        const r = await client.call('git.locate', { path: target })
+        root = r.root ?? null
+        repoPath = r.repoPath ?? null
+      } catch (e) {
+        toast.push({ title: 'Could not find the repository', description: (e as Error).message, tone: 'error' })
+        return
+      }
+    }
+    if (root === null || repoPath === null) {
+      toast.push({ title: `${target} is not in a git repository`, tone: 'error' })
+      return
+    }
+    onOpenView({ kind, root, repoPath, path: target })
+  }
+
+  const copyItem = (target: string): MenuItem => ({ id: 'copy', label: 'Copy path', onSelect: () => { void navigator.clipboard?.writeText(target) } })
+
+  function fileMenu(target: string, mark: GitMark | undefined, changed: boolean): MenuItem[] {
+    const items: MenuItem[] = [{ id: 'open', label: 'Open', icon: <FileText />, onSelect: () => onOpenFile(target) }]
+    if ((changed || mark !== undefined) && onOpenDiff !== undefined) {
+      items.push({ id: 'diff', label: 'View diff', icon: <FileDiff />, onSelect: () => onOpenDiff(target) })
+    }
+    if (mark !== undefined && gitActions !== undefined && mark.letter !== '!') {
+      items.push({ separator: true })
+      if (mark.dirty) items.push({ id: 'stage', label: 'Stage', icon: <Plus />, disabled: gitActions.busy, onSelect: () => gitActions.stage(target) })
+      if (mark.staged) items.push({ id: 'unstage', label: 'Unstage', icon: <Minus />, disabled: gitActions.busy, onSelect: () => gitActions.unstage(target) })
+      const discard = gitActions.discard
+      if (discard !== undefined && (mark.dirty || mark.untracked)) {
+        items.push({ id: 'undo', label: mark.untracked ? 'Delete (not in git)…' : 'Undo Changes…', icon: <Undo2 />, danger: true, disabled: gitActions.busy, onSelect: () => discard(target) })
+      }
+      const ignore = gitActions.ignore
+      if (ignore !== undefined && mark.untracked) {
+        const rp = mark.repoPath ?? target
+        items.push({ id: 'ignore', label: 'Ignore this file', onSelect: () => ignore(target, `/${rp}`) })
+        const ext = rp.includes('.') ? rp.slice(rp.lastIndexOf('.')) : ''
+        if (ext !== '' && !ext.includes('/')) items.push({ id: 'ignore-ext', label: `Ignore all *${ext} files`, onSelect: () => ignore(target, `*${ext}`) })
+      }
+    }
+    if (mark?.letter === '!' && onOpenDiff !== undefined) {
+      items.push({ separator: true }, { id: 'conflict', label: 'Resolve on the Git tab', reason: '', onSelect: () => onOpenDiff(target) })
+    }
+    if (onOpenView !== undefined) {
+      const untracked = mark?.untracked === true
+      items.push(
+        { separator: true },
+        { id: 'history', label: 'View history', icon: <History />, disabled: untracked, reason: untracked ? 'not committed yet' : '', onSelect: () => { void openGitView('history', target, mark) } },
+        { id: 'blame', label: 'Blame (annotate)', disabled: untracked, reason: untracked ? 'not committed yet' : '', onSelect: () => { void openGitView('blame', target, mark) } },
+      )
+    }
+    items.push({ separator: true }, copyItem(target))
+    return items
+  }
+
+  function dirMenu(target: string): MenuItem[] {
+    const under = `${target}/`
+    const inside = git === undefined ? [] : [...git.entries()].filter(([p, m]) => p.startsWith(under) && m.letter !== '!')
+    const dirty = inside.filter(([, m]) => m.dirty).map(([p]) => p)
+    const stagedIn = inside.filter(([, m]) => m.staged).flatMap(([p, m]) => (m.oldPath !== undefined ? [p, m.oldPath] : [p]))
+    const items: MenuItem[] = []
+    const stageMany = gitActions?.stageMany
+    const unstageMany = gitActions?.unstageMany
+    if (stageMany !== undefined) items.push({ id: 'stage-all', label: `Stage all inside${dirty.length > 0 ? ` (${dirty.length})` : ''}`, icon: <Plus />, disabled: gitActions?.busy === true || dirty.length === 0, reason: dirty.length === 0 ? 'nothing to stage here' : '', onSelect: () => stageMany(dirty) })
+    if (unstageMany !== undefined) items.push({ id: 'unstage-all', label: `Unstage all inside${stagedIn.length > 0 ? ` (${stagedIn.length})` : ''}`, icon: <Minus />, disabled: gitActions?.busy === true || stagedIn.length === 0, reason: stagedIn.length === 0 ? 'nothing staged here' : '', onSelect: () => unstageMany(stagedIn) })
+    if (items.length > 0) items.push({ separator: true })
+    items.push(copyItem(target))
+    return items
+  }
+
+  function ghostMenu(target: string, mark: GitMark | undefined): MenuItem[] {
+    const items: MenuItem[] = []
+    if (onOpenDiff !== undefined) items.push({ id: 'diff', label: 'View diff', icon: <FileDiff />, onSelect: () => onOpenDiff(target) })
+    if (mark !== undefined && gitActions !== undefined && mark.letter !== '!') {
+      items.push({ separator: true })
+      if (mark.dirty) items.push({ id: 'stage', label: 'Stage the deletion', icon: <Plus />, disabled: gitActions.busy, onSelect: () => gitActions.stage(target) })
+      if (mark.staged) items.push({ id: 'unstage', label: 'Unstage the deletion', icon: <Minus />, disabled: gitActions.busy, onSelect: () => gitActions.unstage(target) })
+      const discard = gitActions.discard
+      if (discard !== undefined) items.push({ id: 'restore', label: 'Restore the file…', icon: <Undo2 />, disabled: gitActions.busy, onSelect: () => discard(target) })
+    }
+    if (onOpenView !== undefined) {
+      items.push({ separator: true }, { id: 'history', label: 'View history', icon: <History />, onSelect: () => { void openGitView('history', target, mark) } })
+    }
+    items.push({ separator: true }, copyItem(target))
+    return items
+  }
+
   return (
     <>
       {rows.map((row) => {
@@ -691,6 +832,9 @@ function DirChildren({
             class={cn(ROW, mark?.staged === true && STAGED, mount !== undefined && 'flex-1')}
             style={indent(depth)}
             onClick={() => (entry.dir ? onToggle(childPath) : onOpenFile(childPath))}
+            // A mount's row answers the right-click as a whole (see MountRow); every other
+            // row answers here.
+            onContextMenu={mount !== undefined ? undefined : (e) => ctx.open(e, entry.dir ? dirMenu(childPath) : fileMenu(childPath, mark, fileChange !== undefined), entry.dir ? 'Folder actions' : 'File actions')}
             title={childPath}
             aria-expanded={entry.dir ? isExpanded : undefined}
             /* Drag a row onto the composer to attach it. Directories too: a folder
@@ -753,18 +897,19 @@ function DirChildren({
         return (
           <div key={childPath}>
             {mount !== undefined && mountActions !== undefined
-              ? <div class="group/mount flex items-center hover:bg-raised">{rowNode}<MountControls mount={mount} actions={mountActions} /></div>
+              ? <MountRow mount={mount} actions={mountActions} ctx={ctx} extra={dirMenu(childPath)}>{rowNode}</MountRow>
               : rowNode}
             {entry.dir && isExpanded && (
               <DirChildren
                 path={childPath} dirs={dirs} expanded={expanded} onToggle={onToggle}
-                onOpenFile={onOpenFile} onRetry={onRetry} depth={depth + 1} decor={decor}
+                onOpenFile={onOpenFile} onRetry={onRetry} depth={depth + 1} decor={decor} client={client} ctx={ctx}
                 {...(filterChanged !== undefined ? { filterChanged } : {})}
                 {...(reviewedPaths !== undefined ? { reviewedPaths } : {})}
                 {...(onOpenDiff !== undefined ? { onOpenDiff } : {})}
                 {...(git !== undefined ? { git } : {})}
                 {...(gitActions !== undefined ? { gitActions } : {})}
                 {...(ghosts !== undefined ? { ghosts } : {})}
+                {...(onOpenView !== undefined ? { onOpenView } : {})}
               />
             )}
           </div>
@@ -790,6 +935,7 @@ function DirChildren({
         style={indent(depth)}
         title={`${g.path} — deleted; click for the diff`}
         onClick={() => onOpenDiff?.(g.path)}
+        onContextMenu={(e) => ctx.open(e, ghostMenu(g.path, mark), 'Deleted file')}
       >
         <span class="flex w-4 shrink-0" />
         <span class="flex shrink-0 text-faint [&>svg]:size-3.5"><FileText /></span>

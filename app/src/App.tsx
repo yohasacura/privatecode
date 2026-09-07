@@ -27,7 +27,8 @@ import { Welcome } from './shell/welcome'
 import { AgentDown } from './shell/agent-down'
 import { Toaster, toast } from './ui/toast'
 import { EditorTab } from './shell/editor-tabs'
-import { FileDiff, FileText, GitBranch, MessageSquare, TriangleAlert, X } from 'lucide-preact'
+import { FileDiff, FileText, GitBranch, History, MessageSquare, TriangleAlert, X } from 'lucide-preact'
+import { useContextMenu, type MenuItem } from './ui/menu'
 import { GitViewHost } from './panels/git-extra-views'
 import { SHOW_GIT_EVENT, viewKey, viewTitle, type GitView } from './lib/git-views'
 import { UpdateCard } from './shell/update-card'
@@ -99,7 +100,7 @@ const CONTEXT_DEFAULT = 420
  * travelled on to the composer's window listener, which aborts the running turn.
  */
 const ESCAPE_OWNERS =
-  '[role="dialog"][aria-modal="true"], [data-palette],' +
+  '[role="dialog"][aria-modal="true"], [data-palette], [role="menu"],' +
   ' .chat-face:not(.chat-face-hidden) [data-picker], [data-run-config]'
 
 /**
@@ -356,6 +357,52 @@ export default function App() {
 
   function setTabFace(path: string, face: 'file' | 'diff'): void {
     setTabs((prev) => prev.map((t) => (t.path === path ? { ...t, face } : t)))
+  }
+
+  /** Closes several tabs at once — the strip's right-click. The fronted tab, if it goes,
+   * lands on the last survivor, then Chat. */
+  function closeTabs(paths: readonly string[]): void {
+    const gone = new Set(paths)
+    const next = tabs.filter((t) => !gone.has(t.path))
+    setTabs(next)
+    if (activeTab !== null && gone.has(activeTab)) setActiveTab(next[next.length - 1]?.path ?? null)
+  }
+
+  /** A file tab's Git items ask the host which repository holds the file, since the tab
+   * knows only the workspace's spelling of its path. */
+  async function openGitViewFor(kind: 'history' | 'blame', path: string): Promise<void> {
+    if (!client) return
+    try {
+      const r = await client.call('git.locate', { path })
+      if (!r.root || !r.repoPath) { toast.push({ title: `${path} is not in a git repository`, tone: 'error' }); return }
+      openView({ kind, root: r.root, repoPath: r.repoPath, path })
+    } catch (e) {
+      toast.push({ title: 'Could not find the repository', description: (e as Error).message, tone: 'error' })
+    }
+  }
+
+  const tabMenu = useContextMenu()
+  const tabItems = (t: EditorTab): MenuItem[] => {
+    const at = tabs.findIndex((x) => x.path === t.path)
+    const others = tabs.filter((x) => x.path !== t.path)
+    const right = tabs.slice(at + 1)
+    const items: MenuItem[] = [
+      { id: 'close', label: 'Close', icon: <X />, shortcut: 'middle click', onSelect: () => closeTab(t.path) },
+      { id: 'close-others', label: 'Close others', disabled: others.length === 0, onSelect: () => closeTabs(others.map((x) => x.path)) },
+      { id: 'close-right', label: 'Close to the right', disabled: right.length === 0, onSelect: () => closeTabs(right.map((x) => x.path)) },
+      { id: 'close-all', label: 'Close all', onSelect: () => closeTabs(tabs.map((x) => x.path)) },
+    ]
+    if (t.view === undefined) {
+      items.push(
+        { separator: true },
+        { id: 'face', label: t.face === 'diff' ? 'Show the file' : 'Show the diff', icon: t.face === 'diff' ? <FileText /> : <FileDiff />, onSelect: () => setTabFace(t.path, t.face === 'diff' ? 'file' : 'diff') },
+        { id: 'history', label: 'View history', icon: <History />, onSelect: () => { void openGitViewFor('history', t.path) } },
+        { id: 'blame', label: 'Blame (annotate)', onSelect: () => { void openGitViewFor('blame', t.path) } },
+        { separator: true },
+        { id: 'copy', label: 'Copy path', onSelect: () => { void navigator.clipboard?.writeText(t.path) } },
+      )
+    }
+    return items
   }
 
   // Esc on a file tab returns to the chat — it does NOT close the tab, and (capture
@@ -865,8 +912,10 @@ export default function App() {
                       title={t.view !== undefined ? viewTitle(t.view) : t.path}
                       onSelect={() => setActiveTab(t.path)}
                       onClose={() => closeTab(t.path)}
+                      onContextMenu={(e) => tabMenu.open(e, tabItems(t), 'Tab actions')}
                     />
                   ))}
+                  {tabMenu.menu}
                 </div>
               )}
               <div class={`chat-face ${activeTab !== null ? 'chat-face-hidden' : ''}`}>
@@ -1009,7 +1058,7 @@ export default function App() {
           )}
       </div>
 
-      {client && ready && phase.kind === 'ready' && <StatusBar client={client} chatState={chatState} />}
+      {client && ready && phase.kind === 'ready' && <StatusBar client={client} chatState={chatState} onOpenView={openView} />}
 
       {paletteOpen && client && ready && (
         <Palette

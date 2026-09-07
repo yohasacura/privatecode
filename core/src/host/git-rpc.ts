@@ -1,12 +1,12 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, resolve, sep } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { execa } from 'execa'
 import type { Workspace } from '../workspace.js'
 import { canonicalize } from '../workspace.js'
 import { gitStage, gitUnstage } from './git.js'
 import type { GitMethodMap } from './git-protocol.js'
 import * as repo from './git-repo.js'
-import { toplevelOf } from './repos.js'
+import { repoRootFor, resolvePanelPath, toplevelOf } from './repos.js'
 
 /**
  * The `git.*` methods beyond the tree's own — one function per wire method, each of them
@@ -238,6 +238,36 @@ export function gitHandlers(workspace: () => Workspace): Handlers {
       const r = await execa('git', ['checkout', `--${p.side}`, '--', path], { cwd: root, reject: false, windowsHide: true })
       if (r.exitCode !== 0) return { ok: false, problem: r.stderr.trim() || 'git checkout failed' }
       return gitStage(root, [path])
+    },
+    // The two spellings of one file, translated by the side that knows both. The window
+    // addresses files the workspace's way (the tree, the editor tabs) and git its own way
+    // (a commit's file list, a blame), and for a nested repository or a mounted subfolder
+    // the two differ by exactly the prefix neither side can see alone.
+    'git.locate': async (p) => {
+      const ws = workspace()
+      const none = { root: null, repoPath: null }
+      if (typeof p.path !== 'string' || p.path === '') return none
+      let abs: string
+      try { abs = resolvePanelPath(ws, p.path) } catch { return none }
+      const found = await repoRootFor(abs)
+      if (found === null) return none
+      // Only a repository the workspace touches — the rule every other method applies.
+      let root: string
+      try { root = await allowedRoot(ws, found) } catch { return none }
+      return { root, repoPath: relative(root, canonicalize(abs)).split(sep).join('/') }
+    },
+    'git.address': async (p) => {
+      const root = await rootOf(p)
+      const ws = workspace()
+      if (!Array.isArray(p.paths)) throw new GitRpcError('no paths')
+      return {
+        paths: p.paths.map((raw) => {
+          if (typeof raw !== 'string' || raw === '' || isAbsolute(raw) || raw.split(/[\\/]/).includes('..')) return null
+          const abs = join(root, raw)
+          const mount = ws.mountFor(abs)
+          return mount === undefined || mount.access === 'read' ? null : ws.display(abs)
+        }),
+      }
     },
   }
 }

@@ -10,7 +10,7 @@ import { cn } from '../ui/cn'
  * button and buttons cannot nest; Enter and Space select, a middle click closes.
  */
 export function EditorTab({
-  active, icon, name, title, onSelect, onClose,
+  active, icon, name, title, onSelect, onClose, onContextMenu,
 }: {
   active: boolean
   icon: VNode
@@ -18,6 +18,8 @@ export function EditorTab({
   title: string
   onSelect: () => void
   onClose?: () => void
+  /** The tab's own menu — close this, the others, all; the file's git actions. */
+  onContextMenu?: (e: MouseEvent) => void
 }): VNode {
   return (
     <div
@@ -29,6 +31,7 @@ export function EditorTab({
       onClick={onSelect}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect() } }}
       onAuxClick={(e) => { if (e.button === 1 && onClose !== undefined) onClose() }}
+      {...(onContextMenu !== undefined ? { onContextMenu } : {})}
       class={cn(
         'group inline-flex max-w-[220px] shrink-0 cursor-pointer select-none items-center gap-1.5 whitespace-nowrap',
         'rounded-t-md border border-b-0 px-2 py-1 font-ui text-[12.5px] transition-colors duration-(--duration-fast)',

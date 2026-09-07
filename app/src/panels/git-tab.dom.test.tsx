@@ -5,7 +5,8 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { GitRepoView, GitStatusResult } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import type { GitView } from '../lib/git-views'
-import { GitTab } from './git-tab'
+import { GIT_REPO_EVENT, SHOW_GIT_EVENT, gitTabMemory } from '../lib/git-views'
+import { GitTab, forgetGitTabState, repoOptionLabel } from './git-tab'
 
 /**
  * The Git tab, against a scripted host: the sections it draws from one `git.status`, the
@@ -47,7 +48,7 @@ function fakeClient(status: GitStatusResult, handlers: Partial<Record<string, (p
 const flush = async (): Promise<void> => { await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() }) }
 
 let host: HTMLDivElement | null = null
-afterEach(() => { if (host) { render(null, host); host.remove(); host = null } })
+afterEach(() => { if (host) { render(null, host); host.remove(); host = null }; forgetGitTabState() })
 
 async function mount(client: ProtocolClient, extra: { onOpenFile?: (path: string, face?: 'file' | 'diff') => void; onOpenView?: (v: GitView) => void } = {}): Promise<HTMLDivElement> {
   host = document.createElement('div')
@@ -197,5 +198,106 @@ describe('the Git tab', () => {
       { kind: 'repo', root: 'D:\\proj', label: 'proj' },
       { kind: 'merge', root: 'D:\\proj', repoPath: 'src/app.ts', path: 'src/app.ts' },
     ])
+  })
+})
+
+const rightClick = async (el: Element): Promise<void> => {
+  await act(async () => { el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 30, clientY: 40, button: 2 })) })
+  await flush()
+}
+const menuLabels = (): string[] => [...document.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent?.trim() ?? '')
+const pick = async (label: string): Promise<void> => {
+  const item = [...document.querySelectorAll('[role="menuitem"]')].find((i) => i.textContent?.trim() === label) as HTMLElement | undefined
+  expect(item, label).toBeDefined()
+  await act(async () => { item!.click() })
+  await flush()
+}
+const escape = async (): Promise<void> => {
+  await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+}
+
+describe('the right-click', () => {
+  test('a file row opens the same actions the … button has; the Changes header opens the list\'s', async () => {
+    const client = fakeClient({ repos: [repo()], unversioned: [] })
+    const el = await mount(client)
+    await rightClick(el.querySelector('[data-git-row="src/app.ts"]')!)
+    expect(document.querySelector('[role="menu"]')?.getAttribute('aria-label')).toBe('File actions')
+    expect(menuLabels()).toEqual(expect.arrayContaining(['Open file', 'View diff', 'Stage', 'Undo Changes…', 'View history', 'Blame (annotate)', 'Copy path']))
+    await pick('Stage')
+    expect(client.calls.find(([m]) => m === 'git.stagePaths')?.[1]).toEqual({ root: 'D:\\proj', paths: ['src/app.ts'] })
+
+    await rightClick(el.querySelector('[data-section-title="Changes"]')!)
+    expect(menuLabels()).toEqual(expect.arrayContaining(['Stage all', 'Undo all changes…', 'Commit All', 'Stash All…']))
+    await pick('Stage all')
+    expect(client.calls.filter(([m]) => m === 'git.stagePaths').pop()?.[1]).toEqual({ root: 'D:\\proj', paths: ['src/app.ts', 'src/new.ts'] })
+
+    // The header carries the network buttons and the … menu.
+    await rightClick(el.querySelector('[data-action="branch-picker"]')!.parentElement!.parentElement!)
+    expect(menuLabels()).toEqual(expect.arrayContaining(['Fetch', 'Pull', 'Push', 'Sync', 'Open Git Repository', 'New Branch…']))
+    await escape()
+    expect(document.querySelector('[role="menu"]')).toBeNull()
+  })
+})
+
+const LIB: GitRepoView = {
+  root: 'D:\\lib', label: 'lib', branch: 'dev', relation: 'nested', suggestion: '', stashes: 0, operation: 'merge',
+  head: { ...HEAD, branch: 'dev', upstream: null, ahead: 0, behind: 0 },
+  files: [{ path: 'lib/core.ts', repoPath: 'core.ts', code: 'UU', staged: false, untracked: false }],
+}
+
+describe('several repositories', () => {
+  test('the picker names each with its state; switching re-addresses every call and tells the status bar', async () => {
+    const client = fakeClient({ repos: [repo(), LIB], unversioned: [] })
+    const told: string[] = []
+    const listen = (e: Event): void => { told.push((e as CustomEvent<{ root: string }>).detail.root) }
+    window.addEventListener(GIT_REPO_EVENT, listen)
+    try {
+      const el = await mount(client)
+      const picker = el.querySelector('[data-repo-picker]') as HTMLSelectElement
+      expect([...picker.options].map((o) => o.textContent)).toEqual(['proj · main · 3 changes', 'lib · dev · 1 change · Merge in progress'])
+      expect(repoOptionLabel(LIB)).toBe('lib · dev · 1 change · Merge in progress')
+      expect(told).toEqual(['D:\\proj'])
+
+      await act(async () => { picker.value = 'D:\\lib'; picker.dispatchEvent(new Event('change', { bubbles: true })) })
+      await flush()
+      expect(told).toEqual(['D:\\proj', 'D:\\lib'])
+      expect(el.querySelector('[data-action="branch-picker"]')?.textContent).toContain('dev')
+      expect(el.textContent).toContain('Merge in progress')
+      const rows = [...el.querySelectorAll('[data-git-row]')].map((r) => `${r.getAttribute('data-section')}:${r.getAttribute('data-git-row')}`)
+      expect(rows).toEqual(['conflict:lib/core.ts'])
+      // Keep Current on the conflict goes to lib, with git's spelling of the path.
+      await rightClick(el.querySelector('[data-git-row="lib/core.ts"]')!)
+      await pick('Keep Current (ours)')
+      expect(client.calls.find(([m]) => m === 'git.keepSide')?.[1]).toEqual({ root: 'D:\\lib', path: 'core.ts', side: 'ours' })
+    } finally {
+      window.removeEventListener(GIT_REPO_EVENT, listen)
+    }
+  })
+
+  test('the chosen repository and each one\'s unsent message survive a remount; "show Git" can name the repository', async () => {
+    const client = fakeClient({ repos: [repo(), LIB], unversioned: [] })
+    let el = await mount(client)
+    const type = async (text: string): Promise<void> => {
+      const box = el.querySelector('textarea[aria-label="Commit message"]') as HTMLTextAreaElement
+      await act(async () => { box.value = text; box.dispatchEvent(new Event('input', { bubbles: true })) })
+    }
+    await type('for proj')
+    const picker = (): HTMLSelectElement => el.querySelector('[data-repo-picker]') as HTMLSelectElement
+    await act(async () => { picker().value = 'D:\\lib'; picker().dispatchEvent(new Event('change', { bubbles: true })) })
+    await flush()
+    expect((el.querySelector('textarea[aria-label="Commit message"]') as HTMLTextAreaElement).value).toBe('')
+    await type('for lib')
+    expect(gitTabMemory.root).toBe('D:\\lib')
+
+    // Away to another inspector tab and back: the tab unmounts and mounts again.
+    render(null, host!)
+    el = await mount(client)
+    expect(picker().value).toBe('D:\\lib')
+    expect((el.querySelector('textarea[aria-label="Commit message"]') as HTMLTextAreaElement).value).toBe('for lib')
+
+    await act(async () => { window.dispatchEvent(new CustomEvent(SHOW_GIT_EVENT, { detail: { root: 'D:\\proj' } })) })
+    await flush()
+    expect(picker().value).toBe('D:\\proj')
+    expect((el.querySelector('textarea[aria-label="Commit message"]') as HTMLTextAreaElement).value).toBe('for proj')
   })
 })

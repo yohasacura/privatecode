@@ -109,6 +109,7 @@ export function ContextPanel({
             sessionKey={sessionKey}
             reviewed={reviewed}
             onMarkReviewed={onMarkReviewed}
+            onOpenView={onOpenView}
           />
         )}
         {tab === 'git' && (

@@ -119,3 +119,14 @@ describe('ghostRows', () => {
     expect(ghostRows(marks, []).size).toBe(0)
   })
 })
+
+describe('the two spellings of a path', () => {
+  test('a mark carries git\'s own spelling when the host gave one — a nested repository\'s files differ by the folder prefix', () => {
+    const nested: GitRepoView = {
+      root: 'C:/ws/work/one', label: 'work/one', branch: 'main', relation: 'nested', head: NO_HEAD, stashes: 0, operation: null, suggestion: '',
+      files: [{ path: 'work/one/seed.txt', repoPath: 'seed.txt', code: ' M', staged: false, untracked: false }],
+    }
+    const marks = gitMarks([nested])
+    expect(marks.get('work/one/seed.txt')).toMatchObject({ repoRoot: 'C:/ws/work/one', repoPath: 'seed.txt' })
+  })
+})

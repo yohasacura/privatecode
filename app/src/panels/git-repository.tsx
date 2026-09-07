@@ -1,14 +1,14 @@
 import type { VNode } from 'preact'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import {
-  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, FileDiff, GitBranch, GitCommit, GitMerge, MoreHorizontal,
+  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, FileDiff, GitBranch, GitCommit, GitMerge, History, MoreHorizontal,
   Pencil, RefreshCw, Search, Tag, X,
 } from 'lucide-preact'
 import type { GitBranchRef, GitChangedFile, GitCommitDetails, GitCommitRow, GitRefs, GitRepoView, GitTagRef } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { DiffView } from '../lib/diff'
 import { relativeTime } from '../lib/format'
-import { announce, kindOf, shortSha, type Outcome } from '../lib/git-actions'
+import { announce, kindOf, openRepoFile, shortSha, type Outcome } from '../lib/git-actions'
 import { LANE_COLOURS, layoutGraph, type GraphRow } from '../lib/git-graph'
 import type { GitView } from '../lib/git-views'
 import { PanelEmpty, PanelError, PanelLoading, PanelNote } from '../components/panel'
@@ -16,7 +16,7 @@ import { Button, IconButton } from '../ui/button'
 import { Chip } from '../ui/chip'
 import { cn } from '../ui/cn'
 import { Input } from '../ui/input'
-import { Menu, type MenuItem } from '../ui/menu'
+import { Menu, useContextMenu, type MenuItem } from '../ui/menu'
 import { toast } from '../ui/toast'
 import { ConfirmDialog, NewBranchDialog, PublishDialog, PushBehindDialog, ResetDialog, TagDialog, TextDialog } from './git-dialogs'
 
@@ -118,6 +118,7 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
   const [detailsOpen, setDetailsOpen] = useState(true)
   const busyRef = useRef(false)
   busyRef.current = busy !== null
+  const ctx = useContextMenu()
 
   const current = repo?.branch ?? null
   const head = repo?.head
@@ -260,12 +261,14 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
     { id: 'delete', label: 'Delete tag', danger: true, onSelect: () => { void run('Delete tag', () => client.call('git.tagDelete', { root, name: t.name }), `Deleted ${t.name}`) } },
   ]
 
-  const commitMenu = (c: GitCommitRow): MenuItem[] => {
-    const many = selected.length > 1 && selected.includes(c.sha)
+  /** `selection` is passed by a right-click, which selects the row in the same breath and
+   * cannot wait for the state to catch up. */
+  const commitMenu = (c: GitCommitRow, selection: readonly string[] = selected): MenuItem[] => {
+    const many = selection.length > 1 && selection.includes(c.sha)
     const isHead = head?.oid === c.sha
     const items: MenuItem[] = []
     if (many) {
-      const chosen = [...selected]
+      const chosen = [...selection]
       items.push(
         { id: 'compare', label: 'Compare Commits', icon: <FileDiff />, disabled: chosen.length !== 2, reason: chosen.length !== 2 ? 'select exactly two' : '', onSelect: () => {
           const [a, b] = chosen as [string, string]
@@ -295,6 +298,41 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
     if (isHead && !many) items.push({ separator: true }, { id: 'amend', label: 'Edit message (amend)…', icon: <Pencil />, onSelect: () => setDialog({ kind: 'amend', message: c.subject }) })
     return items
   }
+
+  /** A file the selected commit changed. Its path is git's spelling; opening it asks the
+   * host where that is in the workspace (see `openRepoFile`). */
+  const detailFileMenu = (file: GitChangedFile): MenuItem[] => [
+    { id: 'show', label: 'Show the change', icon: <FileDiff />, onSelect: () => setDetailFile(file.path) },
+    { id: 'open', label: 'Open file', disabled: file.status === 'D', reason: file.status === 'D' ? 'deleted in this commit' : '', onSelect: () => { void openRepoFile(client, root, file.path, 'file', onOpenFile) } },
+    { separator: true },
+    { id: 'history', label: 'View history', icon: <History />, onSelect: () => onOpenView({ kind: 'history', root, repoPath: file.path, path: file.path }) },
+    { id: 'blame', label: 'Blame (annotate)', disabled: file.status === 'D', reason: file.status === 'D' ? 'deleted in this commit' : '', onSelect: () => onOpenView({ kind: 'blame', root, repoPath: file.path, path: file.path }) },
+    { separator: true },
+    { id: 'copy', label: 'Copy path', onSelect: () => { void navigator.clipboard?.writeText(file.path) } },
+  ]
+
+  const localHeaderMenu: MenuItem[] = [
+    { id: 'new', label: 'New branch…', icon: <GitBranch />, onSelect: () => setDialog({ kind: 'new-branch', base: current ?? 'HEAD' }) },
+    { id: 'all', label: showAll ? 'Show the current branch only' : 'Show all branches in the graph', icon: showAll ? <EyeOff /> : <Eye />, onSelect: () => setShowAll((v) => !v) },
+  ]
+  const remoteHeaderMenu: MenuItem[] = [
+    { id: 'fetch', label: 'Fetch (prune deleted branches)', icon: <RefreshCw />, disabled: busy !== null, onSelect: () => { void run('Fetch', () => client.call('git.fetch', { root, prune: true }), 'Fetched') } },
+    { id: 'publish', label: 'Publish the current branch…', icon: <ArrowUp />, disabled: current === null, onSelect: () => setDialog({ kind: 'publish' }) },
+  ]
+  const tagHeaderMenu: MenuItem[] = [
+    { id: 'tag-head', label: 'Create tag at HEAD…', icon: <Tag />, disabled: !head?.oid, reason: 'no commits yet', onSelect: () => {
+      const oid = head?.oid
+      if (oid) setDialog({ kind: 'tag', sha: oid, short: shortSha(oid), subject: commits.find((c) => c.sha === oid)?.subject ?? '' })
+    } },
+  ]
+  const incomingMenu: MenuItem[] = [
+    { id: 'pull', label: 'Pull', icon: <ArrowDown />, disabled: busy !== null, onSelect: () => { void run('Pull', () => client.call('git.pull', { root }), 'Pulled') } },
+    { id: 'fetch', label: 'Fetch', icon: <RefreshCw />, disabled: busy !== null, onSelect: () => { void run('Fetch', () => client.call('git.fetch', { root, prune: true }), 'Fetched') } },
+  ]
+  const outgoingMenu: MenuItem[] = [
+    { id: 'push', label: 'Push', icon: <ArrowUp />, disabled: busy !== null, onSelect: () => { void run('Push', () => client.call('git.push', { root }), 'Pushed') } },
+    { id: 'push-tags', label: 'Push with tags', disabled: busy !== null, onSelect: () => { void run('Push', () => client.call('git.push', { root, tags: true }), 'Pushed with tags') } },
+  ]
 
   // ---- rendering ---------------------------------------------------------------------------
 
@@ -326,7 +364,14 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
         )}
         onClick={(e) => select(c.sha, e)}
         onDblClick={() => onOpenView({ kind: 'commit', root, sha: c.sha, short: c.short })}
-        onContextMenu={(e) => { e.preventDefault(); if (!isSelected) setSelected([c.sha]) }}
+        // A right-click on a row outside the selection selects it alone first, the way
+        // every file manager does; on a selected row it keeps the whole selection, so
+        // Compare Commits and Squash reach the menu.
+        onContextMenu={(e) => {
+          const selection = isSelected ? selected : [c.sha]
+          if (!isSelected) setSelected(selection)
+          ctx.open(e, commitMenu(c, selection), 'Commit actions')
+        }}
       >
         <span class="flex h-full shrink-0 items-center pl-1.5">
           {row !== undefined ? <Graph row={row} colourOf={colourOf} /> : <GitCommit class="size-3.5 text-dim" />}
@@ -350,8 +395,12 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
     )
   }
 
-  const sectionHeader = (title: string, count: number, action?: VNode): VNode => (
-    <div class="flex items-center gap-2 border-y border-border-soft bg-panel px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-faint">
+  const sectionHeader = (title: string, count: number, action?: VNode, menu?: MenuItem[]): VNode => (
+    <div
+      class="flex items-center gap-2 border-y border-border-soft bg-panel px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-faint"
+      data-section-title={title}
+      onContextMenu={menu !== undefined ? (e) => ctx.open(e, menu, title) : undefined}
+    >
       <span>{title}</span>
       <span class="font-mono">{count}</span>
       {action !== undefined && <span class="ml-auto">{action}</span>}
@@ -367,11 +416,11 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
           <Input class="h-6 flex-1 text-[12px]" placeholder="Filter branches and tags" aria-label="Filter branches and tags" value={filter} onInput={(e) => setFilter(e.currentTarget.value)} />
         </div>
         <div class="min-h-0 flex-1 overflow-auto py-1">
-          <button type="button" class={cn('flex w-full items-center gap-1 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-faint hover:text-fg')} onClick={() => setOpen((o) => ({ ...o, local: !o.local }))} aria-expanded={open.local}>
+          <button type="button" data-section-title="Local" class={cn('flex w-full items-center gap-1 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-faint hover:text-fg')} onClick={() => setOpen((o) => ({ ...o, local: !o.local }))} onContextMenu={(e) => ctx.open(e, localHeaderMenu, 'Local branches')} aria-expanded={open.local}>
             {open.local ? <ChevronDown class="size-3" /> : <ChevronRight class="size-3" />} Local <span class="font-mono">{locals.length}</span>
           </button>
           {open.local && locals.map((b) => (
-            <div key={b.name} data-branch={b.name} class={cn('group flex items-center gap-1.5 py-0.5 pl-4 pr-1 text-[12.5px] hover:bg-raised', viewing === b.name && 'bg-accent-soft', b.current && 'font-semibold text-accent')}>
+            <div key={b.name} data-branch={b.name} class={cn('group flex items-center gap-1.5 py-0.5 pl-4 pr-1 text-[12.5px] hover:bg-raised', viewing === b.name && 'bg-accent-soft', b.current && 'font-semibold text-accent')} onContextMenu={(e) => ctx.open(e, branchMenu(b), 'Branch actions')}>
               <button type="button" class="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={`${b.name}${b.upstream !== undefined ? ` → ${b.upstream}` : ''}\n${b.subject}`} onClick={() => { setViewing(b.name); setShowAll(false) }} onDblClick={() => { void run('Checkout', () => client.call('git.switch', { root, name: b.name }), `Checked out ${b.name}`) }}>
                 <GitBranch class="size-3.5 shrink-0" />
                 <span class="truncate">{b.name}</span>
@@ -383,11 +432,11 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
               <Menu label="Branch actions" items={branchMenu(b)} align="end" trigger={(props) => <IconButton {...props} size="sm" label="Branch actions" class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100"><MoreHorizontal /></IconButton>} />
             </div>
           ))}
-          <button type="button" class="mt-1 flex w-full items-center gap-1 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-faint hover:text-fg" onClick={() => setOpen((o) => ({ ...o, remote: !o.remote }))} aria-expanded={open.remote}>
+          <button type="button" data-section-title="Remotes" class="mt-1 flex w-full items-center gap-1 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-faint hover:text-fg" onClick={() => setOpen((o) => ({ ...o, remote: !o.remote }))} onContextMenu={(e) => ctx.open(e, remoteHeaderMenu, 'Remote branches')} aria-expanded={open.remote}>
             {open.remote ? <ChevronDown class="size-3" /> : <ChevronRight class="size-3" />} Remotes <span class="font-mono">{remotes.length}</span>
           </button>
           {open.remote && remotes.map((b) => (
-            <div key={b.name} data-branch={b.name} class={cn('group flex items-center gap-1.5 py-0.5 pl-4 pr-1 text-[12.5px] text-dim hover:bg-raised', viewing === b.name && 'bg-accent-soft')}>
+            <div key={b.name} data-branch={b.name} class={cn('group flex items-center gap-1.5 py-0.5 pl-4 pr-1 text-[12.5px] text-dim hover:bg-raised', viewing === b.name && 'bg-accent-soft')} onContextMenu={(e) => ctx.open(e, branchMenu(b), 'Branch actions')}>
               <button type="button" class="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={b.subject} onClick={() => { setViewing(b.name); setShowAll(false) }} onDblClick={() => { void run('Checkout', () => client.call('git.switch', { root, name: b.name }), `Checked out ${b.name}`) }}>
                 <GitBranch class="size-3.5 shrink-0" />
                 <span class="truncate">{b.name}</span>
@@ -395,11 +444,11 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
               <Menu label="Branch actions" items={branchMenu(b)} align="end" trigger={(props) => <IconButton {...props} size="sm" label="Branch actions" class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100"><MoreHorizontal /></IconButton>} />
             </div>
           ))}
-          <button type="button" class="mt-1 flex w-full items-center gap-1 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-faint hover:text-fg" onClick={() => setOpen((o) => ({ ...o, tags: !o.tags }))} aria-expanded={open.tags}>
+          <button type="button" data-section-title="Tags" class="mt-1 flex w-full items-center gap-1 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-faint hover:text-fg" onClick={() => setOpen((o) => ({ ...o, tags: !o.tags }))} onContextMenu={(e) => ctx.open(e, tagHeaderMenu, 'Tags')} aria-expanded={open.tags}>
             {open.tags ? <ChevronDown class="size-3" /> : <ChevronRight class="size-3" />} Tags <span class="font-mono">{tags.length}</span>
           </button>
           {open.tags && tags.map((t) => (
-            <div key={t.name} data-tag={t.name} class={cn('group flex items-center gap-1.5 py-0.5 pl-4 pr-1 text-[12.5px] text-dim hover:bg-raised', viewing === t.name && 'bg-accent-soft')}>
+            <div key={t.name} data-tag={t.name} class={cn('group flex items-center gap-1.5 py-0.5 pl-4 pr-1 text-[12.5px] text-dim hover:bg-raised', viewing === t.name && 'bg-accent-soft')} onContextMenu={(e) => ctx.open(e, tagMenu(t), 'Tag actions')}>
               <button type="button" class="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={`${t.subject}\n${t.short}`} onClick={() => { setViewing(t.name); setShowAll(false) }}>
                 <Tag class="size-3.5 shrink-0 text-yellow" />
                 <span class="truncate">{t.name}</span>
@@ -441,12 +490,12 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
             <>
               {sectionHeader('Incoming', incoming.length, incoming.length > 0
                 ? <Button size="sm" icon={<ArrowDown />} disabled={busy !== null} onClick={() => { void run('Pull', () => client.call('git.pull', { root }), 'Pulled') }}>Pull</Button>
-                : undefined)}
+                : undefined, incomingMenu)}
               {incoming.length === 0 && <div class="px-2.5 py-1 text-[11.5px] text-faint">Nothing new on {head?.upstream} — fetch to check.</div>}
               {incoming.map((c) => commitRow(c, 'incoming'))}
               {sectionHeader('Outgoing', outgoing.length, outgoing.length > 0
                 ? <Button size="sm" icon={<ArrowUp />} disabled={busy !== null} onClick={() => { void run('Push', () => client.call('git.push', { root }), 'Pushed') }}>Push</Button>
-                : undefined)}
+                : undefined, outgoingMenu)}
               {outgoing.length === 0 && <div class="px-2.5 py-1 text-[11.5px] text-faint">Every local commit is on {head?.upstream}.</div>}
               {outgoing.map((c) => commitRow(c, 'outgoing'))}
               {!syncOnly && sectionHeader('Local History', commits.length)}
@@ -495,7 +544,8 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
                           data-commit-file={file.path}
                           class={cn('flex items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-raised', detailFile === file.path && 'bg-accent-soft')}
                           onClick={() => setDetailFile(file.path)}
-                          onDblClick={() => onOpenFile(file.path, 'file')}
+                          onDblClick={() => { void openRepoFile(client, root, file.path, 'file', onOpenFile) }}
+                          onContextMenu={(e) => ctx.open(e, detailFileMenu(file), 'File actions')}
                           title={file.oldPath !== undefined ? `${file.oldPath} → ${file.path}` : file.path}
                         >
                           <span class={cn('w-3 shrink-0 font-mono text-[11px]', file.status === 'A' ? 'text-green' : file.status === 'D' ? 'text-red' : 'text-yellow')}>{file.status}</span>
@@ -589,6 +639,7 @@ export function GitRepositoryView({ client, root, label, reloadKey, onOpenFile, 
         remotes={remoteNames.length > 0 ? remoteNames : ['origin']}
         onPublish={async (remote) => (await run('Publish', () => client.call('git.push', { root, setUpstream: true, remote }), 'Published'))?.ok === true}
       />
+      {ctx.menu}
     </div>
   )
 }

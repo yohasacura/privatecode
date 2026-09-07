@@ -29,11 +29,17 @@ export function Popover({ open, onOpenChange, anchor, side = 'bottom', align = '
   useEscape(open, close)
 
   useEffect(() => {
-    if (!open || panel.current === null) return
-    const restore = rememberFocus()
-    focusFirst(panel.current)
-    return restore
+    if (!open) return
+    return rememberFocus()
   }, [open])
+  // Focus goes in once the panel is placed and visible — it renders `invisible` until it
+  // has been measured, and a browser will not focus what it cannot see (nor, for a few
+  // milliseconds, what has only just appeared: see `focusWhenReady`).
+  const visible = pos !== null
+  useEffect(() => {
+    if (!open || !visible || panel.current === null) return
+    return focusFirst(panel.current)
+  }, [open, visible])
 
   if (!open) return null
   return (

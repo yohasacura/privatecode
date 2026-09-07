@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { afterEach, describe, expect, test } from 'vitest'
-import { focusFirst, rememberFocus, tabbables, trapTab } from './focus'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+import { focusFirst, focusWhenReady, rememberFocus, tabbables, trapTab } from './focus'
 
 afterEach(() => { document.body.innerHTML = '' })
 
@@ -83,5 +83,49 @@ describe('opening and closing', () => {
     const restore2 = rememberFocus()
     opener.remove()
     expect(() => restore2()).not.toThrow()
+  })
+})
+
+describe('focusing what has only just appeared', () => {
+  test('tries again when the browser dropped the first call, and stops once it took', () => {
+    vi.useFakeTimers()
+    try {
+      const box = mount('<div><button id="late">late</button></div>')
+      const el = box.querySelector<HTMLElement>('#late')!
+      // The first two calls are dropped, the way Chromium drops a focus() in the first
+      // milliseconds of an element's life; the third takes.
+      const realFocus = el.focus.bind(el)
+      let calls = 0
+      el.focus = () => { calls += 1; if (calls >= 3) realFocus() }
+      const cancel = focusWhenReady(el)
+      expect(document.activeElement).not.toBe(el)
+      vi.advanceTimersByTime(20)
+      expect(calls).toBe(2)
+      vi.advanceTimersByTime(40)
+      expect(calls).toBe(3)
+      expect(document.activeElement).toBe(el)
+      // Focused now: the last retry leaves it alone.
+      vi.advanceTimersByTime(200)
+      expect(calls).toBe(3)
+      cancel()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('a cancelled retry never fires, so an unmounted menu cannot pull focus back', () => {
+    vi.useFakeTimers()
+    try {
+      const box = mount('<div><button id="gone">gone</button></div>')
+      const el = box.querySelector<HTMLElement>('#gone')!
+      let calls = 0
+      el.focus = () => { calls += 1 }
+      const cancel = focusWhenReady(el)
+      cancel()
+      vi.advanceTimersByTime(500)
+      expect(calls).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

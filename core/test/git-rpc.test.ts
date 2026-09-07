@@ -168,3 +168,39 @@ describe('the handlers, end to end', () => {
     expect(readFileSync(join(root, 'README.md'), 'utf8')).toBe('one\n')
   })
 })
+
+describe('the two spellings of a path', () => {
+  test('git.locate names the repository a workspace path is in; git.address goes the other way', async () => {
+    const nested = join(root, 'vendor', 'lib')
+    mkdirSync(nested, { recursive: true })
+    await run(nested, ['init', '--quiet', '--initial-branch=main'])
+    writeFileSync(join(nested, 'lib.txt'), 'x\n', 'utf8')
+    const ws = new Workspace(root)
+    const h = gitHandlers(() => ws)
+
+    // A file of the nested repository: the workspace spelling carries the folder prefix,
+    // git's does not.
+    const located = await h['git.locate']({ path: 'vendor/lib/lib.txt' })
+    expect(located.root?.toLowerCase()).toBe(nested.toLowerCase())
+    expect(located.repoPath).toBe('lib.txt')
+    const back = await h['git.address']({ root: nested, paths: ['lib.txt', '../README.md', 'C:\\elsewhere.txt'] })
+    expect(back.paths).toEqual(['vendor/lib/lib.txt', null, null])
+
+    // A file of the folder's own repository.
+    expect(await h['git.locate']({ path: 'README.md' })).toMatchObject({ repoPath: 'README.md' })
+    expect((await h['git.address']({ root, paths: ['README.md'] })).paths).toEqual(['README.md'])
+
+    // A file that does not exist yet is still in the repository its folder is in — the
+    // way a deleted file's ghost row still has a history.
+    expect(await h['git.locate']({ path: 'nowhere.txt' })).toMatchObject({ repoPath: 'nowhere.txt' })
+    // Outside the workspace, or under no repository at all: nothing, not an error.
+    expect(await h['git.locate']({ path: '../elsewhere.txt' })).toEqual({ root: null, repoPath: null })
+    const plain = mkdtempSync(join(tmpdir(), 'pc-plain-'))
+    try {
+      const loose = new Workspace(plain)
+      expect(await gitHandlers(() => loose)['git.locate']({ path: 'a.txt' })).toEqual({ root: null, repoPath: null })
+    } finally {
+      rmSync(plain, { recursive: true, force: true })
+    }
+  })
+})

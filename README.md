@@ -116,8 +116,12 @@ revert, reset, tag, squash, rename, delete. Conflicts open a merge editor with a
 side and Accept Merge; a file's diff face stages by the hunk; a file's history and blame are a
 click away; Settings → Git holds name, email, prune, rebase-on-pull and the remotes. The chip
 in the status bar shows the branch, how far it is from its remote and how many files changed.
-Nothing is sent anywhere: it is the machine's own `git`, and the window shows what it says.
-The full parity table: [docs/GIT.md](docs/GIT.md).
+Every row answers a right-click with the same actions its `…` button has — a changed file, a
+stash, a branch, a commit, a conflict block, a hunk, a file in the Workspace tree, an editor
+tab. A workspace with several repositories gets a picker at the top of the Git tab that names
+each one with its state, and the chip lists them all on a right-click. Nothing is sent
+anywhere: it is the machine's own `git`, and the window shows what it says. The full parity
+table: [docs/GIT.md](docs/GIT.md).
 
 **Two numbers in `settings.json` shape how much the model is told up front.**
 `"prefix": { "mapChars": 20000 }` is how much of the cached prefix the project map may take

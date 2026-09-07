@@ -1,13 +1,14 @@
 import type { VNode } from 'preact'
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { GitBranch, ShieldCheck } from 'lucide-preact'
+import { Check, FolderGit2, GitBranch, ShieldCheck } from 'lucide-preact'
 import type { GitRepoView } from '@core/host/protocol'
-import { describeHead } from '../lib/git-actions'
-import { SHOW_GIT_EVENT } from '../lib/git-views'
+import { OPERATION_LABEL, describeHead } from '../lib/git-actions'
+import { GIT_REPO_EVENT, gitEventRoot, showGit, type GitView } from '../lib/git-views'
 import type { ProtocolClient } from '../lib/client'
 import { formatTokenCount } from '../lib/format'
 import type { ChatState } from '../lib/state'
 import { cn } from '../ui/cn'
+import { useContextMenu, type MenuItem } from '../ui/menu'
 
 /**
  * The window's bottom edge (docs/UI-REDESIGN-2026-09.md §2): the server and its model, the
@@ -17,7 +18,12 @@ import { cn } from '../ui/cn'
  * The polling and the arithmetic are unchanged from the first status bar and carry its
  * reasons; only the drawing is new.
  */
-export function StatusBar({ client, chatState }: { client: ProtocolClient; chatState: ChatState }): VNode {
+export function StatusBar({ client, chatState, onOpenView }: {
+  client: ProtocolClient
+  chatState: ChatState
+  /** Opens the Git Repository window as a tab — the chip's menu offers it. */
+  onOpenView?: (view: GitView) => void
+}): VNode {
   const [serverUp, setServerUp] = useState<boolean | null>(null)
   const [model, setModel] = useState<string | null>(null)
   const [contextLength, setContextLength] = useState<number | null>(null)
@@ -27,21 +33,56 @@ export function StatusBar({ client, chatState }: { client: ProtocolClient; chatS
   // The branch, the way Visual Studio's status bar wears it: name, outgoing/incoming, and
   // the count of pending changes; a click opens the Git tab. Polled with the same idle
   // rhythm as the server probe, plus on focus, which is when it can have gone stale.
-  const [git, setGit] = useState<{ repo: GitRepoView; more: number } | null>(null)
+  //
+  // With several repositories the chip shows the one the Git tab shows (it says which,
+  // through GIT_REPO_EVENT) — the first one otherwise — and its right-click lists them all.
+  const [repos, setRepos] = useState<GitRepoView[]>([])
+  const [preferred, setPreferred] = useState<string | null>(null)
+  const ctx = useContextMenu()
   useEffect(() => {
     let cancelled = false
     function poll(): void {
-      client.call('git.status', {}).then((r) => {
-        if (cancelled) return
-        const repo = r.repos[0]
-        setGit(repo === undefined ? null : { repo, more: r.repos.length - 1 })
-      }).catch(() => {})
+      client.call('git.status', {}).then((r) => { if (!cancelled) setRepos(r.repos) }).catch(() => {})
     }
     poll()
     const id = setInterval(poll, 10_000)
     window.addEventListener('focus', poll)
     return () => { cancelled = true; clearInterval(id); window.removeEventListener('focus', poll) }
   }, [client])
+  useEffect(() => {
+    const follow = (e: Event): void => { const root = gitEventRoot(e); if (root !== null) setPreferred(root) }
+    window.addEventListener(GIT_REPO_EVENT, follow)
+    return () => window.removeEventListener(GIT_REPO_EVENT, follow)
+  }, [])
+  const gitRepo = repos.find((r) => r.root === preferred) ?? repos[0]
+  const git = gitRepo === undefined ? null : { repo: gitRepo, more: repos.length - 1 }
+
+  /** One repository, as the chip's list describes it. */
+  const describeRepo = (r: GitRepoView): string => {
+    const parts = [describeHead(r)]
+    if (r.head.ahead > 0) parts.push(`↑${r.head.ahead}`)
+    if (r.head.behind > 0) parts.push(`↓${r.head.behind}`)
+    if (r.files.length > 0) parts.push(`${r.files.length} change${r.files.length === 1 ? '' : 's'}`)
+    if (r.operation !== null) parts.push(`${OPERATION_LABEL[r.operation] ?? r.operation} in progress`)
+    return parts.join(' · ')
+  }
+  const chipMenu = (current: GitRepoView): MenuItem[] => [
+    { id: 'git-tab', label: 'Open the Git tab', icon: <GitBranch />, onSelect: () => showGit(current.root) },
+    ...(onOpenView !== undefined
+      ? [{ id: 'repo-window', label: 'Open the Git Repository window', icon: <FolderGit2 />, onSelect: () => onOpenView({ kind: 'repo', root: current.root, label: current.label }) } as MenuItem]
+      : []),
+    ...(repos.length > 1
+      ? [
+        { separator: true } as MenuItem,
+        ...repos.map((r): MenuItem => ({
+          id: `repo:${r.root}`,
+          label: `${r.label} — ${describeRepo(r)}`,
+          ...(r.root === current.root ? { icon: <Check /> } : {}),
+          onSelect: () => { setPreferred(r.root); showGit(r.root) },
+        })),
+      ]
+      : []),
+  ]
 
   // Polls `status` every 10s while IDLE and never during a turn: the server runs with a
   // single slot (`-np 1`), so a health probe fired mid-generation would be a second
@@ -115,18 +156,23 @@ export function StatusBar({ client, chatState }: { client: ProtocolClient; chatS
         <button
           type="button"
           data-status="git"
+          data-git-root={git.repo.root}
           class="flex shrink-0 items-center gap-1 rounded border-0 bg-transparent px-1 py-0 font-ui text-[12px] text-dim hover:bg-raised hover:text-fg"
-          title={`${git.repo.label}${git.repo.head.upstream !== null ? ` · tracks ${git.repo.head.upstream}` : ' · no upstream'}${git.more > 0 ? ` · and ${git.more} more repositor${git.more === 1 ? 'y' : 'ies'}` : ''} — open the Git tab`}
-          onClick={() => window.dispatchEvent(new CustomEvent(SHOW_GIT_EVENT))}
+          title={`${git.repo.label}${git.repo.head.upstream !== null ? ` · tracks ${git.repo.head.upstream}` : ' · no upstream'}${git.more > 0 ? ` · and ${git.more} more repositor${git.more === 1 ? 'y' : 'ies'} — right-click to pick one` : ''} — open the Git tab`}
+          onClick={() => showGit(git.repo.root)}
+          onContextMenu={(e) => ctx.open(e, chipMenu(git.repo), 'Repository')}
         >
           <GitBranch class="size-3 text-accent" aria-hidden="true" />
+          {git.more > 0 && <span class="max-w-[120px] truncate text-faint" data-git-label="">{git.repo.label}</span>}
           <span class="max-w-[160px] truncate">{describeHead(git.repo)}</span>
           {git.repo.head.ahead > 0 && <span class="text-faint">↑{git.repo.head.ahead}</span>}
           {git.repo.head.behind > 0 && <span class="text-faint">↓{git.repo.head.behind}</span>}
           {git.repo.files.length > 0 && <span class="text-faint">· {git.repo.files.length}</span>}
           {git.repo.operation !== null && <span class="text-yellow">· {git.repo.operation}</span>}
+          {git.more > 0 && <span class="text-faint" title={`${git.more} more repositor${git.more === 1 ? 'y' : 'ies'} in this workspace`}>+{git.more}</span>}
         </button>
       )}
+      {ctx.menu}
 
       {fillPct !== null && used !== undefined && total !== null && (
         <span

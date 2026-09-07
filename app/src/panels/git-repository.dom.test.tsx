@@ -165,3 +165,75 @@ describe('the Git Repository window', () => {
     expect(client.calls.find(([m]) => m === 'git.branchCreate')?.[1]).toEqual({ root: 'D:\\proj', name: 'topic/x', base: 'main', checkout: true, track: false })
   })
 })
+
+const rightClick = async (el: Element): Promise<void> => {
+  await act(async () => { el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 30, clientY: 40, button: 2 })) })
+  await flush()
+}
+const menuLabels = (): string[] => [...document.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent?.trim() ?? '')
+const escape = async (): Promise<void> => {
+  await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+}
+
+describe('the right-click in the repository window', () => {
+  test('on a commit outside the selection: selects it alone and opens its actions; on two selected: the pair\'s', async () => {
+    const el = await mount(fakeClient())
+    const first = [...el.querySelectorAll('[data-commit="c1"]')].pop() as HTMLElement
+    await rightClick(first)
+    expect(first.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('[role="menu"]')?.getAttribute('aria-label')).toBe('Commit actions')
+    expect(menuLabels()).toEqual(expect.arrayContaining(['Checkout (detached)', 'New Branch…', 'Create Tag…', 'Cherry-Pick', 'Revert', 'Reset…', 'Copy Commit ID']))
+    expect(menuLabels()).not.toContain('Compare Commits')
+    await escape()
+
+    const second = [...el.querySelectorAll('[data-commit="c2"]')].pop() as HTMLElement
+    await act(async () => { second.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true })) })
+    await flush()
+    await rightClick(second)
+    expect(menuLabels()).toEqual(expect.arrayContaining(['Compare Commits', 'Squash 2 Commits…', 'Cherry-Pick 2 Commits']))
+    await escape()
+  })
+
+  test('on a branch, a tag and the section headers', async () => {
+    const el = await mount(fakeClient())
+    await rightClick(el.querySelector('[data-branch="feature"]')!)
+    expect(menuLabels()).toEqual(expect.arrayContaining(['Checkout', "Merge 'feature' into 'main'", 'Rename…', 'Delete…']))
+    await escape()
+    await rightClick(el.querySelector('[data-section-title="Local"]')!)
+    expect(menuLabels()).toEqual(expect.arrayContaining(['New branch…', 'Show all branches in the graph']))
+    await escape()
+    await rightClick(el.querySelector('[data-section-title="Remotes"]')!)
+    expect(menuLabels()).toEqual(expect.arrayContaining(['Fetch (prune deleted branches)', 'Publish the current branch…']))
+    await escape()
+    await rightClick(el.querySelector('[data-section-title="Outgoing"]')!)
+    expect(menuLabels()).toEqual(['Push', 'Push with tags'])
+    await escape()
+    // Tags are collapsed by default; the header still answers.
+    await rightClick(el.querySelector('[data-section-title="Tags"]')!)
+    expect(menuLabels()).toEqual(['Create tag at HEAD…'])
+    await escape()
+  })
+
+  test('a file of the selected commit opens through the host\'s spelling of the workspace path', async () => {
+    const opened: string[] = []
+    const client = fakeClient({ 'git.address': (p) => ({ paths: (p as { paths: string[] }).paths.map((x) => `work/one/${x}`) }) })
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    await act(async () => { render(<GitRepositoryView client={client} root={'D:\\proj'} label="proj" reloadKey={0} onOpenFile={(p) => opened.push(p)} onOpenView={() => {}} />, host!) })
+    await flush()
+    await flush()
+    const row = [...host.querySelectorAll('[data-commit="c2"]')].pop() as HTMLElement
+    await act(async () => { row.click() })
+    await flush()
+    await flush()
+    const file = host.querySelector('[data-commit-file="src/app.ts"]') as HTMLButtonElement
+    await rightClick(file)
+    expect(menuLabels()).toEqual(expect.arrayContaining(['Show the change', 'Open file', 'View history', 'Blame (annotate)', 'Copy path']))
+    const open = [...document.querySelectorAll('[role="menuitem"]')].find((i) => i.textContent?.trim() === 'Open file') as HTMLElement
+    await act(async () => { open.click() })
+    await flush()
+    await flush()
+    expect(client.calls.find(([m]) => m === 'git.address')?.[1]).toEqual({ root: 'D:\\proj', paths: ['src/app.ts'] })
+    expect(opened).toEqual(['work/one/src/app.ts'])
+  })
+})

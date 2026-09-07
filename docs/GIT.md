@@ -17,6 +17,7 @@ its own, so whatever it shows is what `git status`, `git log` and `git for-each-
 | File history / Blame | A changed file's menu → **View history** / **Blame (annotate)** | The commits touching the file with each diff; who last touched every line |
 | Diff face of a file | Any file tab → *diff* | **Stage hunk** and **Undo** per hunk (line staging) |
 | Settings → Git | The `…` menu → **Git Settings…**, or Settings | User name / email (global and per repository), prune on fetch, rebase on pull, default branch, remotes, `.gitignore` |
+| The right-click | Any row: a changed file, a stash, a branch, a tag, a commit, a commit's file, a history row, a blame line, a conflict block, a hunk, a file or folder in the Workspace tree, an editor tab, the branch chip | The same actions the row's `…` button has, at the pointer. Section titles carry the list's actions (Stage all, Unstage all, Undo all, Stash All…); the Git tab's header carries Fetch / Pull / Push / Sync and the `…` menu. Shift+F10 opens it from the keyboard; arrows move, Enter chooses, Escape closes |
 
 ## Parity with Visual Studio
 
@@ -49,7 +50,8 @@ its own, so whatever it shows is what `git status`, `git log` and `git for-each-
 | Blame (Annotate) · View History | Row menu | |
 | Git Settings: name, email, prune, rebase on pull, remotes, gitignore | Settings → Git | Global and repository scopes are both shown; a repository value overrides |
 | Create Git Repository | Git tab, for a folder under no version control | `git init`; the default branch comes from `init.defaultBranch` |
-| Multi-repo | Repository selector at the top of the Git tab when the workspace holds several | Nested repositories and a repository above a mounted subfolder are found the way the tree finds them |
+| Solution Explorer → Git: View History, Blame, Compare with Unmodified, Undo, Stage, Unstage, Ignore | The Workspace tree's right-click | A folder offers *Stage all inside* / *Unstage all inside*; a clean file asks the host which repository holds it (`git.locate`) |
+| Multi-repo: the repository picker, the status bar's repository chip | Repository selector at the top of the Git tab when the workspace holds several; the branch chip names the repository and lists them all on a right-click | Each entry says its branch, its changes and an operation in progress. The chosen repository and each one's unsent commit message survive switching inspector tabs. Nested repositories, a repository above a mounted subfolder, and a repository git reports inside another (under `vendor/`, a submodule, an unregistered clone at any depth) each get their own section; files git names one way and the workspace another (`packages/api/a.ts` vs `api/a.ts`) are translated by the host (`git.address`), so *Open file* from a commit lands on the right tab |
 | Clone, GitHub / Azure DevOps sign-in, pull requests, work items, Copilot review, author images | Not here | The app talks to no service; clone from a terminal, then open the folder |
 
 ## How it is wired
@@ -62,7 +64,15 @@ its own, so whatever it shows is what `git status`, `git log` and `git for-each-
   climb out or land in a folder the workspace does not hold.
 - `core/src/host/repos.ts` — discovery now reads porcelain v2, so one `git status` also
   yields the upstream, ahead/behind, detached and unborn states, the stash count and the
-  conflict list.
+  conflict list. A directory git reports that has a `.git` inside — an unregistered clone,
+  a submodule — becomes its own section rather than one entry to stage, wherever the
+  nested-repository walk did or did not look.
+- `git.locate` / `git.address` — the two spellings of one file, translated by the side that
+  knows both: the workspace's (`api/a.ts`, what the tree and the tabs say) and git's
+  (`packages/api/a.ts`, what a commit's file list and a blame say).
+- `app/src/ui/menu.tsx` — `useContextMenu`: one right-click menu per component, opened at
+  the pointer with the same items the row's `…` button shows; a right-click inside a text
+  field is left to the browser.
 - `app/src/panels/git-tab.tsx`, `git-repository.tsx`, `merge-editor.tsx`,
   `git-extra-views.tsx`, `git-settings.tsx`, `git-dialogs.tsx` — the surfaces;
   `app/src/lib/git-graph.ts`, `conflicts.ts`, `hunks.ts` — the pure parts, each with a test.

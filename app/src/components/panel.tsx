@@ -190,7 +190,7 @@ export function PanelRow({
  * the boundary from the content.
  */
 export function PanelSection({
-  title, count, subtitle, actions, children,
+  title, count, subtitle, actions, onContextMenu, children,
 }: {
   title: string
   /** Rendered beside the title when there is something to count. */
@@ -200,11 +200,13 @@ export function PanelSection({
   subtitle?: string
   /** Controls for the whole list, at the right of its title. */
   actions?: ComponentChildren
+  /** A right-click on the title row — the list's own actions, at the pointer. */
+  onContextMenu?: (e: MouseEvent) => void
   children: ComponentChildren
 }): VNode {
   return (
     <section data-panel="section" class="flex flex-col">
-      <div class="flex items-center gap-1.5 px-2.5 pb-1 pt-2.5">
+      <div class="flex items-center gap-1.5 px-2.5 pb-1 pt-2.5" data-section-title={title} {...(onContextMenu !== undefined ? { onContextMenu } : {})}>
         <span class="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-faint">{title}</span>
         {count !== undefined && count > 0 && <span class="font-mono text-[10.5px] text-faint">{count}</span>}
         {subtitle !== undefined && subtitle !== '' && (

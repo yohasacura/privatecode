@@ -4,7 +4,7 @@ import { useRef, useState } from 'preact/hooks'
 import { act } from 'preact/test-utils'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { AlertDialog, Dialog } from './dialog'
-import { Menu } from './menu'
+import { Menu, useContextMenu } from './menu'
 import { Popover } from './popover'
 import { toast, Toaster } from './toast'
 import { Tooltip } from './tooltip'
@@ -242,5 +242,68 @@ describe('toasts', () => {
     click([...card.querySelectorAll('button')].find((b) => b.textContent === 'Retry')!)
     expect(onUndo).toHaveBeenCalledTimes(1)
     expect(document.querySelector('[role="alert"]')).toBeNull()
+  })
+})
+
+describe('context menu', () => {
+  const picked: string[] = []
+  function Harness(): preact.JSX.Element {
+    const { menu, open } = useContextMenu()
+    const items = [
+      { id: 'open', label: 'Open', onSelect: () => picked.push('open') },
+      { id: 'stage', label: 'Stage', onSelect: () => picked.push('stage') },
+    ]
+    return (
+      <div>
+        <div id="row" tabIndex={0} onContextMenu={(e) => open(e, items, 'Row actions')}>
+          a row
+          <input id="field" />
+        </div>
+        {menu}
+      </div>
+    )
+  }
+  const rightClick = (el: Element, x = 40, y = 50): MouseEvent => {
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2 })
+    act(() => { el.dispatchEvent(e) })
+    return e
+  }
+
+  test('a right-click on the row opens its items at the pointer, on the first one; Enter chooses and focus comes back', () => {
+    picked.length = 0
+    const el = mount(<Harness />)
+    const row = el.querySelector<HTMLElement>('#row')!
+    row.focus()
+    const e = rightClick(row)
+    expect(e.defaultPrevented).toBe(true)
+    const menu = document.querySelector<HTMLElement>('[role="menu"]')!
+    expect(menu.getAttribute('aria-label')).toBe('Row actions')
+    expect(document.activeElement?.textContent).toBe('Open')
+    press(menu, 'ArrowDown')
+    press(menu, 'Enter')
+    expect(picked).toEqual(['stage'])
+    expect(document.querySelector('[role="menu"]')).toBeNull()
+    expect(document.activeElement).toBe(row)
+  })
+
+  test('Escape and a pointer-down elsewhere close it; a second right-click is a fresh menu', () => {
+    const el = mount(<Harness />)
+    const row = el.querySelector<HTMLElement>('#row')!
+    rightClick(row)
+    expect(document.querySelector('[role="menu"]')).not.toBeNull()
+    press(document, 'Escape')
+    expect(document.querySelector('[role="menu"]')).toBeNull()
+    rightClick(row, 10, 10)
+    expect(document.querySelector('[role="menu"]')).not.toBeNull()
+    pointerDown(document.body)
+    expect(document.querySelector('[role="menu"]')).toBeNull()
+  })
+
+  test('a right-click inside a text field is left to the browser, whose menu has Paste', () => {
+    const el = mount(<Harness />)
+    const field = el.querySelector<HTMLElement>('#field')!
+    const e = rightClick(field)
+    expect(e.defaultPrevented).toBe(false)
+    expect(document.querySelector('[role="menu"]')).toBeNull()
   })
 })

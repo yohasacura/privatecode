@@ -9,7 +9,7 @@ import type { ProtocolClient } from '../lib/client'
 import { relativeTime } from '../lib/format'
 import { OPERATION_LABEL, announce, describeHead, kindOf, repoPathOf, shortSha, syncSummary, type Outcome } from '../lib/git-actions'
 import { letterOf } from '../lib/git-scm'
-import type { GitView } from '../lib/git-views'
+import { GIT_REPO_EVENT, SHOW_GIT_EVENT, gitEventRoot, gitTabMemory, type GitView } from '../lib/git-views'
 import { DiffView } from '../lib/diff'
 import { Icon } from '../components/icons'
 import { PanelEmpty, PanelError, PanelLoading, PanelNote, PanelSection } from '../components/panel'
@@ -17,7 +17,7 @@ import { Button, IconButton } from '../ui/button'
 import { cn } from '../ui/cn'
 import { Dialog } from '../ui/dialog'
 import { Input, Textarea } from '../ui/input'
-import { Menu, type MenuItem } from '../ui/menu'
+import { Menu, useContextMenu, type MenuItem } from '../ui/menu'
 import { Popover } from '../ui/popover'
 import { Select } from '../ui/select'
 import { Switch } from '../ui/switch'
@@ -41,6 +41,31 @@ import { ConfirmDialog, NewBranchDialog, PublishDialog, PushBehindDialog, StashD
 
 const POLL_MS = 3000
 
+/**
+ * What the tab keeps across its own remounts. It unmounts whenever another inspector tab
+ * is showing, and a workspace with several repositories came back on the FIRST one every
+ * time, with the commit message gone — so the chosen repository and each repository's
+ * unsent message and Amend switch live here, keyed by root so two workspaces' repositories
+ * never meet. Module state, not persisted: a restart starts clean, like Visual Studio.
+ */
+const remembered = {
+  drafts: new Map<string, { message: string; amend: boolean }>(),
+}
+
+/** For tests: the tab as if it had never been opened. */
+export function forgetGitTabState(): void {
+  gitTabMemory.root = null
+  remembered.drafts.clear()
+}
+
+/** One repository as the picker names it: what it is, where it is, what is going on. */
+export function repoOptionLabel(r: GitRepoView): string {
+  const parts = [r.label, describeHead(r)]
+  if (r.files.length > 0) parts.push(`${r.files.length} change${r.files.length === 1 ? '' : 's'}`)
+  if (r.operation !== null) parts.push(`${OPERATION_LABEL[r.operation] ?? r.operation} in progress`)
+  return parts.join(' · ')
+}
+
 type Dialog =
   | { kind: 'new-branch' }
   | { kind: 'stash' }
@@ -61,6 +86,8 @@ interface FileRowProps {
   onUnstage: () => void
   onUndo: () => void
   onMenu: () => MenuItem[]
+  /** The same items as the `…` button, at the pointer. */
+  onContextMenu: (e: MouseEvent) => void
 }
 
 function splitPath(path: string): { dir: string; name: string } {
@@ -68,7 +95,7 @@ function splitPath(path: string): { dir: string; name: string } {
   return cut === -1 ? { dir: '', name: path } : { dir: path.slice(0, cut), name: path.slice(cut + 1) }
 }
 
-function FileRow({ file, section, busy, onOpen, onStage, onUnstage, onUndo, onMenu }: FileRowProps): VNode {
+function FileRow({ file, section, busy, onOpen, onStage, onUnstage, onUndo, onMenu, onContextMenu }: FileRowProps): VNode {
   const letter = letterOf(file.code)
   const { dir, name } = splitPath(file.path)
   const staged = section === 'staged'
@@ -80,6 +107,7 @@ function FileRow({ file, section, busy, onOpen, onStage, onUnstage, onUndo, onMe
         'group flex min-h-7 items-center gap-2 py-0.5 pl-2.5 pr-1.5 transition-colors duration-(--duration-fast) hover:bg-raised',
         section === 'conflict' && 'text-red',
       )}
+      onContextMenu={onContextMenu}
     >
       <span class={cn('flex shrink-0', section === 'conflict' ? 'text-red' : staged ? 'text-accent' : 'text-dim')} title={file.code}>
         {Icon.gitMark(letter, staged)}
@@ -129,10 +157,11 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
   const [status, setStatus] = useState<GitStatusResult | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   const [gitMissing, setGitMissing] = useState(false)
-  const [selectedRoot, setSelectedRoot] = useState<string | null>(null)
+  const [selectedRoot, setSelectedRoot] = useState<string | null>(gitTabMemory.root)
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const [amend, setAmend] = useState(false)
+  const ctx = useContextMenu()
   const [stashes, setStashes] = useState<GitStashEntry[]>([])
   const [refs, setRefs] = useState<GitRefs | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
@@ -145,6 +174,38 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
 
   const repos = status?.repos ?? []
   const repo: GitRepoView | undefined = repos.find((r) => r.root === selectedRoot) ?? repos[0]
+  const repoRoot = repo?.root
+
+  /** Picks a repository: the tab, its memory, and the status bar's chip all follow. */
+  const chooseRepo = useCallback((root: string): void => {
+    gitTabMemory.root = root
+    setSelectedRoot(root)
+    setRefs(null)
+  }, [])
+  // The status bar's chip (and anything else that shows "the" repository) follows the tab.
+  useEffect(() => {
+    if (repoRoot === undefined) return
+    window.dispatchEvent(new CustomEvent(GIT_REPO_EVENT, { detail: { root: repoRoot } }))
+  }, [repoRoot])
+  // "Show Git" from elsewhere can name the repository to show — the chip's list does.
+  useEffect(() => {
+    const onShow = (e: Event): void => { const root = gitEventRoot(e); if (root !== null) chooseRepo(root) }
+    window.addEventListener(SHOW_GIT_EVENT, onShow)
+    return () => window.removeEventListener(SHOW_GIT_EVENT, onShow)
+  }, [chooseRepo])
+  // The unsent message and the Amend switch belong to the repository they were typed for.
+  useEffect(() => {
+    if (repoRoot === undefined) return
+    const draft = remembered.drafts.get(repoRoot)
+    setMessage(draft?.message ?? '')
+    setAmend(draft?.amend ?? false)
+  }, [repoRoot])
+  const draft = (next: { message?: string; amend?: boolean }): void => {
+    const value = { message: next.message ?? message, amend: next.amend ?? amend }
+    if (next.message !== undefined) setMessage(next.message)
+    if (next.amend !== undefined) setAmend(next.amend)
+    if (repoRoot !== undefined) remembered.drafts.set(repoRoot, value)
+  }
 
   const load = useCallback((quiet = true) => {
     client.call('git.status', {})
@@ -217,8 +278,7 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
   async function commit(all: boolean, then: 'push' | 'sync' | null): Promise<void> {
     const r = await run('Commit', () => client.call('git.commitIndex', { root, message, all, amend }), amend ? 'Commit amended' : 'Committed')
     if (r === null || !r.ok) return
-    setMessage('')
-    setAmend(false)
+    draft({ message: '', amend: false })
     if (then === 'push') await push({})
     if (then === 'sync') await sync()
   }
@@ -333,6 +393,36 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
     { id: 'new-branch', label: 'New Branch…', icon: <GitBranch />, onSelect: () => setDialog({ kind: 'new-branch' }) },
     ...(onOpenSettings !== undefined ? [{ id: 'settings', label: 'Git Settings…', onSelect: onOpenSettings } as MenuItem] : []),
   ]
+  /** A right-click on the header: the four network buttons, then the `…` menu. */
+  const headerMenu: MenuItem[] = [
+    { id: 'fetch', label: 'Fetch', icon: <Download />, disabled: busy !== null, onSelect: fetch },
+    { id: 'pull', label: 'Pull', icon: <ArrowDown />, disabled: busy !== null, onSelect: () => { void pull() } },
+    { id: 'push', label: 'Push', icon: <ArrowUp />, disabled: busy !== null, onSelect: () => { void push({}) } },
+    { id: 'sync', label: 'Sync', icon: <RefreshCw />, disabled: busy !== null, onSelect: () => { void sync() } },
+    { separator: true },
+    ...moreMenu,
+  ]
+  const sectionMenu = (section: 'staged' | 'change' | 'stash'): MenuItem[] => {
+    switch (section) {
+      case 'staged': return [
+        { id: 'unstage-all', label: 'Unstage all', icon: Icon.minus(), disabled: busy !== null || staged.length === 0, onSelect: () => unstage(staged) },
+        { id: 'commit-staged', label: 'Commit Staged', disabled: !canCommit(false), reason: message.trim() === '' ? 'write a message first' : '', onSelect: () => { void commit(false, null) } },
+      ]
+      case 'change': return [
+        { id: 'stage-all', label: 'Stage all', icon: Icon.plus(), disabled: busy !== null || changes.length === 0, onSelect: () => stage(changes) },
+        { id: 'undo-all', label: 'Undo all changes…', icon: <Undo2 />, danger: true, disabled: busy !== null || changes.length === 0, onSelect: () => discard(changes) },
+        { separator: true },
+        { id: 'commit-all', label: 'Commit All', disabled: !canCommit(true), reason: message.trim() === '' ? 'write a message first' : '', onSelect: () => { void commit(true, null) } },
+        { id: 'stash', label: 'Stash All…', icon: <Archive />, disabled: files.length === 0, onSelect: () => setDialog({ kind: 'stash' }) },
+      ]
+      case 'stash': return [
+        { id: 'stash', label: 'Stash All…', icon: <Archive />, disabled: files.length === 0, onSelect: () => setDialog({ kind: 'stash' }) },
+        ...(stashes[0] !== undefined
+          ? [{ id: 'pop-latest', label: `Pop the latest (${stashes[0].message})`, onSelect: () => { const s = stashes[0]!; void run('Pop stash', () => client.call('git.stashApply', { root, index: s.index, pop: true, restoreIndex: true }), 'Stash popped') } } as MenuItem]
+          : []),
+      ]
+    }
+  }
 
   // ----------------------------------------------------------------------------------------
 
@@ -393,10 +483,10 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
   return (
     <div data-panel="git" class="flex h-full min-h-0 flex-col font-ui">
       {/* Header: repository, branch, sync state, network buttons */}
-      <div class="flex flex-col gap-1.5 border-b border-border-soft px-2.5 py-2">
+      <div class="flex flex-col gap-1.5 border-b border-border-soft px-2.5 py-2" onContextMenu={(e) => ctx.open(e, headerMenu, 'Git actions')}>
         {repos.length > 1 && (
-          <Select value={repo.root} aria-label="Repository" onChange={(e) => { setSelectedRoot(e.currentTarget.value); setRefs(null) }} class="h-7 text-[12px]">
-            {repos.map((r) => <option key={r.root} value={r.root}>{r.label}</option>)}
+          <Select value={repo.root} aria-label="Repository" data-repo-picker="" title={repo.root} onChange={(e) => chooseRepo(e.currentTarget.value)} class="h-7 text-[12px]">
+            {repos.map((r) => <option key={r.root} value={r.root}>{repoOptionLabel(r)}</option>)}
           </Select>
         )}
         <div class="flex items-center gap-1">
@@ -526,7 +616,7 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
             placeholder={amend ? 'New message for the last commit (leave empty to keep it)' : 'Enter a commit message'}
             aria-label="Commit message"
             disabled={busy !== null}
-            onInput={(e) => setMessage(e.currentTarget.value)}
+            onInput={(e) => draft({ message: e.currentTarget.value })}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canCommit(primaryAll)) { e.preventDefault(); void commit(primaryAll, null) } }}
           />
           <div class="flex items-center gap-1.5">
@@ -547,7 +637,7 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
                 <Button {...props} size="sm" variant="primary" class="rounded-l-none border-l border-l-white/20 px-1" aria-label="Commit options"><ChevronDown /></Button>
               )} />
             </span>
-            <Switch size="sm" checked={amend} onChange={setAmend} disabled={busy !== null || head.unborn} label="Amend" hint="Fold this commit into the last one, replacing its message when one is given" />
+            <Switch size="sm" checked={amend} onChange={(v) => draft({ amend: v })} disabled={busy !== null || head.unborn} label="Amend" hint="Fold this commit into the last one, replacing its message when one is given" />
             <span class="ml-auto text-[11px] text-faint">{files.length === 0 ? 'nothing to commit' : `${files.length} change${files.length === 1 ? '' : 's'}`}</span>
           </div>
         </div>
@@ -560,13 +650,14 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
             actions={<IconButton size="sm" label={sectionOpen['conflict'] === false ? 'Expand' : 'Collapse'} onClick={() => toggle('conflict')}><ChevronDown class={cn('transition-transform', sectionOpen['conflict'] === false && '-rotate-90')} /></IconButton>}
           >
             {sectionOpen['conflict'] !== false && conflicts.map((f) => (
-              <FileRow key={`c:${f.path}`} file={f} section="conflict" busy={busy !== null} onOpen={() => openMerge(f)} onStage={() => stage([f])} onUnstage={() => {}} onUndo={() => {}} onMenu={() => fileMenu(f, 'conflict')} />
+              <FileRow key={`c:${f.path}`} file={f} section="conflict" busy={busy !== null} onOpen={() => openMerge(f)} onStage={() => stage([f])} onUnstage={() => {}} onUndo={() => {}} onMenu={() => fileMenu(f, 'conflict')} onContextMenu={(e) => ctx.open(e, fileMenu(f, 'conflict'), 'File actions')} />
             ))}
           </PanelSection>
         )}
         <PanelSection
           title="Staged Changes"
           count={staged.length}
+          onContextMenu={(e) => ctx.open(e, sectionMenu('staged'), 'Staged changes')}
           actions={(
             <>
               {staged.length > 0 && <IconButton size="sm" label="Unstage all" title="Unstage all" disabled={busy !== null} onClick={() => unstage(staged)}>{Icon.minus()}</IconButton>}
@@ -577,12 +668,13 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
           {sectionOpen['staged'] !== false && (staged.length === 0
             ? <div class="px-2.5 pb-1.5 text-[11.5px] text-faint">Nothing staged. Press + on a change, or Commit All.</div>
             : staged.map((f) => (
-              <FileRow key={`s:${f.path}`} file={f} section="staged" busy={busy !== null} onOpen={() => onOpenFile(f.path, 'diff')} onStage={() => {}} onUnstage={() => unstage([f])} onUndo={() => {}} onMenu={() => fileMenu(f, 'staged')} />
+              <FileRow key={`s:${f.path}`} file={f} section="staged" busy={busy !== null} onOpen={() => onOpenFile(f.path, 'diff')} onStage={() => {}} onUnstage={() => unstage([f])} onUndo={() => {}} onMenu={() => fileMenu(f, 'staged')} onContextMenu={(e) => ctx.open(e, fileMenu(f, 'staged'), 'File actions')} />
             )))}
         </PanelSection>
         <PanelSection
           title="Changes"
           count={changes.length}
+          onContextMenu={(e) => ctx.open(e, sectionMenu('change'), 'Changes')}
           actions={(
             <>
               {changes.length > 0 && <IconButton size="sm" label="Undo all changes" title="Undo all changes — put every file back to the last commit" disabled={busy !== null} onClick={() => discard(changes)}><Undo2 /></IconButton>}
@@ -594,17 +686,18 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
           {sectionOpen['change'] !== false && (changes.length === 0
             ? <div class="px-2.5 pb-1.5 text-[11.5px] text-faint">{files.length === 0 ? 'The working tree is clean.' : 'Every change is staged.'}</div>
             : changes.map((f) => (
-              <FileRow key={`w:${f.path}`} file={f} section="change" busy={busy !== null} onOpen={() => onOpenFile(f.path, 'diff')} onStage={() => stage([f])} onUnstage={() => {}} onUndo={() => discard([f])} onMenu={() => fileMenu(f, 'change')} />
+              <FileRow key={`w:${f.path}`} file={f} section="change" busy={busy !== null} onOpen={() => onOpenFile(f.path, 'diff')} onStage={() => stage([f])} onUnstage={() => {}} onUndo={() => discard([f])} onMenu={() => fileMenu(f, 'change')} onContextMenu={(e) => ctx.open(e, fileMenu(f, 'change'), 'File actions')} />
             )))}
         </PanelSection>
         {(repo.stashes > 0 || stashes.length > 0) && (
           <PanelSection
             title="Stashes"
             count={stashes.length}
+            onContextMenu={(e) => ctx.open(e, sectionMenu('stash'), 'Stashes')}
             actions={<IconButton size="sm" label={sectionOpen['stash'] === false ? 'Expand' : 'Collapse'} onClick={() => toggle('stash')}><ChevronDown class={cn('transition-transform', sectionOpen['stash'] === false && '-rotate-90')} /></IconButton>}
           >
             {sectionOpen['stash'] !== false && stashes.map((s) => (
-              <div key={s.ref} data-stash={s.index} class={cn('group/stash flex min-h-7 items-center gap-2 py-0.5 pl-2.5 pr-1.5 hover:bg-raised')}>
+              <div key={s.ref} data-stash={s.index} class={cn('group/stash flex min-h-7 items-center gap-2 py-0.5 pl-2.5 pr-1.5 hover:bg-raised')} onContextMenu={(e) => ctx.open(e, stashMenu(s), 'Stash actions')}>
                 <Archive class="size-3.5 shrink-0 text-dim" />
                 <span class="min-w-0 flex-1 truncate text-[12.5px]" title={s.message}>{s.message}</span>
                 <span class="shrink-0 text-[10.5px] text-faint">{relativeTime(s.date)}</span>
@@ -711,6 +804,7 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
         </Dialog>
       )}
       {busy !== null && <span class="sr-only" role="status">{busy}…</span>}
+      {ctx.menu}
     </div>
   )
 }

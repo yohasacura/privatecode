@@ -46,13 +46,35 @@ export function trapTab(container: HTMLElement): (e: KeyboardEvent) => void {
 }
 
 /**
- * Focus the first tabbable inside `container` (or the one marked `data-autofocus`), or the
- * container itself. Called when a dialog or menu opens.
+ * Focuses `el`, and again a moment later if the first call was dropped.
+ *
+ * Chromium refuses a `focus()` for the first few milliseconds after an element appears:
+ * the call returns, nothing is focused, no error is raised. A menu or a popover focusing
+ * its first control from the effect that follows its mount was, in the live window,
+ * focusing nothing — the row that had been right-clicked kept focus and the arrow keys
+ * went to it — while a DOM without layout (the tests) focused it every time. Measured on
+ * the packaged app: refused up to ~6 ms after the element was inserted, accepted from
+ * ~8 ms on; the effect ran at 2–5 ms. So: try now, and try again after a frame or two.
+ * Returns a cancel for the retries, for the effect's cleanup.
  */
-export function focusFirst(container: HTMLElement): void {
+export function focusWhenReady(el: HTMLElement, delays: readonly number[] = [16, 48, 120]): () => void {
+  el.focus()
+  if (el.ownerDocument.activeElement === el) return () => {}
+  const timers = delays.map((ms) => setTimeout(() => {
+    if (el.isConnected && el.ownerDocument.activeElement !== el) el.focus()
+  }, ms))
+  return () => { for (const t of timers) clearTimeout(t) }
+}
+
+/**
+ * Focus the first tabbable inside `container` (or the one marked `data-autofocus`), or the
+ * container itself. Called when a dialog or menu opens. Returns a cancel for the retries
+ * (see `focusWhenReady`); a caller with no cleanup to hang it on may ignore it.
+ */
+export function focusFirst(container: HTMLElement): () => void {
   const preferred = container.querySelector<HTMLElement>('[data-autofocus]')
   const target = preferred ?? tabbables(container)[0] ?? container
-  target.focus()
+  return focusWhenReady(target)
 }
 
 /** The element to hand focus back to when an overlay closes: what had it before. */

@@ -24,6 +24,9 @@ export interface GitMark {
   untracked: boolean
   /** The repository that owns it — what a stage/unstage call is addressed through. */
   repoRoot: string
+  /** What git calls it inside that repository — the spelling the `git.*` methods take,
+   * which differs from the workspace's for a nested repository or a mounted subfolder. */
+  repoPath?: string
   /** A rename's OLD path: unstaging must send both names, or the old name's staged
    * deletion survives alone and the next commit deletes the file. */
   oldPath?: string
@@ -69,6 +72,7 @@ export function gitMarks(repos: readonly GitRepoView[]): ReadonlyMap<string, Git
         dirty: f.untracked || (f.code[1] !== undefined && f.code[1] !== ' '),
         untracked: f.untracked,
         repoRoot: repo.root,
+        ...(f.repoPath !== undefined ? { repoPath: f.repoPath } : {}),
         ...(f.oldPath !== undefined ? { oldPath: f.oldPath } : {}),
       })
     }

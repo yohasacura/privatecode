@@ -7,12 +7,14 @@ import type { ProtocolClient } from '../lib/client'
 import { DiffStatBadge, diffStat } from '../lib/diff'
 import { decorateChanges } from '../lib/path-tree'
 import { ghostRows, gitMarks, letterOf } from '../lib/git-scm'
+import type { GitView } from '../lib/git-views'
 import { PanelError, PanelNote } from '../components/panel'
 import { Button, IconButton } from '../ui/button'
 import { Chip } from '../ui/chip'
 import { cn } from '../ui/cn'
 import { Input } from '../ui/input'
 import { type ChangeEntry, splitReviewed } from './changes-tab'
+import { ConfirmDialog } from './git-dialogs'
 import { TreePanel, type GitRowActions, type MountActions, type MountInfo } from './tree'
 
 /**
@@ -37,13 +39,15 @@ import { TreePanel, type GitRowActions, type MountActions, type MountInfo } from
 export function WorkspaceTab({
   client, items, changes, onOpenFile, workspaceRoot, workspaceName, folderCount,
   reloadKey, isDevBridge, onReopenWorkspace, onSwitchWorkspace, onCloseWorkspace,
-  sessionKey, reviewed, onMarkReviewed,
+  sessionKey, reviewed, onMarkReviewed, onOpenView,
 }: {
   client: ProtocolClient
   items: ChatItem[]
   changes: ChangeEntry[]
   /** Opens a file as a TAB beside the chat; `face: 'diff'` lands on the diff. */
   onOpenFile: (path: string, face?: 'file' | 'diff') => void
+  /** Opens a file's history or blame as a tab — the tree's right-click Git items. */
+  onOpenView?: (view: GitView) => void
   workspaceRoot: string
   workspaceName: string
   folderCount: number
@@ -81,6 +85,8 @@ export function WorkspaceTab({
   const [repoChoice, setRepoChoice] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const [gitNote, setGitNote] = useState<{ kind: 'ok' | 'bad'; text: string } | null>(null)
+  /** Undo Changes from the tree's right-click, waiting for its yes. */
+  const [discarding, setDiscarding] = useState<{ path: string; root: string; repoPath: string; untracked: boolean } | null>(null)
 
   // The filter is a judgement about ONE session's changes; a different session starts
   // unfiltered. (Reviewed state lives in App now, reset there the same way.)
@@ -255,12 +261,57 @@ export function WorkspaceTab({
       .finally(() => { setGitBusy(false); loadGit() })
   }
 
+  /**
+   * Several paths that may belong to several repositories — a folder's worth from the
+   * tree's right-click. `git.stage` addresses one repository per call (the first path's),
+   * so the paths are grouped by the repository their mark names and sent one group at a
+   * time; a mixed list sent whole was refused as "not in this repository".
+   */
+  async function gitApplyGrouped(method: 'git.stage' | 'git.unstage', paths: string[]): Promise<void> {
+    if (paths.length === 0 || gitBusy) return
+    const groups = new Map<string, string[]>()
+    for (const p of paths) {
+      const root = marks.get(p)?.repoRoot ?? ''
+      groups.set(root, [...(groups.get(root) ?? []), p])
+    }
+    setGitBusy(true)
+    setGitNote(null)
+    try {
+      for (const group of groups.values()) {
+        const r = await client.call(method, { paths: group })
+        if (!r.ok) { setGitNote({ kind: 'bad', text: r.problem ?? 'git said no' }); break }
+      }
+    } catch (e) {
+      setGitNote({ kind: 'bad', text: (e as Error).message })
+    } finally {
+      setGitBusy(false)
+      loadGit()
+    }
+  }
+
   const gitActions: GitRowActions = {
     busy: gitBusy,
     stage: (path) => gitApply('git.stage', [path]),
     unstage: (path) => {
       const oldPath = marks.get(path)?.oldPath
       gitApply('git.unstage', oldPath !== undefined ? [path, oldPath] : [path])
+    },
+    stageMany: (paths) => { void gitApplyGrouped('git.stage', paths) },
+    unstageMany: (paths) => { void gitApplyGrouped('git.unstage', paths) },
+    discard: (path) => {
+      const mark = marks.get(path)
+      if (mark === undefined) return
+      setDiscarding({ path, root: mark.repoRoot, repoPath: mark.repoPath ?? path, untracked: mark.untracked })
+    },
+    ignore: (path, pattern) => {
+      const mark = marks.get(path)
+      if (mark === undefined || gitBusy) return
+      setGitBusy(true)
+      setGitNote(null)
+      client.call('git.ignore', { root: mark.repoRoot, pattern })
+        .then((r) => setGitNote(r.ok ? { kind: 'ok', text: `ignored ${pattern}` } : { kind: 'bad', text: r.problem ?? 'git said no' }))
+        .catch((e: Error) => setGitNote({ kind: 'bad', text: e.message }))
+        .finally(() => { setGitBusy(false); loadGit() })
     },
   }
 
@@ -512,8 +563,32 @@ export function WorkspaceTab({
           reloadKey={reloadKey}
           find={find}
           onReveal={() => setFind(null)}
+          {...(onOpenView !== undefined ? { onOpenView } : {})}
         />
       </div>
+      {discarding !== null && (
+        <ConfirmDialog
+          open
+          onCancel={() => setDiscarding(null)}
+          title={discarding.untracked ? `Delete ${discarding.path}?` : `Undo changes to ${discarding.path}?`}
+          description={discarding.untracked
+            ? 'The file is not in git, so undoing it means deleting it from the disk. This cannot be undone.'
+            : 'The file goes back to the last commit. This cannot be undone.'}
+          confirmLabel={discarding.untracked ? 'Delete' : 'Undo changes'}
+          onConfirm={async () => {
+            try {
+              const r = await client.call('git.discard', { root: discarding.root, paths: [discarding.repoPath] })
+              setGitNote(r.ok ? { kind: 'ok', text: `${discarding.untracked ? 'deleted' : 'undid'} ${discarding.path}` } : { kind: 'bad', text: r.problem ?? 'git said no' })
+              return r.ok
+            } catch (e) {
+              setGitNote({ kind: 'bad', text: (e as Error).message })
+              return false
+            } finally {
+              loadGit()
+            }
+          }}
+        />
+      )}
     </div>
   )
 }

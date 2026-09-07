@@ -5,14 +5,32 @@ import type { GitBlameLine, GitChangedFile, GitCommitDetails, GitCommitRow } fro
 import type { ProtocolClient } from '../lib/client'
 import { DiffView } from '../lib/diff'
 import { relativeTime } from '../lib/format'
-import { shortSha } from '../lib/git-actions'
+import { openRepoFile, shortSha } from '../lib/git-actions'
 import type { GitView } from '../lib/git-views'
 import { PanelEmpty, PanelError, PanelLoading } from '../components/panel'
 import { Button } from '../ui/button'
 import { Chip } from '../ui/chip'
 import { cn } from '../ui/cn'
+import { useContextMenu, type MenuItem } from '../ui/menu'
 import { GitRepositoryView } from './git-repository'
 import { MergeEditor } from './merge-editor'
+
+type OpenFile = (path: string, face?: 'file' | 'diff') => void
+type OpenView = (view: GitView) => void
+
+/** The right-click on a changed file in a compare or commit view: open it (the host
+ * translates git's spelling to the workspace's), its history, its blame, its path. */
+function changedFileMenu(client: ProtocolClient, root: string, f: GitChangedFile, onOpenFile: OpenFile, onOpenView: OpenView): MenuItem[] {
+  const gone = f.status === 'D'
+  return [
+    { id: 'open', label: 'Open file', disabled: gone, reason: gone ? 'deleted' : '', onSelect: () => { void openRepoFile(client, root, f.path, 'file', onOpenFile) } },
+    { separator: true },
+    { id: 'history', label: 'View history', icon: <History />, onSelect: () => onOpenView({ kind: 'history', root, repoPath: f.path, path: f.path }) },
+    { id: 'blame', label: 'Blame (annotate)', disabled: gone, reason: gone ? 'deleted' : '', onSelect: () => onOpenView({ kind: 'blame', root, repoPath: f.path, path: f.path }) },
+    { separator: true },
+    { id: 'copy', label: 'Copy path', onSelect: () => { void navigator.clipboard?.writeText(f.path) } },
+  ]
+}
 
 /**
  * The Git views that open as tabs, and the one switch that picks them: the repository
@@ -30,10 +48,10 @@ export function GitViewHost({ client, view, reloadKey, onOpenFile, onOpenView }:
   switch (view.kind) {
     case 'repo': return <GitRepositoryView client={client} root={view.root} label={view.label} reloadKey={reloadKey} onOpenFile={onOpenFile} onOpenView={onOpenView} />
     case 'merge': return <MergeEditor client={client} root={view.root} repoPath={view.repoPath} path={view.path} />
-    case 'compare': return <CompareView client={client} root={view.root} from={view.from} to={view.to} fromLabel={view.fromLabel} toLabel={view.toLabel} />
-    case 'blame': return <BlameView client={client} root={view.root} repoPath={view.repoPath} onOpenView={onOpenView} />
-    case 'history': return <FileHistoryView client={client} root={view.root} repoPath={view.repoPath} onOpenView={onOpenView} />
-    case 'commit': return <CommitView client={client} root={view.root} sha={view.sha} onOpenFile={onOpenFile} />
+    case 'compare': return <CompareView client={client} root={view.root} from={view.from} to={view.to} fromLabel={view.fromLabel} toLabel={view.toLabel} onOpenFile={onOpenFile} onOpenView={onOpenView} />
+    case 'blame': return <BlameView client={client} root={view.root} repoPath={view.repoPath} onOpenFile={onOpenFile} onOpenView={onOpenView} />
+    case 'history': return <FileHistoryView client={client} root={view.root} repoPath={view.repoPath} onOpenFile={onOpenFile} onOpenView={onOpenView} />
+    case 'commit': return <CommitView client={client} root={view.root} sha={view.sha} onOpenFile={onOpenFile} onOpenView={onOpenView} />
   }
 }
 
@@ -42,13 +60,16 @@ function StatusLetter({ status }: { status: string }): VNode {
 }
 
 /** A list of changed files with one file's diff beside it — the shape three views share. */
-function FilesAndDiff({ files, diffOf, empty }: {
+function FilesAndDiff({ files, diffOf, empty, menuFor }: {
   files: GitChangedFile[]
   diffOf: (path: string) => Promise<string>
   empty: string
+  /** The right-click on a file row. */
+  menuFor?: (f: GitChangedFile) => MenuItem[]
 }): VNode {
   const [selected, setSelected] = useState<string | null>(files[0]?.path ?? null)
   const [diff, setDiff] = useState<string | null>(null)
+  const ctx = useContextMenu()
   useEffect(() => { setSelected(files[0]?.path ?? null) }, [files])
   useEffect(() => {
     if (selected === null) return
@@ -62,7 +83,7 @@ function FilesAndDiff({ files, diffOf, empty }: {
     <div class="flex min-h-0 flex-1">
       <div class="flex w-[300px] shrink-0 flex-col overflow-auto border-r border-border-soft py-1 text-[12px]" data-compare-files="">
         {files.map((f) => (
-          <button key={f.path} type="button" data-file={f.path} class={cn('flex items-center gap-1.5 px-2.5 py-0.5 text-left hover:bg-raised', selected === f.path && 'bg-accent-soft')} onClick={() => setSelected(f.path)} title={f.oldPath !== undefined ? `${f.oldPath} → ${f.path}` : f.path}>
+          <button key={f.path} type="button" data-file={f.path} class={cn('flex items-center gap-1.5 px-2.5 py-0.5 text-left hover:bg-raised', selected === f.path && 'bg-accent-soft')} onClick={() => setSelected(f.path)} onContextMenu={menuFor !== undefined ? (e) => { setSelected(f.path); ctx.open(e, menuFor(f), 'File actions') } : undefined} title={f.oldPath !== undefined ? `${f.oldPath} → ${f.path}` : f.path}>
             <StatusLetter status={f.status} />
             <span class="min-w-0 flex-1 truncate">{f.path}</span>
             {!f.binary && <span class="shrink-0 font-mono text-[10.5px]"><span class="text-green">+{f.additions}</span> <span class="text-red">−{f.deletions}</span></span>}
@@ -72,17 +93,20 @@ function FilesAndDiff({ files, diffOf, empty }: {
       <div class="min-w-0 flex-1 overflow-auto px-3 py-2">
         {diff === null ? <PanelLoading /> : diff.trim() === '' ? <div class="text-[12px] text-faint">No textual change.</div> : <DiffView content={diff} dense />}
       </div>
+      {ctx.menu}
     </div>
   )
 }
 
-export function CompareView({ client, root, from, to, fromLabel, toLabel }: {
+export function CompareView({ client, root, from, to, fromLabel, toLabel, onOpenFile, onOpenView }: {
   client: ProtocolClient
   root: string
   from: string
   to: string
   fromLabel: string
   toLabel: string
+  onOpenFile: OpenFile
+  onOpenView: OpenView
 }): VNode {
   const [files, setFiles] = useState<GitChangedFile[] | null>(null)
   const [counts, setCounts] = useState<{ ahead: number; behind: number } | null>(null)
@@ -110,16 +134,17 @@ export function CompareView({ client, root, from, to, fromLabel, toLabel }: {
         )}
         <span class="ml-auto text-[11.5px] text-faint">{files.length} file{files.length === 1 ? '' : 's'} differ</span>
       </div>
-      <FilesAndDiff files={files} diffOf={(path) => client.call('git.diffBetween', { root, from, to, path }).then((r) => r.diff)} empty="Nothing differs between the two" />
+      <FilesAndDiff files={files} diffOf={(path) => client.call('git.diffBetween', { root, from, to, path }).then((r) => r.diff)} empty="Nothing differs between the two" menuFor={(f) => changedFileMenu(client, root, f, onOpenFile, onOpenView)} />
     </div>
   )
 }
 
-export function CommitView({ client, root, sha, onOpenFile }: {
+export function CommitView({ client, root, sha, onOpenFile, onOpenView }: {
   client: ProtocolClient
   root: string
   sha: string
-  onOpenFile: (path: string, face?: 'file' | 'diff') => void
+  onOpenFile: OpenFile
+  onOpenView: OpenView
 }): VNode {
   const [details, setDetails] = useState<GitCommitDetails | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
@@ -144,24 +169,35 @@ export function CommitView({ client, root, sha, onOpenFile }: {
         {details.refs.length > 0 && <div class="mt-1 flex flex-wrap gap-1">{details.refs.filter((r) => r.kind !== 'head').map((r) => <Chip key={`${r.kind}:${r.name}`} tone={r.kind === 'tag' ? 'yellow' : 'blue'}>{r.name}</Chip>)}</div>}
         {details.body !== '' && <pre class="mt-1.5 whitespace-pre-wrap font-ui text-[12px]">{details.body}</pre>}
         <div class="mt-1 flex gap-1">
-          {details.files[0] !== undefined && <Button size="sm" variant="ghost" onClick={() => onOpenFile(details.files[0]!.path, 'file')}>Open first file</Button>}
+          {details.files[0] !== undefined && <Button size="sm" variant="ghost" onClick={() => { void openRepoFile(client, root, details.files[0]!.path, 'file', onOpenFile) }}>Open first file</Button>}
         </div>
       </div>
-      <FilesAndDiff files={details.files} diffOf={(path) => client.call('git.diffBetween', { root, from: details.base, to: details.sha, path }).then((r) => r.diff)} empty="This commit changed no files" />
+      <FilesAndDiff files={details.files} diffOf={(path) => client.call('git.diffBetween', { root, from: details.base, to: details.sha, path }).then((r) => r.diff)} empty="This commit changed no files" menuFor={(f) => changedFileMenu(client, root, f, onOpenFile, onOpenView)} />
     </div>
   )
 }
 
-export function FileHistoryView({ client, root, repoPath, onOpenView }: {
+export function FileHistoryView({ client, root, repoPath, onOpenFile, onOpenView }: {
   client: ProtocolClient
   root: string
   repoPath: string
-  onOpenView: (view: GitView) => void
+  onOpenFile: OpenFile
+  onOpenView: OpenView
 }): VNode {
   const [commits, setCommits] = useState<GitCommitRow[] | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const [selected, setSelected] = useState<GitCommitRow | null>(null)
   const [diff, setDiff] = useState<string | null>(null)
+  const ctx = useContextMenu()
+  const rowMenu = (c: GitCommitRow): MenuItem[] => [
+    { id: 'open', label: 'Open commit in new tab', icon: <GitCommit />, onSelect: () => onOpenView({ kind: 'commit', root, sha: c.sha, short: c.short }) },
+    { id: 'compare-head', label: 'Compare with HEAD', icon: <FileDiff />, onSelect: () => onOpenView({ kind: 'compare', root, from: c.sha, to: 'HEAD', fromLabel: shortSha(c.sha), toLabel: 'working tree at HEAD' }) },
+    { id: 'file', label: 'Open the file as it is now', onSelect: () => { void openRepoFile(client, root, repoPath, 'file', onOpenFile) } },
+    { id: 'blame', label: 'Blame (annotate)', onSelect: () => onOpenView({ kind: 'blame', root, repoPath, path: repoPath }) },
+    { separator: true },
+    { id: 'copy', label: 'Copy commit ID', onSelect: () => { void navigator.clipboard?.writeText(c.sha) } },
+    { id: 'copy-msg', label: 'Copy message', onSelect: () => { void navigator.clipboard?.writeText(c.subject) } },
+  ]
   useEffect(() => {
     let cancelled = false
     client.call('git.log', { root, paths: [repoPath], limit: 500 })
@@ -195,7 +231,7 @@ export function FileHistoryView({ client, root, repoPath, onOpenView }: {
         <div class="flex min-h-0 flex-1">
           <div class="flex w-[340px] shrink-0 flex-col overflow-auto border-r border-border-soft py-1" data-history-commits="">
             {commits.map((c) => (
-              <button key={c.sha} type="button" data-commit={c.sha} class={cn('flex flex-col px-2.5 py-1 text-left hover:bg-raised', selected?.sha === c.sha && 'bg-accent-soft')} onClick={() => setSelected(c)} onDblClick={() => onOpenView({ kind: 'commit', root, sha: c.sha, short: c.short })}>
+              <button key={c.sha} type="button" data-commit={c.sha} class={cn('flex flex-col px-2.5 py-1 text-left hover:bg-raised', selected?.sha === c.sha && 'bg-accent-soft')} onClick={() => setSelected(c)} onDblClick={() => onOpenView({ kind: 'commit', root, sha: c.sha, short: c.short })} onContextMenu={(e) => { setSelected(c); ctx.open(e, rowMenu(c), 'Commit actions') }}>
                 <span class="truncate text-[12.5px]">{c.subject}</span>
                 <span class="text-[11px] text-faint">{c.authorName} · {relativeTime(c.authorDate)} · <span class="font-mono">{c.short}</span></span>
               </button>
@@ -206,18 +242,29 @@ export function FileHistoryView({ client, root, repoPath, onOpenView }: {
           </div>
         </div>
       )}
+      {ctx.menu}
     </div>
   )
 }
 
-export function BlameView({ client, root, repoPath, onOpenView }: {
+export function BlameView({ client, root, repoPath, onOpenFile, onOpenView }: {
   client: ProtocolClient
   root: string
   repoPath: string
-  onOpenView: (view: GitView) => void
+  onOpenFile: OpenFile
+  onOpenView: OpenView
 }): VNode {
   const [lines, setLines] = useState<GitBlameLine[] | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
+  const ctx = useContextMenu()
+  const lineMenu = (l: GitBlameLine): MenuItem[] => [
+    { id: 'commit', label: `Open commit ${l.short}`, icon: <GitCommit />, onSelect: () => onOpenView({ kind: 'commit', root, sha: l.sha, short: l.short }) },
+    { id: 'history', label: 'View history of this file', icon: <History />, onSelect: () => onOpenView({ kind: 'history', root, repoPath, path: repoPath }) },
+    { id: 'file', label: 'Open the file', onSelect: () => { void openRepoFile(client, root, repoPath, 'file', onOpenFile) } },
+    { separator: true },
+    { id: 'copy', label: 'Copy commit ID', onSelect: () => { void navigator.clipboard?.writeText(l.sha) } },
+    { id: 'copy-line', label: 'Copy line', onSelect: () => { void navigator.clipboard?.writeText(l.text) } },
+  ]
   useEffect(() => {
     let cancelled = false
     client.call('git.blame', { root, path: repoPath })
@@ -241,7 +288,7 @@ export function BlameView({ client, root, repoPath, onOpenView }: {
           const same = l.sha === previous
           previous = l.sha
           return (
-            <div key={l.line} class={cn('flex hover:bg-raised', !same && 'border-t border-border-soft')} data-blame-line={l.line}>
+            <div key={l.line} class={cn('flex hover:bg-raised', !same && 'border-t border-border-soft')} data-blame-line={l.line} onContextMenu={(e) => ctx.open(e, lineMenu(l), 'Line actions')}>
               <button
                 type="button"
                 class={cn('w-[230px] shrink-0 truncate px-2 text-left font-ui text-[11px] hover:text-accent', same ? 'text-transparent' : 'text-dim')}
@@ -257,6 +304,7 @@ export function BlameView({ client, root, repoPath, onOpenView }: {
           )
         })}
       </div>
+      {ctx.menu}
     </div>
   )
 }
