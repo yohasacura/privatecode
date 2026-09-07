@@ -43,12 +43,15 @@ function sha256(buf) {
 /**
  * A fetch that tries again on a dropped connection. The 0.4.5 release build died on
  * `read ECONNRESET` halfway through ripgrep — nothing wrong, a runner's network hiccup —
- * and a 40-minute rebuild for that is the wrong price. Three attempts, a pause between,
- * and only for network faults and server errors: a 404 or a hash mismatch fails at once.
+ * and a 40-minute rebuild for that is the wrong price; the 0.4.8 build died on an HTTP 504
+ * from GitHub that outlasted three quick tries. Six attempts, the pauses growing to a minute
+ * (two and a half minutes in all), and only for network faults and server errors: a 404 or
+ * a hash mismatch fails at once.
  */
 async function fetchBytesWithRetry(url, what) {
   let last
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  const pauses = [5_000, 10_000, 20_000, 40_000, 60_000]
+  for (let attempt = 1; attempt <= pauses.length + 1; attempt += 1) {
     try {
       const res = await fetch(url)
       if (!res.ok) {
@@ -63,9 +66,9 @@ async function fetchBytesWithRetry(url, what) {
       if (e instanceof Error && /HTTP [1-4]\d\d/.test(e.message)) throw e
       last = e
     }
-    if (attempt < 3) {
+    if (attempt <= pauses.length) {
       process.stdout.write(`retry ${attempt}… `)
-      await new Promise((r) => setTimeout(r, 3000 * attempt))
+      await new Promise((r) => setTimeout(r, pauses[attempt - 1]))
     }
   }
   throw last
