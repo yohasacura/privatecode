@@ -51,10 +51,13 @@ beforeEach(async () => {
 })
 afterEach(() => { rmSync(scratch, { recursive: true, force: true }) })
 
-/** A bare "origin" beside the work tree, with main pushed and tracking set up. */
+/** A bare "origin" beside the work tree, with main pushed and tracking set up.
+ * `--initial-branch=main` on the bare too: without it, a machine with no
+ * `init.defaultBranch` (CI) gives the bare a HEAD that points at `master`, a clone of it
+ * checks nothing out, and the "someone else" below commits to a branch nobody fetches. */
 async function withRemote(): Promise<string> {
   const bare = join(scratch, 'origin.git')
-  await run(scratch, ['init', '--quiet', '--bare', bare])
+  await run(scratch, ['init', '--quiet', '--bare', '--initial-branch=main', bare])
   await run(root, ['remote', 'add', 'origin', bare])
   await run(root, ['push', '--quiet', '-u', 'origin', 'main'])
   return bare
@@ -63,7 +66,7 @@ async function withRemote(): Promise<string> {
 /** A second clone that advances the remote, so the first one falls behind. */
 async function someoneElsePushes(bare: string, rel: string, body: string, message: string): Promise<void> {
   const other = join(scratch, 'other')
-  await run(scratch, ['clone', '--quiet', bare, other])
+  await run(scratch, ['clone', '--quiet', '--branch', 'main', bare, other])
   await run(other, ['config', 'user.name', 'other'])
   await run(other, ['config', 'user.email', 'other@test'])
   writeFileSync(join(other, rel), body, 'utf8')

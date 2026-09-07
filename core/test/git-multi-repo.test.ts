@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import type { Mount } from '../src/mounts.js'
 import { GitRpcError, gitHandlers } from '../src/host/git-rpc.js'
 import { discoverRepos } from '../src/host/repos.js'
-import { Workspace } from '../src/workspace.js'
+import { Workspace, canonicalize } from '../src/workspace.js'
 
 /**
  * One workspace, five kinds of git under it, every operation addressed to the right one.
@@ -43,7 +43,10 @@ const write = (path: string, body: string): void => {
   writeFileSync(path, body, 'utf8')
 }
 const mount = (name: string, root: string, primary = false): Mount => ({ name, root, access: 'write', primary })
-const lower = (s: string | null | undefined): string => (s ?? '').toLowerCase()
+/** Same directory, whichever of its names each side used: the temp folder here may be an
+ * 8.3 alias (`RUNNER~1` on a GitHub runner) while git and the host answer with the long name. */
+const same = (a: string | null | undefined, b: string): boolean =>
+  a !== null && a !== undefined && canonicalize(a).toLowerCase() === canonicalize(b).toLowerCase()
 
 beforeEach(async () => {
   base = mkdtempSync(join(tmpdir(), 'pc-multi-'))
@@ -70,7 +73,7 @@ function workspace(): Workspace {
   ])
 }
 const handlers = () => gitHandlers(workspace)
-const repoOf = async (root: string) => (await discoverRepos(workspace())).repos.find((r) => lower(r.root) === lower(root))
+const repoOf = async (root: string) => (await discoverRepos(workspace())).repos.find((r) => same(r.root, root))
 
 describe('a workspace with several repositories', () => {
   test('every repository is its own section, labelled by where it is, and the plain folders are named as such', async () => {
@@ -117,7 +120,7 @@ describe('a workspace with several repositories', () => {
 
     // The two spellings, both ways.
     expect(await h['git.locate']({ path: 'api/a.ts' })).toMatchObject({ repoPath: 'packages/api/a.ts' })
-    expect(lower((await h['git.locate']({ path: 'api/a.ts' })).root)).toBe(lower(paths.mono))
+    expect(same((await h['git.locate']({ path: 'api/a.ts' })).root, paths.mono)).toBe(true)
     expect((await h['git.address']({ root: paths.mono, paths: ['packages/api/a.ts', 'packages/web/w.ts'] })).paths).toEqual(['api/a.ts', null])
   })
 

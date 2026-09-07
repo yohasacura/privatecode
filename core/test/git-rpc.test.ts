@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { allowedRoot, checkedPaths, gitHandlers, isGitMethod } from '../src/host/git-rpc.js'
-import { Workspace } from '../src/workspace.js'
+import { Workspace, canonicalize } from '../src/workspace.js'
+
+/** The spelling git and the host agree on. A GitHub runner's `%TEMP%` is `RUNNER~1`, an
+ * 8.3 alias; git answers with the long name, and so does every root the host returns. */
+const canon = (p: string): string => canonicalize(p).toLowerCase()
 
 /**
  * The wire for the repository operations: the root check that keeps a request inside the
@@ -48,13 +52,13 @@ describe('the root check', () => {
     mkdirSync(join(root, 'sub'))
     write('sub/file.txt', 'x\n')
     const above = new Workspace(join(root, 'sub'))
-    expect((await allowedRoot(above, root)).toLowerCase()).toBe(root.toLowerCase())
+    expect((await allowedRoot(above, root)).toLowerCase()).toBe(canon(root))
 
     const nested = join(root, 'vendor', 'lib')
     mkdirSync(nested, { recursive: true })
     await run(nested, ['init', '--quiet'])
     const ws = new Workspace(root)
-    expect((await allowedRoot(ws, nested)).toLowerCase()).toBe(nested.toLowerCase())
+    expect((await allowedRoot(ws, nested)).toLowerCase()).toBe(canon(nested))
   })
 
   test('any other directory is refused, repository or not', async () => {
@@ -181,7 +185,7 @@ describe('the two spellings of a path', () => {
     // A file of the nested repository: the workspace spelling carries the folder prefix,
     // git's does not.
     const located = await h['git.locate']({ path: 'vendor/lib/lib.txt' })
-    expect(located.root?.toLowerCase()).toBe(nested.toLowerCase())
+    expect(located.root?.toLowerCase()).toBe(canon(nested))
     expect(located.repoPath).toBe('lib.txt')
     const back = await h['git.address']({ root: nested, paths: ['lib.txt', '../README.md', 'C:\\elsewhere.txt'] })
     expect(back.paths).toEqual(['vendor/lib/lib.txt', null, null])
