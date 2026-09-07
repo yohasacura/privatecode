@@ -3,6 +3,9 @@ import type { GitFileChange, GitRepoView } from '@core/host/protocol'
 import { loadedFrom, noteFor, wantsUntrackedDiff } from './file-view'
 import type { ChangeEntry } from './changes-tab'
 
+/** A HEAD the git view carries; these tests are about the files, not the branch. */
+const NO_HEAD = { branch: 'main', detached: false, unborn: false, oid: null, upstream: null, ahead: 0, behind: 0, upstreamGone: false }
+
 /**
  * The three decisions the file tab makes about what it is looking at, pulled out of the
  * components so they can be pinned down without a DOM: which git diff a path actually
@@ -17,7 +20,7 @@ function file(path: string, code: string): GitFileChange {
 }
 
 function repo(root: string, files: GitFileChange[]): GitRepoView {
-  return { root, label: root, branch: 'main', relation: 'folder', files, suggestion: '' }
+  return { root, label: root, branch: 'main', relation: 'folder', head: NO_HEAD, stashes: 0, operation: null, files, suggestion: '' }
 }
 
 describe('wantsUntrackedDiff', () => {

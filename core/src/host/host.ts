@@ -164,6 +164,7 @@ import {
 } from '../outline/repo-map.js'
 import { harvestReferenceEdges } from '../csharp/reference-edges.js'
 import { gitCommitStaged, gitDiff, gitStage, gitUnstage, stagedPaths, suggestCommitMessage } from './git.js'
+import { gitHandlers, isGitMethod } from './git-rpc.js'
 import { describeFolder, discoverRepos, repoRootFor, resolvePanelPath, toRepoPaths } from './repos.js'
 import { searchSessions } from './session-search.js'
 
@@ -504,7 +505,16 @@ export class SessionHost {
   // Dispatch
   // -----------------------------------------------------------------------------------
 
+  /** The `git.*` operations beyond the tree's own — see `git-rpc.ts`. Built lazily
+   * against whichever workspace is open, since a workspace switch replaces it. */
+  private readonly gitRpc = gitHandlers(() => this.requireInitialized().workspace)
+
   private async dispatch(method: string, params: unknown): Promise<unknown> {
+    // The repository operations — branches, history, remotes, stashes, conflicts — live in
+    // their own table; the five the tree uses stay below with the rest of the switch.
+    if (isGitMethod(method) && method in this.gitRpc) {
+      return this.gitRpc[method]((params ?? {}) as never)
+    }
     switch (method) {
       case 'init': return this.init(params as InitParams)
       case 'send': return this.send(params as SendParams)
@@ -1949,6 +1959,9 @@ export class SessionHost {
         branch: repo.branch,
         relation: repo.relation,
         files: repo.files,
+        head: repo.head,
+        stashes: repo.stashes,
+        operation: repo.operation,
         // The suggestion describes what a commit WOULD contain, which is the staged set —
         // only before anything is staged does it fall back to describing all of it.
         suggestion: suggestCommitMessage(

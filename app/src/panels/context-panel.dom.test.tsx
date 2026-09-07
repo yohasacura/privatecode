@@ -42,6 +42,7 @@ function draw(changes: ChangeEntry[] = []): void {
         changes={changes}
         reloadKey={0}
         onOpenFile={() => {}}
+        onOpenView={() => {}}
         hasSession
         workspaceRoot="D:/ws"
         workspaceName="ws"
@@ -71,7 +72,7 @@ describe('the inspector', () => {
     draw()
     await settle()
     const tabs = [...host.querySelectorAll<HTMLElement>('[role="tab"]')]
-    expect(tabs.map((t) => t.textContent?.trim())).toEqual(['Workspace', 'History', 'Terminal'])
+    expect(tabs.map((t) => t.textContent?.trim())).toEqual(['Workspace', 'Git', 'History', 'Terminal'])
     expect(tabs[0]?.getAttribute('aria-selected')).toBe('true')
     const panel = host.querySelector('[role="tabpanel"]')!
     expect(panel.getAttribute('aria-labelledby')).toBe(tabs[0]?.id)

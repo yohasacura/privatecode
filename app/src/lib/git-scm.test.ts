@@ -2,6 +2,9 @@ import { describe, expect, test } from 'vitest'
 import type { GitRepoView } from '@core/host/protocol'
 import { describeMark, ghostRows, gitMarks, letterOf } from './git-scm'
 
+/** A HEAD the git view carries; these tests are about the files, not the branch. */
+const NO_HEAD = { branch: 'main', detached: false, unborn: false, oid: null, upstream: null, ahead: 0, behind: 0, upstreamGone: false }
+
 /**
  * Git as the tree wears it: porcelain pairs → one letter, staged/dirty flags, and ghost
  * rows for the files a disk listing cannot contain.
@@ -34,7 +37,7 @@ const repo = (files: { path: string; code: string }[]): GitRepoView => ({
   root: 'C:/repo',
   label: 'repo',
   branch: 'main',
-  relation: 'folder',
+  relation: 'folder', head: NO_HEAD, stashes: 0, operation: null,
   suggestion: '',
   files: files.map((f) => ({
     path: f.path,

@@ -103,6 +103,20 @@ permission gate, and everything under `.privatecode/` except `state/` is writabl
 (the settings and hooks always ask first). Details, the hook
 contract and what is not supported: [docs/PLUGINS.md](docs/PLUGINS.md).
 
+**Git, the way Visual Studio does it.** The inspector's Git tab is the *Git Changes* window:
+the branch with its picker, fetch / pull / push / sync, a commit box with Commit All, Commit
+Staged and their "and Push" / "and Sync" forms, Amend, stashes, and the Unmerged / Staged /
+Changes lists with stage, unstage and undo on every row. The *Git Repository* window opens as
+a tab beside the chat — branches, remotes and tags on the left, the commit graph with Incoming
+and Outgoing in the middle, the selected commit with its files and diffs below — and every
+branch and commit carries its menu: checkout, new branch, merge, rebase, compare, cherry-pick,
+revert, reset, tag, squash, rename, delete. Conflicts open a merge editor with a checkbox per
+side and Accept Merge; a file's diff face stages by the hunk; a file's history and blame are a
+click away; Settings → Git holds name, email, prune, rebase-on-pull and the remotes. The chip
+in the status bar shows the branch, how far it is from its remote and how many files changed.
+Nothing is sent anywhere: it is the machine's own `git`, and the window shows what it says.
+The full parity table: [docs/GIT.md](docs/GIT.md).
+
 **Two numbers in `settings.json` shape how much the model is told up front.**
 `"prefix": { "mapChars": 20000 }` is how much of the cached prefix the project map may take
 — every folder with a file count, then the most-referenced files with their definitions and

@@ -27,6 +27,11 @@ export interface GitFileChange {
    * old name and the addition of the new — and unstaging only the new one would leave a
    * pure deletion staged, which is not what "take it out of the commit" means. */
   oldPath?: string
+  /** The same file as git spells it — relative to the repository root, forward slashes.
+   * The Git panel addresses every operation by this; `path` is the workspace's spelling
+   * for opening the file. Set by `discoverRepos`, absent straight out of the parser. */
+  repoPath?: string
+  repoOldPath?: string
 }
 
 async function git(cwd: string, args: string[], timeout = 15_000) {

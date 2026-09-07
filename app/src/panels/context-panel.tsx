@@ -1,6 +1,6 @@
-import { useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
-import { Files, History, Terminal } from 'lucide-preact'
+import { Files, GitBranch, History, Terminal } from 'lucide-preact'
 import type { ProtocolClient } from '../lib/client'
 import type { ChatItem } from '../lib/state'
 import { Tabs, tabPanelId, type TabItem } from '../ui/tabs'
@@ -8,6 +8,8 @@ import type { ChangeEntry } from './changes-tab'
 import { WorkspaceTab } from './workspace-tab'
 import { HistoryTab } from './history-tab'
 import { TerminalTab } from './terminal-tab'
+import { GitTab } from './git-tab'
+import { SHOW_GIT_EVENT, type GitView } from '../lib/git-views'
 import { useJobs } from '../lib/use-jobs'
 
 /**
@@ -24,16 +26,20 @@ import { useJobs } from '../lib/use-jobs'
  * fit the panel's minimum width and pushed the whole shell sideways.
  */
 
-export type ContextTab = 'workspace' | 'history' | 'terminal'
+export type ContextTab = 'workspace' | 'git' | 'history' | 'terminal'
 
 export const INSPECTOR = 'inspector'
 
 export function ContextPanel({
   client, items, changes, reloadKey, onOpenFile, hasSession, workspaceRoot, workspaceName,
   folderCount, isDevBridge, onReopenWorkspace, onSwitchWorkspace, onCloseWorkspace,
-  sessionKey, reviewed, onMarkReviewed,
+  sessionKey, reviewed, onMarkReviewed, onOpenView, onOpenGitSettings,
 }: {
   client: ProtocolClient
+  /** Opens one of the Git views — the repository window, the merge editor, a comparison,
+   * a blame, a file's history — as a tab beside the chat. */
+  onOpenView: (view: GitView) => void
+  onOpenGitSettings?: () => void
   items: ChatItem[]
   /** The session's changes, computed once in App — the chat-column diff tabs read the
    * same list, and two computations of one truth would drift. */
@@ -60,12 +66,18 @@ export function ContextPanel({
   onMarkReviewed: (entries: readonly ChangeEntry[]) => void
 }): VNode {
   const [tab, setTab] = useState<ContextTab>('workspace')
+  useEffect(() => {
+    const show = (): void => setTab('git')
+    window.addEventListener(SHOW_GIT_EVENT, show)
+    return () => window.removeEventListener(SHOW_GIT_EVENT, show)
+  }, [])
   // Polled at the panel level so the Terminal badge is live on every tab, not only its own.
   const { jobs } = useJobs(client, hasSession, 2000)
   const runningJobs = jobs.filter((j) => j.running).length
 
   const tabs: TabItem<ContextTab>[] = [
     { id: 'workspace', label: 'Workspace', icon: <Files />, badge: changes.length },
+    { id: 'git', label: 'Git', icon: <GitBranch /> },
     { id: 'history', label: 'History', icon: <History /> },
     { id: 'terminal', label: 'Terminal', icon: <Terminal />, badge: runningJobs },
   ]
@@ -97,6 +109,16 @@ export function ContextPanel({
             sessionKey={sessionKey}
             reviewed={reviewed}
             onMarkReviewed={onMarkReviewed}
+          />
+        )}
+        {tab === 'git' && (
+          <GitTab
+            client={client}
+            reloadKey={reloadKey}
+            active={tab === 'git'}
+            onOpenFile={onOpenFile}
+            onOpenView={onOpenView}
+            {...(onOpenGitSettings !== undefined ? { onOpenSettings: onOpenGitSettings } : {})}
           />
         )}
         {tab === 'history' && <HistoryTab client={client} reloadKey={reloadKey} />}

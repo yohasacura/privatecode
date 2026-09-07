@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
-import { Brain, Check, Database, Info, Palette, Plug, Puzzle, RefreshCw, Server, ShieldCheck } from 'lucide-preact'
+import { Brain, Check, Database, GitBranch, Info, Palette, Plug, Puzzle, RefreshCw, Server, ShieldCheck } from 'lucide-preact'
 import type { ProtocolClient } from '../lib/client'
 import type { McpServerInfo } from '@core/host/protocol'
 import type { AgentMode } from '@core/permissions/engine'
@@ -20,6 +20,7 @@ import { McpEditor } from './mcp-editor'
 import { EraseEverything } from './erase-data'
 import { Skills } from './skills'
 import { Plugins } from './plugins'
+import { GitSettings } from './git-settings'
 
 /**
  * Settings (docs/UI-REDESIGN-2026-09.md §8): a dialog with a tab list on the left and one
@@ -28,12 +29,13 @@ import { Plugins } from './plugins'
  * A section you have to already know about to find is not a section.
  */
 
-export type SettingsTab = 'server' | 'appearance' | 'permissions' | 'skills' | 'plugins' | 'mcp' | 'data' | 'about'
+export type SettingsTab = 'server' | 'appearance' | 'permissions' | 'git' | 'skills' | 'plugins' | 'mcp' | 'data' | 'about'
 
 export const SETTINGS_TABS: readonly TabItem<SettingsTab>[] = [
   { id: 'server', label: 'Server', icon: <Server /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette /> },
   { id: 'permissions', label: 'Permissions', icon: <ShieldCheck /> },
+  { id: 'git', label: 'Git', icon: <GitBranch /> },
   { id: 'skills', label: 'Skills', icon: <Brain /> },
   { id: 'plugins', label: 'Plugins', icon: <Puzzle /> },
   { id: 'mcp', label: 'MCP servers', icon: <Plug /> },
@@ -329,6 +331,7 @@ export function SettingsModal({
             <Permissions client={client} {...(liveMode !== undefined ? { liveMode } : {})} />
           )}
 
+          {tab === 'git' && <GitSettings client={client} />}
           {tab === 'skills' && <Skills client={client} />}
 
           {tab === 'plugins' && <Plugins client={client} />}

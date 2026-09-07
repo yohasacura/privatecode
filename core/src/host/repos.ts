@@ -4,7 +4,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { findNestedRepos } from '../checkpoints/units.js'
 import type { Mount } from '../mounts.js'
 import { canonicalize, type Workspace, WorkspaceViolation } from '../workspace.js'
-import { type GitFileChange, parsePorcelain } from './git.js'
+import type { GitFileChange } from './git.js'
+import { type GitHeadInfo, type GitOperation, parsePorcelainV2, readOperation } from './git-repo.js'
 
 /**
  * Which repositories a workspace actually contains — asked, never assumed.
@@ -49,7 +50,17 @@ export interface WorkspaceRepo {
   scopes: RepoScope[]
   /** Changed files, addressed the way the rest of the workspace addresses paths. */
   files: GitFileChange[]
+  /** Where HEAD is: upstream, ahead/behind, detached, unborn — what the Git panel's header
+   * and the status bar show. */
+  head: GitHeadInfo
+  stashes: number
+  /** A merge, rebase, cherry-pick or revert waiting to be continued or aborted. */
+  operation: GitOperation | null
   problem?: string
+}
+
+const NO_HEAD: GitHeadInfo = {
+  branch: null, detached: false, unborn: false, oid: null, upstream: null, ahead: 0, behind: 0, upstreamGone: false,
 }
 
 export interface WorkspaceGit {
@@ -77,7 +88,7 @@ async function git(cwd: string, args: string[]) {
  * the panel went quietly empty. One canonical spelling on this side, and `Workspace.locate`
  * accepting either on the other, is what makes them meet.
  */
-async function toplevelOf(dir: string): Promise<string | null> {
+export async function toplevelOf(dir: string): Promise<string | null> {
   const result = await git(dir, ['rev-parse', '--show-toplevel'])
   if (result.exitCode !== 0) return null
   const out = result.stdout.trim()
@@ -158,6 +169,9 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
           relation,
           scopes: [{ mount: mount.name, prefix: toPrefix(ownPath, rootPath) }],
           files: [],
+          head: NO_HEAD,
+          stashes: 0,
+          operation: null,
         })
       }
     } else {
@@ -180,6 +194,9 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
         relation: 'nested',
         scopes: [{ mount: mount.name, prefix: '' }],
         files: [],
+        head: NO_HEAD,
+        stashes: 0,
+        operation: null,
       })
     }
   }
@@ -197,15 +214,21 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
     // folder created outside this session could be neither seen nor staged individually — and
     // the changed-files strip counted a row its own filter then hid. `-z` because it is the
     // only unquoted form (see parsePorcelain).
+    // Porcelain v2 answers in the same process what the panel's header needs — the
+    // upstream, the ahead/behind count, a detached or unborn HEAD, the stash count — and
+    // spells a conflict as its own entry.
     const result = await git(repo.root, [
-      'status', '--porcelain=v1', '--branch', '-uall', '-z', '--', ...pathspecs,
+      'status', '--porcelain=v2', '--branch', '--show-stash', '-uall', '-z', '--', ...pathspecs,
     ])
     if (result.exitCode !== 0) {
       repo.problem = result.stderr.trim() || 'git status failed'
       continue
     }
-    const parsed = parsePorcelain(result.stdout)
-    repo.branch = parsed.branch
+    const parsed = parsePorcelainV2(result.stdout)
+    repo.branch = parsed.head.branch
+    repo.head = parsed.head
+    repo.stashes = parsed.stashes
+    repo.operation = await readOperation(repo.root)
     for (const file of parsed.files) {
       const abs = join(repo.root, file.path)
       // A repository nested INSIDE this one, which git reports here as a single gitlink
@@ -227,8 +250,9 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
       repo.files.push({
         ...rest,
         path: workspace.display(abs),
+        repoPath: file.path,
         ...(oldAbs !== undefined && workspace.mountFor(oldAbs) !== undefined
-          ? { oldPath: workspace.display(oldAbs) }
+          ? { oldPath: workspace.display(oldAbs), repoOldPath: rawOldPath }
           : {}),
       })
     }

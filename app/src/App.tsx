@@ -27,7 +27,9 @@ import { Welcome } from './shell/welcome'
 import { AgentDown } from './shell/agent-down'
 import { Toaster, toast } from './ui/toast'
 import { EditorTab } from './shell/editor-tabs'
-import { FileDiff, FileText, MessageSquare, TriangleAlert, X } from 'lucide-preact'
+import { FileDiff, FileText, GitBranch, MessageSquare, TriangleAlert, X } from 'lucide-preact'
+import { GitViewHost } from './panels/git-extra-views'
+import { SHOW_GIT_EVENT, viewKey, viewTitle, type GitView } from './lib/git-views'
 import { UpdateCard } from './shell/update-card'
 import { IconButton } from './ui/button'
 import { WorkspaceSwitch } from './panels/workspace-switch'
@@ -37,8 +39,11 @@ import { Transcript } from './panels/transcript'
 /** One opened file, as a TAB beside the chat. The face — content or diff — is tab state,
  * so switching away and back lands where you were. */
 interface EditorTab {
+  /** A workspace path — or, for a Git view, its `viewKey`, which is what the strip dedupes on. */
   path: string
   face: 'file' | 'diff'
+  /** Set for a Git view (repository window, merge editor, comparison, blame, history). */
+  view?: GitView
 }
 
 /**
@@ -334,6 +339,13 @@ export default function App() {
     setActiveTab(path)
   }, [])
 
+  /** Open a Git view as a tab, or re-front the one already open for the same thing. */
+  const openView = useCallback((view: GitView) => {
+    const key = viewKey(view)
+    setTabs((prev) => (prev.some((t) => t.path === key) ? prev : [...prev, { path: key, face: 'file', view }]))
+    setActiveTab(key)
+  }, [])
+
   function closeTab(path: string): void {
     const idx = tabs.findIndex((t) => t.path === path)
     const next = tabs.filter((t) => t.path !== path)
@@ -391,6 +403,13 @@ export default function App() {
     function onResize(): void { setWindowWidth(window.innerWidth) }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // The status bar's branch chip asks for the Git tab; the column has to be open to show it.
+  useEffect(() => {
+    const show = (): void => setContextOpen(true)
+    window.addEventListener(SHOW_GIT_EVENT, show)
+    return () => window.removeEventListener(SHOW_GIT_EVENT, show)
   }, [])
 
   const columns = fitColumns({ windowWidth, railOpen, contextOpen, railWidth, contextWidth })
@@ -841,9 +860,9 @@ export default function App() {
                     <EditorTab
                       key={t.path}
                       active={activeTab === t.path}
-                      icon={t.face === 'diff' ? <FileDiff /> : <FileText />}
-                      name={baseName(t.path)}
-                      title={t.path}
+                      icon={t.view !== undefined ? <GitBranch /> : t.face === 'diff' ? <FileDiff /> : <FileText />}
+                      name={t.view !== undefined ? viewTitle(t.view) : baseName(t.path)}
+                      title={t.view !== undefined ? viewTitle(t.view) : t.path}
                       onSelect={() => setActiveTab(t.path)}
                       onClose={() => closeTab(t.path)}
                     />
@@ -893,8 +912,20 @@ export default function App() {
                   {...(updating ? { locked: 'An update is in progress — the app restarts when it is done' } : {})}
                 />
               </div>
-              {tabs.map((t) => (activeTab === t.path
-                ? (
+              {tabs.map((t) => (activeTab !== t.path
+                ? null
+                : t.view !== undefined
+                  ? (
+                    <GitViewHost
+                      key={t.path}
+                      client={client}
+                      view={t.view}
+                      reloadKey={workspaceMutations + reverts + externalChanges}
+                      onOpenFile={openTab}
+                      onOpenView={openView}
+                    />
+                    )
+                  : (
                   <FileView
                     key={t.path}
                     client={client}
@@ -910,8 +941,7 @@ export default function App() {
                     onMarkReviewed={(entry) => setReviewed((m) => new Map(m).set(entry.path, entry.id))}
                     onReverted={() => setReverts((n) => n + 1)}
                   />
-                  )
-                : null))}
+                    )))}
             </main>
 
             {contextShown && (
@@ -924,6 +954,8 @@ export default function App() {
                     changes={changes}
                     reloadKey={workspaceMutations + reverts + externalChanges}
                     onOpenFile={openTab}
+                    onOpenView={openView}
+                    onOpenGitSettings={() => { setSettingsTab('git'); setSettingsOpen(true) }}
                     hasSession={chatState.session !== null}
                     workspaceRoot={workspaceRoot}
                     workspaceName={workspaceLabel.name || baseName(workspaceRoot)}

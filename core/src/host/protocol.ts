@@ -1,3 +1,5 @@
+import type { GitHeadInfo, GitMethodMap, GitOperation } from './git-protocol.js'
+export * from './git-protocol.js'
 /**
  * The wire contract between the (future) Tauri UI and the agent sidecar: a request/reply/
  * event envelope, one named params/result interface per method and one named data
@@ -382,6 +384,10 @@ export interface GitFileChange {
   code: string
   staged: boolean
   untracked: boolean
+  /** Repository-relative, forward slashes — what every `git.*` call beyond the tree's own
+   * addresses the file by. */
+  repoPath?: string
+  repoOldPath?: string
   /** A rename's OLD path (workspace-addressed) — unstaging must send both names, or the
    * old name's staged deletion survives alone and Commit would delete the file. */
   oldPath?: string
@@ -401,6 +407,10 @@ export interface GitRepoView {
   branch: string | null
   relation: 'folder' | 'above' | 'nested'
   files: GitFileChange[]
+  /** Where HEAD is — see `GitHeadInfo`. */
+  head: GitHeadInfo
+  stashes: number
+  operation: GitOperation | null
   /** A starting point for the message field, derived from the files themselves. */
   suggestion: string
   problem?: string
@@ -647,7 +657,7 @@ export interface ServerProbeResult {
  * module reads it -- it exists so a typed RPC client/dispatcher elsewhere can look up both
  * shapes for one method name without importing a chain of individual types.
  */
-export interface HostMethodMap {
+export interface HostMethodMap extends GitMethodMap {
   init: { params: InitParams; result: InitResult }
   send: { params: SendParams; result: SendResult }
   abort: { params: AbortParams; result: AbortResult }

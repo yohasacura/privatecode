@@ -4,6 +4,9 @@ import { AlignLeft, Check, FileDiff, FileX, Search, Undo2 } from 'lucide-preact'
 import type { FsReadResult, GitRepoView } from '@core/host/protocol'
 import type { ProtocolClient } from '../lib/client'
 import { DiffStatBadge, DiffView, diffStat } from '../lib/diff'
+import { splitDiff, type DiffHunk } from '../lib/hunks'
+import { AlertDialog } from '../ui/dialog'
+import { toast } from '../ui/toast'
 import { highlight } from '../lib/highlight'
 import { Button, IconButton } from '../ui/button'
 import { Chip } from '../ui/chip'
@@ -301,10 +304,14 @@ export function wantsUntrackedDiff(repos: readonly GitRepoView[], path: string):
  * calling the path new (`wantsUntrackedDiff`) — anything else with an empty HEAD diff has
  * nothing uncommitted, and says so.
  */
-function GitDiffFace({ client, path }: { client: ProtocolClient; path: string }): VNode {
+function GitDiffFace({ client, path, onChanged }: { client: ProtocolClient; path: string; onChanged?: () => void }): VNode {
   const [diff, setDiff] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const [tries, setTries] = useState(0)
+  // Which repository holds the file, in git's own spelling — what a hunk is staged through.
+  const [target, setTarget] = useState<{ root: string; repoPath: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [undoing, setUndoing] = useState<DiffHunk | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -312,8 +319,13 @@ function GitDiffFace({ client, path }: { client: ProtocolClient; path: string })
     setFailed(null)
     client.call('git.diff', { path, untracked: false })
       .then(async (r) => {
-        if (r.diff.trim() !== '') return r.diff
         const status = await client.call('git.status', {})
+        const lower = path.toLowerCase()
+        for (const repo of status.repos) {
+          const file = repo.files.find((f) => f.path === path) ?? repo.files.find((f) => f.path.toLowerCase() === lower)
+          if (file !== undefined) { if (!cancelled) setTarget({ root: repo.root, repoPath: file.repoPath ?? file.path }); break }
+        }
+        if (r.diff.trim() !== '') return r.diff
         if (!wantsUntrackedDiff(status.repos, path)) return ''
         const u = await client.call('git.diff', { path, untracked: true })
         return u.diff
@@ -323,14 +335,62 @@ function GitDiffFace({ client, path }: { client: ProtocolClient; path: string })
     return () => { cancelled = true }
   }, [client, path, tries])
 
+  async function hunk(h: DiffHunk, mode: 'stage' | 'undo'): Promise<void> {
+    if (target === null || busy) return
+    setBusy(true)
+    try {
+      const r = await client.call('git.hunk', { root: target.root, path: target.repoPath, hunk: h.text, mode })
+      if (!r.ok) toast.push({ title: mode === 'stage' ? 'Could not stage the hunk' : 'Could not undo the hunk', description: r.problem ?? 'git said no', tone: 'error' })
+      else toast.push({ title: mode === 'stage' ? 'Hunk staged' : 'Hunk undone', tone: 'success' })
+    } catch (e) {
+      toast.push({ title: 'git apply failed', description: (e as Error).message, tone: 'error' })
+    } finally {
+      setBusy(false)
+      setTries((n) => n + 1)
+      onChanged?.()
+    }
+  }
+
   if (failed !== null) return <PanelError message={failed} onRetry={() => setTries((n) => n + 1)} />
   if (diff === null) return <PanelLoading />
   if (diff.trim() === '') {
     return <PanelEmpty icon={<FileDiff />} title="Nothing uncommitted in this file" hint="Git has the same bytes as the disk." />
   }
+  const files = splitDiff(diff)
+  const first = files[0]
+  // Hunk-by-hunk controls only for a tracked file inside a known repository: a new file
+  // has no HEAD side to stage a piece against, and is staged whole from the Git tab.
+  const canStage = target !== null && first !== undefined && first.hunks.length > 0 && !diff.startsWith('diff --git a//dev/null')
   return (
     <div data-face="diff" class="flex min-h-0 flex-1 flex-col">
-      <div class="min-h-0 overflow-auto px-3.5 pb-3 pt-2"><DiffView content={diff} /></div>
+      {canStage && first !== undefined
+        ? (
+          <div class="min-h-0 overflow-auto px-3.5 pb-3 pt-2" data-hunks={first.hunks.length}>
+            {first.hunks.map((h, i) => (
+              <div key={h.header} class="mb-3 rounded-md border border-border-soft" data-hunk={i}>
+                <div class="flex items-center gap-2 border-b border-border-soft bg-raised px-2 py-1 font-mono text-[11px] text-dim">
+                  <span class="min-w-0 flex-1 truncate">{h.header}</span>
+                  <span class="text-[10.5px]"><span class="text-green">+{h.added}</span> <span class="text-red">−{h.removed}</span></span>
+                  <Button size="sm" disabled={busy} onClick={() => { void hunk(h, 'stage') }} data-action="stage-hunk" title="Stage only this hunk (line staging)">Stage hunk</Button>
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => setUndoing(h)} data-action="undo-hunk" title="Undo only this hunk — the working tree loses it">Undo</Button>
+                </div>
+                <div class="px-2 pb-1"><DiffView content={`${first.header}\n${h.text}`} dense /></div>
+              </div>
+            ))}
+          </div>
+          )
+        : <div class="min-h-0 overflow-auto px-3.5 pb-3 pt-2"><DiffView content={diff} /></div>}
+      {undoing !== null && (
+        <AlertDialog
+          open
+          onCancel={() => setUndoing(null)}
+          onConfirm={() => { const h = undoing; setUndoing(null); void hunk(h, 'undo') }}
+          title="Undo this hunk?"
+          description={`The lines ${undoing.header} go back to the last commit. This cannot be undone.`}
+          confirmLabel="Undo hunk"
+          danger
+        />
+      )}
     </div>
   )
 }
@@ -493,7 +553,7 @@ export function FileView({
               {...(onReverted !== undefined ? { onReverted } : {})}
             />
             )
-          : <GitDiffFace client={client} path={path} />
+          : <GitDiffFace client={client} path={path} {...(onReverted !== undefined ? { onChanged: onReverted } : {})} />
         : (
           <>
             {loaded.kind === 'loading' && <PanelLoading />}
