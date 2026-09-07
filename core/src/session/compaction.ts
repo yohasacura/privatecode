@@ -149,7 +149,7 @@ export function collapseSupersededReads(tail: ChatMessage[]): ChatMessage[] {
 
 /** The write family, matched by call NAME because this module must not import the
  * session's own registry. Kept in sync with `session.ts`'s WRITE_TOOLS by the test. */
-const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['Edit', 'Write', 'move_file', 'delete_file'])
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['Edit', 'Write', 'MoveFile', 'DeleteFile'])
 
 /** A read smaller than this is cheaper to keep than to explain away. */
 const COLLAPSE_MIN_CHARS = 600
@@ -465,9 +465,9 @@ const CHARS_PER_TOKEN = 4
 // --- The continuation inventory --------------------------------------------------------
 
 /** Tools whose successful call means "the model has looked at this path". */
-const SEEN_TOOLS = new Set(['Read', 'symbol_outline'])
+const SEEN_TOOLS = new Set(['Read', 'SymbolOutline'])
 /** Tools whose successful call means "the model changed this path". */
-const CHANGED_TOOLS = new Set(['Edit', 'Write', 'move_file', 'delete_file'])
+const CHANGED_TOOLS = new Set(['Edit', 'Write', 'MoveFile', 'DeleteFile'])
 /** Permanent context, so bounded. Past this the list stops being an aid and becomes noise. */
 const MAX_INVENTORY_PATHS = 40
 

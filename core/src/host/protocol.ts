@@ -373,7 +373,7 @@ export interface AttachResolveResult {
 /**
  * The working tree, for the Changes panel.
  *
- * Separate from the model's read-only `git_status` tool, which returns prose for a context
+ * Separate from the model's read-only `GitStatus` tool, which returns prose for a context
  * window. This returns structure for a panel, and `git.commit` does the one thing the
  * model's tool deliberately cannot: a commit is where work becomes permanent, and that is a
  * person's decision, made over a message they can read and edit.
@@ -560,7 +560,7 @@ export interface StatusResult {
 export interface JobInfo {
   id: string
   command: string
-  /** `'agent'` = started by a `background_task` tool call (permission-gated);
+  /** `'agent'` = started by a `Bash` call with run_in_background (permission-gated);
    * `'user'` = started from the app's own terminal by the person sitting at it. */
   origin: 'agent' | 'user'
   /** Epoch milliseconds. */

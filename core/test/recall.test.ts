@@ -9,7 +9,7 @@ import { Workspace } from '../src/workspace.js'
 import type { ToolContext } from '../src/tools/types.js'
 
 /**
- * Reading back what `remember` stored.
+ * Reading back what `Remember` stored.
  *
  * The behaviour that matters is the refusal, not the retrieval: the notes FILE holds every
  * note ever written, and the loader is what drops the ones whose evidence has changed.
@@ -24,7 +24,7 @@ let ctx: ToolContext
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'pc-recall-'))
-  // The app makes this on open; a bare temp directory does not have it, and `remember`
+  // The app makes this on open; a bare temp directory does not have it, and `Remember`
   // writes into it rather than creating it.
   mkdirSync(join(root, '.privatecode'), { recursive: true })
   mkdirSync(join(root, 'src'), { recursive: true })
@@ -91,7 +91,7 @@ test('it steers away from the workaround it exists to replace', async () => {
 
 test('it is read-only, so plan mode can use it', () => {
   // A plan built without what earlier sessions worked out is a plan that re-derives them,
-  // which is the cost `remember` exists to remove.
+  // which is the cost `Remember` exists to remove.
   expect(recallTool.readOnly).toBe(true)
 })
 
@@ -100,7 +100,7 @@ test('it is read-only, so plan mode can use it', () => {
  *
  * Discouraging it did not work. Asked how to read its notes, the model found the file and
  * told the user `Read('.privatecode/project-notes.md')` — and said it again in a later
- * conversation, after `recall` existed and it had used it. The file holds every note ever
+ * conversation, after `Recall` existed and it had used it. The file holds every note ever
  * written; the loader is what drops the ones whose evidence has changed. So the direct read
  * returns exactly what the design exists to keep out of the context.
  */
@@ -110,7 +110,7 @@ test('Read refuses the notes store and names the tool that does it properly', as
   const r = await readFileTool.execute({ path: '.privatecode/project-notes.md' }, ctx)
 
   expect(r.ok).toBe(false)
-  expect(r.content).toContain('recall')
+  expect(r.content).toContain('Recall')
   // The refusal has to say WHY, or it reads as an arbitrary lock and the next move is to
   // find another way in.
   expect(r.content).toContain('evidence files have since changed')
@@ -125,7 +125,7 @@ test('the refusal cannot be spelled around', async () => {
     ctx,
   )
   expect(sneaky.ok).toBe(false)
-  expect(sneaky.content).toContain('recall')
+  expect(sneaky.content).toContain('Recall')
 })
 
 test('every other file in .privatecode still reads normally', async () => {

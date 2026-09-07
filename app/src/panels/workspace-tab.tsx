@@ -131,7 +131,7 @@ export function WorkspaceTab({
 
   const ghosts = useMemo(() => ghostRows(
     marks,
-    changes.filter((c) => c.tool === 'delete_file' && c.ok).map((c) => c.openPath),
+    changes.filter((c) => c.tool === 'DeleteFile' && c.ok).map((c) => c.openPath),
   ), [marks, changes])
 
   const { hidden } = splitReviewed(changes, reviewed)

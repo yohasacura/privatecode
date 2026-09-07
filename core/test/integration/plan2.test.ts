@@ -148,7 +148,7 @@ describe.runIf(enabled)('Plan 2 live acceptance suite', () => {
     const interaction = neverCalledPort({
       requestApproval: async (req: ApprovalRequest): Promise<ApprovalDecision> => {
         approvalRequests.push(req)
-        return { verdict: 'deny', comment: 'use list_dir instead of a shell command' }
+        return { verdict: 'deny', comment: 'use LS instead of a shell command' }
       },
     })
 
@@ -177,7 +177,7 @@ describe.runIf(enabled)('Plan 2 live acceptance suite', () => {
 
     // Either proves the deny text steered it: the model tries the suggested tool, or it
     // gives up and says so in its closing prose.
-    const triedListDir = calls.some((c) => c.name === 'list_dir')
+    const triedListDir = calls.some((c) => c.name === 'LS')
     const acknowledgedRefusal = /declin|refus|denied|permission|not allowed|cannot run|couldn't run|blocked/i
       .test(result.finalText)
     console.log(`[deny] triedListDir=${triedListDir}, acknowledgedRefusal=${acknowledgedRefusal}`)

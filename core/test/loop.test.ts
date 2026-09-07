@@ -1160,7 +1160,7 @@ test('the third identical call with the same answer is refused instead of run', 
 })
 
 test('a call whose answer keeps changing is never refused', async () => {
-  // The regression that would matter most: breaking background_task poll, whose whole
+  // The regression that would matter most: breaking TaskOutput, whose whole
   // purpose is to be called until something changes.
   let n = 0
   const counter: Tool<Record<string, never>> = {

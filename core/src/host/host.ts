@@ -1119,7 +1119,7 @@ export class SessionHost {
     // The agents plugins and `.claude/agents/` ship, and the plugins' `bin/` folders.
     const roles = this.roles()
     if (roles.length > 0) sessionOpts.roles = roles
-    // The `plugins` tool runs the same `/plugin …` lines the composer does, store, reload
+    // The `Plugin` tool runs the same `/plugin …` lines the composer does, store, reload
     // and all — the owner's ruling that the model may install and manage plugins when
     // asked, behind the permission gate (an ask in normal mode, like a command).
     sessionOpts.plugins = {

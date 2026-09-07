@@ -131,8 +131,8 @@ describe('a folder root is not a file', () => {
    * and they still get it. Writes are the other half: every write tool carried its own
    * `opensAsWorkspaceRoot(abs, workspace.root)` guard, and `workspace.root` is `mounts[0]`,
    * the PRIMARY folder. So the guard compared the attached D:\engine against C:\proj, said
-   * "not the root", and `delete_file({ path: 'engine', recursive: true })` removed the whole
-   * attached project — permanently, since delete_file writes no checkpoint, and with no
+   * "not the root", and `DeleteFile({ path: 'engine', recursive: true })` removed the whole
+   * attached project — permanently, since DeleteFile writes no checkpoint, and with no
    * approval card at all in autopilot.
    */
   test('a write to an attached folder root is refused, and the refusal names the folder', () => {
@@ -168,7 +168,7 @@ describe('a folder root is not a file', () => {
     expect(() => single.resolveForWrite('. ')).toThrow(/workspace root/i)
   })
 
-  test('delete_file cannot remove an attached folder', async () => {
+  test('DeleteFile cannot remove an attached folder', async () => {
     const r = await deleteFileTool.execute({ path: 'engine', recursive: true }, { workspace: ws })
     expect(r.ok).toBe(false)
     expect(r.content).toContain('root of the folder "engine"')
@@ -176,7 +176,7 @@ describe('a folder root is not a file', () => {
     expect(readFileSync(join(mounts[1]!.root, 'lib.rs'), 'utf8')).toBe('fn main() {}\n')
   })
 
-  test('move_file cannot rename an attached folder away, nor onto one', async () => {
+  test('MoveFile cannot rename an attached folder away, nor onto one', async () => {
     const away = await moveFileTool.execute(
       { from: 'engine', to: 'app/engine-was-here' }, { workspace: ws },
     )

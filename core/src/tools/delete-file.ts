@@ -9,7 +9,7 @@ export interface DeleteFileArgs {
 }
 
 export const deleteFileTool: Tool<DeleteFileArgs> = {
-  name: 'delete_file',
+  name: 'DeleteFile',
   readOnly: false,
   description:
     'Delete a file, or a directory and everything in it with recursive: true. There is no ' +
@@ -39,7 +39,7 @@ export const deleteFileTool: Tool<DeleteFileArgs> = {
     return { ok: true, args }
   },
   permissionKey(args): PermissionKey {
-    return { tool: 'delete_file', paths: [args.path] }
+    return { tool: 'DeleteFile', paths: [args.path] }
   },
   approvalPreview(args): ApprovalPreview {
     return {
@@ -94,9 +94,9 @@ export const deleteFileTool: Tool<DeleteFileArgs> = {
     }
 
     // The C# index is loaded once per workspace and nothing but this call clears it, so
-    // without it `csharp_nav` keeps answering about the file that was just removed — with
+    // without it `CSharpNav` keeps answering about the file that was just removed — with
     // ok:true, pointing the model at a definition in a path `Read` can no longer open.
-    // Edit, Write and move_file all report their writes; deleting a .cs file is the
+    // Edit, Write and MoveFile all report their writes; deleting a .cs file is the
     // largest invalidation of the lot and was the one that did not.
     if (isDirectory) {
       // `noteWorkspaceWrite` decides on the extension it is handed, and a directory has none

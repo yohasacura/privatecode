@@ -20,7 +20,7 @@ function describeBytes(bytes: number): string {
 const SUPPORTED_LIST = SUPPORTED_EXTENSIONS.join(' ')
 
 export const symbolOutlineTool: Tool<SymbolOutlineArgs> = {
-  name: 'symbol_outline',
+  name: 'SymbolOutline',
   readOnly: true,
   description:
     'Extract a structural outline (classes, methods, functions, interfaces, enums, ...) ' +
@@ -52,7 +52,7 @@ export const symbolOutlineTool: Tool<SymbolOutlineArgs> = {
     try {
       const info = await stat(abs)
       if (info.isDirectory()) {
-        return { ok: false, content: `${args.path} is a directory; use list_dir` }
+        return { ok: false, content: `${args.path} is a directory; use LS` }
       }
       if (!info.isFile()) {
         return { ok: false, content: `${args.path} is not a regular file` }
@@ -72,7 +72,7 @@ export const symbolOutlineTool: Tool<SymbolOutlineArgs> = {
       return {
         ok: false,
         content:
-          `${args.path} is ${describeBytes(size)}; symbol_outline refuses files larger ` +
+          `${args.path} is ${describeBytes(size)}; SymbolOutline refuses files larger ` +
           `than ${describeBytes(MAX_FILE_BYTES)}. Use Read with a line range, or ` +
           'Grep, instead.',
       }
@@ -100,7 +100,7 @@ export const symbolOutlineTool: Tool<SymbolOutlineArgs> = {
     } catch (e) {
       return {
         ok: false,
-        content: `symbol_outline failed: ${e instanceof Error ? e.message : String(e)}`,
+        content: `SymbolOutline failed: ${e instanceof Error ? e.message : String(e)}`,
       }
     }
 
@@ -108,7 +108,7 @@ export const symbolOutlineTool: Tool<SymbolOutlineArgs> = {
       return {
         ok: false,
         content:
-          `symbol_outline supports ${SUPPORTED_LIST} files; use Read or Grep ` +
+          `SymbolOutline supports ${SUPPORTED_LIST} files; use Read or Grep ` +
           `for ${result.unsupported}`,
       }
     }

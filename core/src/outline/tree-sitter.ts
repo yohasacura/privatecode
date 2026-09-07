@@ -17,7 +17,7 @@ export interface OutlineEntry {
 type LanguageKey = 'typescript' | 'tsx' | 'javascript' | 'c_sharp' | 'python'
 
 /**
- * Single source of truth for what `symbol_outline` accepts. Exported so the tool
+ * Single source of truth for what `SymbolOutline` accepts. Exported so the tool
  * (`tools/symbol-outline.ts`) can build both its description and its refusal message from
  * this list rather than keeping a second copy that could drift from the one actually
  * consulted here.
@@ -121,7 +121,7 @@ function resolveWasmDir(): string {
 function assertWasmFile(path: string, what: string): void {
   if (!existsSync(path)) {
     throw new Error(
-      `symbol_outline cannot ${what}: no wasm file at "${path}". Restore the vendored copy ` +
+      `SymbolOutline cannot ${what}: no wasm file at "${path}". Restore the vendored copy ` +
       'in vendor/tree-sitter (see vendor/tree-sitter/PROVENANCE.md), or set ' +
       'PRIVATECODE_TS_WASM_DIR to a directory that has it.',
     )

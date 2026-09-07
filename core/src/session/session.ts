@@ -258,7 +258,7 @@ export interface SessionOptions {
   notes?: string
   skills?: LoadedSkills
   /** The database this workspace works against, when one is configured. Absent — the normal
-   * case — leaves the `database` tool answering with where to configure one. */
+   * case — leaves the `Database` tool answering with where to configure one. */
   database?: DatabaseSettings
   /** Its shape, ALREADY FETCHED, for the cached prefix. Read by the caller rather than here
    * because it crosses a network: a session must start whether or not the server answers. */
@@ -298,7 +298,7 @@ export interface SessionOptions {
   roles?: readonly SubAgentRole[]
   /** Folders prepended to PATH for `Bash`: the `bin/` of every enabled plugin. */
   extraPath?: readonly string[]
-  /** The host's `/plugin …` runner, for the `plugins` tool. See `ToolContext.plugins`. */
+  /** The host's `/plugin …` runner, for the `Plugin` tool. See `ToolContext.plugins`. */
   plugins?: PluginPort
   /**
    * The project's own check, run after any turn that wrote something. Absent means the
@@ -399,8 +399,8 @@ export interface SessionOptions {
 /** What counts as changing the workspace, for `turnFootprint`. Mirrors the permission
  * engine's own write family; restated here rather than imported so a change to the gate's
  * membership is a deliberate decision in both places. */
-const WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'move_file', 'delete_file'])
-const COMMAND_TOOLS: ReadonlySet<string> = new Set(['Bash', 'background_task'])
+const WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MoveFile', 'DeleteFile'])
+const COMMAND_TOOLS: ReadonlySet<string> = new Set(['Bash'])
 
 const PLAN_MODE_NOTE = '(mode is now plan: investigate and propose; do not edit)'
 
@@ -552,12 +552,12 @@ const MAX_ACCEPTANCE_ROUNDS = 2
  * What the fresh-context reviewer may call, named once.
  *
  * Named explicitly rather than left to plan mode's default, which is the registry's WHOLE
- * read-only set -- that set includes `database` and `Skill`, and the reviewer's context
+ * read-only set -- that set includes `Database` and `Skill`, and the reviewer's context
  * deliberately carries neither, so both would answer with a confident false statement about
  * the workspace that it would then reason from. Shared with `reviewVerdict` so the verdict
  * call sends the same array the reading turn did and stays a warm append.
  */
-const REVIEWER_TOOLS = ['Read', 'Grep', 'list_dir', 'Glob', 'symbol_outline'] as const
+const REVIEWER_TOOLS = ['Read', 'Grep', 'LS', 'Glob', 'SymbolOutline'] as const
 
 /** How far the independent reader may look before it must deliver a verdict. Enough to open
  * the files the diff touched and follow one thread out of them; past that it is re-reading
@@ -602,7 +602,7 @@ const CONTEXT_FILL_MARKS = [0.6, 0.75, 0.85] as const
 /** The only tools the work log's "Ran" line is built from — `commandsFrom` drops everything
  * else. Kept beside the capture rather than only inside the formatter, because the point is
  * to not RETAIN what will be discarded. */
-const LOGGED_TOOLS = new Set(['Bash', 'background_task'])
+const LOGGED_TOOLS = new Set(['Bash'])
 
 /**
  * Prefill cost and the ceiling on a cold wait both live in `loop.ts` now.
@@ -1447,8 +1447,8 @@ export class Session {
       const glob = of('glob')
       return glob === undefined ? 'looking for files' : `looking for ${clip(glob)}`
     }
-    if (name === 'list_dir' && path !== undefined) return `listing ${clip(path)}`
-    if (name === 'symbol_outline' && path !== undefined) return `outlining ${clip(path)}`
+    if (name === 'LS' && path !== undefined) return `listing ${clip(path)}`
+    if (name === 'SymbolOutline' && path !== undefined) return `outlining ${clip(path)}`
     return name
   }
 
@@ -1482,7 +1482,7 @@ export class Session {
       transcript,
       mode: 'plan',
       // Named explicitly rather than left to plan mode's default, which is the registry's
-      // WHOLE read-only set. That set includes `database` and `Skill`, and the context
+      // WHOLE read-only set. That set includes `Database` and `Skill`, and the context
       // above deliberately carries neither — so both were offered to the reviewer and both
       // answer with a confident false statement about the workspace ("no database is
       // configured") that it then reasons from. Plan mode still narrows whatever is passed,
@@ -1959,7 +1959,7 @@ export class Session {
     } catch {
       return
     }
-    // `move_file` reports its destination as `to`; every other write tool uses `path`.
+    // `MoveFile` reports its destination as `to`; every other write tool uses `path`.
     const target = typeof parsed.path === 'string' ? parsed.path
       : typeof parsed.to === 'string' ? parsed.to : undefined
     if (target === undefined) return
@@ -3128,7 +3128,7 @@ export class Session {
       content:
         `[Context is about ${Math.round(mark * 100)}% full. When it fills, the earlier part ` +
         'of this conversation is replaced by a summary — anything not written down is lost. ' +
-        'Now is the moment to record what you have worked out with `remember`, and to bring ' +
+        'Now is the moment to record what you have worked out with `Remember`, and to bring ' +
         '`TodoWrite` up to date so the plan survives. Then carry on.]',
     })
   }

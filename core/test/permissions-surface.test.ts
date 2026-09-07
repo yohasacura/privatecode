@@ -155,7 +155,7 @@ describe('withdrawing a rule', () => {
   })
 
   test('a written rule applies to the live engine immediately, in any list', () => {
-    // `adopt` is `remember`'s generalisation, and the deny case is the one with teeth: a
+    // `adopt` is `Remember`'s generalisation, and the deny case is the one with teeth: a
     // deny typed into the permissions screen that did not bite until the next session build
     // would be the revoke hole again, pointed the more dangerous way — the user believes a
     // protection is standing and it is not.

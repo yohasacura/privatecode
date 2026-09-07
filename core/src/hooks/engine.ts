@@ -208,8 +208,8 @@ export function claudeToolInput(name: string, args: unknown): Record<string, unk
   const a: Record<string, unknown> = isRecord(args) ? { ...args } : {}
   switch (name) {
     case 'Edit': return { ...a, file_path: a['path'], old_string: a['search_text'], new_string: a['replace_text'] }
-    case 'Write': case 'Read': case 'delete_file': case 'list_dir': return { ...a, file_path: a['path'] }
-    case 'move_file': return { ...a, file_path: a['from'], new_path: a['to'] }
+    case 'Write': case 'Read': case 'DeleteFile': case 'LS': return { ...a, file_path: a['path'] }
+    case 'MoveFile': return { ...a, file_path: a['from'], new_path: a['to'] }
     case 'Bash': return { ...a, command: Array.isArray(a['commands']) ? (a['commands'] as unknown[]).join(' && ') : a['command'] }
     case 'Glob': return { ...a, pattern: a['glob'] }
     default: return a
@@ -222,8 +222,8 @@ export function fromClaudeToolInput(name: string, updated: unknown, original: un
   const out: Record<string, unknown> = { ...(isRecord(original) ? original : {}) }
   const aliases: Record<string, Record<string, string>> = {
     Edit: { file_path: 'path', old_string: 'search_text', new_string: 'replace_text' },
-    Write: { file_path: 'path' }, Read: { file_path: 'path' }, delete_file: { file_path: 'path' }, list_dir: { file_path: 'path' },
-    move_file: { file_path: 'from', new_path: 'to' },
+    Write: { file_path: 'path' }, Read: { file_path: 'path' }, DeleteFile: { file_path: 'path' }, LS: { file_path: 'path' },
+    MoveFile: { file_path: 'from', new_path: 'to' },
     Glob: { pattern: 'glob' },
   }
   const map = aliases[name] ?? {}

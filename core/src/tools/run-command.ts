@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
 import { findBash, removeDeviceNamedFiles, rewriteDeviceRedirects, spawnBash } from '../bash.js'
+import { READY_WHEN_SCHEMA, validateReadyWhen, type ReadyWhen } from './ready-when.js'
 import { killTree } from '../powershell.js'
 import type { BackgroundTasks } from './background-task.js'
 import { countLines, headLines, overflowNotice, spillToLog } from './output-log.js'
@@ -31,8 +32,11 @@ export interface BashArgs {
   /** What the command is for, in a few words — shown on the approval card. */
   description?: string
   cwd?: string
-  /** Start it and return at once; `background_task` polls and stops it. */
+  /** Start it and return at once; `TaskOutput` polls it and `TaskStop` stops it. */
   run_in_background?: boolean
+  /** With `run_in_background`: what shows the process is ready — a port, a file, a log
+   * marker — so `TaskOutput` can wait for it rather than for the exit that never comes. */
+  ready_when?: ReadyWhen
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -131,7 +135,8 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
       'set `cwd` rather than chaining `cd`. `git`, `node`, `python`, `dotnet` and the rest come ' +
       'from the machine\'s PATH. Exit code 0 is evidence, not proof — verify with a follow-up ' +
       'check when it matters. A dev server, a watcher or anything long-running: pass ' +
-      'run_in_background: true and poll it with background_task.',
+      'run_in_background: true (with ready_when for a port, file or log marker that shows it is ' +
+      'up) and read it with TaskOutput; TaskStop ends it.',
     parameters: {
       type: 'object',
       properties: {
@@ -158,6 +163,7 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
           type: 'boolean',
           description: 'Start the command and return its task id at once instead of waiting for it.',
         },
+        ready_when: READY_WHEN_SCHEMA,
       },
       required: ['command'],
     },
@@ -199,6 +205,12 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
         if (typeof r.run_in_background !== 'boolean') return { ok: false, error: 'run_in_background must be true or false' }
         if (r.run_in_background) args.run_in_background = true
       }
+      if (r.ready_when !== undefined) {
+        if (args.run_in_background !== true) return { ok: false, error: 'ready_when goes with run_in_background: true' }
+        const ready = validateReadyWhen(r.ready_when)
+        if (!ready.ok) return ready
+        args.ready_when = ready.args
+      }
       return { ok: true, args }
     },
     permissionKey(args): PermissionKey {
@@ -237,11 +249,12 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
         if (deps.background === undefined) {
           return { ok: false, content: 'No background runner is available here; run the command without run_in_background.' }
         }
-        const entry = deps.background.start(args.command, null, cwd, 'agent', ctx.extraPath ?? [])
+        const entry = deps.background.start(args.command, args.ready_when ?? null, cwd, 'agent', ctx.extraPath ?? [])
+        const ready = args.ready_when !== undefined ? ' Poll it until it reports ready: YES before relying on it.' : ''
         return {
           ok: true,
           content: `Started in the background as ${entry.id}${whereRan(ctx.workspace, cwd, args.cwd)}. ` +
-            `Read its output with background_task (action: poll, id: ${entry.id}); stop it with action: stop.` +
+            `Read its output with TaskOutput (id: ${entry.id}); stop it with TaskStop (id: ${entry.id}).${ready}` +
             deviceNameNote(rewritten, []),
         }
       }

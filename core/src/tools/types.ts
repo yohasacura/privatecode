@@ -7,7 +7,7 @@ import type { ReadMemory } from './read-memory.js'
 import type { DatabaseSettings } from '../sql/settings.js'
 import type { SubAgentOutcome } from '../agent/subagent.js'
 
-/** What the `plugins` tool can do: one `/plugin …` line, answered the way the composer is. */
+/** What the `Plugin` tool can do: one `/plugin …` line, answered the way the composer is. */
 export interface PluginPort {
   run(line: string): Promise<{ ok: boolean; text: string }>
 }
@@ -36,7 +36,7 @@ export interface ToolContext {
   /** The browser, when this host provides one. Lazy: holding it starts nothing. */
   browser?: BrowserManager
   /** The HEADLESS renderer the `web` tool escalates to for JavaScript-shell pages.
-   * A separate instance from `browser` on purpose: reading a page for research must
+   * A separate instance from `Browser` on purpose: reading a page for research must
    * never flash a window, and the visible browser's page must never be navigated away
    * under the user by a background read. Lazy like its sibling. */
   webRenderer?: BrowserManager
@@ -72,7 +72,7 @@ export interface ToolContext {
    * Runs a `/plugin …` line — add a marketplace, install, enable, update — on the user's
    * behalf, exactly as the composer and the REPL run it. Provided by the host, which owns
    * the store and reloads the plugins afterwards; absent for hosts with no store, and the
-   * `plugins` tool says so. See `tools/plugins.ts`.
+   * `Plugin` tool says so. See `tools/plugins.ts`.
    */
   plugins?: PluginPort
   /**

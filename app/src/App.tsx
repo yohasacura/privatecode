@@ -76,7 +76,7 @@ type Phase =
 
 /** Tools whose result means the workspace on disk may have moved. See `workspaceMutations`. */
 const MUTATING_TOOLS: ReadonlySet<string> = new Set([
-  'Edit', 'Write', 'move_file', 'delete_file', 'Bash', 'background_task',
+  'Edit', 'Write', 'MoveFile', 'DeleteFile', 'Bash', 'TaskOutput', 'TaskStop',
 ])
 
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:8080'
@@ -315,7 +315,7 @@ export default function App() {
    * `describeFolder` plus `discoverRepos` for every mount on every step: git process spawns
    * and two uncached recursive directory walks, on the same laptop running the agent's own
    * tools, to refresh a listing that cannot have moved. The file tree next door already does
-   * the filtered version of this. `Bash` and `background_task` are in the list because
+   * the filtered version of this. `Bash`, `TaskOutput` and `TaskStop` are in the list because
    * a build or a script genuinely does change the tree; nothing else here can.
    */
   const workspaceMutations = chatState.items.reduce(

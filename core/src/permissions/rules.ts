@@ -30,6 +30,22 @@ export const LEGACY_TOOL_NAMES: Readonly<Record<string, string>> = {
   ask_user: 'AskUserQuestion',
   use_skill: 'Skill',
   delegate: 'Agent',
+  // The second round (2026-09-07). `background_task` split in two; a rule bound to the
+  // old name now binds to TaskOutput, and `Bash` (which starts the process) already asks.
+  list_dir: 'LS',
+  delete_file: 'DeleteFile',
+  move_file: 'MoveFile',
+  git_status: 'GitStatus',
+  sql_deploy: 'SqlDeploy',
+  symbol_outline: 'SymbolOutline',
+  csharp_nav: 'CSharpNav',
+  browser: 'Browser',
+  database: 'Database',
+  plugins: 'Plugin',
+  recall: 'Recall',
+  remember: 'Remember',
+  sessions: 'Sessions',
+  background_task: 'TaskOutput',
   web: 'WebFetch',
 }
 

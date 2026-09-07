@@ -27,7 +27,7 @@ describe('continuationInventory', () => {
     const out = continuationInventory([
       call('Read', { path: 'src/a.ts' }),
       call('Read', { path: 'src/a.ts' }),
-      call('symbol_outline', { path: 'src/b.ts' }),
+      call('SymbolOutline', { path: 'src/b.ts' }),
       call('Edit', { path: 'src/c.ts' }),
     ])
     expect(out).toContain('src/a.ts')

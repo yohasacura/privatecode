@@ -20,8 +20,8 @@ it was built against. The live proof is `test/integration/plugins-live.test.ts`.
    window's `lib/tools.ts`). `Bash` runs bash — the Git for Windows bash and coreutils
    vendored in `vendor/git` (its PROVENANCE.md, `scripts/fetch-vendor.mjs`), the shell
    Claude Code itself uses on Windows — with Claude Code's arguments (`command`, `timeout`
-   in ms, `description`, `run_in_background`) plus `cwd`. `background_task` runs the model's
-   jobs under the same bash; the Terminal panel's own commands, and the `verify`, `format`
+   in ms, `description`, `run_in_background`) plus `cwd`. `Bash` with `run_in_background` runs the
+   model's background jobs under the same bash (`TaskOutput` reads them, `TaskStop` ends them); the Terminal panel's own commands, and the `verify`, `format`
    and `after` hooks a person writes in settings, stay PowerShell.
 3. Four skills ship with the app (`core/skills/`, staged beside the sidecar): `skill-creator`,
    `grill-me`, `mermaid` (the transcript renders ```mermaid blocks) and `pptx` (three
@@ -59,7 +59,7 @@ can declare that PrivateCode ignores, and how it says so (the Errors tab, never 
 
 ## 1. Sources of truth
 
-Read on 2026-09-02 from code.claude.com/docs: `plugins`, `plugin-marketplaces`,
+Read on 2026-09-02 from code.claude.com/docs: `Plugin`, `plugin-marketplaces`,
 `plugins-reference`, `discover-plugins`, `hooks`, `skills`, `sub-agents`, `mcp`, `settings`.
 The two Anthropic catalogs were read raw: `anthropics/claude-plugins-official` (400+ entries,
 `git-subdir`/`url`/relative sources, SHA-pinned) and `anthropics/claude-plugins-community`
@@ -129,7 +129,7 @@ Tool names, both directions (hook matchers, `allowed-tools`, agent `tools`, `per
 
 | Claude Code | PrivateCode |
 |---|---|
-| Bash | Bash (and background_task) |
+| Bash | Bash (TaskOutput / TaskStop for what it started in the background) |
 | Edit, MultiEdit | Edit |
 | Write | Write |
 | Read | Read |

@@ -27,7 +27,7 @@ test('only a /plugin line is accepted, trimmed', () => {
 
 test('the line is the permission key, and the preview says what an install does', () => {
   const args = { line: '/plugin marketplace add anthropics/claude-code' }
-  expect(pluginsTool.permissionKey!(args)).toEqual({ tool: 'plugins', command: args.line })
+  expect(pluginsTool.permissionKey!(args)).toEqual({ tool: 'Plugin', command: args.line })
   const ctx: ToolContext = { workspace: new Workspace(root) }
   const preview = pluginsTool.approvalPreview!(args, ctx)
   expect(preview.summary).toBe(args.line)
@@ -59,7 +59,7 @@ test('the engine gates it like a command: ask in normal, allow in autopilot, den
   expect(at('plan')).toBe('deny')
   const denied = new PermissionEngine({
     mode: 'autopilot', workspaceRoot: root,
-    layers: [{ scope: 'project', path: join(root, '.privatecode', 'settings.json'), permissions: { allow: [], ask: [], deny: ['plugins'] } }],
+    layers: [{ scope: 'project', path: join(root, '.privatecode', 'settings.json'), permissions: { allow: [], ask: [], deny: ['Plugin'] } }],
   })
   expect(denied.decide(key).verdict).toBe('deny')
 })

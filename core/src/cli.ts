@@ -182,7 +182,7 @@ async function main() {
   for (const p of browserSettings.problems) console.error(`settings: ${p}`)
   // Read here as well as in the host: the CLI builds its own session, and a setting wired
   // into only one of the two entry points is a feature that works in the window and does
-  // nothing in the terminal -- which is precisely the shape of the bug that left `csharp_nav`
+  // nothing in the terminal -- which is precisely the shape of the bug that left `CSharpNav`
   // advertised and unusable on this path for a day.
   const databaseSettings = loadDatabaseSettings(values.workspace)
   for (const p of databaseSettings.problems) console.error(`settings: ${p}`)
@@ -321,10 +321,10 @@ async function main() {
 
   const session = new Session(sessionOpts)
 
-  // The REPL's own shutdown() calls toolset.background.stopAll() so a background_task
+  // The REPL's own shutdown() calls toolset.background.stopAll() so a background
   // process never outlives the process that started it (see repl.ts). This one-shot path
   // is the other caller of the same Toolset contract, and used to skip that call entirely
-  // -- a `background_task` start left a live child (and the execa/PowerShell handles that
+  // -- a `Bash` run_in_background start left a live child (and the execa/PowerShell handles that
   // keep the event loop alive) behind after the turn finished, so the process never
   // exited on its own. try/finally here, around both the send and the result report
   // below, guarantees stopAll() runs on every exit from this block: normal completion,

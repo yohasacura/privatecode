@@ -2,69 +2,91 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { BackgroundTasks, MAX_FINISHED, backgroundTaskTool } from '../src/tools/background-task.js'
+import { BackgroundTasks, MAX_FINISHED, taskOutputTool, taskStopTool } from '../src/tools/background-task.js'
+import { createBashTool } from '../src/tools/run-command.js'
 import { Workspace } from '../src/workspace.js'
 
 const root = mkdtempSync(join(tmpdir(), 'pc-bg-'))
 const ws = new Workspace(root)
 const tasks = new BackgroundTasks()
-const tool = backgroundTaskTool(tasks)
+const bash = createBashTool({ background: tasks })
+const output = taskOutputTool(tasks)
+const stopper = taskStopTool(tasks)
 const ctx = { workspace: ws }
 afterAll(async () => { await tasks.stopAll(); rmSync(root, { recursive: true, force: true }) })
 
-const call = (args: unknown) => {
-  const v = tool.validate(args)
+/** Bash starts it (`run_in_background`), TaskOutput reads it, TaskStop ends it — Claude Code's three. */
+const start = (args: Record<string, unknown>) => {
+  const v = bash.validate({ run_in_background: true, ...args })
   if (!v.ok) throw new Error(v.error)
-  return tool.execute(v.args, ctx)
+  return bash.execute(v.args, ctx)
+}
+const poll = (args: unknown) => {
+  const v = output.validate(args)
+  if (!v.ok) throw new Error(v.error)
+  return output.execute(v.args, ctx)
+}
+const stop = (args: unknown) => {
+  const v = stopper.validate(args)
+  if (!v.ok) throw new Error(v.error)
+  return stopper.execute(v.args, ctx)
+}
+const call = (args: { action: 'start' | 'poll' | 'stop' } & Record<string, unknown>) => {
+  const { action, ...rest } = args
+  return action === 'start' ? start(rest) : action === 'poll' ? poll(rest) : stop(rest)
 }
 
-describe('background_task', () => {
-  it('validate rejects start without command, poll/stop without id', () => {
-    expect(tool.validate({ action: 'start' }).ok).toBe(false)
-    expect(tool.validate({ action: 'poll' }).ok).toBe(false)
-    expect(tool.validate({ action: 'stop' }).ok).toBe(false)
-    expect(tool.validate({ action: 'dance' }).ok).toBe(false)
+describe('TaskOutput and TaskStop', () => {
+  it('validate: TaskOutput and TaskStop need an id; ready_when needs run_in_background and a condition', () => {
+    expect(output.validate({}).ok).toBe(false)
+    expect(output.validate({ id: 'task-1', wait_seconds: 999 }).ok).toBe(false)
+    expect(stopper.validate({}).ok).toBe(false)
+    expect(bash.validate({ command: 'x', ready_when: { port: 80 } }).ok).toBe(false)
+    expect(bash.validate({ command: 'x', run_in_background: true, ready_when: {} }).ok).toBe(false)
+    expect(bash.validate({ command: 'x', run_in_background: true, ready_when: { port: 0 } }).ok).toBe(false)
+    expect(bash.validate({ command: 'x', run_in_background: true, ready_when: { log_contains: 'up' } })).toMatchObject({ ok: true, args: { ready_when: { log_contains: 'up' } } })
   })
 
-  it('start returns an id; poll returns new output exactly once; exit is reported', async () => {
-    const started = await call({ command: 'echo first; sleep 0.4; echo second', action: 'start' })
+  it('Bash starts and names the id; TaskOutput returns new output exactly once; exit is reported', async () => {
+    const started = await start({ command: 'echo first; sleep 0.4; echo second' })
     expect(started.ok).toBe(true)
-    const id = /id: (task-\d+)/.exec(started.content)?.[1]
+    expect(started.content).toContain('TaskOutput')
+    const id = /as (task-\d+)/.exec(started.content)?.[1]
     expect(id).toBeTruthy()
-    const p1 = await call({ action: 'poll', id, wait_seconds: 3 })
+    const p1 = await poll({ id, wait_seconds: 3 })
     expect(p1.content).toContain('first')
     // wait_seconds: 3 waited for exit, so both lines and the exit code are visible
     expect(p1.content).toContain('second')
     expect(p1.content).toMatch(/exited with code 0/)
-    const p2 = await call({ action: 'poll', id })
+    const p2 = await poll({ id })
     expect(p2.content).not.toContain('first') // cursor advanced: no repeated output
   }, 30_000)
 
-  it('stop kills a running task', async () => {
-    const started = await call({ action: 'start', command: 'sleep 60' })
-    const id = /id: (task-\d+)/.exec(started.content)?.[1]
-    const stopped = await call({ action: 'stop', id })
+  it('TaskStop kills a running task', async () => {
+    const started = await start({ command: 'sleep 60' })
+    const id = /as (task-\d+)/.exec(started.content)?.[1]
+    const stopped = await stop({ id })
     expect(stopped.ok).toBe(true)
-    const polled = await call({ action: 'poll', id })
+    const polled = await poll({ id })
     expect(polled.content).toMatch(/stopped|exited/)
   }, 30_000)
 
-  it('reports readiness when a log marker appears', async () => {
-    const started = await call({
-      action: 'start',
+  it('reports readiness when the log marker Bash was given appears', async () => {
+    const started = await start({
       command: 'sleep 0.3; echo "SERVER READY"; sleep 60',
       ready_when: { log_contains: 'SERVER READY' },
     })
-    const id = /id: (task-\d+)/.exec(started.content)?.[1]
-    const early = await call({ action: 'poll', id })
+    expect(started.content).toContain('ready: YES')
+    const id = /as (task-\d+)/.exec(started.content)?.[1]
+    const early = await poll({ id })
     expect(early.content).toMatch(/ready: no/)
-    const later = await call({ action: 'poll', id, wait_seconds: 5 })
+    const later = await poll({ id, wait_seconds: 5 })
     expect(later.content).toMatch(/ready: YES/)
-    await call({ action: 'stop', id })
+    await stop({ id })
   }, 30_000)
 
-  it('poll on an unknown id fails without throwing', async () => {
-    const r = await call({ action: 'poll', id: 'task-999' })
+  it('TaskOutput on an unknown id fails without throwing', async () => {
+    const r = await poll({ id: 'task-999' })
     expect(r.ok).toBe(false)
   })
 })
@@ -93,7 +115,7 @@ describe('stopping a job stops what the job started', () => {
       action: 'start',
       command: `node -e "setInterval(()=>require('fs').appendFileSync('${path}','x'),200)"`,
     })
-    const id = /id: (task-\d+)/.exec(started.content)?.[1]
+    const id = /as (task-\d+)/.exec(started.content)?.[1]
     expect(id).toBeTruthy()
 
     // Let it actually get going, or "it stopped" would be indistinguishable from "it never
@@ -218,8 +240,8 @@ it('ready_when is validated, so a condition that can never be true is refused', 
   // `{}` is schema-valid and grammar-reachable, and `isReady` falls through all three
   // branches to false — forever — while the tool's description promises "poll until it
   // reports ready". DESIGN.md §4 requires semantic validation for exactly this shape.
-  const tool = backgroundTaskTool(new BackgroundTasks())
-  const empty = tool.validate({ action: 'start', command: 'npm run dev', ready_when: {} })
+  const tool = createBashTool({ background: new BackgroundTasks() })
+  const empty = tool.validate({ run_in_background: true, command: 'npm run dev', ready_when: {} })
   expect(empty.ok).toBe(false)
   expect((empty as { error: string }).error).toMatch(/port, file, or log_contains/)
 
@@ -228,15 +250,15 @@ it('ready_when is validated, so a condition that can never be true is refused', 
     { file: '   ' }, { file: 42 },
     { log_contains: '' },
   ]) {
-    const v = tool.validate({ action: 'start', command: 'npm run dev', ready_when: bad })
+    const v = tool.validate({ run_in_background: true, command: 'npm run dev', ready_when: bad })
     expect(v.ok, JSON.stringify(bad)).toBe(false)
   }
 })
 
 it('and the usable conditions still pass, trimmed', () => {
-  const tool = backgroundTaskTool(new BackgroundTasks())
+  const tool = createBashTool({ background: new BackgroundTasks() })
   const v = tool.validate({
-    action: 'start', command: 'npm run dev',
+    run_in_background: true, command: 'npm run dev',
     ready_when: { port: 5173, file: '  dist/index.html  ', log_contains: ' ready in ' },
   })
   expect(v.ok).toBe(true)

@@ -41,7 +41,7 @@ const ACTIONS: Record<GitAction, (a: GitArgs) => string[]> = {
 }
 
 export const gitStatusTool: Tool<GitArgs> = {
-  name: 'git_status',
+  name: 'GitStatus',
   readOnly: true,
   description:
     'Read-only git inspection: status (dirty files + branch), diff (working tree vs a ' +
@@ -89,7 +89,7 @@ export const gitStatusTool: Tool<GitArgs> = {
     return { ok: true, args }
   },
   permissionKey(): PermissionKey {
-    return { tool: 'git_status' }
+    return { tool: 'GitStatus' }
   },
   async execute(args, ctx) {
     // `args.path` is workspace-relative as the model wrote it; resolve() is the jail, and
@@ -133,7 +133,7 @@ export const gitStatusTool: Tool<GitArgs> = {
         return {
           ok: false,
           content:
-            'git could not be run (is git installed and on PATH?), so git_status has ' +
+            'git could not be run (is git installed and on PATH?), so GitStatus has ' +
             'nothing to report.',
         }
       }
@@ -142,7 +142,7 @@ export const gitStatusTool: Tool<GitArgs> = {
           ok: false,
           content:
             'The workspace is not a git repository (or git is not installed), so ' +
-            'git_status has nothing to report.',
+            'GitStatus has nothing to report.',
         }
       }
       const clipped = clipOutput(all, OUTPUT_CHAR_LIMIT)

@@ -9,7 +9,7 @@ import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } fr
 /**
  * One tool, not nine.
  *
- * `background_task` is the house precedent: an `action` enum with control operations that
+ * `TaskStop` is the house precedent: a control operation that
  * carry no permission spec. Nine separate browser tools would cost nine schema slots in
  * every request's constraint grammar, on a model whose context window is the scarcest
  * resource in the system — and the model would still have to learn that they are one
@@ -89,7 +89,7 @@ function shotName(now: Date): string {
 }
 
 export const browserTool: Tool<BrowserArgs> = {
-  name: 'browser',
+  name: 'Browser',
   // Opening a page starts a process and reaches the network, so this is never plan-safe --
   // and `readOnly` is the ONLY thing plan mode consults (see registry.readOnlyNames).
   readOnly: false,
@@ -189,13 +189,13 @@ export const browserTool: Tool<BrowserArgs> = {
    *
    * `open` is keyed on the URL being requested; every other action is keyed on the page
    * already open, which the user approved when it was opened. `close` carries no key at all:
-   * it is a control operation, like `background_task`'s stop, and there is nothing left to
+   * it is a control operation, like `TaskStop`, and there is nothing left to
    * gate about shutting down something that was already approved to start.
    */
   permissionKey(args, ctx?: ToolContext): PermissionKey {
-    if (args.action === 'close') return { tool: 'browser' }
+    if (args.action === 'close') return { tool: 'Browser' }
     const target = args.action === 'open' ? args.url : ctx?.browser?.currentUrl() ?? undefined
-    return target ? { tool: 'browser', target } : { tool: 'browser' }
+    return target ? { tool: 'Browser', target } : { tool: 'Browser' }
   },
 
   approvalPreview(args, ctx): ApprovalPreview {

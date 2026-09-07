@@ -124,7 +124,7 @@ describe.skipIf(findBash() === null)('execute', () => {
     expect(r.content.replace(/\\/g, '/')).toContain('/usr/bin/ls')
   }, 30_000)
 
-  it('starts a command in the background when asked, through the same runner as background_task', async () => {
+  it('starts a command in the background when asked, through the same runner TaskOutput reads', async () => {
     const tasks = new BackgroundTasks()
     const tool = createBashTool({ background: tasks })
     try {
@@ -156,7 +156,7 @@ describe.skipIf(findBash() === null)('execute', () => {
  * The job is `bash.exe -c …`, so the process actually doing the work is bash's CHILD. A kill
  * that reaches only bash reports the command stopped and leaves node/dotnet running —
  * holding a port, a build lock and its file handles — with no entry in the Terminal panel
- * (that lists background_task jobs only) to stop it from.
+ * (that lists background jobs only) to stop it from.
  *
  * The grandchild here appends to a file every 100 ms, so "did it really stop" is answered
  * by the file's size holding still afterwards rather than by anything the tool reports

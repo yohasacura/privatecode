@@ -551,7 +551,7 @@ describe('failure, what happened next, and whether it worked', () => {
     // The other half, or the finding above would be true of everything and mean nothing.
     const listing = 'src/Real.cs\nsrc/Other.cs'
     const lines: Line[] = [
-      call('a1', 'list_dir', JSON.stringify({ path: 'src' })),
+      call('a1', 'LS', JSON.stringify({ path: 'src' })),
       { role: 'tool', tool_call_id: 'a1', content: listing },
     ]
     const outcomes = [{ id: 'a1', ok: true }]

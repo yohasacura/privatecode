@@ -11,13 +11,13 @@ import { renderSchema } from './render.js'
  * as a tool result would cost a step every time and would still end up in the transcript.
  *
  * It exists because of a measurement, not a preference. Naming a tool in the prompt does not
- * make this model reach for it — `symbol_outline` was named for 81% of a 703-call corpus and
+ * make this model reach for it — `SymbolOutline` was named for 81% of a 703-call corpus and
  * chosen zero times — so the reliable way to have the schema available is to have it
  * ALREADY THERE. "Which table holds the document status" then costs nothing at all.
  *
  * Best-effort by construction. A server that is asleep, a wrong password, a database that has
  * been renamed: all of them return null, the session starts exactly as it would have without
- * a database, and the `database` tool reports the real error the first time it is used. A
+ * a database, and the `Database` tool reports the real error the first time it is used. A
  * dead database must never be the reason a session cannot start.
  */
 
@@ -72,5 +72,5 @@ const HEADER =
   'The structure of the database this workspace works against, read from the server when ' +
   'this session started. Table and column names, types, keys and relationships here are ' +
   'accurate — answer from them directly rather than looking them up again. Two things are ' +
-  'NOT here: the DATA, and any change made since the session started. Use `database` for ' +
+  'NOT here: the DATA, and any change made since the session started. Use `Database` for ' +
   'those, and for the body of a view or procedure.'

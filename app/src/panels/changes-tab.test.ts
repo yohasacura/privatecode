@@ -31,10 +31,10 @@ describe('collectChanges', () => {
     expect(changes[0]?.content).toBe('third')
   })
 
-  it('orders newest first and keeps move_file\'s two-sided target', () => {
+  it('orders newest first and keeps MoveFile\'s two-sided target', () => {
     const items: ChatItem[] = [
       tool(1, 'Write', '{"path":"old.ts"}'),
-      tool(2, 'move_file', '{"from":"old.ts","to":"new.ts"}'),
+      tool(2, 'MoveFile', '{"from":"old.ts","to":"new.ts"}'),
     ]
     const changes = collectChanges(items)
     expect(changes.map((c) => c.path)).toEqual(['old.ts → new.ts', 'old.ts'])
@@ -166,7 +166,7 @@ describe('a call that never ran is not a change', () => {
     // Restoring only the destination deleted the file outright: absent there at the
     // baseline (removed) while the source was never recreated.
     const move = {
-      kind: 'tool' as const, id: 2, name: 'move_file', startedAtMs: 2,
+      kind: 'tool' as const, id: 2, name: 'MoveFile', startedAtMs: 2,
       args: JSON.stringify({ from: 'src/old.ts', to: 'src/new.ts' }),
       result: { ok: true, preview: 'p', content: 'moved', display: 'moved' },
     }
@@ -207,7 +207,7 @@ describe('grouping the change list', () => {
     // by it split on the last slash of the second half: heading `src/old.ts → src`, row
     // `new.ts`, and the half that says where the file came from simply gone.
     const entries: ChangeEntry[] = [
-      { id: 2, tool: 'move_file', path: 'src/old.ts → src/lib/new.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/new.ts', restorePaths: ['src/old.ts', 'src/lib/new.ts'] },
+      { id: 2, tool: 'MoveFile', path: 'src/old.ts → src/lib/new.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/new.ts', restorePaths: ['src/old.ts', 'src/lib/new.ts'] },
       { id: 1, tool: 'Write', path: 'src/lib/other.ts', ok: true, content: '', revisions: 1, openPath: 'src/lib/other.ts', restorePaths: ['src/lib/other.ts'] },
     ]
     const tree = buildPathTree(entries, (e) => e.openPath)

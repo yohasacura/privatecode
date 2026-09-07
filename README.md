@@ -86,7 +86,9 @@ a plugin's README works as written — and Settings → Plugins has the same com
 buttons: Installed, Discover (Anthropic's four catalogs are registered for you and fetched
 on first use), Marketplaces. A plugin's skills, slash commands, agents, hooks and MCP
 servers all arrive. The tools carry Claude Code's names — `Read`, `Edit`, `Write`, `Bash`,
-`Glob`, `Grep`, `WebSearch`, `WebFetch`, `Agent`, `Skill` — so a plugin's hook matchers and
+`Glob`, `Grep`, `WebSearch`, `WebFetch`, `Agent`, `Skill`, `TaskOutput`, `TaskStop`, and the rest in
+the same style (`LS`, `MoveFile`, `DeleteFile`, `GitStatus`, `SymbolOutline`, `Browser`,
+`Database`, `CSharpNav`, `SqlDeploy`, `Remember`, `Recall`, `Sessions`, `Plugin`) — so a plugin's hook matchers and
 agent files mean here what they mean there. `Bash` is bash: the app ships Git for Windows'
 bash and coreutils (`vendor/git`), the same shell Claude Code uses on Windows, so `&&`,
 pipes, `grep`, `sed` and `find` work as written; the model's PATH also reaches the
@@ -98,7 +100,7 @@ validated by the same tool, which is plain Node. Everything the console does, th
 does: Settings → Plugins adds marketplaces, browses and installs, reloads and validates;
 Settings → Skills makes a skill or an agent from a template and edits SKILL.md, the scripts
 beside it and the agent files in place; Settings → MCP servers edits the JSON. The model
-may do the same when asked — the `plugins` tool runs `/plugin …` lines behind the
+may do the same when asked — the `Plugin` tool runs `/plugin …` lines behind the
 permission gate, and everything under `.privatecode/` except `state/` is writable
 (the settings and hooks always ask first). Details, the hook
 contract and what is not supported: [docs/PLUGINS.md](docs/PLUGINS.md).
@@ -120,7 +122,7 @@ The full parity table: [docs/GIT.md](docs/GIT.md).
 **Two numbers in `settings.json` shape how much the model is told up front.**
 `"prefix": { "mapChars": 20000 }` is how much of the cached prefix the project map may take
 — every folder with a file count, then the most-referenced files with their definitions and
-line numbers. Bigger means fewer `list_dir` and `Glob` steps on a large workspace, paid
+line numbers. Bigger means fewer `LS` and `Glob` steps on a large workspace, paid
 once when the workspace opens (the prefix is prewarmed then, while you type).
 `"compaction": { "triggerTokens": 140000 }` is where a long session folds its history.
 A configured `verify` command runs by itself right after every step that edits files, and

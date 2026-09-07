@@ -4,7 +4,7 @@
  * transcript renders a diff, a command console, or a plain collapsible result).
  *
  * The transcript, the Changes tab and the Terminal tab all need this mapping; deriving it
- * three times is how three panels end up disagreeing about what `move_file`'s target is.
+ * three times is how three panels end up disagreeing about what `MoveFile`'s target is.
  */
 
 export type ToolKind =
@@ -30,7 +30,7 @@ export interface ToolPresentation {
    * make a card clickable and to key the Changes list. `null` for tools with no single
    * path (a command, a search across the tree, a move with two). */
   path: string | null
-  /** `move_file` only: the SOURCE path. A restore of a move must put both sides back —
+  /** `MoveFile` only: the SOURCE path. A restore of a move must put both sides back —
    * restoring only the destination deletes the file outright (it did not exist there at
    * the baseline) while the source is never recreated. */
   fromPath?: string
@@ -53,6 +53,21 @@ const LEGACY_TOOL_NAMES: Record<string, string> = {
   use_skill: 'Skill',
   delegate: 'Agent',
   web: 'WebFetch',
+  // The second round (2026-09-07).
+  list_dir: 'LS',
+  delete_file: 'DeleteFile',
+  move_file: 'MoveFile',
+  git_status: 'GitStatus',
+  sql_deploy: 'SqlDeploy',
+  symbol_outline: 'SymbolOutline',
+  csharp_nav: 'CSharpNav',
+  browser: 'Browser',
+  database: 'Database',
+  plugins: 'Plugin',
+  recall: 'Recall',
+  remember: 'Remember',
+  sessions: 'Sessions',
+  background_task: 'TaskOutput',
 }
 
 /** The tool's current name, whatever a stored transcript called it. */
@@ -62,24 +77,25 @@ export function toolName(name: string): string {
 
 /** The write family, as the permission engine and the Changes tab both understand it. */
 export const WRITE_TOOLS: ReadonlySet<string> = new Set([
-  'Edit', 'Write', 'move_file', 'delete_file',
-  // Recorded sessions from before the rename.
-  'edit_file', 'write_file',
+  'Edit', 'Write', 'MoveFile', 'DeleteFile',
+  // Recorded sessions from before the renames.
+  'edit_file', 'write_file', 'move_file', 'delete_file',
 ])
 
 const VERBS: Record<string, string> = {
   Read: 'Read',
-  list_dir: 'List',
+  LS: 'List',
   Glob: 'Find',
   Grep: 'Search',
-  symbol_outline: 'Outline',
+  SymbolOutline: 'Outline',
   Edit: 'Edit',
   Write: 'Write',
-  move_file: 'Move',
-  delete_file: 'Delete',
+  MoveFile: 'Move',
+  DeleteFile: 'Delete',
   Bash: 'Run',
-  background_task: 'Background',
-  git_status: 'Git',
+  TaskOutput: 'Poll',
+  TaskStop: 'Stop',
+  GitStatus: 'Git',
   TodoWrite: 'Plan',
   AskUserQuestion: 'Ask',
   Skill: 'Skill',
@@ -90,20 +106,21 @@ const VERBS: Record<string, string> = {
 
 const KINDS: Record<string, ToolKind> = {
   Read: 'read',
-  list_dir: 'read',
+  LS: 'read',
   Glob: 'read',
   Grep: 'read',
-  symbol_outline: 'read',
-  git_status: 'read',
+  SymbolOutline: 'read',
+  GitStatus: 'read',
   Skill: 'read',
   WebSearch: 'read',
   WebFetch: 'read',
   Edit: 'diff',
   Write: 'diff',
-  move_file: 'fileop',
-  delete_file: 'fileop',
+  MoveFile: 'fileop',
+  DeleteFile: 'fileop',
   Bash: 'command',
-  background_task: 'command',
+  TaskOutput: 'command',
+  TaskStop: 'command',
   TodoWrite: 'meta',
   AskUserQuestion: 'meta',
 }
@@ -142,7 +159,7 @@ function commandLabel(o: Record<string, unknown>): string | null {
 }
 
 /**
- * The screenshot a `browser` call saved, or `null`.
+ * The screenshot a `Browser` call saved, or `null`.
  *
  * Anchored to the exact shape the tool writes, and that strictness is the point: the
  * tool's own prose mentions the path too ("Screenshot saved to …"), and so does the
@@ -150,7 +167,7 @@ function commandLabel(o: Record<string, unknown>): string | null {
  * into an image, including one the model wrote about a file that no longer exists.
  */
 export function screenshotPathOf(name: string, display: string | undefined): string | null {
-  if (name !== 'browser' || display === undefined) return null
+  if (name !== 'Browser' || display === undefined) return null
   return /^\.privatecode\/state\/browser\/shot-\d+\.png$/.test(display) ? display : null
 }
 
@@ -180,7 +197,7 @@ export function presentTool(recorded: string, argsJson: string): ToolPresentatio
 
   if (name.startsWith('mcp__')) return presentMcp(name, args)
 
-  if (name === 'browser') {
+  if (name === 'Browser') {
     const action = str(args, 'action') ?? 'read'
     // Deliberately NOT `text`: a fill can carry something the user pasted into a login form,
     // and this string goes in a header, in a title attribute, and into the session file. The
@@ -191,7 +208,7 @@ export function presentTool(recorded: string, argsJson: string): ToolPresentatio
     return { kind: 'other', verb: `Browser ${action}`, target: detail, path: null }
   }
 
-  if (name === 'move_file') {
+  if (name === 'MoveFile') {
     const from = str(args, 'from')
     const to = str(args, 'to')
     return {
@@ -199,12 +216,11 @@ export function presentTool(recorded: string, argsJson: string): ToolPresentatio
       ...(from !== null ? { fromPath: from } : {}),
     }
   }
-  if (name === 'background_task') {
-    const action = str(args, 'action') ?? 'poll'
-    const detail = commandLabel(args) ?? str(args, 'id') ?? ''
-    return { kind, verb: `Background ${action}`, target: detail, path: null }
+  if (name === 'TaskOutput' || name === 'TaskStop') {
+    return { kind, verb, target: str(args, 'id') ?? '', path: null }
   }
-  if (name === 'git_status') {
+
+  if (name === 'GitStatus') {
     return { kind, verb, target: str(args, 'base') ?? 'status', path: null }
   }
   if (name === 'TodoWrite') {
@@ -218,13 +234,13 @@ export function presentTool(recorded: string, argsJson: string): ToolPresentatio
     // false for the empty string, so the collapsed preview line was suppressed as well.
     return { kind, verb, target: str(args, 'glob') ?? '', path: null }
   }
-  // The two tools whose `path` names a DIRECTORY — always for `list_dir`, and for
+  // The two tools whose `path` names a DIRECTORY — always for `LS`, and for
   // `Grep` whichever of the two the model chose (its schema documents the argument as
   // "file or directory"). Returning it as `path` made the transcript render its "Open file"
   // button, which calls `fs.read`, which answers `… is a directory; use fs.tree`: a permanent
   // tab in the strip whose only content is that error. Neither offers a path rather than
   // guessing which kind this one is.
-  if (name === 'list_dir') {
+  if (name === 'LS') {
     return { kind, verb, target: str(args, 'path') ?? '', path: null }
   }
   if (name === 'Grep') {

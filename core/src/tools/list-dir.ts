@@ -21,7 +21,7 @@ const HIDDEN_NAMES = new Set(['.git', 'node_modules'].map((s) => s.toLowerCase()
 export interface ListDirArgs { path: string }
 
 export const listDirTool: Tool<ListDirArgs> = {
-  name: 'list_dir',
+  name: 'LS',
   readOnly: true,
   description: 'List the entries of a directory in the workspace. Directories end with "/".',
   parameters: {
@@ -39,7 +39,7 @@ export const listDirTool: Tool<ListDirArgs> = {
   async execute(args, ctx) {
     // In a multi-folder workspace the root is not a directory on disk — it is the list of
     // folders. Answering with them, rather than with the jail's "name a folder first"
-    // refusal, is what makes `list_dir(".")` the natural first move it looks like.
+    // refusal, is what makes `LS(".")` the natural first move it looks like.
     if (ctx.workspace.multi && isRootPath(args.path)) {
       const lines = ctx.workspace.mounts.map((m) =>
         `${m.name}/${m.access === 'read' ? '    (read-only reference)' : ''}`)

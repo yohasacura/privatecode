@@ -117,7 +117,7 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 | **modes** | normal (ask by rules) · plan (no write tools in grammar) · auto-edit · autopilot (explicit, red banner) | |
 | **hard denies** | `rm -rf`, `git push`, `git reset --hard`, reading `.env`/`*.pem`/`id_rsa`, any path outside the workspace root | **Known limitation:** the deny list matches file *names*. A hardlink (`mklink /H`, no admin needed) gives a denied file's bytes a second, undenied name, and this is not detected — accepted deliberately, since an `nlink`-based backstop would also break pnpm's hardlinked `node_modules` layout, and the vector needs a link-creation capability nothing in this tool set grants. The same mechanism defeats containment, not just the name denylist: `mklink /H <root>\innocent.txt <a file outside the root>` produces a path `resolve()` accepts as inside the workspace whose bytes come from outside it. Bounded to files on the same volume; directories cannot be hardlinked. |
 | **network** | denied to PrivateCode itself, allowed to child processes (`dotnet restore`, `npm install`) | user's call |
-| **long-running commands** | `Bash` and `background_task` treat a process exit as *evidence*, not as completion: anything long-running carries a readiness condition (a file appears, a port answers, a marker is logged) and is polled against it | learned the hard way while installing the toolchain — the VS Build Tools installer returned exit code 0 and printed "Successfully installed" within seconds while the real 3.3 GB install ran on asynchronously for three more minutes. An agent that trusts exit codes will confidently report success on a job that has not started |
+| **long-running commands** | `Bash` and `TaskOutput` treat a process exit as *evidence*, not as completion: anything long-running carries a readiness condition (a file appears, a port answers, a marker is logged) and is polled against it | learned the hard way while installing the toolchain — the VS Build Tools installer returned exit code 0 and printed "Successfully installed" within seconds while the real 3.3 GB install ran on asynchronously for three more minutes. An agent that trusts exit codes will confidently report success on a job that has not started |
 | **checkpoints** | none — the user's own git is the safety net | user's call. Mitigation: before autopilot starts, check `git status` and offer a WIP commit or stash if the tree is dirty |
 | **sub-agents** | **not in v1** | with `-np 1` a sub-agent evicts the main KV cache: up to 2 minutes of silence on return. `-np 2` avoids that but halves per-session context to 65K and costs MTP. Law 3 means the usual payoff isn't there anyway |
 | **sessions** | one active conversation; others persisted and resumable, **and a resumed one shows the conversation it had** | matches the single server slot. Resume answered with a title and nothing else until 2026-08-04: the transcript was always on disk (it is what the model gets sent) and there was simply no protocol to ask for it. `TranscriptEntry` mirrors the live events, so the window folds history through the same reducer as the present |
@@ -136,17 +136,17 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 | group | tool | notes |
 |---|---|---|
 | read | `Read` | line-numbered, range-capable |
-| | `list_dir` | |
+| | `LS` | |
 | | `Glob` | glob |
 | | `Grep` | ripgrep |
-| | `symbol_outline` | tree-sitter: file structure, symbol definitions |
-| | `git_status` | status / diff / log / blame — read-only |
+| | `SymbolOutline` | tree-sitter: file structure, symbol definitions |
+| | `GitStatus` | status / diff / log / blame — read-only |
 | write | `Edit` | SEARCH/REPLACE, payload **inside** the normal JSON arguments — see §3 and §7; the spike measured zero escaping failures, so the non-standard channel bought nothing |
 | | `Write` | new files and full rewrites |
-| | `move_file`, `delete_file` | separate from bash so permission rules can see them |
+| | `MoveFile`, `DeleteFile` | separate from bash so permission rules can see them |
 | run | `Bash` | PowerShell, with timeout |
-| | `background_task` | start / poll / stop long-running processes |
-| web | `browser` | one tool, eleven actions, over CDP against the installed Edge/Chrome. Text-first (`read` returns the page with `[ref_N]` markers) because there is no vision tower; a screenshot is for the person watching |
+| | `TaskOutput`, `TaskStop` | read / stop a process `Bash` started in the background (`ready_when` says when it is up) |
+| web | `Browser` | one tool, eleven actions, over CDP against the installed Edge/Chrome. Text-first (`read` returns the page with `[ref_N]` markers) because there is no vision tower; a screenshot is for the person watching |
 | meta | `TodoWrite` | visible plan |
 | | `AskUserQuestion` | question with options, instead of guessing |
 
@@ -186,7 +186,7 @@ still stands is why the built-in toolset did not change.
    gate families and be auto-allowed in normal mode — the least trustworthy tools would be
    the least gated."** This was correct, and it was the real objection. It is fixed at the
    source rather than worked around: `permissions/engine.ts` now has a **third family**,
-   `isExternalTool`, covering `browser` and everything under `mcp__`, which **asks** by
+   `isExternalTool`, covering `Browser` and everything under `mcp__`, which **asks** by
    default in normal and auto-edit, allows in autopilot, and denies in plan. It is a
    predicate, not a `Set`, because MCP tool names are not known until a server has been
    contacted — a family whose membership is mutated at runtime by whatever registers the
@@ -199,7 +199,7 @@ still stands is why the built-in toolset did not change.
    and no file content is sent to a server the user did not configure, and every call is
    gated. A remote MCP server is now the user's decision, in the user's settings file, with
    a token that lives in the environment (`${VAR}` expansion) rather than in the file.
-3. **"Local servers duplicate `Read` / `Grep` / `git_status` in already-jailed,
+3. **"Local servers duplicate `Read` / `Grep` / `GitStatus` in already-jailed,
    permission-keyed form."** Still true, and it is why **none of the built-in tools were
    removed or replaced**. MCP is an addition at the edges, not a new way to do what the
    jailed tools already do.
@@ -232,7 +232,7 @@ approval at 22:06. `autopilot` does not stop, but nothing can be undone afterwar
   snapshots the current state first, so it is itself undoable, and uses `clean -fd` without
   `-x` so it never costs a rebuild.
 - **Loop detection** (`agent/loop-detector.ts`) refuses the third identical call *whose
-  result was also identical*. The result, not the call, is the signal: `background_task` poll
+  result was also identical*. The result, not the call, is the signal: `TaskOutput`
   exists to be called repeatedly, and a detector that counted calls would break the one tool
   whose purpose is repetition.
 - **The work log** (`session/worklog.ts`) is one screenful per turn, and every line comes

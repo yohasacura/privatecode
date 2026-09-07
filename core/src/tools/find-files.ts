@@ -12,7 +12,7 @@ const MAX_RESULTS = 200
 /** Either separator may appear in a model-written pattern, on any platform. */
 const SEPARATOR = /[\\/]/
 
-/** Path segments never enumerated, matched whole - the same rule list_dir applies. */
+/** Path segments never enumerated, matched whole - the same rule LS applies. */
 const HIDDEN_SEGMENTS = new Set(['.git', 'node_modules'].map((s) => s.toLowerCase()))
 
 /**

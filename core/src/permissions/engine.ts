@@ -86,32 +86,34 @@ export interface Decision {
 }
 
 /** Tools whose grantable act is writing to the workspace. */
-const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'move_file', 'delete_file'])
+const FILE_WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MoveFile', 'DeleteFile'])
 
 /** Tools whose grantable act is running something outside the workspace jail. */
-// `plugins` runs `/plugin …` lines — an install fetches and enables code — so it is gated
+// `Plugin` runs `/plugin …` lines — an install fetches and enables code — so it is gated
 // like a command: asked in normal mode, allowed in autopilot, refused in plan mode.
-const EXEC_TOOLS: ReadonlySet<string> = new Set(['Bash', 'background_task', 'plugins'])
+// `TaskOutput` and `TaskStop` are control ops on a process `Bash` already got approval to
+// start; their keys carry no command, which `modeDefault` reads as "nothing left to gate".
+const EXEC_TOOLS: ReadonlySet<string> = new Set(['Bash', 'TaskOutput', 'TaskStop', 'Plugin'])
 
 /**
  * Tools whose grantable act changes state that is neither a workspace file nor a process:
  * a live database.
  *
- * A fourth family for the same reason `isExternalTool` was a third one. `sql_deploy`
+ * A fourth family for the same reason `isExternalTool` was a third one. `SqlDeploy`
  * belongs to none of the others — its key carries an action, not a command or paths — so
- * `modeDefault` fell straight through to its allow tier and `sql_deploy({action:'publish'})`
+ * `modeDefault` fell straight through to its allow tier and `SqlDeploy({action:'publish'})`
  * applied schema changes to a live database in normal AND auto-edit mode with no approval
  * card, while the tool's own doc comment claimed it was "gated on every use in every other
  * mode". DESIGN.md §6 records this exact fall-through as the defect that motivated
- * `isExternalTool`; that fix covered MCP and the browser, and `sql_deploy` landed after it.
+ * `isExternalTool`; that fix covered MCP and the browser, and `SqlDeploy` landed after it.
  *
  * Both actions are gated, `script` included: what a person can sensibly grant standing
- * permission to is a rule they wrote themselves (`sql_deploy(script)`), not a default.
+ * permission to is a rule they wrote themselves (`SqlDeploy(script)`), not a default.
  */
-const DEPLOY_TOOLS: ReadonlySet<string> = new Set(['sql_deploy'])
+const DEPLOY_TOOLS: ReadonlySet<string> = new Set(['SqlDeploy'])
 
 /** The single browser tool. Named here so the engine does not import the tool module. */
-export const BROWSER_TOOL = 'browser'
+export const BROWSER_TOOL = 'Browser'
 
 /** The two web tools, same arrangement, named as Claude Code names them. `WebSearch`
  * carries this fixed target; `WebFetch` carries the URL. */
@@ -163,7 +165,7 @@ function specIsPathShaped(tool: string): boolean {
 
 /**
  * The one problem a rule's spec can earn, or `null` when the spec is fine. Shared by all
- * three places that validate a rule (settings loading, `addSessionRule`, `remember`) so the
+ * three places that validate a rule (settings loading, `addSessionRule`, `Remember`) so the
  * three can never drift apart -- they did drift once, and the cost was an "always allow"
  * the user believed had taken effect.
  */
@@ -223,7 +225,7 @@ function scopeLabel(scope: SettingsLayer['scope']): string {
 // or any path that fails to canonicalize is itself treated as a match.
 //
 // Deliberately does NOT fire for a keyless call (`key.paths === undefined`, e.g. a spec'd
-// deny rule against a `background_task` control op, or any tool call whose key carries
+// deny rule against a `TaskOutput` control op, or any tool call whose key carries
 // neither `command` nor `paths`): there is no path here to fail to canonicalize, so this
 // check stays silent and `decide()` falls through to the ask/allow tiers and mode default
 // as before. That is safe to leave unchanged because the workspace jail (`Workspace`, see
@@ -344,7 +346,7 @@ export class PermissionEngine {
   // is a red flag for a path rule is unremarkable for a command rule.
   //
   // A rule with a spec bound to a tool that is neither `FILE_WRITE_TOOLS` nor `EXEC_TOOLS`
-  // (`Read(docs/**)`, `git_status(x)`, ...) is a different, stronger case: those tools'
+  // (`Read(docs/**)`, `GitStatus(x)`, ...) is a different, stronger case: those tools'
   // `PermissionKey` never carries `command` or `paths` at all (see tools/types.ts), so
   // `ruleMatches` can never match the spec regardless of whether its syntax is canonical --
   // there is no path or command to check it against, full stop. That is reported instead
@@ -441,10 +443,10 @@ export class PermissionEngine {
   }
 
   private modeDefault(key: PermissionKey): Decision {
-    // A keyless EXEC-tool key (background_task poll/stop) carries no command because
+    // A keyless EXEC-tool key (TaskOutput, TaskStop) carries no command because
     // there is nothing left to gate: starting the process was the approval point. This
     // check runs before the per-mode branching below, and applies in every mode -- an
-    // explicit deny/ask/allow rule bound to the bare tool name (e.g. `deny: ["background_task"]`)
+    // explicit deny/ask/allow rule bound to the bare tool name (e.g. `deny: ["TaskStop"]`)
     // already caught it earlier in `decide()` if the user wrote one; this is only the
     // fallback once no rule matched at all.
     if (EXEC_TOOLS.has(key.tool) && key.command === undefined) {
@@ -602,7 +604,7 @@ export class PermissionEngine {
   /**
    * Make a revoked rule stop mattering NOW, not at the next session build.
    *
-   * The other half of `remember`, and it was missing in the dangerous direction: a grant
+   * The other half of `Remember`, and it was missing in the dangerous direction: a grant
    * applied to this live engine immediately (see above — "a `decide()` call for the same
    * key right after this one already sees it"), while a revocation edited only the file on
    * disk. The permissions screen then showed the rule as gone while this engine kept
@@ -624,9 +626,9 @@ export class PermissionEngine {
   }
 
   /**
-   * Make a rule the user just WROTE start mattering now — `remember`'s generalisation.
+   * Make a rule the user just WROTE start mattering now — `Remember`'s generalisation.
    *
-   * `remember` covers exactly one shape: an `allow` born from an approval card. The
+   * `Remember` covers exactly one shape: an `allow` born from an approval card. The
    * permissions screen now lets the user write a rule into any of the three lists, and a
    * deny typed there that did not bite until the next session build would be the revoke
    * hole again, pointed in the more dangerous direction — a user believes a protection is
@@ -634,7 +636,7 @@ export class PermissionEngine {
    *
    * Returns the problem instead of pushing it into `this.problems`: the caller is an
    * interactive form, and "your rule is malformed" belongs in front of the person typing
-   * it, not in the session's problem strip after the fact. Validation is `remember`'s own,
+   * it, not in the session's problem strip after the fact. Validation is `Remember`'s own,
    * via the same helpers, so the two cannot drift.
    */
   adopt(scope: SettingsLayer['scope'], list: 'allow' | 'ask' | 'deny', rule: string): string | null {

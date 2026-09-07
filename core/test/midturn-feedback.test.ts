@@ -134,7 +134,7 @@ test('the model is told when its context is filling, once per threshold', async 
   // so what is counted is how many DISTINCT thresholds were announced.
   const distinct = new Set(notices.map((m) => m.content))
   expect(distinct.size).toBeGreaterThan(0)
-  expect([...distinct].join(' ')).toMatch(/remember/)
+  expect([...distinct].join(' ')).toMatch(/Remember/)
   expect([...distinct].join(' ')).toMatch(/TodoWrite/)
   // Never the same threshold twice.
   expect(distinct.size).toBeLessThanOrEqual(3)
@@ -147,7 +147,7 @@ const readStep = (n: number) => ({
       role: 'assistant',
       tool_calls: [{
         id: `r${n}`, type: 'function',
-        function: { name: 'list_dir', arguments: JSON.stringify({ path: '.' }) },
+        function: { name: 'LS', arguments: JSON.stringify({ path: '.' }) },
       }],
     },
     finish_reason: 'tool_calls',

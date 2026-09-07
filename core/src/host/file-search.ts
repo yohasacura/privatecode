@@ -11,7 +11,7 @@ import { join } from 'node:path'
  * is a picker you stop using.
  */
 
-/** Directories never walked. The same list `list_dir` and `Glob` refuse to enumerate,
+/** Directories never walked. The same list `LS` and `Glob` refuse to enumerate,
  * for the same reason: nobody is looking for a file inside `node_modules` by name. */
 // `bin` and `obj` are .NET build output, and they are not merely noise here: 10 of the 40
 // files in one C# workspace's map were generated `obj/**/*.g.cs`, so a quarter of what the

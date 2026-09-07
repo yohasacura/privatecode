@@ -13,8 +13,8 @@ const ACTIONS: readonly SqlDeployArgs['action'][] = ['script', 'publish']
 /**
  * Bringing a database up to the schema a `.sqlproj` describes.
  *
- * **Separate from `database`, and not read-only.** That is the whole point of it being its
- * own tool: `database` can be allowed once and forgotten, because nothing it does can be
+ * **Separate from `Database`, and not read-only.** That is the whole point of it being its
+ * own tool: `Database` can be allowed once and forgotten, because nothing it does can be
  * regretted. This one changes a live database, the checkpoint history covers the working tree
  * and not the server, and no snapshot taken afterwards can undo a column that has been
  * dropped. It goes through the permission engine every time, and it should.
@@ -31,7 +31,7 @@ const ACTIONS: readonly SqlDeployArgs['action'][] = ['script', 'publish']
  * something reached through a tool call.
  */
 export const sqlDeployTool: Tool<SqlDeployArgs> = {
-  name: 'sql_deploy',
+  name: 'SqlDeploy',
   // Deliberately absent from plan mode, and gated on every use in every other mode.
   readOnly: false,
   description:
@@ -71,13 +71,13 @@ export const sqlDeployTool: Tool<SqlDeployArgs> = {
   /**
    * The ACTION is the permission key, not the file.
    *
-   * "Allow sql_deploy for Probe.dacpac" would be a rule that stops meaning what it said the
+   * "Allow SqlDeploy for Probe.dacpac" would be a rule that stops meaning what it said the
    * moment the project gains a table — the file name is the same and its contents are not.
    * What a person can sensibly grant standing permission to is reading the script; applying
    * one is a decision per deployment.
    */
   permissionKey(args) {
-    return { tool: 'sql_deploy', target: args.action }
+    return { tool: 'SqlDeploy', target: args.action }
   },
   async execute(args, ctx) {
     const configured = ctx.database ?? null

@@ -47,8 +47,8 @@ function dirOf(path: string): string {
 /**
  * The tree-refresh path parser: given a write-family tool's name and its raw `tool.call`
  * args JSON, returns the workspace-relative directories a successful call just changed the
- * CONTENTS of -- `Edit`/`Write`/`delete_file` each name one directory (the parent
- * of `path`); `move_file` can name up to two (the parent of `from` AND of `to`,
+ * CONTENTS of -- `Edit`/`Write`/`DeleteFile` each name one directory (the parent
+ * of `path`); `MoveFile` can name up to two (the parent of `from` AND of `to`,
  * deduplicated -- a move within the same directory returns just one). Any other tool name,
  * or JSON that does not parse or does not carry the expected string field(s), returns `[]`
  * rather than throwing.
@@ -62,7 +62,7 @@ export function affectedDirectories(name: string, args: string): string[] {
   } catch {
     return []
   }
-  if (name === 'move_file') {
+  if (name === 'MoveFile') {
     const from = obj['from']
     const to = obj['to']
     const dirs = new Set<string>()
@@ -70,7 +70,7 @@ export function affectedDirectories(name: string, args: string): string[] {
     if (typeof to === 'string') dirs.add(dirOf(to))
     return [...dirs]
   }
-  if (name === 'Edit' || name === 'Write' || name === 'delete_file') {
+  if (name === 'Edit' || name === 'Write' || name === 'DeleteFile') {
     const path = obj['path']
     return typeof path === 'string' ? [dirOf(path)] : []
   }

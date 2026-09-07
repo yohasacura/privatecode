@@ -22,7 +22,7 @@ export interface RememberArgs {
  * unremarkable to approve — the file is ours, in `.privatecode/`, and holds prose.
  */
 export const rememberTool: Tool<RememberArgs> = {
-  name: 'remember',
+  name: 'Remember',
   readOnly: false,
   description:
     'Record something durable you worked out about this project — an architectural fact, a ' +
@@ -68,7 +68,7 @@ export const rememberTool: Tool<RememberArgs> = {
   permissionKey() {
     // Keyed on the tool alone: every call writes the same file, and a per-note key would ask
     // the user the same question forever.
-    return { tool: 'remember' }
+    return { tool: 'Remember' }
   },
   approvalPreview(args) {
     return {

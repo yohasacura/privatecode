@@ -16,7 +16,7 @@ import type { VNode } from 'preact'
  *
  * — all removals, then all additions, from one starting line. That is enough to number both
  * sides correctly, which is what makes a diff readable at a glance. Anything that is NOT in
- * that shape (a `Write` confirmation, a `delete_file` note, a tool error) still renders
+ * that shape (a `Write` confirmation, a `DeleteFile` note, a tool error) still renders
  * here, just without gutters: this component never assumes it was handed a diff.
  */
 

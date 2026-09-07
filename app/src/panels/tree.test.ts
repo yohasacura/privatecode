@@ -10,17 +10,17 @@ describe('affectedDirectories (tree-refresh path parser)', () => {
     expect(affectedDirectories('Write', JSON.stringify({ path: 'README.md' }))).toEqual([''])
   })
 
-  it('names the parent directory of a delete_file path', () => {
-    expect(affectedDirectories('delete_file', JSON.stringify({ path: 'old/stale.ts' }))).toEqual(['old'])
+  it('names the parent directory of a DeleteFile path', () => {
+    expect(affectedDirectories('DeleteFile', JSON.stringify({ path: 'old/stale.ts' }))).toEqual(['old'])
   })
 
-  it('names both parent directories for a cross-directory move_file', () => {
-    const dirs = affectedDirectories('move_file', JSON.stringify({ from: 'a/x.ts', to: 'b/y.ts' }))
+  it('names both parent directories for a cross-directory MoveFile', () => {
+    const dirs = affectedDirectories('MoveFile', JSON.stringify({ from: 'a/x.ts', to: 'b/y.ts' }))
     expect(new Set(dirs)).toEqual(new Set(['a', 'b']))
   })
 
   it('deduplicates to one directory for a rename within the same directory', () => {
-    expect(affectedDirectories('move_file', JSON.stringify({ from: 'a/x.ts', to: 'a/y.ts' }))).toEqual(['a'])
+    expect(affectedDirectories('MoveFile', JSON.stringify({ from: 'a/x.ts', to: 'a/y.ts' }))).toEqual(['a'])
   })
 
   it('tolerates backslash-separated paths', () => {

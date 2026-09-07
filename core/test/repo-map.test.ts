@@ -162,7 +162,7 @@ describe('rendering', () => {
     const text = renderRepoMap([outline('a.ts', [['function', 'f', 0]])])
     expect(text).toMatch(/snapshot/i)
     expect(text).toMatch(/out of date/i)
-    expect(text).toMatch(/Read|symbol_outline/)
+    expect(text).toMatch(/Read|SymbolOutline/)
   })
 
   test('a budget that cuts the listing SAYS how much it cut', () => {
@@ -292,7 +292,7 @@ describe('a C# file renders its types and their members, not its namespace', () 
 
 describe('the layout summary', () => {
   test('a big folder is opened into its sub-folders while the listing stays short', () => {
-    // The question the model spent its first steps asking one list_dir at a time: which
+    // The question the model spent its first steps asking one LS at a time: which
     // folders exist and how much lives in each. Two thousand files must read as twenty lines.
     const paths: string[] = []
     for (let i = 0; i < 40; i++) paths.push(`src/backend/Api/Controllers/C${i}.cs`)

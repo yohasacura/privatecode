@@ -17,7 +17,7 @@ export interface ChangeEntry {
   ok: boolean
   content: string
   revisions: number
-  /** What to actually open. `path` is for DISPLAY and for move_file reads "from → to",
+  /** What to actually open. `path` is for DISPLAY and for MoveFile reads "from → to",
    * which is not a path anything can read -- clicking such a row asked the host to open a
    * file that cannot exist and produced an ENOENT banner. */
   openPath: string

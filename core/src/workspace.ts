@@ -222,8 +222,8 @@ export class Workspace {
    * folder's own root, and the write tools each carried their own
    * `opensAsWorkspaceRoot(abs, workspace.root)` guard, where `root` is `mounts[0].root`. So
    * with D:\engine attached to a workspace whose primary is C:\proj, that guard compared
-   * D:\engine against C:\proj, said "not the root", and `delete_file({ path: 'engine',
-   * recursive: true })` removed the entire attached project — permanently, delete_file
+   * D:\engine against C:\proj, said "not the root", and `DeleteFile({ path: 'engine',
+   * recursive: true })` removed the entire attached project — permanently, DeleteFile
    * having no checkpoint, and in autopilot with no approval card in the way. A workspace
    * folder is never a file, whichever folder it is.
    */
@@ -361,7 +361,7 @@ export class Workspace {
    * rule: every write tool had its own copy of the check, every copy compared against the
    * PRIMARY root, and an attached folder equals that root only in a single-folder workspace.
    * One check at the chokepoint every write goes through (`Edit`, `Write`,
-   * `delete_file`, `move_file` both endpoints, and `writeFileAtomic`'s re-resolve) covers
+   * `DeleteFile`, `MoveFile` both endpoints, and `writeFileAtomic`'s re-resolve) covers
    * every folder, including for callers that never thought about mounts at all.
    */
   resolveForWrite(relativePath: string): string {

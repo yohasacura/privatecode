@@ -28,7 +28,7 @@ const ACTIONS: readonly DatabaseArgs['action'][] = ['schema', 'describe', 'query
  * the file to write, rather than failing.
  */
 export const databaseTool: Tool<DatabaseArgs> = {
-  name: 'database',
+  name: 'Database',
   readOnly: true,
   description:
     'Answers "what tables are there?", "what columns does this have?", "what does this ' +
@@ -81,7 +81,7 @@ export const databaseTool: Tool<DatabaseArgs> = {
     return { ok: true, args }
   },
   permissionKey(args) {
-    return { tool: 'database', target: args.action }
+    return { tool: 'Database', target: args.action }
   },
   async execute(args, ctx) {
     const configured = ctx.database ?? null

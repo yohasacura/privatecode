@@ -22,26 +22,28 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
      // Parses C# and answers a question about it. Available in PLAN mode for the same
      // reason as Skill: understanding how the code connects is most of what planning
      // is, and it is the one tool that answers that without reading files.
-     'csharp_nav',
+     'CSharpNav',
      // Reads a database and cannot change one: the helper behind it has no operation that
      // writes, `query` refuses a writing statement, and what survives runs in a transaction
-     // that is always rolled back. In plan mode for the same reason as csharp_nav — a plan
+     // that is always rolled back. In plan mode for the same reason as CSharpNav — a plan
      // written against what the code claims the schema is, rather than what it is, is the
      // plan that fails at the first migration.
-     'database',
-     'Glob', 'git_status', 'list_dir', 'Read',
-     // Reads back the notes `remember` wrote, through the SAME freshness filter that puts
+     'Database',
+     'Glob', 'GitStatus', 'LS', 'Read',
+     // Reads back the notes `Remember` wrote, through the SAME freshness filter that puts
      // them in message 0. Read-only, and in plan mode deliberately: what earlier sessions
      // worked out about this project is most of what a plan should be built on, and the
      // alternative the model reached for without it was reading the notes file directly —
      // which returns the stale notes the filter exists to drop.
-     'recall',
+     'Recall',
      'Grep',
      // Lists, reads and searches the stored conversations; it changes nothing. In plan mode
      // deliberately — "what did we decide about this last time" and "what were we doing on
      // Tuesday" are questions a plan should be built on rather than re-derived around.
-     'sessions',
-     'symbol_outline', 'TodoWrite',
+     'Sessions',
+     'SymbolOutline',
+     // Reads a background task's output; starting or stopping one is another tool.
+     'TaskOutput', 'TodoWrite',
      // Reads a file the user wrote and returns its text; it runs nothing. Read-only is
      // what makes it available in PLAN mode, which is where reading a procedure before
      // proposing a plan is most of the point.
@@ -49,15 +51,15 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
   )
 })
 
-test('sql_deploy is deliberately not read-only, so plan mode cannot reach it', () => {
-  // `database` can be allowed once and forgotten because nothing it does can be regretted.
+test('SqlDeploy is deliberately not read-only, so plan mode cannot reach it', () => {
+  // `Database` can be allowed once and forgotten because nothing it does can be regretted.
   // This one changes a live server, and the checkpoint history covers the working tree and
   // not the database -- no snapshot taken afterwards undoes a dropped column. So it is
   // gated on every use, and absent from the mode whose whole promise is that it changes
   // nothing.
   const registry = buildRegistry()
-  expect(registry.readOnlyNames()).not.toContain('sql_deploy')
-  expect(registry.names()).toContain('sql_deploy')
+  expect(registry.readOnlyNames()).not.toContain('SqlDeploy')
+  expect(registry.names()).toContain('SqlDeploy')
 })
 
 /**
@@ -86,8 +88,10 @@ test('BUILT_IN_TOOL_NAMES is what buildRegistry() ships, plus only what was reti
   for (const name of registered) expect(BUILT_IN_TOOL_NAMES.has(name)).toBe(true)
   const extra = [...BUILT_IN_TOOL_NAMES].filter((n) => !registered.includes(n)).sort()
   expect(extra).toEqual([
-    'ask_user', 'delegate', 'doctor', 'edit_file', 'find_files', 'read_file', 'run_command', 'search_code',
-    'todo_write', 'use_skill', 'web', 'write_file',
+    'ask_user', 'background_task', 'browser', 'csharp_nav', 'database', 'delegate', 'delete_file', 'doctor',
+    'edit_file', 'find_files', 'git_status', 'list_dir', 'move_file', 'plugins', 'read_file', 'recall',
+    'remember', 'run_command', 'search_code', 'sessions', 'sql_deploy', 'symbol_outline', 'todo_write',
+    'use_skill', 'web', 'write_file',
   ])
 })
 

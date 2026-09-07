@@ -36,33 +36,37 @@ const RETIRED_TOOL_NAMES: readonly string[] = [
   'doctor',
   'read_file', 'write_file', 'edit_file', 'run_command', 'find_files', 'search_code',
   'todo_write', 'ask_user', 'use_skill', 'delegate', 'web',
+  // The second round (2026-09-07): the tools that still carried snake_case names.
+  'list_dir', 'delete_file', 'move_file', 'git_status', 'sql_deploy', 'symbol_outline', 'csharp_nav',
+  'browser', 'database', 'plugins', 'recall', 'remember', 'sessions', 'background_task',
 ]
 
 export const BUILT_IN_TOOL_NAMES: ReadonlySet<string> = new Set([
   ...RETIRED_TOOL_NAMES,
-  'AskUserQuestion',
-  'background_task',
-  'browser',
-  'csharp_nav',
-  'plugins',
-  'database',
   'Agent',
-  'delete_file',
-  'Edit',
-  'Glob',
-  'git_status',
-  'list_dir',
-  'move_file',
-  'Read',
-  'recall',
-  'remember',
+  'AskUserQuestion',
   'Bash',
+  'Browser',
+  'CSharpNav',
+  'Database',
+  'DeleteFile',
+  'Edit',
+  'GitStatus',
+  'Glob',
   'Grep',
-  'sessions',
-  'sql_deploy',
-  'symbol_outline',
-  'TodoWrite',
+  'LS',
+  'MoveFile',
+  'Plugin',
+  'Read',
+  'Recall',
+  'Remember',
+  'Sessions',
   'Skill',
+  'SqlDeploy',
+  'SymbolOutline',
+  'TaskOutput',
+  'TaskStop',
+  'TodoWrite',
   'WebFetch',
   'WebSearch',
   'Write',
@@ -76,7 +80,9 @@ export const BUILT_IN_TOOL_NAMES: ReadonlySet<string> = new Set([
 export const CLAUDE_CODE_OLD_NAMES: Readonly<Record<string, string>> = {
   Task: 'Agent',
   MultiEdit: 'Edit',
-  LS: 'list_dir',
+  BashOutput: 'TaskOutput',
+  KillShell: 'TaskStop',
+  KillBash: 'TaskStop',
 }
 
 /** The prefix every MCP tool's name is built with (`mcp/manager.ts`'s `toolNameFor`). Ours,
@@ -92,27 +98,27 @@ export const MCP_TOOL_PREFIX = 'mcp__'
  *
  * It is here because MEMBERSHIP is the only honest way to say "the model went and looked
  * and changed nothing". Deciding that by falling through — not an editing tool, not
- * `Bash`, therefore read-only — asserted it of `Agent`, `sql_deploy`,
- * `background_task`, `browser`, `remember` and every MCP tool, so a check answered by
+ * `Bash`, therefore read-only — asserted it of `Agent`, `SqlDeploy`,
+ * `background_task`, `Browser`, `Remember` and every MCP tool, so a check answered by
  * delegating the fix to a sub-agent that rewrote four files was reported as `only looked`,
  * whose stated meaning is that nothing changed. An audit found it; the fallback is now the
  * other way round, and an unrecognised tool reads as having done something.
  */
 
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'AskUserQuestion', 'csharp_nav', 'database', 'Glob', 'git_status', 'list_dir',
-  'Read', 'recall', 'Grep', 'sessions', 'symbol_outline', 'TodoWrite',
-  'Skill',
+  'AskUserQuestion', 'CSharpNav', 'Database', 'Glob', 'GitStatus', 'LS',
+  'Read', 'Recall', 'Grep', 'Sessions', 'SymbolOutline', 'TodoWrite',
+  'Skill', 'TaskOutput',
 ])
 
 /**
  * The tools that CHANGE FILES, as opposed to the ones that merely write something.
  *
- * Narrower than "not read-only" on purpose, and the narrowing is the whole point. `remember`
- * writes, `browser` writes, `Bash` may write and there is no way to know — none of
+ * Narrower than "not read-only" on purpose, and the narrowing is the whole point. `Remember`
+ * writes, `Browser` writes, `Bash` may write and there is no way to know — none of
  * them answers the question this set exists for, which is asked of a gate: *the check handed
  * the turn back, did the model then change the code, or did it explain why the check was
- * wrong?* Counting `remember` as a fix would make arguing look like fixing.
+ * wrong?* Counting `Remember` as a fix would make arguing look like fixing.
  *
  * `Bash` is deliberately outside. A build command changes nothing and a script may
  * change everything; folding it in either direction would be a guess reported as a count, so
@@ -123,8 +129,8 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
  * rather than silently dropping out of the gate analysis.
  */
 export const EDITING_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'delete_file',
+  'DeleteFile',
   'Edit',
-  'move_file',
+  'MoveFile',
   'Write',
 ])

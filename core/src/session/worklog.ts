@@ -242,7 +242,7 @@ export function commandsFrom(
 ): CommandRecord[] {
   const records: CommandRecord[] = []
   for (const call of calls) {
-    if (call.name !== 'Bash' && call.name !== 'background_task') continue
+    if (call.name !== 'Bash') continue
     let command = ''
     try {
       const parsed = JSON.parse(call.args) as { command?: unknown }

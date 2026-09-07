@@ -26,7 +26,7 @@ export interface MoveFileArgs {
 }
 
 export const moveFileTool: Tool<MoveFileArgs> = {
-  name: 'move_file',
+  name: 'MoveFile',
   readOnly: false,
   description:
     'Move or rename a file or directory within the workspace. Refuses to replace an ' +
@@ -60,7 +60,7 @@ export const moveFileTool: Tool<MoveFileArgs> = {
     return { ok: true, args }
   },
   permissionKey(args): PermissionKey {
-    return { tool: 'move_file', paths: [args.from, args.to] }
+    return { tool: 'MoveFile', paths: [args.from, args.to] }
   },
   approvalPreview(args): ApprovalPreview {
     return {
@@ -111,7 +111,7 @@ export const moveFileTool: Tool<MoveFileArgs> = {
         return {
           ok: false,
           content:
-            `${args.to} is an existing directory; move_file will not rename onto a directory`,
+            `${args.to} is an existing directory; MoveFile will not rename onto a directory`,
         }
       }
       if (!args.overwrite) {

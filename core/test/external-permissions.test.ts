@@ -19,7 +19,7 @@ const root = 'C:\\ws'
 const engineIn = (mode: 'normal' | 'plan' | 'auto-edit' | 'autopilot') =>
   new PermissionEngine({ layers: [], mode, workspaceRoot: root })
 
-const BROWSER: PermissionKey = { tool: 'browser', target: 'https://example.dev/app' }
+const BROWSER: PermissionKey = { tool: 'Browser', target: 'https://example.dev/app' }
 const MCP: PermissionKey = { tool: 'mcp__github__create_issue' }
 
 describe('the external family is gated, not auto-allowed', () => {
@@ -52,7 +52,7 @@ describe('the external family is gated, not auto-allowed', () => {
   })
 
   test('the predicate covers the browser and the mcp namespace, and nothing else', () => {
-    expect(isExternalTool('browser')).toBe(true)
+    expect(isExternalTool('Browser')).toBe(true)
     expect(isExternalTool('mcp__github__create_issue')).toBe(true)
     expect(isExternalTool('Read')).toBe(false)
     expect(isExternalTool('Bash')).toBe(false)
@@ -76,37 +76,37 @@ describe('rules for the external family', () => {
 
   test('a :* target rule matches everything under the prefix, with a boundary', () => {
     expect(matches('browser(http://localhost:5173:*)',
-      { tool: 'browser', target: 'http://localhost:5173' })).toBe(true)
+      { tool: 'Browser', target: 'http://localhost:5173' })).toBe(true)
     expect(matches('browser(http://localhost:5173:*)',
-      { tool: 'browser', target: 'http://localhost:5173/admin' })).toBe(true)
+      { tool: 'Browser', target: 'http://localhost:5173/admin' })).toBe(true)
     // The boundary that keeps `:*` from being a bare substring test: port 51730 is a
     // different server, and a rule for 5173 must not authorize it.
     expect(matches('browser(http://localhost:5173:*)',
-      { tool: 'browser', target: 'http://localhost:51730/' })).toBe(false)
+      { tool: 'Browser', target: 'http://localhost:51730/' })).toBe(false)
   })
 
   test('a host rule never reaches a different host that starts the same way', () => {
     // The over-grant that would actually matter, and the reason the boundary exists.
     expect(matches('browser(https://example.dev:*)',
-      { tool: 'browser', target: 'https://example.dev.evil.com/x' })).toBe(false)
+      { tool: 'Browser', target: 'https://example.dev.evil.com/x' })).toBe(false)
     expect(matches('browser(http://localhost:*)',
-      { tool: 'browser', target: 'http://localhostevil.com/x' })).toBe(false)
+      { tool: 'Browser', target: 'http://localhostevil.com/x' })).toBe(false)
   })
 
   test('a host rule does cover that host\'s other ports, which is what makes it writable', () => {
     // `:*` consumes a colon, so `http://localhost:*` has the prefix `http://localhost`.
     // Excluding `:` from the boundary would make "any port on localhost" unspellable.
     expect(matches('browser(http://localhost:*)',
-      { tool: 'browser', target: 'http://localhost:5173/x' })).toBe(true)
+      { tool: 'Browser', target: 'http://localhost:5173/x' })).toBe(true)
     expect(matches('browser(http://localhost:*)',
-      { tool: 'browser', target: 'http://localhost:8080/' })).toBe(true)
+      { tool: 'Browser', target: 'http://localhost:8080/' })).toBe(true)
   })
 
   test('a trailing-slash prefix covers everything below that path', () => {
     expect(matches('browser(http://localhost:5173/admin/:*)',
-      { tool: 'browser', target: 'http://localhost:5173/admin/users' })).toBe(true)
+      { tool: 'Browser', target: 'http://localhost:5173/admin/users' })).toBe(true)
     expect(matches('browser(http://localhost:5173/admin/:*)',
-      { tool: 'browser', target: 'http://localhost:5173/public' })).toBe(false)
+      { tool: 'Browser', target: 'http://localhost:5173/public' })).toBe(false)
   })
 
   test('an empty prefix authorizes nothing', () => {
@@ -114,8 +114,8 @@ describe('rules for the external family', () => {
   })
 
   test('a bare browser rule matches every browser call', () => {
-    expect(matches('browser', BROWSER)).toBe(true)
-    expect(matches('browser', { tool: 'browser' })).toBe(true)
+    expect(matches('Browser', BROWSER)).toBe(true)
+    expect(matches('Browser', { tool: 'Browser' })).toBe(true)
   })
 
   test('an mcp server rule covers that server\'s tools', () => {
@@ -133,7 +133,7 @@ describe('rules for the external family', () => {
   test('prefix semantics belong to the mcp namespace alone', () => {
     // No built-in tool name may acquire them by accident.
     expect(matches('edit', { tool: 'Edit', paths: ['a.ts'] })).toBe(false)
-    expect(matches('browser', { tool: 'browser_thing' })).toBe(false)
+    expect(matches('Browser', { tool: 'browser_thing' })).toBe(false)
   })
 
   test('a target key is never satisfied by a path-shaped rule and vice versa', () => {
@@ -145,14 +145,14 @@ describe('rules for the external family', () => {
 describe('what the approval dialog offers', () => {
   test('a browser call offers this URL and this origin', () => {
     expect(suggestRules(BROWSER)).toEqual([
-      'browser(https://example.dev/app)',
-      'browser(https://example.dev:*)',
+      'Browser(https://example.dev/app)',
+      'Browser(https://example.dev:*)',
     ])
   })
 
   test('a target that is not a URL offers only the exact rule', () => {
-    expect(suggestRules({ tool: 'browser', target: 'about:blank' }))
-      .toEqual(['browser(about:blank)'])
+    expect(suggestRules({ tool: 'Browser', target: 'about:blank' }))
+      .toEqual(['Browser(about:blank)'])
   })
 
   test('an MCP call offers this tool and this whole server', () => {
@@ -176,8 +176,8 @@ describe('rules the engine must stop calling broken', () => {
     // Every URL contains `//`, which `specHasNonCanonicalSyntax` flags for path rules. The
     // browser is target-keyed, so that check does not apply to it — exactly as it already
     // does not apply to `Bash(git clone https://...)`.
-    expect(problemsFor('browser(http://localhost:5173:*)')).toEqual([])
-    expect(problemsFor('browser(https://example.dev/app)')).toEqual([])
+    expect(problemsFor('Browser(http://localhost:5173:*)')).toEqual([])
+    expect(problemsFor('Browser(https://example.dev/app)')).toEqual([])
   })
 
   test('a spec on an MCP tool is still nonsense and still reported', () => {
@@ -211,9 +211,9 @@ describe('rules still win over mode defaults for the new family', () => {
     })
 
   test('an allow rule for one origin does not leak to another', () => {
-    const engine = withLayer('allow', ['browser(http://localhost:*)'])
-    expect(engine.decide({ tool: 'browser', target: 'http://localhost:5173/x' }).verdict).toBe('allow')
-    expect(engine.decide({ tool: 'browser', target: 'https://evil.example/x' }).verdict).toBe('ask')
+    const engine = withLayer('allow', ['Browser(http://localhost:*)'])
+    expect(engine.decide({ tool: 'Browser', target: 'http://localhost:5173/x' }).verdict).toBe('allow')
+    expect(engine.decide({ tool: 'Browser', target: 'https://evil.example/x' }).verdict).toBe('ask')
   })
 
   test('a deny rule for a server beats autopilot', () => {
@@ -224,9 +224,9 @@ describe('rules still win over mode defaults for the new family', () => {
 
   test('an always-allow from an approval takes effect immediately', () => {
     const engine = engineIn('normal')
-    engine.addSessionRule('browser(http://localhost:5173:*)')
+    engine.addSessionRule('Browser(http://localhost:5173:*)')
     expect(engine.problems).toEqual([])
-    expect(engine.decide({ tool: 'browser', target: 'http://localhost:5173/admin' }).verdict)
+    expect(engine.decide({ tool: 'Browser', target: 'http://localhost:5173/admin' }).verdict)
       .toBe('allow')
   })
 })
@@ -234,15 +234,15 @@ describe('rules still win over mode defaults for the new family', () => {
 /**
  * The fourth family, and the same defect one tool later.
  *
- * `sql_deploy`'s key carries an ACTION — not a command, not paths, not a URL — so it
+ * `SqlDeploy`'s key carries an ACTION — not a command, not paths, not a URL — so it
  * belonged to no family and `modeDefault` fell straight through to its allow tier.
- * `sql_deploy({ action: 'publish' })` applied schema changes to a live database, in normal
+ * `SqlDeploy({ action: 'publish' })` applied schema changes to a live database, in normal
  * and in auto-edit, with no approval card, while the tool's own doc comment said it was
  * "gated on every use in every other mode".
  */
 describe('the deploy family is gated, not auto-allowed', () => {
-  const PUBLISH: PermissionKey = { tool: 'sql_deploy', target: 'publish' }
-  const SCRIPT: PermissionKey = { tool: 'sql_deploy', target: 'script' }
+  const PUBLISH: PermissionKey = { tool: 'SqlDeploy', target: 'publish' }
+  const SCRIPT: PermissionKey = { tool: 'SqlDeploy', target: 'script' }
 
   test('normal mode ASKS before a publish reaches a live database', () => {
     const d = engineIn('normal').decide(PUBLISH)
@@ -270,7 +270,7 @@ describe('the deploy family is gated, not auto-allowed', () => {
 
   test('and a per-action rule can still grant it, because the key carries the action', () => {
     const engine = new PermissionEngine({
-      layers: [{ scope: 'project', path: 'p', permissions: { allow: ['sql_deploy(script)'], ask: [], deny: [] } }],
+      layers: [{ scope: 'project', path: 'p', permissions: { allow: ['SqlDeploy(script)'], ask: [], deny: [] } }],
       mode: 'normal',
       workspaceRoot: root,
     })

@@ -2,7 +2,7 @@
  * How a schema and a result set are put into words.
  *
  * Shared, because the same rendering is wanted in two places that must not import each other:
- * the `database` tool, and the block injected into the prompt at session start.
+ * the `Database` tool, and the block injected into the prompt at session start.
  */
 
 interface Column { name: string; type: string; nullable: boolean; identity: boolean; pk: boolean }
@@ -48,7 +48,7 @@ export function renderSchema(reply: Record<string, unknown>, budget = Infinity):
   const out = [head, '', blocks.join('\n\n')]
   if (shown < tables.length) {
     out.push('', `(${tables.length - shown} more tables are not listed here. ` +
-      'Ask `database` with action "describe" for any of them.)')
+      'Ask `Database` with action "describe" for any of them.)')
   }
   if (links.length > 0) {
     out.push('', 'references')

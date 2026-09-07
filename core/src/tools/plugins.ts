@@ -12,14 +12,14 @@ export interface PluginsArgs {
  * runner, which owns the store and reloads what changed. The owner's ruling: the model must
  * be able to do everything the console can, plugins included, when asked. What keeps this
  * honest is the gate, not the tool: the line is the permission key, so in normal mode every
- * install is offered for approval like a command, and a `deny: ["plugins"]` rule switches
+ * install is offered for approval like a command, and a `deny: ["Plugin"]` rule switches
  * it off for good.
  *
  * Installing runs code from the internet — a marketplace is a git repository. The tool
  * says so in its description, and the approval prompt shows the exact line.
  */
 export const pluginsTool: Tool<PluginsArgs> = {
-  name: 'plugins',
+  name: 'Plugin',
   readOnly: false,
   description:
     'Run one /plugin line, exactly as the user would type it: `/plugin marketplace add ' +
@@ -48,7 +48,7 @@ export const pluginsTool: Tool<PluginsArgs> = {
     return { ok: true, args: { line } }
   },
   permissionKey(args) {
-    return { tool: 'plugins', command: args.line }
+    return { tool: 'Plugin', command: args.line }
   },
   approvalPreview(args) {
     const install = /^\/plugins?\s+(install|marketplace\s+add)\b/.test(args.line)

@@ -80,12 +80,14 @@ marketplace; a name that merely resembles one is accepted and noted.
 ## The tools have Claude Code's names
 
 `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Agent`,
-`TodoWrite`, `AskUserQuestion`, `Skill`, plus PrivateCode's own (`list_dir`, `move_file`,
-`delete_file`, `background_task`, `git_status`, `symbol_outline`, `browser`, `database`,
-`csharp_nav`, `sql_deploy`, `remember`, `recall`, `sessions`) and MCP tools as
+`TodoWrite`, `AskUserQuestion`, `Skill`, plus PrivateCode's own (`LS`, `MoveFile`,
+`DeleteFile`, `TaskOutput`, `TaskStop`, `Plugin`, `GitStatus`, `SymbolOutline`, `Browser`, `Database`,
+`CSharpNav`, `SqlDeploy`, `Remember`, `Recall`, `Sessions`) and MCP tools as
 `mcp__<server>__<tool>`. A hook matcher, an agent's `tools:` line and a permission rule
-name the tool itself. The three names Claude Code retired — `Task` (now `Agent`),
-`MultiEdit` (now `Edit`), `LS` (`list_dir`) — are read as what they became.
+name the tool itself. The names Claude Code retired — `Task` (now `Agent`), `MultiEdit` (now `Edit`),
+`BashOutput` and `KillShell` (now `TaskOutput` and `TaskStop`) — are read as what they
+became, and so are this project's own earlier names (`list_dir`, `background_task`, …)
+in a settings file or a recorded session.
 
 `Bash` is bash. PrivateCode ships Git for Windows' bash and coreutils (`vendor/git`, see its
 `PROVENANCE.md`) and runs the tool under them, as Claude Code does on Windows; a machine with
@@ -185,9 +187,9 @@ when asked:
 
 | Console | Window | Model |
 |---|---|---|
-| `/plugin marketplace add|list|update|remove` | Settings → Plugins → Marketplaces | the `plugins` tool, gated like a command |
-| `/plugin install|uninstall|enable|disable|update|list|details` | Settings → Plugins → Discover / Installed | the `plugins` tool |
-| `/plugin validate <folder>` | Settings → Plugins → Marketplaces → Validate | the `plugins` tool |
+| `/plugin marketplace add|list|update|remove` | Settings → Plugins → Marketplaces | the `Plugin` tool, gated like a command |
+| `/plugin install|uninstall|enable|disable|update|list|details` | Settings → Plugins → Discover / Installed | the `Plugin` tool |
+| `/plugin validate <folder>` | Settings → Plugins → Marketplaces → Validate | the `Plugin` tool |
 | `/reload-plugins` | Settings → Plugins → Reload plugins | after an install through the tool, automatic |
 | `/skills`, writing a skill by hand | Settings → Skills: New skill (project or user folder), Edit SKILL.md and the files beside it, Open folder | `Write`/`Edit` under `.privatecode/skills/` or the user folder; `skill-creator` guides it |
 | an agent file by hand | Settings → Skills → Agents: New agent, Edit, Open folder | `Write`/`Edit` under `.privatecode/agents/` |

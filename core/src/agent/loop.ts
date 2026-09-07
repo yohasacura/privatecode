@@ -619,7 +619,7 @@ const UNKNOWN_RECHECK_MS = 5_000
  * What a per-turn decline is counted against — the tool plus the thing it wanted to act on.
  *
  * `PermissionKey` carries that thing in a different field per tool family: `target` for
- * browser/web/database/Skill, `command` for Bash/background_task, `paths` for the
+ * browser/web/database/Skill, `command` for Bash, `paths` for the
  * file tools. Counting on `target` alone therefore collapsed to `Bash:` or
  * `Edit:` for exactly the tools that produce most approvals, and declining
  * `npm install -g x` and then, ten steps later, an unrelated `git clean -fdx` reached two
@@ -631,7 +631,7 @@ const UNKNOWN_RECHECK_MS = 5_000
  * `src\App.ts` and `src/app.ts` are one file, so two declines for it are two declines for
  * the same thing, whichever way the model spelled it.
  *
- * A key with none of the three — `remember`, `git_status`, `browser` close — still collapses
+ * A key with none of the three — `Remember`, `GitStatus`, `Browser` close — still collapses
  * to `tool:`, which is what those tools mean: every call of them asks the same question.
  */
 function denialIdentity(key: PermissionKey): string {

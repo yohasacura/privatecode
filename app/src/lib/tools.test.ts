@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { presentTool, screenshotPathOf } from './tools'
+import { presentTool, screenshotPathOf, toolName, WRITE_TOOLS } from './tools'
 
 /**
  * How the two new tool families read in the transcript.
@@ -28,24 +28,24 @@ describe('MCP tools', () => {
 
 describe('the browser tool', () => {
   it('names the action, because one tool does eleven different things', () => {
-    expect(presentTool('browser', '{"action":"open","url":"http://localhost:5173/"}'))
+    expect(presentTool('Browser', '{"action":"open","url":"http://localhost:5173/"}'))
       .toMatchObject({ verb: 'Browser open', target: 'http://localhost:5173/' })
   })
 
   it('shows the ref for a click, and the expression for an eval', () => {
-    expect(presentTool('browser', '{"action":"click","ref":3}').target).toBe('ref_3')
-    expect(presentTool('browser', '{"action":"eval","expression":"document.title"}').target)
+    expect(presentTool('Browser', '{"action":"click","ref":3}').target).toBe('ref_3')
+    expect(presentTool('Browser', '{"action":"eval","expression":"document.title"}').target)
       .toBe('document.title')
   })
 
   it('does not show what was typed, only where', () => {
     // A fill can carry a password the user pasted in; the ref says enough.
-    expect(presentTool('browser', '{"action":"fill","ref":1,"text":"hunter2"}').target)
+    expect(presentTool('Browser', '{"action":"fill","ref":1,"text":"hunter2"}').target)
       .toBe('ref_1')
   })
 
   it('is not a file operation, so it never claims a path', () => {
-    expect(presentTool('browser', '{"action":"screenshot"}').path).toBeNull()
+    expect(presentTool('Browser', '{"action":"screenshot"}').path).toBeNull()
   })
 })
 
@@ -69,7 +69,7 @@ describe('the search family', () => {
     // The transcript renders its "Open file" button on any non-null path, and opening a
     // directory as a file answers "… is a directory; use fs.tree" — a tab whose only content
     // is that error.
-    expect(presentTool('list_dir', '{"path":"app/src/panels"}'))
+    expect(presentTool('LS', '{"path":"app/src/panels"}'))
       .toMatchObject({ verb: 'List', target: 'app/src/panels', path: null })
     expect(presentTool('Grep', '{"pattern":"x","path":"app/src"}').path).toBeNull()
     // A file the model asked to READ is still openable — that is the button's real case.
@@ -80,28 +80,28 @@ describe('the search family', () => {
   it('names the row even when the arguments never finished streaming', () => {
     // A card opens on the tool NAME, mid-generation, with args that are not yet valid JSON.
     expect(presentTool('Glob', '{"glob":"src/**').target).toBe('')
-    expect(presentTool('list_dir', '{"pa').verb).toBe('List')
+    expect(presentTool('LS', '{"pa').verb).toBe('List')
   })
 })
 
 describe('screenshotPathOf', () => {
   it('recognises exactly what the screenshot action writes', () => {
-    expect(screenshotPathOf('browser', '.privatecode/state/browser/shot-001.png'))
+    expect(screenshotPathOf('Browser', '.privatecode/state/browser/shot-001.png'))
       .toBe('.privatecode/state/browser/shot-001.png')
   })
 
   it('ignores prose that merely names a screenshot', () => {
     // The tool's own `content` and the model's answer both mention the path. Matching
     // loosely would turn any message that talks ABOUT a screenshot into an image.
-    expect(screenshotPathOf('browser', 'Screenshot saved to .privatecode/state/browser/shot-001.png for the user'))
+    expect(screenshotPathOf('Browser', 'Screenshot saved to .privatecode/state/browser/shot-001.png for the user'))
       .toBeNull()
   })
 
   it('is scoped to the browser tool and to that directory', () => {
     expect(screenshotPathOf('Read', '.privatecode/state/browser/shot-001.png')).toBeNull()
-    expect(screenshotPathOf('browser', 'assets/logo.png')).toBeNull()
-    expect(screenshotPathOf('browser', '.privatecode/state/logs/run.log')).toBeNull()
-    expect(screenshotPathOf('browser', undefined)).toBeNull()
+    expect(screenshotPathOf('Browser', 'assets/logo.png')).toBeNull()
+    expect(screenshotPathOf('Browser', '.privatecode/state/logs/run.log')).toBeNull()
+    expect(screenshotPathOf('Browser', undefined)).toBeNull()
   })
 })
 
@@ -117,4 +117,26 @@ it('labels a Bash card from a LIST of commands, and still from a string', () => 
 
   const fromString = presentTool('Bash', JSON.stringify({ command: 'git status' }))
   expect(fromString.target).toBe('git status')
+})
+
+describe('the names a recorded session may carry', () => {
+  it('resolve to the tool they became, both rounds of renames', () => {
+    expect(toolName('read_file')).toBe('Read')
+    expect(toolName('list_dir')).toBe('LS')
+    expect(toolName('move_file')).toBe('MoveFile')
+    expect(toolName('background_task')).toBe('TaskOutput')
+    expect(toolName('browser')).toBe('Browser')
+    expect(toolName('plugins')).toBe('Plugin')
+    expect(toolName('TaskStop')).toBe('TaskStop')
+  })
+  it('still count an old write as a write', () => {
+    for (const name of ['edit_file', 'write_file', 'move_file', 'delete_file', 'Edit', 'Write', 'MoveFile', 'DeleteFile']) {
+      expect(WRITE_TOOLS.has(name), name).toBe(true)
+    }
+  })
+  it('presents the background pair by the task id', () => {
+    expect(presentTool('TaskOutput', '{"id":"task-3","wait_seconds":5}')).toMatchObject({ kind: 'command', verb: 'Poll', target: 'task-3' })
+    expect(presentTool('TaskStop', '{"id":"task-3"}')).toMatchObject({ verb: 'Stop', target: 'task-3' })
+    expect(presentTool('background_task', '{"action":"poll","id":"task-3"}').target).toBe('task-3')
+  })
 })

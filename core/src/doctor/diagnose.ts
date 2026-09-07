@@ -143,7 +143,7 @@ export function classify(text: string): FailureKind {
     || t.includes('not a regular file')) return 'not-text'
   if (t.includes('is not available') || t.includes('no worker is available')
     || t.includes('is not configured')) return 'unavailable'
-  if (t.includes('use list_dir') || t.includes('use `recall`') || t.includes('use recall')
+  if (t.includes('use LS') || t.includes('use `Recall`') || t.includes('use Recall')
     || t.includes('instead')) return 'wrong-tool'
   if (/exit(ed)? (code )?[1-9]/.test(t) || t.includes('exit 1')) return 'command-failed'
   return 'other'

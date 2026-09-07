@@ -15,7 +15,7 @@ const ACTIONS: readonly CsharpNavArgs['action'][] = ['definition', 'references',
  * This exists because of a measurement, not a wish. Over a 27-minute run on a real backend
  * the model prefilled 394k tokens and generated 29k — two thirds of the wall clock spent
  * re-ingesting context, most of it file contents read in order to work out what calls what.
- * `Grep` finds a string and `symbol_outline` describes one file; neither can answer
+ * `Grep` finds a string and `SymbolOutline` describes one file; neither can answer
  * "who calls this" without the model reading the callers and deciding for itself.
  *
  * One question here replaces that reading. Measured against the same project: `references`
@@ -26,12 +26,12 @@ const ACTIONS: readonly CsharpNavArgs['action'][] = ['definition', 'references',
  * the same reason `Skill` is — understanding the code is most of what planning is.
  */
 export const csharpNavTool: Tool<CsharpNavArgs> = {
-  name: 'csharp_nav',
+  name: 'CSharpNav',
   readOnly: true,
   // Leads with the questions rather than the category, and names Roslyn. The old wording
   // opened with "answer a semantic question", never used the word, and argued only against
   // reading files -- so when the user asked for Roslyn by name the model had to reason its
-  // way here from "csharp_nav (likely powered by Roslyn)". Naming the engine costs nothing:
+  // way here from "CSharpNav (likely powered by Roslyn)". Naming the engine costs nothing:
   // the schema ships every turn regardless of what it says.
   description:
     'Answers "who calls this?", "what implements this?", "where is this defined?" and "what ' +
@@ -76,7 +76,7 @@ export const csharpNavTool: Tool<CsharpNavArgs> = {
     return { ok: true, args }
   },
   permissionKey(args) {
-    return { tool: 'csharp_nav', target: args.symbol }
+    return { tool: 'CSharpNav', target: args.symbol }
   },
   async execute(args, ctx) {
     const nav = navProcess()
@@ -85,7 +85,7 @@ export const csharpNavTool: Tool<CsharpNavArgs> = {
         ok: false,
         content:
           'C# navigation is not available in this build (the helper binary is not installed). ' +
-          'Use Grep and symbol_outline instead.',
+          'Use Grep and SymbolOutline instead.',
       }
     }
 

@@ -6,22 +6,18 @@ import type { ResultPromise } from 'execa'
 import { findBash, spawnBash } from '../bash.js'
 import { POWERSHELL_EXE, powershellArgs } from '../powershell.js'
 import { clipOutput } from './run-command.js'
+import type { ReadyWhen } from './ready-when.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext } from './types.js'
+export type { ReadyWhen } from './ready-when.js'
 
-export interface ReadyWhen {
-  port?: number
-  file?: string
-  log_contains?: string
+
+export interface TaskOutputArgs {
+  id: string
+  wait_seconds?: number
 }
 
-export interface BackgroundTaskArgs {
-  action: 'start' | 'poll' | 'stop'
-  command?: string
-  id?: string
-  wait_seconds?: number
-  /** start only. Workspace-addressed, resolved through the model's jail — see `execute`. */
-  cwd?: string
-  ready_when?: ReadyWhen
+export interface TaskStopArgs {
+  id: string
 }
 
 // Parameterized so .all is a stream, not undefined — ResultPromise import used.
@@ -30,7 +26,7 @@ type ExecaChild = ResultPromise<any>
 interface Entry {
   id: string
   command: string
-  /** Who started this process. `'agent'` is a `background_task` tool call, which passed the
+  /** Who started this process. `'agent'` is a `Bash` call with `run_in_background`, which passed the
    * permission engine; `'user'` is a command typed into the app's own terminal, which did
    * not, because the user running a command in their own workspace is not the model acting.
    * Only the UI reads this -- nothing here behaves differently by origin. */
@@ -280,161 +276,52 @@ function describe(entry: Entry, ready: string | null): string {
   return `${entry.id}: ${state}${readyLine}\nNew output since last poll:\n${output}${dropped}`
 }
 
-export function backgroundTaskTool(tasks: BackgroundTasks): Tool<BackgroundTaskArgs> {
+/**
+ * `TaskOutput` — Claude Code's name for reading a background task's output. Starting one
+ * is `Bash` with `run_in_background` (and a `ready_when`, when the process has a readiness
+ * condition); this polls it, waiting up to `wait_seconds` for exit or readiness, and
+ * returns only what appeared since the previous poll.
+ */
+export function taskOutputTool(tasks: BackgroundTasks): Tool<TaskOutputArgs> {
   return {
-    name: 'background_task',
-    readOnly: false,
+    name: 'TaskOutput',
+    readOnly: true,
     description:
-      'Start, poll or stop a long-running process (dev server, watcher, long build). ' +
-      'A process exiting is evidence, not completion — pass ready_when on start (a port ' +
-      'that answers, a file that appears, or a log marker) and poll until "ready: YES". ' +
-      'poll returns only output produced since the previous poll.',
+      'Read the output of a background task started with Bash (run_in_background: true). ' +
+      'Returns only what appeared since the previous read, and whether the task is still ' +
+      'running or how it exited. A process exiting is evidence, not completion — when it was ' +
+      'started with ready_when, poll until "ready: YES". wait_seconds waits that long for exit ' +
+      'or readiness before answering.',
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['start', 'poll', 'stop'] },
-        command: { type: 'string', description: 'start only: a bash command line, exactly as Bash takes it.' },
-        id: { type: 'string', description: 'poll/stop: the id returned by start.' },
+        id: { type: 'string', description: 'The id Bash returned when it started the task.' },
         wait_seconds: {
           type: 'integer',
-          description: `poll only: wait up to this long for exit or readiness (max ${MAX_WAIT_S}).`,
-        },
-        cwd: {
-          type: 'string',
-          description:
-            'start only: which directory to run in, named the way every other tool argument ' +
-            'is — folder-prefixed in a multi-folder workspace (`engine`), plain ' +
-            'workspace-relative in a single-folder one. Defaults to the FIRST folder.',
-        },
-        ready_when: {
-          type: 'object',
-          description: 'start only: readiness condition to poll against.',
-          properties: {
-            port: { type: 'integer', description: 'TCP port on 127.0.0.1 that must answer.' },
-            file: { type: 'string', description: 'Workspace-relative file that must exist.' },
-            log_contains: { type: 'string', description: 'Substring that must appear in the output.' },
-          },
+          description: `Wait up to this long for exit or readiness (max ${MAX_WAIT_S}).`,
         },
       },
-      required: ['action'],
+      required: ['id'],
     },
     validate(raw) {
-      const r = raw as Partial<BackgroundTaskArgs>
-      if (r?.action !== 'start' && r?.action !== 'poll' && r?.action !== 'stop') {
-        return { ok: false, error: 'action must be one of start, poll, stop' }
-      }
-      if (r.action === 'start') {
-        if (typeof r.command !== 'string' || r.command.trim() === '') {
-          return { ok: false, error: 'start needs a non-empty command' }
-        }
-      } else if (typeof r.id !== 'string' || r.id.trim() === '') {
-        return { ok: false, error: `${r.action} needs the id returned by start` }
-      }
+      const r = raw as Partial<TaskOutputArgs>
+      if (typeof r?.id !== 'string' || r.id.trim() === '') return { ok: false, error: 'id is the one Bash returned' }
       if (r.wait_seconds !== undefined &&
           (!Number.isInteger(r.wait_seconds) || r.wait_seconds < 0 || r.wait_seconds > MAX_WAIT_S)) {
         return { ok: false, error: `wait_seconds must be an integer from 0 to ${MAX_WAIT_S}` }
       }
-      const args: BackgroundTaskArgs = { action: r.action }
-      if (r.command !== undefined) args.command = r.command
-      if (r.id !== undefined) args.id = r.id
-      if (r.wait_seconds !== undefined) args.wait_seconds = r.wait_seconds
-      // Added alongside `Bash`'s, because a tool pair where one takes a cwd and the
-      // other does not teaches the wrong lesson twice: the model learns "set cwd to move"
-      // from one and then has to `cd ../engine` inside the command on the other.
-      if (r.cwd !== undefined) {
-        if (typeof r.cwd !== 'string' || r.cwd.trim() === '') {
-          return { ok: false, error: 'cwd must be a non-empty workspace-relative path when given' }
-        }
-        args.cwd = r.cwd
-      }
-      // VALIDATED, not cast. `ready_when: {}` is schema-valid and grammar-reachable, and
-      // `isReady` falls through all three branches to `false` — forever — while the tool's
-      // own description promises "poll until it reports ready". The whole reason this tool
-      // exists is DESIGN.md §4's rule that a process exit is evidence and not completion; a
-      // readiness condition that can never be true turns that into an endless poll. §4 also
-      // requires every tool to validate its arguments semantically rather than against the
-      // schema alone, which is exactly what this cast skipped.
-      if (r.ready_when !== undefined) {
-        const raw = r.ready_when as Record<string, unknown>
-        if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-          return { ok: false, error: 'ready_when must be an object with one of: port, file, log_contains' }
-        }
-        const ready: ReadyWhen = {}
-        if (raw['port'] !== undefined) {
-          const port = raw['port']
-          if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65_535) {
-            return { ok: false, error: 'ready_when.port must be an integer from 1 to 65535' }
-          }
-          ready.port = port
-        }
-        if (raw['file'] !== undefined) {
-          const file = raw['file']
-          if (typeof file !== 'string' || file.trim() === '') {
-            return { ok: false, error: 'ready_when.file must be a non-empty path' }
-          }
-          ready.file = file.trim()
-        }
-        if (raw['log_contains'] !== undefined) {
-          const marker = raw['log_contains']
-          if (typeof marker !== 'string' || marker.trim() === '') {
-            return { ok: false, error: 'ready_when.log_contains must be a non-empty string' }
-          }
-          ready.log_contains = marker.trim()
-        }
-        if (ready.port === undefined && ready.file === undefined && ready.log_contains === undefined) {
-          return {
-            ok: false,
-            error: 'ready_when needs one usable condition: port, file, or log_contains. ' +
-              'Omit it entirely if the process has none.',
-          }
-        }
-        args.ready_when = ready
-      }
-      return { ok: true, args }
+      return { ok: true, args: { id: r.id.trim(), ...(r.wait_seconds !== undefined ? { wait_seconds: r.wait_seconds } : {}) } }
     },
-    permissionKey(args): PermissionKey {
-      // Only starting a process is a grantable capability; poll/stop are control ops on
-      // something already approved and carry no command.
-      return args.action === 'start'
-        ? { tool: 'background_task', command: args.command ?? '' }
-        : { tool: 'background_task' }
+    // A control op on something already approved: no command, so nothing to gate.
+    permissionKey(): PermissionKey {
+      return { tool: 'TaskOutput' }
     },
     approvalPreview(args): ApprovalPreview {
-      const cmd = (args.command ?? '').replace(/\s+/g, ' ').trim()
-      return {
-        summary: `background: ${cmd.length > 68 ? `${cmd.slice(0, 65)}...` : cmd}`,
-        // "workspace root" named nothing a person could point at once the workspace was
-        // several folders, and the default is the FIRST of them.
-        detail: `Start in the background (cwd: ${args.cwd ?? 'the first workspace folder'}):\n${args.command ?? ''}`,
-      }
+      return { summary: `read the output of ${args.id}`, detail: `Read new output of background task ${args.id}` }
     },
     async execute(args, ctx) {
-      if (args.action === 'start') {
-        let cwd = ctx.workspace.root
-        if (args.cwd !== undefined) {
-          // Through the model's own jail, exactly as `Bash` resolves its cwd: a
-          // background process is no less able to touch the disk than a foreground one.
-          try {
-            cwd = ctx.workspace.resolve(args.cwd)
-          } catch (e) {
-            return { ok: false, content: (e as Error).message }
-          }
-        }
-        const entry = tasks.start(args.command!, args.ready_when ?? null, cwd, 'agent', ctx.extraPath ?? [])
-        const ready = args.ready_when
-          ? ' Poll until it reports ready: YES before relying on it.'
-          : ''
-        return { ok: true, content: `Started, id: ${entry.id}.${ready}` }
-      }
-      const entry = tasks.get(args.id!)
-      if (!entry) {
-        return { ok: false, content: `No background task with id ${args.id}. Use the id start returned.` }
-      }
-      if (args.action === 'stop') {
-        await tasks.stop(entry)
-        return { ok: true, content: `${entry.id} stopped.` }
-      }
-      // poll
+      const entry = tasks.get(args.id)
+      if (!entry) return { ok: false, content: `No background task with id ${args.id}. Use the id Bash returned.` }
       const deadline = Date.now() + (args.wait_seconds ?? 0) * 1000
       let ready = await tasks.isReady(entry, ctx.workspace)
       while (!entry.exit && !ready && Date.now() < deadline) {
@@ -444,6 +331,37 @@ export function backgroundTaskTool(tasks: BackgroundTasks): Tool<BackgroundTaskA
       }
       const readyLine = entry.ready === null ? null : `ready: ${ready ? 'YES' : 'no'}`
       return { ok: true, content: describe(entry, readyLine) }
+    },
+  }
+}
+
+/** `TaskStop` — Claude Code's name for stopping a background task. The whole tree goes. */
+export function taskStopTool(tasks: BackgroundTasks): Tool<TaskStopArgs> {
+  return {
+    name: 'TaskStop',
+    readOnly: false,
+    description: 'Stop a background task started with Bash (run_in_background: true), and everything it started.',
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'The id Bash returned when it started the task.' } },
+      required: ['id'],
+    },
+    validate(raw) {
+      const r = raw as Partial<TaskStopArgs>
+      if (typeof r?.id !== 'string' || r.id.trim() === '') return { ok: false, error: 'id is the one Bash returned' }
+      return { ok: true, args: { id: r.id.trim() } }
+    },
+    permissionKey(): PermissionKey {
+      return { tool: 'TaskStop' }
+    },
+    approvalPreview(args): ApprovalPreview {
+      return { summary: `stop ${args.id}`, detail: `Stop background task ${args.id}` }
+    },
+    async execute(args) {
+      const entry = tasks.get(args.id)
+      if (!entry) return { ok: false, content: `No background task with id ${args.id}. Use the id Bash returned.` }
+      await tasks.stop(entry)
+      return { ok: true, content: `${entry.id} stopped.` }
     },
   }
 }

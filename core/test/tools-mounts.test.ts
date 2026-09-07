@@ -6,8 +6,8 @@ import { buildSystemPrompt } from '../src/agent/prompt.js'
 import type { Mount } from '../src/mounts.js'
 import { findFilesTool } from '../src/tools/find-files.js'
 import { listDirTool } from '../src/tools/list-dir.js'
-import { BackgroundTasks, backgroundTaskTool } from '../src/tools/background-task.js'
-import { runCommandTool } from '../src/tools/run-command.js'
+import { BackgroundTasks, taskOutputTool } from '../src/tools/background-task.js'
+import { createBashTool, runCommandTool } from '../src/tools/run-command.js'
 import { searchCodeTool } from '../src/tools/search-code.js'
 import { canonicalize, Workspace } from '../src/workspace.js'
 
@@ -44,10 +44,10 @@ beforeEach(() => {
 })
 afterEach(() => { rmSync(base, { recursive: true, force: true }) })
 
-describe('list_dir', () => {
+describe('LS', () => {
   test('the root is the list of folders, not a refusal', async () => {
     // The jail refuses `.` in a multi-folder workspace, which is right for a path and wrong
-    // for a listing: `list_dir(".")` is the obvious first move and has to answer something.
+    // for a listing: `LS(".")` is the obvious first move and has to answer something.
     const r = await listDirTool.execute({ path: '.' }, { workspace: ws })
     expect(r.ok).toBe(true)
     expect(r.content).toContain('app/')
@@ -203,23 +203,26 @@ describe('where a command runs', () => {
     // Driven through `execute`, not `validate`. Validate never touches the workspace, so a
     // test that stopped there would pass with the resolution wired to nothing.
     const tasks = new BackgroundTasks()
-    const tool = backgroundTaskTool(tasks)
-    const call = async (args: Record<string, unknown>) => {
-      const v = tool.validate(args)
+    const bash = createBashTool({ background: tasks })
+    const output = taskOutputTool(tasks)
+    const start = async (args: Record<string, unknown>) => {
+      const v = bash.validate({ run_in_background: true, ...args })
       if (!v.ok) throw new Error(`validate refused: ${v.error}`)
-      return tool.execute(v.args, { workspace: ws })
+      return bash.execute(v.args, { workspace: ws })
     }
     try {
-      const refused = await call({ action: 'start', command: 'pwd', cwd: 'src' })
+      const refused = await start({ command: 'pwd', cwd: 'src' })
       expect(refused.ok).toBe(false)
       expect(refused.content).toContain('app')
       expect(refused.content).toContain('engine')
 
-      const started = await call({ action: 'start', command: 'cygpath -w "$PWD"', cwd: 'engine' })
+      const started = await start({ command: 'cygpath -w "$PWD"', cwd: 'engine' })
       expect(started.ok).toBe(true)
-      const id = /id: (\S+?)\./.exec(started.content)?.[1]
+      const id = /as (\S+?) /.exec(started.content)?.[1]
       expect(id).toBeTruthy()
-      const polled = await call({ action: 'poll', id, wait_seconds: 10 })
+      const v = output.validate({ id, wait_seconds: 10 })
+      if (!v.ok) throw new Error(v.error)
+      const polled = await output.execute(v.args, { workspace: ws })
       expect(canonicalize(polled.content.split('\n').find((l) => /^[A-Za-z]:\\/.test(l.trim()))?.trim() ?? '')).toBe(canonicalize(mounts[1]!.root))
     } finally {
       await tasks.stopAll()

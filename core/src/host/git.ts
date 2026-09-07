@@ -3,7 +3,7 @@ import { execa } from 'execa'
 /**
  * The working tree, for the window.
  *
- * Distinct from `git_status`, which is the MODEL's read-only tool and returns prose for a
+ * Distinct from `GitStatus`, which is the MODEL's read-only tool and returns prose for a
  * context window. This returns structure for a panel, and it can commit — the one thing the
  * model's tool deliberately cannot do.
  *

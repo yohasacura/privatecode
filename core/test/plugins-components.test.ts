@@ -143,7 +143,7 @@ describe('tool names, as Claude Code writes them', () => {
   it('a tools: line is taken as written; the three names Claude Code retired are read as what they became', () => {
     const problems: string[] = []
     expect(readToolList('Read, Write, Task, MultiEdit, LS, mcp__github__issues, NotebookEdit, Frobnicate', 'x', problems))
-      .toEqual(['Read', 'Write', 'Agent', 'Edit', 'list_dir', 'mcp__github__issues'])
+      .toEqual(['Read', 'Write', 'Agent', 'Edit', 'LS', 'mcp__github__issues'])
     expect(problems).toEqual([expect.stringContaining('"NotebookEdit"'), expect.stringContaining('"Frobnicate"')])
     expect(readToolList('["Bash", "Grep"]', 'x', [])).toEqual(['Bash', 'Grep'])
   })
@@ -155,7 +155,7 @@ describe('tool names, as Claude Code writes them', () => {
     expect(matcherCovers(undefined, 'anything')).toBe(true)
     expect(matcherCovers('^(Read|Grep)$', 'Grep')).toBe(true)
     expect(matcherCovers('Task', 'Agent')).toBe(true)
-    expect(matcherCovers('Bash', 'background_task')).toBe(false)
+    expect(matcherCovers('Bash', 'TaskOutput')).toBe(false)
     expect(matcherCovers('mcp__.*', 'mcp__github__issues')).toBe(true)
   })
 })

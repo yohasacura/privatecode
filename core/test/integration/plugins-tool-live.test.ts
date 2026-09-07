@@ -9,7 +9,7 @@ import {
 } from '../../src/host/protocol.js'
 
 /**
- * The `plugins` tool against the live model and the real network: asked in words to add
+ * The `Plugin` tool against the live model and the real network: asked in words to add
  * Anthropic's example marketplace and install commit-commands from it, the model runs the
  * two `/plugin …` lines itself, and the plugin is live in the workspace afterwards — the
  * same end state `plugins-live.test.ts` reaches through the host's own RPC.
@@ -98,7 +98,7 @@ describe.skipIf(!enabled)('the plugins tool against the live model', () => {
     const result = await sendPromise
     log(`turn: ${result.turn.stoppedBecause} after ${result.turn.steps} steps — ${result.turn.finalText.replace(/\s+/g, ' ').slice(0, 300)}`)
     const events = transport.messages.filter(isHostEvent) as HostEvent[]
-    const pluginCalls = events.filter((e) => e.event === 'tool.call' && (e.data as { name?: string }).name === 'plugins')
+    const pluginCalls = events.filter((e) => e.event === 'tool.call' && (e.data as { name?: string }).name === 'Plugin')
     log(`plugins tool calls: ${pluginCalls.length}`)
     expect(pluginCalls.length).toBeGreaterThanOrEqual(1)
 

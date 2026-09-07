@@ -133,7 +133,7 @@ function withinDates(
 }
 
 export const sessionsTool: Tool<SessionsArgs> = {
-  name: 'sessions',
+  name: 'Sessions',
   readOnly: true,
   description:
     'The stored conversations in this workspace — your own history and the person\'s. Three ' +

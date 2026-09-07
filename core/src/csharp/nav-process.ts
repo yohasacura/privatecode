@@ -334,7 +334,7 @@ function moduleDir(): string | null {
  * Two sources, in order. The env var is how the packaged app points at its own staged copy,
  * and it wins when it names a file that exists. Otherwise the copy vendored in this checkout,
  * found relative to this module — which is what the Tauri launcher's variable was doing all
- * along and the CLI and ws-bridge never did, so those two advertised `csharp_nav` and could
+ * along and the CLI and ws-bridge never did, so those two advertised `CSharpNav` and could
  * only ever answer "not available in this build". A set-but-wrong variable falls through to
  * the vendored copy rather than failing: pointing at nothing is a stale launcher, not an
  * instruction to switch the feature off.

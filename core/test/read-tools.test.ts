@@ -112,7 +112,7 @@ test('Read rejects an empty path at validation time', () => {
   expect(v.ok).toBe(false)
 })
 
-test('list_dir lists entries and marks directories', async () => {
+test('LS lists entries and marks directories', async () => {
   const r = await listDirTool.execute({ path: '.' }, ctx)
   expect(r.content).toContain('src/')
   expect(r.content).toContain('README.md')
@@ -125,9 +125,9 @@ test('list_dir lists entries and marks directories', async () => {
 // was held to no such bar and leaked the workspace's absolute path plus a raw errno.
 // Measured before the fix:
 //   Read -> "File not found: nope.txt"
-//   list_dir  -> "Could not list nope: ENOENT: no such file or directory, scandir 'C:\...'"
+//   LS  -> "Could not list nope: ENOENT: no such file or directory, scandir 'C:\...'"
 
-test('list_dir reports a missing directory without leaking the absolute path', async () => {
+test('LS reports a missing directory without leaking the absolute path', async () => {
   const r = await listDirTool.execute({ path: 'nope' }, ctx)
   expect(r.ok).toBe(false)
   expect(r.content).toContain('nope')
@@ -135,7 +135,7 @@ test('list_dir reports a missing directory without leaking the absolute path', a
   expect(r.content).not.toContain('scandir')
 })
 
-test('list_dir reports an unreadable directory without leaking the absolute path', async () => {
+test('LS reports an unreadable directory without leaking the absolute path', async () => {
   const locked = join(tempRoot, 'locked-dir')
   mkdirSync(locked)
   const user = process.env.USERNAME ?? process.env.USER ?? ''
@@ -370,7 +370,7 @@ test('an anchor copied from Read line 1 of a BOM file matches exactly', async ()
 
 // --- Important 8: .git prefix filtering hides files the agent needs ----------------
 
-test('I8 list_dir shows .gitignore and .github but hides the .git directory', async () => {
+test('I8 LS shows .gitignore and .github but hides the .git directory', async () => {
   const r = await listDirTool.execute({ path: '.' }, ctx)
   const entries = r.content.split('\n')
   expect(entries).toContain('.gitignore')
@@ -380,7 +380,7 @@ test('I8 list_dir shows .gitignore and .github but hides the .git directory', as
   expect(entries).not.toContain('node_modules/')
 })
 
-test('I8 list_dir says so when it filtered entries out', async () => {
+test('I8 LS says so when it filtered entries out', async () => {
   const r = await listDirTool.execute({ path: '.' }, ctx)
   expect(r.content).toMatch(/hidden: \.git\/, node_modules\//)
 })
@@ -456,7 +456,7 @@ test('F1 Glob filters mixed-case paths to hidden directories', async () => {
   expect(r.content).toMatch(/^No files match/)
 })
 
-test('F1 list_dir filters hidden entries case-insensitively', async () => {
+test('F1 LS filters hidden entries case-insensitively', async () => {
   // This used to run against the shared fixture, whose `.git` and `node_modules` are
   // created in lowercase and come back from readdir in lowercase — so dropping
   // `.toLowerCase()` in list-dir.ts left it green and it tested nothing about casing.
@@ -478,7 +478,7 @@ test('F1 list_dir filters hidden entries case-insensitively', async () => {
   }
 })
 
-test('F1 list_dir still filters the ordinary lowercase entries', async () => {
+test('F1 LS still filters the ordinary lowercase entries', async () => {
   const r = await listDirTool.execute({ path: '.' }, ctx)
   const lines = r.content.split('\n')
   expect(lines.some((l) => l === '.git/' || l === 'node_modules/')).toBe(false)

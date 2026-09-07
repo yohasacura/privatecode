@@ -4,7 +4,7 @@ import { LoopDetector } from '../src/agent/loop-detector.js'
 /**
  * The signal is the RESULT, not the call, and every test here exists to hold that line.
  *
- * Repeating a call is frequently the right thing to do: `background_task` poll is designed
+ * Repeating a call is frequently the right thing to do: `TaskOutput` is designed
  * to be called until something changes, and re-reading a file after editing it is correct.
  * A detector that counted calls alone would break both, which is worse than the loop it
  * was trying to catch.
@@ -20,12 +20,12 @@ describe('what counts as a loop', () => {
   })
 
   test('a call that keeps returning something different is left alone forever', () => {
-    // background_task poll exists to be called until something changes. A detector that
+    // TaskOutput exists to be called until something changes. A detector that
     // stopped it would have broken the one tool whose whole purpose is repetition.
     const d = new LoopDetector()
     for (let i = 0; i < 20; i++) {
-      d.record('background_task', '{"action":"poll","id":"j1"}', `line ${i}`)
-      expect(d.wouldRepeat('background_task', '{"action":"poll","id":"j1"}')).toBe(false)
+      d.record('TaskOutput', '{"id":"j1"}', `line ${i}`)
+      expect(d.wouldRepeat('TaskOutput', '{"id":"j1"}')).toBe(false)
     }
   })
 
@@ -59,7 +59,7 @@ describe('what counts as a loop', () => {
   test('the same arguments to different tools are different calls', () => {
     const d = new LoopDetector()
     d.record('Read', '{"path":"a.ts"}', 'x')
-    d.record('symbol_outline', '{"path":"a.ts"}', 'x')
+    d.record('SymbolOutline', '{"path":"a.ts"}', 'x')
     expect(d.wouldRepeat('Read', '{"path":"a.ts"}')).toBe(false)
   })
 

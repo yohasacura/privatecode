@@ -22,23 +22,24 @@ test('plan mode denies writes and commands even when the Agent was built in anot
   // Exactly what Session.setMode does mid-turn: mutate the live engine.
   engine.mode = 'plan'
 
-  for (const tool of ['Write', 'Edit', 'delete_file', 'move_file']) {
+  for (const tool of ['Write', 'Edit', 'DeleteFile', 'MoveFile']) {
     const d = engine.decide({ tool, paths: ['src/app.ts'] })
     expect(d.verdict, `${tool} must not be auto-allowed by plan mode`).toBe('deny')
   }
-  for (const tool of ['Bash', 'background_task']) {
+  for (const tool of ['Bash', 'Plugin']) {
     const d = engine.decide({ tool, command: 'npm test' })
     expect(d.verdict, `${tool} must not be auto-allowed by plan mode`).toBe('deny')
   }
 })
 
-test('plan mode still allows read-only tools, and background_task control ops', () => {
+test('plan mode still allows read-only tools, and the TaskOutput / TaskStop control ops', () => {
   const engine = new PermissionEngine({ layers: [], mode: 'plan', workspaceRoot: root })
   expect(engine.decide({ tool: 'Read', paths: ['a.ts'] }).verdict).toBe('allow')
   expect(engine.decide({ tool: 'Grep' }).verdict).toBe('allow')
   // Keyless EXEC key = poll/stop on a process whose start was already approved. It
   // short-circuits before the mode switch and must stay allowed.
-  expect(engine.decide({ tool: 'background_task' }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'TaskOutput' }).verdict).toBe('allow')
+  expect(engine.decide({ tool: 'TaskStop' }).verdict).toBe('allow')
 })
 
 test('normal mode still asks rather than denying, so the fix did not widen the deny tier', () => {

@@ -175,7 +175,7 @@ export function sqlProcess(): SqlProcess | null {
  * resolves a vendored asset this way (`search-code.ts`, `tree-sitter.ts`) gets away with it
  * only because it checks its environment variable first and returns before touching
  * `import.meta`. Passing the directory as an eagerly-evaluated argument removed that
- * protection, which is how the same line broke `csharp_nav` in the packaged app while every
+ * protection, which is how the same line broke `CSharpNav` in the packaged app while every
  * test and the whole CLI — real ES modules — kept passing.
  *
  * Null is the right answer rather than an error: in the packaged build the launcher sets the

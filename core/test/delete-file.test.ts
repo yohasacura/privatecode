@@ -11,8 +11,8 @@ import { Workspace } from '../src/workspace.js'
  *
  * The C# navigation index is built once per workspace: `ensureLoaded` answers
  * `{ ok: true, cached: true }` for as long as `loadedRoot` matches, and nothing but an
- * explicit `invalidate()` ever clears it. Edit, Write and move_file all report
- * their writes; delete_file reported nothing, so `csharp_nav` went on naming a definition in
+ * explicit `invalidate()` ever clears it. Edit, Write and MoveFile all report
+ * their writes; DeleteFile reported nothing, so `CSharpNav` went on naming a definition in
  * a file that no longer existed — with ok:true, which the model has no reason to doubt until
  * `Read` on that path answers "File not found".
  *

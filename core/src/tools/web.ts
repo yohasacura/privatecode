@@ -14,13 +14,13 @@ import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } fr
  * first-class tool here — the HTML endpoints of DuckDuckGo/Bing, no keys, no
  * accounts (an owner-level constraint, not an optimization) — and reading is fetch +
  * Firefox's Reader engine, escalating to the HEADLESS browser only when a page ships as
- * a JavaScript shell. The visible `browser` tool stays what it was: for pages the user
+ * a JavaScript shell. The visible `Browser` tool stays what it was: for pages the user
  * should watch being driven.
  *
  * `WebSearch` carries the fixed permission target `'search'` — the engine allows it in
  * every working mode without asking (it reaches only the search engine), while an
  * explicit `deny: ["WebSearch"]` rule still kills it. `WebFetch` is keyed on the URL,
- * origin rules and all, exactly like `browser` — reading an arbitrary site is the act
+ * origin rules and all, exactly like `Browser` — reading an arbitrary site is the act
  * worth a decision.
  */
 

@@ -10,7 +10,7 @@ import { moveFileTool } from './move-file.js'
 import { deleteFileTool } from './delete-file.js'
 import { delegateTool } from './delegate.js'
 import { createBashTool } from './run-command.js'
-import { BackgroundTasks, backgroundTaskTool } from './background-task.js'
+import { BackgroundTasks, taskOutputTool, taskStopTool } from './background-task.js'
 import { pluginsTool } from './plugins.js'
 import { gitStatusTool } from './git-tool.js'
 import { TodoStore } from '../interaction.js'
@@ -42,7 +42,7 @@ export interface Toolset {
   browser: BrowserManager
   /** The `web` tool's headless renderer for JavaScript-shell pages. Its own instance so
    * a background read never flashes a window or steals the visible browser's page.
-   * Lazy and host-closed exactly like `browser`. */
+   * Lazy and host-closed exactly like `Browser`. */
   webRenderer: BrowserManager
 }
 
@@ -69,7 +69,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
     headless: true,
     userDataDir: `${profileDir()}-headless`,
   })
-  // Registration order is the order the schemas reach the model, and `csharp_nav` sat 17th
+  // Registration order is the order the schemas reach the model, and `CSharpNav` sat 17th
   // of 18 -- past every file tool, next to the browser. Moved beside `Grep`, which is
   // what it competes with: both answer "where is this used", one by text and one by meaning.
   // Free, and unmeasured: no claim is made here that position is what routes the choice.
@@ -86,7 +86,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   // remove the tool and the paragraph goes with it.
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webSearchTool, webFetchTool, csharpNavTool, databaseTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, createBashTool({ background }), sqlDeployTool, pluginsTool,
-                   backgroundTaskTool(background), gitStatusTool, todoWriteTool, askUserTool,
+                   taskOutputTool(background), taskStopTool(background), gitStatusTool, todoWriteTool, askUserTool,
                    symbolOutlineTool, browserTool, useSkillTool, rememberTool, recallTool, sessionsTool,
                    delegateTool]) {
     registry.register(t)

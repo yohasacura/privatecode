@@ -167,7 +167,7 @@ test('the reviewer detail says which file, not which JSON', () => {
     .toBe('reading core/src/session/session.ts')
   expect(detail('Grep', '{"pattern":"applyCompactionSwap","max_results":40}'))
     .toBe('searching for applyCompactionSwap')
-  expect(detail('list_dir', '{"path":"core/src"}')).toBe('listing core/src')
+  expect(detail('LS', '{"path":"core/src"}')).toBe('listing core/src')
   // A half-streamed call still has a usable name; it must not throw.
   expect(detail('Read', '{"path":')).toBe('Read')
   // Long values are clipped, because a status line that wraps pushes the composer around

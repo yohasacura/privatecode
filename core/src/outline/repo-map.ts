@@ -38,7 +38,7 @@ const MAX_FILE_BYTES = 300_000
  * barely a third as many files, and breadth is what a map is for — and again from 10k to
  * 20k for the workspaces this tool is actually used on: several folders, hundreds to
  * thousands of files, where a 10k map named one file in fifteen and the model spent its
- * first steps on `list_dir` (24 calls across the recorded sessions, one directory at a
+ * first steps on `LS` (24 calls across the recorded sessions, one directory at a
  * time). The prefix is prewarmed when the workspace opens, so the extra 2.5k tokens cost
  * nothing at the moment a person is waiting; `prefix.mapChars` in settings.json overrides.
  */
@@ -88,7 +88,7 @@ const NAMED_ONLY = new Set(['.xaml', '.axaml', '.razor', '.cshtml', '.sql', '.sq
 
 /**
  * Which folders hold the files, and how many — the answer to the question the model spent
- * its first steps asking one `list_dir` at a time.
+ * its first steps asking one `LS` at a time.
  *
  * A cut through the directory tree: the root's children, with the biggest of them opened
  * up into THEIR children while the listing stays short, so a workspace of two thousand
@@ -395,7 +395,7 @@ export function rankByReferences(
  * Breadth beats depth in a map. This project's own `protocol.ts` defines forty type aliases
  * and, uncapped, ate most of a 6k budget by itself — leaving a map of five files where
  * twenty-five would have been more use. Knowing a file exists and roughly what it holds is
- * the job; `symbol_outline` gives the whole list for one file in one cheap call.
+ * the job; `SymbolOutline` gives the whole list for one file in one cheap call.
  */
 const MAX_LINES_PER_FILE = 6
 /** Members listed for one class or interface; see `renderFile`. */
@@ -407,7 +407,7 @@ const MAX_MEMBERS = 8
  *
  * Every name carries its line number (` :41`), and that is what turns the map from a list
  * of what exists into the ARGUMENT of the next call. Measured over the recorded sessions:
- * 285 `Read` calls against 11 `Grep` and 0 `symbol_outline`, nearly all of them
+ * 285 `Read` calls against 11 `Grep` and 0 `SymbolOutline`, nearly all of them
  * whole files — a 19k-character view-model read three times in one turn for edits that
  * touched one method each. A name with no line leaves the model exactly one way to reach
  * the method: read the file. A name with a line makes `Read(path, start_line,
@@ -473,7 +473,7 @@ export function renderFile(file: FileOutline): string {
   const defined = lines.length - 1
   if (defined > MAX_LINES_PER_FILE) {
     const kept = lines.slice(0, MAX_LINES_PER_FILE + 1)
-    kept.push(`  …and ${defined - MAX_LINES_PER_FILE} more (symbol_outline lists them all)`)
+    kept.push(`  …and ${defined - MAX_LINES_PER_FILE} more (SymbolOutline lists them all)`)
     return kept.join('\n')
   }
   return lines.join('\n')
@@ -493,15 +493,15 @@ const MAP_HEADER_HEAD =
   'definitions only — not what they do — and it can be out of date, including because of ' +
   'your own edits. Use it to know where to look; '
 
-const MAP_HEADER_TAIL = 'confirm with Read or symbol_outline before relying on it.\n'
+const MAP_HEADER_TAIL = 'confirm with Read or SymbolOutline before relying on it.\n'
 
 /**
- * The one place a nudge toward `csharp_nav` is worth its tokens.
+ * The one place a nudge toward `CSharpNav` is worth its tokens.
  *
  * It rides a header that is already in the prompt, and the C# clause REPLACES the general
  * one rather than being appended, so a C# workspace pays nothing extra and a workspace with
  * no .cs files pays nothing at all. That constraint is not fastidiousness: this same header
- * has named `symbol_outline` since the day it was written, and across 703 recorded tool
+ * has named `SymbolOutline` since the day it was written, and across 703 recorded tool
  * calls that tool was chosen exactly zero times. Naming a tool in the prompt has a measured
  * track record in this project, and the record is that it achieves nothing — so the version
  * of this idea that spends tokens on every turn of every session was refused, and this is
@@ -510,7 +510,7 @@ const MAP_HEADER_TAIL = 'confirm with Read or symbol_outline before relying on i
  */
 const MAP_HEADER_TAIL_CSHARP =
   'confirm with Read before relying on it — or, for how the C# in here connects, ask ' +
-  'csharp_nav, which answers who calls what from the compiler rather than from this list.\n'
+  'CSharpNav, which answers who calls what from the compiler rather than from this list.\n'
 
 const mapHeader = (ranked: readonly FileOutline[]): string =>
   MAP_HEADER_HEAD +

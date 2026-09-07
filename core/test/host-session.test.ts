@@ -793,7 +793,7 @@ test('a long turn compacts between its own steps instead of dying on a full wind
     if (streamed <= 3) {
       const body =
         sseFrame({ choices: [{ delta: { reasoning_content: 'x'.repeat(60_000) } }] }) +
-        sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: `c${streamed}`, type: 'function', function: { name: 'list_dir', arguments: '' } }] } }] }) +
+        sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: `c${streamed}`, type: 'function', function: { name: 'LS', arguments: '' } }] } }] }) +
         // A different path each time: three identical calls in a row is what the loop
         // detector is for, and tripping it would prove nothing about compaction.
         sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ path: `d${streamed}` }) } }] } }] }) +
@@ -1039,7 +1039,7 @@ test('a stretch of writes with the plan untouched earns one upkeep order', async
 function fatToolCallSSE(dir: string): RawResponse {
   const body =
     sseFrame({ choices: [{ delta: { reasoning_content: 'x'.repeat(60_000) } }] }) +
-    sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: `c-${dir}`, type: 'function', function: { name: 'list_dir', arguments: '' } }] } }] }) +
+    sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: `c-${dir}`, type: 'function', function: { name: 'LS', arguments: '' } }] } }] }) +
     sseFrame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ path: dir }) } }] } }] }) +
     sseFrame({ choices: [{ finish_reason: 'tool_calls', delta: {} }], timings: {} }) +
     sseFrame({ choices: [], usage: { prompt_tokens: 2_000, completion_tokens: 20 } }) +
@@ -1216,7 +1216,7 @@ test('a session never refuses a repeated call, however identical the answer', as
     // Four identical reads of the same directory, which returns the same thing every time —
     // exactly the shape the detector used to stop on the third.
     return call <= 4
-      ? toolCallSSE('list_dir', JSON.stringify({ path: '.' }))
+      ? toolCallSSE('LS', JSON.stringify({ path: '.' }))
       : textSSE('had a look')
   })
   stop = fake.close
@@ -1226,7 +1226,7 @@ test('a session never refuses a repeated call, however identical the answer', as
   await host.handle({ id: 2, method: 'send', params: { text: 'look in there a few times' } })
 
   const results = eventsNamed(transport, 'tool.result').map((e) => e.data as { name: string; content: string })
-  const listings = results.filter((r) => r.name === 'list_dir')
+  const listings = results.filter((r) => r.name === 'LS')
   expect(listings.length).toBe(4)
   expect(listings.some((r) => r.content.includes('already called'))).toBe(false)
   expect(listings.some((r) => r.content.startsWith('Not run:'))).toBe(false)

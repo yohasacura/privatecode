@@ -134,7 +134,7 @@ describe('what the model did about it', () => {
     // An audit found this asserting "changed nothing" about a check answered by delegating
     // the fix to a sub-agent. Every one of these can change the workspace; none is an
     // editing tool, and under the old fall-through all four printed as `only looked`.
-    for (const tool of ['Agent', 'sql_deploy', 'background_task', 'browser']) {
+    for (const tool of ['Agent', 'SqlDeploy', 'TaskStop', 'Browser']) {
       expect(answerFrom(1, [tool])).toBe('ran')
     }
     // And one read-only tool mixed in does not launder the rest.

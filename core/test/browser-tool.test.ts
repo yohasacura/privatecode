@@ -111,27 +111,27 @@ describe('the permission key is the origin', () => {
 
   test('open is keyed on the URL being requested', () => {
     expect(keyFor({ action: 'open', url: 'https://example.dev/app' }))
-      .toEqual({ tool: 'browser', target: 'https://example.dev/app' })
+      .toEqual({ tool: 'Browser', target: 'https://example.dev/app' })
   })
 
   test('every other action is keyed on the page already open', () => {
     // Which the user approved when it was opened, so the same rule covers acting on it.
     for (const action of ['read', 'console', 'network', 'screenshot', 'back'] as const) {
-      expect(keyFor({ action })).toEqual({ tool: 'browser', target: 'http://localhost:5173/' })
+      expect(keyFor({ action })).toEqual({ tool: 'Browser', target: 'http://localhost:5173/' })
     }
     expect(keyFor({ action: 'click', ref: 0 }))
-      .toEqual({ tool: 'browser', target: 'http://localhost:5173/' })
+      .toEqual({ tool: 'Browser', target: 'http://localhost:5173/' })
     expect(keyFor({ action: 'eval', expression: '1+1' }))
-      .toEqual({ tool: 'browser', target: 'http://localhost:5173/' })
+      .toEqual({ tool: 'Browser', target: 'http://localhost:5173/' })
   })
 
   test('close is a control operation and carries no target', () => {
-    // Same shape as background_task's stop: the approval happened when it started.
-    expect(keyFor({ action: 'close' })).toEqual({ tool: 'browser' })
+    // Same shape as TaskStop: the approval happened when it started.
+    expect(keyFor({ action: 'close' })).toEqual({ tool: 'Browser' })
   })
 
   test('with no page open there is no origin to name, and the key stays bare', () => {
-    expect(keyFor({ action: 'read' }, { url: null })).toEqual({ tool: 'browser' })
+    expect(keyFor({ action: 'read' }, { url: null })).toEqual({ tool: 'Browser' })
   })
 })
 

@@ -96,7 +96,7 @@ async function shapeOf(
     'To read a part of it: Read with start_line and end_line — the line numbers ' +
     (outlined ? 'above are where each declaration starts. ' : 'in the head above are a start. ') +
     'To find something by name: Grep with path=' + path + '. ' +
-    'For C#, csharp_nav answers where a symbol is defined and what references it without ' +
+    'For C#, CSharpNav answers where a symbol is defined and what references it without ' +
     'reading the file at all.',
   )
   return parts.join('\n')
@@ -250,7 +250,7 @@ export const readFileTool: Tool<ReadFileArgs> = {
     //
     // Refused rather than discouraged, because discouraging it did not work: asked how to
     // read its notes, the model found this file and told the user to read it — and told
-    // them again after `recall` existed and it had used it. The recipe this project keeps
+    // them again after `Recall` existed and it had used it. The recipe this project keeps
     // relearning is to make the wrong thing inexpressible, not unattractive.
     if (isProjectNotes(abs)) {
       return {
@@ -258,7 +258,7 @@ export const readFileTool: Tool<ReadFileArgs> = {
         content:
           'That is the project-notes store, and reading it directly returns notes whose ' +
           'evidence files have since changed — the ones that are deliberately kept OUT of ' +
-          'your context because they no longer describe the code. Use `recall`: it applies ' +
+          'your context because they no longer describe the code. Use `Recall`: it applies ' +
           'the same freshness check the session start applies, and returns only what still ' +
           'holds.',
       }
@@ -267,7 +267,7 @@ export const readFileTool: Tool<ReadFileArgs> = {
     try {
       const info = await stat(abs)
       if (info.isDirectory()) {
-        return { ok: false, content: `${args.path} is a directory; use list_dir` }
+        return { ok: false, content: `${args.path} is a directory; use LS` }
       }
       if (!info.isFile()) {
         return { ok: false, content: `${args.path} is not a regular file` }

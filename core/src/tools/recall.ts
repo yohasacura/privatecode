@@ -2,7 +2,7 @@ import { loadProjectNotes } from '../memory/project-notes.js'
 import type { Tool } from './types.js'
 
 /**
- * Reading back what `remember` stored — the half that was missing.
+ * Reading back what `Remember` stored — the half that was missing.
  *
  * Notes reach the model exactly one way: `loadProjectNotes` runs when the session is built
  * and its fresh block is frozen into message 0. That covers the common case and leaves two
@@ -24,10 +24,10 @@ import type { Tool } from './types.js'
  * something a silent filter can say.
  */
 export const recallTool: Tool<Record<string, never>> = {
-  name: 'recall',
+  name: 'Recall',
   readOnly: true,
   description:
-    'Read the project notes stored by `remember` — the durable facts earlier sessions ' +
+    'Read the project notes stored by `Remember` — the durable facts earlier sessions ' +
     'worked out about this project. The notes already in your context arrived this way ' +
     'when the session started; call this to see one you recorded since, or to check ' +
     'whether something is already recorded before recording it again. Only notes whose ' +
