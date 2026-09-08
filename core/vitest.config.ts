@@ -26,5 +26,10 @@ export default defineConfig({
      * computer.
      */
     testTimeout: 60_000,
+    // The same reasoning for the hooks: a fixture that inits five repositories and commits
+    // in each is git-bound, not hung, and under a full parallel run — or on the two-core
+    // release runner — it crossed the ten seconds vitest allows by default. Measured on
+    // 2026-09-08: "Hook timed out in 10000ms" in git-multi-repo, twice in three runs.
+    hookTimeout: 60_000,
   },
 })
