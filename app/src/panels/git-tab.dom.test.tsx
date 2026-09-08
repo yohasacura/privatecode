@@ -301,3 +301,47 @@ describe('several repositories', () => {
     expect((el.querySelector('textarea[aria-label="Commit message"]') as HTMLTextAreaElement).value).toBe('for proj')
   })
 })
+
+describe('a bounded listing', () => {
+  test('says how many files are not listed, where the flood lives, and offers the ignore line', async () => {
+    const client = fakeClient({
+      repos: [repo({ omitted: 18_350, hotspots: [{ dir: 'src/App/obj', count: 12_000, pattern: 'obj/', junk: true }, { dir: 'node_modules', count: 6_000, pattern: 'node_modules/', junk: true }, { dir: 'gen', count: 900, pattern: '/gen/', junk: false }] })],
+      unversioned: [],
+    }, { 'git.ignore': () => ({ ok: true }) })
+    const el = await mount(client)
+    const note = el.querySelector('[data-omitted]')!
+    expect(note.getAttribute('data-omitted')).toBe('18350')
+    expect(note.textContent).toContain('src/App/obj/')
+    expect(note.textContent).toContain('node_modules/')
+    // The person's own directory is named, never offered to ignore.
+    expect(note.textContent).toContain('gen/')
+    expect([...note.querySelectorAll('button')].filter((b) => b.textContent?.trim() === 'Ignore').length).toBe(2)
+    const ignore = [...note.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Ignore')!
+    await act(async () => { ignore.click() })
+    await flush()
+    expect(client.calls.some(([m, p]) => m === 'git.ignore' && (p as { pattern: string }).pattern === 'obj/')).toBe(true)
+  })
+
+  test('a small repository carries no such note', async () => {
+    const el = await mount(fakeClient({ repos: [repo()], unversioned: [] }))
+    expect(el.querySelector('[data-omitted]')).toBeNull()
+  })
+})
+
+describe('coming back to the tab', () => {
+  test('draws the last known state at once and refreshes quietly, instead of "reading the repository…"', async () => {
+    const client = fakeClient({ repos: [repo()], unversioned: [] })
+    let el = await mount(client)
+    expect(el.querySelector('[data-commit-box]')).not.toBeNull()
+
+    // Away to another inspector tab and back — with a status that now takes forever.
+    render(null, host!)
+    const slow = fakeClient({ repos: [repo()], unversioned: [] })
+    const original = slow.call
+    ;(slow as { call: unknown }).call = vi.fn((method: string, params: unknown) => (method === 'git.status' ? new Promise(() => {}) : original(method as never, params as never)))
+    el = await mount(slow)
+    expect(el.textContent).not.toContain('reading the repository')
+    expect(el.querySelector('[data-commit-box]')).not.toBeNull()
+    expect(el.textContent).toContain('app.ts')
+  })
+})

@@ -80,3 +80,41 @@ its own, so whatever it shows is what `git status`, `git log` and `git for-each-
 Network operations run with `GIT_TERMINAL_PROMPT=0`, so a remote that needs credentials
 answers "could not read Username" instead of hanging; Git Credential Manager, which Git for
 Windows installs, still opens its own window when it has to.
+
+## At scale
+
+Measured on 2026-09-08 against a synthetic working tree of six thousand tracked files, one
+hundred and fifty changes and twenty thousand untracked files under a forgotten
+`node_modules`, and against the owner's report of a Git tab that showed "reading the
+repository…" for five minutes on a real repository:
+
+- **One status at a time, shared.** `git.status` is answered from one discovery for
+  everyone who asks within a second and a half — the Git tab, an open diff, the file
+  view — and dropped by every change this process makes (a tool's write, any git
+  operation). Before, the tab's three-second poll did not wait for the previous answer, so
+  on a slow tree the reads stacked up behind one another without end.
+- **The poll backs off.** The next read waits at least three times what the last one
+  took; a status that takes four seconds is asked for every twelve, not every three.
+- **The listing is bounded.** Two thousand changed files per repository reach the panel,
+  the tracked changes first; the rest are counted, and the untracked flood is located —
+  the three directories holding most of it, each with the `.gitignore` line that ends it
+  (`obj/` for a well-known build directory wherever it appears, `/gen/` otherwise) and an
+  Ignore button. Twenty thousand rows were 2.8 MB on the wire every poll and a frozen
+  panel; the same tree is now 280 KB and a note.
+- **Nothing is asked of the disk per file.** Whether an entry is a nested repository is
+  checked only for the two shapes that can be one — an untracked directory (git prints
+  the slash) and a submodule's gitlink — where every entry used to cost a stat.
+- **Repositories are read four at a time**, and `git status` gets sixty seconds on a
+  large tree instead of the fifteen every other call gets; a tree slower than that is
+  reported as such, not as a blank panel.
+- **A remote that does not answer says so.** Fetch, pull, push and sync give up after
+  three minutes; after eight seconds the panel says what it is probably waiting for — a
+  sign-in window behind this one, a host not reachable from here (VPN, proxy). Every git
+  process runs with `GIT_TERMINAL_PROMPT=0`, so a missing credential fails rather than
+  waits on a console nobody sees; a credential manager's own window is still the way in
+  for GitHub Enterprise, GitLab and the like.
+- **The Workspace tab no longer carries git.** Its tree used to show letters, stage from
+  its rows and commit from a box above, and every reload was a second `git status` of the
+  whole tree on top of the Git tab's own. By the owner's call, once the Git tab was
+  complete, staging and commits live there alone; the tree's right-click still opens a
+  file's history and blame.

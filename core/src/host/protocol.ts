@@ -391,6 +391,20 @@ export interface GitFileChange {
   /** A rename's OLD path (workspace-addressed) — unstaging must send both names, or the
    * old name's staged deletion survives alone and Commit would delete the file. */
   oldPath?: string
+  /** A submodule's entry in its parent — a pointer at a commit, not a file. */
+  gitlink?: boolean
+}
+
+/** A directory holding much of an untracked flood, with the .gitignore line that ends it. */
+export interface GitHotspot {
+  /** Repository-relative directory, forward slashes. */
+  dir: string
+  count: number
+  /** `obj/` for a well-known build directory wherever it appears, `/dir/` otherwise. */
+  pattern: string
+  /** A well-known build or dependency directory — the one kind the panel offers to ignore
+   * with a button; anything else is the person's own tree and is only named. */
+  junk: boolean
 }
 
 /**
@@ -414,6 +428,10 @@ export interface GitRepoView {
   /** A starting point for the message field, derived from the files themselves. */
   suggestion: string
   problem?: string
+  /** Changed files beyond `files` — the listing is bounded; these are counted. */
+  omitted?: number
+  /** Where the untracked flood lives, when `omitted` is set. */
+  hotspots?: GitHotspot[]
 }
 
 export interface GitStatusResult {

@@ -6,6 +6,7 @@ import type { Mount } from '../mounts.js'
 import { canonicalize, type Workspace, WorkspaceViolation } from '../workspace.js'
 import type { GitFileChange } from './git.js'
 import { type GitHeadInfo, type GitOperation, parsePorcelainV2, readOperation } from './git-repo.js'
+import type { GitHotspot } from './protocol.js'
 
 /**
  * Which repositories a workspace actually contains — asked, never assumed.
@@ -57,6 +58,10 @@ export interface WorkspaceRepo {
   /** A merge, rebase, cherry-pick or revert waiting to be continued or aborted. */
   operation: GitOperation | null
   problem?: string
+  /** Changed files beyond `files` — counted, not listed. See `MAX_LISTED_FILES`. */
+  omitted?: number
+  /** Where the untracked flood lives, when there is one. */
+  hotspots?: GitHotspot[]
 }
 
 const NO_HEAD: GitHeadInfo = {
@@ -71,9 +76,23 @@ export interface WorkspaceGit {
   problems: string[]
 }
 
-async function git(cwd: string, args: string[]) {
-  return execa('git', args, { cwd, reject: false, timeout: GIT_TIMEOUT_MS, windowsHide: true })
+async function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS) {
+  return execa('git', args, { cwd, reject: false, timeout, windowsHide: true })
 }
+
+/** `git status` on a large working tree is seconds, not the milliseconds the rest of these
+ * are; it gets its own ceiling so a big repository reports its state instead of a timeout. */
+const STATUS_TIMEOUT_MS = 60_000
+/** Repositories read at once. Thirty clones one after another was a thirty-second panel. */
+const STATUS_CONCURRENCY = 4
+/** Changed files listed per repository; the rest is counted and located, not sent. */
+const MAX_LISTED_FILES = 2_000
+/** Directories named for an untracked flood. */
+const HOTSPOTS = 3
+/** A directory is named only when it holds this many of the untracked files… */
+const HOTSPOT_MIN_FILES = 50
+/** …and this share of them. */
+const HOTSPOT_MIN_SHARE = 0.05
 
 /**
  * The repository this directory belongs to, or null. `--show-toplevel` answers the question
@@ -202,9 +221,13 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
   }
 
   const roots = [...byRoot.keys()]
-  // `byRoot` can grow while this runs (a repository git reports inside another one, below);
-  // a Map's iteration visits what is added to it, so the newcomer gets its own pass.
-  for (const repo of byRoot.values()) {
+  // A work queue rather than a loop over the Map: repositories are read a few at a time
+  // (a workspace of thirty clones used to wait for them one after another), and one
+  // found inside another — below — is pushed onto the queue and reached by whichever
+  // worker is still going.
+  const queue: WorkspaceRepo[] = [...byRoot.values()]
+  let next = 0
+  const readOne = async (repo: WorkspaceRepo): Promise<void> => {
     repo.label = describe(repo.relation, repo.root, repo.scopes, workspace)
     // Scoped to the subtrees that are in the workspace. `--porcelain` reports paths relative
     // to the repository root whatever the cwd is, which is what makes the translation below
@@ -221,16 +244,19 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
     // spells a conflict as its own entry.
     const result = await git(repo.root, [
       'status', '--porcelain=v2', '--branch', '--show-stash', '-uall', '-z', '--', ...pathspecs,
-    ])
+    ], STATUS_TIMEOUT_MS)
     if (result.exitCode !== 0) {
-      repo.problem = result.stderr.trim() || 'git status failed'
-      continue
+      repo.problem = result.timedOut
+        ? `git status took longer than ${STATUS_TIMEOUT_MS / 1000} s — a very large working tree, or one on a slow disk`
+        : result.stderr.trim() || 'git status failed'
+      return
     }
     const parsed = parsePorcelainV2(result.stdout)
     repo.branch = parsed.head.branch
     repo.head = parsed.head
     repo.stashes = parsed.stashes
     repo.operation = await readOperation(repo.root)
+    const listed: GitFileChange[] = []
     for (const file of parsed.files) {
       const abs = join(repo.root, file.path)
       // A repository git found where the walk did not look — under `vendor`, which the
@@ -242,16 +268,23 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
       // would have committed a gitlink to the parent. Caught by vendoring a repository
       // under `app/vendor/lib`: the walk found nothing, the panel offered `vendor/lib` as
       // an untracked file.
-      if (existsSync(join(abs, '.git'))) {
+      //
+      // Asked of the disk only for the two shapes that can be one — an untracked DIRECTORY
+      // entry (git prints the slash) and a gitlink. It used to be asked of every entry, and
+      // a working tree with twenty thousand untracked files under a forgotten `node_modules`
+      // paid twenty thousand stats per status, every three seconds.
+      const boundary = (file.untracked && file.path.endsWith('/')) || file.gitlink === true
+      if (boundary && existsSync(join(abs, '.git'))) {
         const nested = canonicalize(resolve(abs))
         const owner = workspace.mountFor(nested)
         if (owner !== undefined && owner.access !== 'read' && !byRoot.has(nested)) {
-          // Visited later by this same loop: a Map iteration reaches entries added to it.
-          byRoot.set(nested, {
+          const found: WorkspaceRepo = {
             root: nested, label: '', branch: null, relation: 'nested',
             scopes: [{ mount: owner.name, prefix: '' }], files: [], head: NO_HEAD, stashes: 0, operation: null,
-          })
+          }
+          byRoot.set(nested, found)
           roots.push(nested)
+          queue.push(found)
         }
         continue
       }
@@ -269,9 +302,9 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
       // unstage of a rename must name both halves. Dropped when the old name falls
       // outside the workspace (renamed INTO a mounted subtree): the caller cannot
       // address what it cannot see, and staging-wise that half is not its to touch.
-      const { oldPath: rawOldPath, ...rest } = file
+      const { oldPath: rawOldPath, gitlink: _gitlink, ...rest } = file
       const oldAbs = rawOldPath !== undefined ? join(repo.root, rawOldPath) : undefined
-      repo.files.push({
+      listed.push({
         ...rest,
         path: workspace.display(abs),
         repoPath: file.path,
@@ -280,9 +313,59 @@ export async function discoverRepos(workspace: Workspace): Promise<WorkspaceGit>
           : {}),
       })
     }
+    // Bounded. A list of twenty thousand rows is not a list anyone reads, and it was
+    // costing megabytes on the wire every poll and a frozen panel at the other end. The
+    // tracked changes come first — they are the work — and the untracked flood is summed
+    // up by where it lives, which is the one fact that lets the person end it: an ignore
+    // pattern. See `hotspotsOf`.
+    listed.sort((a, b) => Number(a.untracked) - Number(b.untracked))
+    repo.files = listed.slice(0, MAX_LISTED_FILES)
+    if (listed.length > MAX_LISTED_FILES) {
+      repo.omitted = listed.length - MAX_LISTED_FILES
+      repo.hotspots = hotspotsOf(listed.filter((f) => f.untracked).map((f) => f.repoPath ?? f.path))
+    }
   }
+  const worker = async (): Promise<void> => {
+    while (next < queue.length) {
+      const repo = queue[next++]!
+      await readOne(repo)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(STATUS_CONCURRENCY, Math.max(1, queue.length)) }, worker))
 
   return { repos: [...byRoot.values()], unversioned, problems }
+}
+
+/** Directory names that are build output or dependencies wherever they appear — an untracked
+ * flood under one of them is answered with `name/` in .gitignore, not with a path. */
+const JUNK_DIRS = new Set(['node_modules', 'bin', 'obj', 'dist', 'build', 'out', 'target', '.vs', 'packages', 'bower_components', '__pycache__', '.venv', 'venv', 'coverage', 'TestResults'])
+
+/**
+ * Where an untracked flood lives: the few directories that hold most of it, each with the
+ * ignore pattern that would end it. Grouped at the first well-known junk directory on the
+ * path (`src/App/obj/...` → `obj/`, anywhere) and otherwise at the top-level directory.
+ */
+export function hotspotsOf(untrackedRepoPaths: readonly string[]): GitHotspot[] {
+  const counts = new Map<string, { count: number; pattern: string; junk: boolean }>()
+  for (const raw of untrackedRepoPaths) {
+    const parts = raw.split('/').filter((p) => p !== '')
+    if (parts.length < 2) continue
+    const junkAt = parts.findIndex((p, i) => i < parts.length - 1 && JUNK_DIRS.has(p))
+    const dir = junkAt >= 0 ? parts.slice(0, junkAt + 1).join('/') : parts[0]!
+    const pattern = junkAt >= 0 ? `${parts[junkAt]}/` : `/${dir}/`
+    const entry = counts.get(dir) ?? { count: 0, pattern, junk: junkAt >= 0 }
+    entry.count += 1
+    counts.set(dir, entry)
+  }
+  // A directory holding a sliver of the flood is not where it lives: eighty new files
+  // under `src/` beside thirty thousand under `node_modules/` are the person's work, and
+  // naming `src/` next to an Ignore button would be an invitation to a mistake.
+  const floor = Math.max(HOTSPOT_MIN_FILES, untrackedRepoPaths.length * HOTSPOT_MIN_SHARE)
+  return [...counts.entries()]
+    .filter(([, v]) => v.count >= floor)
+    .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+    .slice(0, HOTSPOTS)
+    .map(([dir, { count, pattern, junk }]) => ({ dir, count, pattern, junk }))
 }
 
 /**

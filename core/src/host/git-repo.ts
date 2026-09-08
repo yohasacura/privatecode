@@ -133,11 +133,11 @@ export function parsePorcelainV2(stdout: string): GitStatusV2 {
     }
     const kind = record[0]
     if (kind === '1') {
-      // 1 XY sub mH mI mW hH hI path
+      // 1 XY sub mH mI mW hH hI path — `sub` opens with S for a submodule entry.
       const parts = record.split(' ')
       const code = parts[1] ?? '  '
       const path = parts.slice(8).join(' ')
-      files.push(fileOf(path, normaliseCode(code)))
+      files.push({ ...fileOf(path, normaliseCode(code)), ...(parts[2]?.startsWith('S') ? { gitlink: true } : {}) })
     } else if (kind === '2') {
       // 2 XY sub mH mI mW hH hI Xscore path\0origPath
       const parts = record.split(' ')
@@ -145,7 +145,7 @@ export function parsePorcelainV2(stdout: string): GitStatusV2 {
       const path = parts.slice(9).join(' ')
       const oldPath = records[i + 1] ?? ''
       i += 1
-      files.push({ ...fileOf(path, normaliseCode(code)), ...(oldPath !== '' ? { oldPath } : {}) })
+      files.push({ ...fileOf(path, normaliseCode(code)), ...(oldPath !== '' ? { oldPath } : {}), ...(parts[2]?.startsWith('S') ? { gitlink: true } : {}) })
     } else if (kind === 'u') {
       // u XY sub m1 m2 m3 mW h1 h2 h3 path
       const parts = record.split(' ')

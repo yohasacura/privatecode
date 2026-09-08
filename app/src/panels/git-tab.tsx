@@ -40,6 +40,10 @@ import { ConfirmDialog, NewBranchDialog, PublishDialog, PushBehindDialog, StashD
  */
 
 const POLL_MS = 3000
+/** Actions that talk to a remote, and so can wait on a network or a sign-in. */
+const NETWORK_ACTIONS = new Set(['Fetch', 'Pull', 'Push', 'Sync', 'Publish'])
+/** How long a remote may stay silent before the panel says what it is likely waiting for. */
+const SLOW_ACTION_MS = 8_000
 
 /**
  * What the tab keeps across its own remounts. It unmounts whenever another inspector tab
@@ -50,12 +54,19 @@ const POLL_MS = 3000
  */
 const remembered = {
   drafts: new Map<string, { message: string; amend: boolean }>(),
+  /** The last status and stashes shown, so coming back to the tab draws them at once and
+   * refreshes quietly — every switch between inspector tabs unmounts this one, and it
+   * used to open on "reading the repository…" each time, which read as git starting over. */
+  status: null as GitStatusResult | null,
+  stashes: [] as GitStashEntry[],
 }
 
 /** For tests: the tab as if it had never been opened. */
 export function forgetGitTabState(): void {
   gitTabMemory.root = null
   remembered.drafts.clear()
+  remembered.status = null
+  remembered.stashes = []
 }
 
 /** One repository as the picker names it: what it is, where it is, what is going on. */
@@ -154,15 +165,17 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
   onOpenView: (view: GitView) => void
   onOpenSettings?: () => void
 }): VNode {
-  const [status, setStatus] = useState<GitStatusResult | null>(null)
+  const [status, setStatus] = useState<GitStatusResult | null>(remembered.status)
   const [problem, setProblem] = useState<string | null>(null)
   const [gitMissing, setGitMissing] = useState(false)
   const [selectedRoot, setSelectedRoot] = useState<string | null>(gitTabMemory.root)
   const [busy, setBusy] = useState<string | null>(null)
+  /** A network action that has been waiting longer than `SLOW_ACTION_MS`. */
+  const [slowAction, setSlowAction] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const [amend, setAmend] = useState(false)
   const ctx = useContextMenu()
-  const [stashes, setStashes] = useState<GitStashEntry[]>([])
+  const [stashes, setStashes] = useState<GitStashEntry[]>(remembered.stashes)
   const [refs, setRefs] = useState<GitRefs | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [branchOpen, setBranchOpen] = useState(false)
@@ -207,20 +220,33 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
     if (repoRoot !== undefined) remembered.drafts.set(repoRoot, value)
   }
 
+  // One read at a time, and the next poll no sooner than three times the last read took:
+  // on a large working tree a status is seconds, and a three-second timer that did not
+  // wait for the previous answer stacked reads behind one another until the panel showed
+  // "reading the repository…" for as long as the person watched.
+  const loadingRef = useRef(false)
+  const lastReadMsRef = useRef(0)
   const load = useCallback((quiet = true) => {
+    if (loadingRef.current) return
+    loadingRef.current = true
+    const started = Date.now()
     client.call('git.status', {})
       .then(async (r) => {
+        remembered.status = r
         setStatus(r)
         setProblem(r.problem ?? null)
         const current = r.repos.find((x) => x.root === selectedRoot) ?? r.repos[0]
         if (current !== undefined && current.stashes > 0) {
           const list = await client.call('git.stashList', { root: current.root })
+          remembered.stashes = list.stashes
           setStashes(list.stashes)
         } else {
+          remembered.stashes = []
           setStashes([])
         }
       })
       .catch((e: Error) => { if (!quiet) setProblem(e.message); else setProblem((p) => p ?? e.message) })
+      .finally(() => { loadingRef.current = false; lastReadMsRef.current = Date.now() - started })
   }, [client, selectedRoot])
 
   useEffect(() => {
@@ -230,8 +256,13 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
   useEffect(() => { load(false) }, [load, reloadKey])
   useEffect(() => {
     if (!active) return
-    const id = setInterval(() => { if (!busyRef.current && !document.hidden) load() }, POLL_MS)
-    return () => clearInterval(id)
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const tick = (): void => {
+      if (!busyRef.current && !document.hidden) load()
+      timer = setTimeout(tick, Math.max(POLL_MS, lastReadMsRef.current * 3))
+    }
+    timer = setTimeout(tick, POLL_MS)
+    return () => { if (timer !== null) clearTimeout(timer) }
   }, [active, load])
 
   // The branch picker and the New branch dialog want every ref; loaded when either opens.
@@ -253,6 +284,10 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
   async function run<R extends Outcome>(label: string, call: () => Promise<R>, done: string): Promise<R | null> {
     if (busyRef.current) return null
     setBusy(label)
+    // A remote that does not answer — a host behind a VPN that is off, a credential window
+    // that opened behind this one — looks like a spinner for up to three minutes. After a
+    // few seconds the spinner says what it is probably waiting for.
+    const slow = NETWORK_ACTIONS.has(label) ? setTimeout(() => setSlowAction(label), SLOW_ACTION_MS) : null
     try {
       const r = await call()
       announce(r, done)
@@ -261,6 +296,8 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
       toast.push({ title: `${label} failed`, description: (e as Error).message, tone: 'error' })
       return null
     } finally {
+      if (slow !== null) clearTimeout(slow)
+      setSlowAction(null)
       setBusy(null)
       load()
     }
@@ -606,6 +643,38 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
           <div class="px-2.5 pt-2"><PanelNote inset>The upstream {head.upstream} no longer exists on the remote.</PanelNote></div>
         )}
         {repo.problem !== undefined && <div class="px-2.5 pt-2"><PanelNote tone="bad" inset>{repo.problem}</PanelNote></div>}
+        {slowAction !== null && (
+          <div class="px-2.5 pt-2" data-slow-action={slowAction}>
+            <PanelNote tone="warn" inset>
+              {slowAction} is still waiting for the remote. If nothing happens, a sign-in window may have opened
+              behind this one, or the host is not reachable from here (VPN, proxy). It gives up after three minutes.
+            </PanelNote>
+          </div>
+        )}
+        {repo.omitted !== undefined && repo.omitted > 0 && (
+          <div class="px-2.5 pt-2" data-omitted={repo.omitted}>
+            <PanelNote tone="warn" inset title={`${repo.omitted.toLocaleString()} more changed file${repo.omitted === 1 ? '' : 's'} not listed`}>
+              {repo.hotspots !== undefined && repo.hotspots.length > 0
+                ? (
+                  <span class="flex flex-col gap-1">
+                    <span>Most of the untracked files are under:</span>
+                    {repo.hotspots.map((h) => (
+                      <span key={h.dir} class="flex items-center gap-1.5">
+                        <code class="min-w-0 truncate">{h.dir}/</code>
+                        <span class="text-faint">{h.count.toLocaleString()}</span>
+                        {h.junk && (
+                          <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => { void run('Ignore', () => client.call('git.ignore', { root, pattern: h.pattern }), `Ignored ${h.pattern}`) }} title={`Add ${h.pattern} to .gitignore`}>
+                            Ignore
+                          </Button>
+                        )}
+                      </span>
+                    ))}
+                  </span>
+                  )
+                : 'The listing is bounded; the rest are counted here.'}
+            </PanelNote>
+          </div>
+        )}
 
         {/* Commit box */}
         <div class="flex flex-col gap-1.5 px-2.5 pb-2 pt-2" data-commit-box="">
@@ -638,7 +707,7 @@ export function GitTab({ client, reloadKey, active, onOpenFile, onOpenView, onOp
               )} />
             </span>
             <Switch size="sm" checked={amend} onChange={(v) => draft({ amend: v })} disabled={busy !== null || head.unborn} label="Amend" hint="Fold this commit into the last one, replacing its message when one is given" />
-            <span class="ml-auto text-[11px] text-faint">{files.length === 0 ? 'nothing to commit' : `${files.length} change${files.length === 1 ? '' : 's'}`}</span>
+            <span class="ml-auto text-[11px] text-faint">{files.length === 0 ? 'nothing to commit' : `${(files.length + (repo.omitted ?? 0)).toLocaleString()} change${files.length + (repo.omitted ?? 0) === 1 ? '' : 's'}${repo.omitted !== undefined && repo.omitted > 0 ? ` (${files.length.toLocaleString()} listed)` : ''}`}</span>
           </div>
         </div>
 

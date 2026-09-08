@@ -32,6 +32,8 @@ export interface GitFileChange {
    * for opening the file. Set by `discoverRepos`, absent straight out of the parser. */
   repoPath?: string
   repoOldPath?: string
+  /** A submodule's entry in its parent — a pointer at a commit, not a file. */
+  gitlink?: boolean
 }
 
 async function git(cwd: string, args: string[], timeout = 15_000) {

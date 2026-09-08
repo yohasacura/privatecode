@@ -255,6 +255,15 @@ function modelNameFrom(modelPath: string | undefined): string | null {
 const FS_READ_MAX_LINES = 2000
 const FS_READ_MAX_CHARS = 60_000
 
+/** How long one `git.status` answer serves every asker. See `gitStatusFor`. */
+const GIT_STATUS_TTL_MS = 1_500
+/** The `git.*` methods that change nothing; every other one drops the cached status. */
+const GIT_READ_METHODS = new Set<string>([
+  'git.status', 'git.diff', 'git.log', 'git.refs', 'git.commitDetails', 'git.diffBetween', 'git.compare',
+  'git.showFile', 'git.stashList', 'git.stashShow', 'git.blame', 'git.config', 'git.remotes', 'git.version',
+  'git.locate', 'git.address',
+])
+
 /**
  * Extensions the preview renders as an image rather than as text, and the MIME type each
  * becomes in its `data:` URL. Kept to the formats a screenshot or a checked-in asset
@@ -513,6 +522,8 @@ export class SessionHost {
     // The repository operations — branches, history, remotes, stashes, conflicts — live in
     // their own table; the five the tree uses stay below with the rest of the switch.
     if (isGitMethod(method) && method in this.gitRpc) {
+      // Whatever a git operation did, the last status is no longer the truth.
+      if (!GIT_READ_METHODS.has(method)) this.invalidateGitStatus()
       return this.gitRpc[method]((params ?? {}) as never)
     }
     switch (method) {
@@ -543,9 +554,9 @@ export class SessionHost {
       case 'prompt.reply': return this.promptReply()
       case 'git.status': return this.gitStatusFor()
       case 'git.diff': return this.gitDiffFor(params as GitDiffParams)
-      case 'git.stage': return this.gitStageFor(params as GitStageParams, 'stage')
-      case 'git.unstage': return this.gitStageFor(params as GitStageParams, 'unstage')
-      case 'git.commit': return this.gitCommitFor(params as GitCommitParams)
+      case 'git.stage': this.invalidateGitStatus(); return this.gitStageFor(params as GitStageParams, 'stage')
+      case 'git.unstage': this.invalidateGitStatus(); return this.gitStageFor(params as GitStageParams, 'unstage')
+      case 'git.commit': this.invalidateGitStatus(); return this.gitCommitFor(params as GitCommitParams)
       case 'fs.read': return this.fsRead(params as FsReadParams)
       case 'status': return this.status()
       case 'commands.list': return this.commandsList()
@@ -1707,6 +1718,8 @@ export class SessionHost {
       // Recording which calls worked is `Session`'s job now, not this host's — every front
       // end reaches the model through a Session, and only this one ever recorded.
       onToolResult: (name, result, _callId, agent) => {
+        // The tree may have moved under the last git status; the next asker reads it again.
+        this.invalidateGitStatus()
         this.emit('tool.result', {
           name,
           ok: result.ok,
@@ -1949,7 +1962,33 @@ export class SessionHost {
    * Never throws for "not a repository". With one folder that was a yes-or-no question; with
    * several it is not even the same question per folder, and none of the answers is an error.
    */
-  private async gitStatusFor(): Promise<GitStatusResult> {
+  /**
+   * One discovery at a time, and one answer for everyone who asked within a second and a
+   * half of it. Three panels and every open diff ask `git.status`, the Git tab asks again
+   * every three seconds, and each answer used to be its own walk and its own `git status`
+   * per repository — on a large working tree they overlapped, queued, and the tab showed
+   * "reading the repository…" for as long as the person cared to wait. Dropped by every
+   * change this process makes (a tool's write, a git operation), so a poll after a stage
+   * never sees the state before it.
+   */
+  private gitStatusCache: { at: number; result: Promise<GitStatusResult> } | null = null
+
+  private invalidateGitStatus(): void {
+    this.gitStatusCache = null
+  }
+
+  private gitStatusFor(): Promise<GitStatusResult> {
+    const now = Date.now()
+    if (this.gitStatusCache !== null && now - this.gitStatusCache.at < GIT_STATUS_TTL_MS) return this.gitStatusCache.result
+    const result = this.readGitStatus()
+    const entry = { at: now, result }
+    this.gitStatusCache = entry
+    // A failed discovery is not an answer worth repeating for a second and a half.
+    result.catch(() => { if (this.gitStatusCache === entry) this.gitStatusCache = null })
+    return result
+  }
+
+  private async readGitStatus(): Promise<GitStatusResult> {
     const { workspace } = this.requireInitialized()
     const found = await discoverRepos(workspace)
     return {
@@ -1968,6 +2007,8 @@ export class SessionHost {
           repo.files.some((f) => f.staged) ? repo.files.filter((f) => f.staged) : repo.files,
         ),
         ...(repo.problem !== undefined ? { problem: repo.problem } : {}),
+        ...(repo.omitted !== undefined ? { omitted: repo.omitted } : {}),
+        ...(repo.hotspots !== undefined ? { hotspots: repo.hotspots } : {}),
       })),
       unversioned: found.unversioned,
     }
