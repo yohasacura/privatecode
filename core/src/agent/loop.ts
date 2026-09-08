@@ -7,6 +7,8 @@ import { Transcript, transcriptChars } from '../transcript/transcript.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } from '../tools/types.js'
 import { buildSystemPrompt } from './prompt.js'
+import { mapIndexFor } from '../map/digest.js'
+import { mapDirOf } from '../map/tool.js'
 import type { LoopDetector } from './loop-detector.js'
 import type { PreToolOutcome, ToolHooks } from '../hooks/engine.js'
 
@@ -717,6 +719,10 @@ export class Agent {
           // context strips `Agent` too, so a worker never reads an offer to spawn workers.
           delegation: (this.opts.allowedTools ?? opts.registry.schemas().map((s) => s.function.name))
             .includes('Agent') && opts.context.delegate !== undefined,
+          // A worker reads code too, and reads the map first for the same reason the session
+          // does — when the tool reached it and a map is on disk.
+          map: (this.opts.allowedTools ?? opts.registry.schemas().map((s) => s.function.name))
+            .includes('ProjectMap') && mapIndexFor(mapDirOf(opts.context.workspace.root)) !== null,
           // Conditional spread, not `memory: opts.memory`: tsconfig sets
           // exactOptionalPropertyTypes, so an explicit undefined is not the same as absent.
           ...(opts.memory !== undefined ? { memory: opts.memory } : {}),

@@ -70,7 +70,16 @@ Open the folder as a vault in Obsidian: the graph view is the reference graph, a
   note is read every time.
 - **The agent, asking**: the `ProjectMap` tool reads the project note (no arguments), a
   note by path, or searches the notes — and a search hit carries the note's lines that
-  matched, not only the path. The repo map says a map exists.
+  matched, not only the path. On a mapped workspace the system prompt says so, as a
+  description and not a rule — "use it when it helps, to check a detail or to get the
+  overall structure" — by the owner's call: there are requests the map has nothing to say
+  about, and sending every one through it first was not wanted. (A first-move rule was
+  measured on the way, at 4 of 6; the two deliveries below are what make a description
+  enough.) The tool is first in the list, ahead of `Read`.
+- **The agent, handed the first move**: the notes nearest the request — the words of the
+  request scored against every note, common words discounted — ride in the user message
+  itself, in the same leading bracket as the task contract: three files with the lines that
+  matched, one module. A request about an unmapped area gets no block. `orientationFor`.
 - **The model server has one slot.** A build never asks while a turn runs, and yields
   between notes, so a turn the person starts waits for at most one note.
 - **A workspace of several folders is one map.** Every writable folder is a top-level
@@ -95,12 +104,35 @@ differences are inside the noise of single runs (the control question took 221 s
 and 58 s the other with the same answer). That is what turned "offered" into "delivered".
 
 **Delivered** (the same day, the note on top of every first `Read`, matching lines in
-search hits): mean score 0.94, reads 14.0, 105 s — again inside the noise. On a repository
-whose file names already say where things are, and on questions that ask for the exact
-rule and its line, this model reads the code whichever way the map is put in front of it,
-and it should. Six questions once each cannot tell a small effect from none; what would is
-the eval (`eval/README.md`): the same fifteen tasks with hidden tests, with a map built for
-the project and without, where a trap the note names is a bug the model does not write.
+search hits): mean score 0.94, reads 14.0, 105 s — again inside the noise, and the tool
+still called in one question of six.
+
+**Told, the measured way** (a first-move rule in the system prompt, the tool first in the
+list, its description an instruction): the map read first in four questions of six; mean
+score 0.97, reads 12.5, 89 s; the question the model had spent 21 reads on took 14. The
+two it skipped it for were a concept it could grep for and a file it could name — the
+shapes the delegation measurement predicts, at its 8/12.
+
+**Handed the first move** (the shipped shape: a description in the prompt, the nearest
+notes folded into the request, the note on top of a `Read`): mean score 0.97, reads 10.2,
+87 s, and not one call to the tool — the notes were already in the request. Per question
+against no map: 21 reads → 13, 4 → 2, 26 → 23, 8 → 7; the control question with no notes
+went 33 → 12 (the 33 was an outlier). Still one run per cell, so the sizes are rough; the
+direction held on every question.
+
+| | score | steps | seconds | reads | tool called |
+|---|---:|---:|---:|---:|---:|
+| no map | 0.93 | 6.7 | 124 | 15.8 | — |
+| offered (a line in the repo map) | 0.97 | 6.8 | 89 | 12.5 | 2 of 6 |
+| delivered on Read | 0.94 | 6.0 | 105 | 14.0 | 1 of 6 |
+| first-move rule (not shipped) | 0.97 | 5.2 | 89 | 12.5 | 4 of 6 |
+| handed the first move | 0.97 | 5.7 | 87 | 10.2 | 0 of 6 |
+
+On a repository whose file names already say where things are, and on questions that ask
+for the exact rule and its line, this model still reads the code, and it should. What would
+say more is the eval (`eval/README.md`): the same fifteen tasks with hidden tests, with a
+map built for the project and without, where a trap the note names is a bug the model does
+not write.
 
 ## Cost
 

@@ -5,6 +5,8 @@ import {
   type AgentEvents, type AgentOptions, type StepInfo, type StepPreamble, type TurnResult,
 } from '../agent/loop.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
+import { mapIndexFor } from '../map/digest.js'
+import { mapDirOf, orientationFor } from '../map/tool.js'
 import { ROLES, runSubAgent, type SubAgentOutcome, type SubAgentRole } from '../agent/subagent.js'
 import type { Checkpoint } from '../checkpoints/store.js'
 import { CheckpointSet } from '../checkpoints/set.js'
@@ -2730,6 +2732,18 @@ export class Session {
           turnText = `[${renderContract(contract)}]\n\n${promptText}`
         }
       }
+      // The map's first move, made here rather than asked for (see `orientationFor`): the
+      // notes nearest the request ride in the SAME leading bracket as the contract, because
+      // the window strips exactly one bracket from the front of a message on replay.
+      const orientation = this.mapOrientation(userText)
+      if (orientation !== null) {
+        // Either the bare request, or `[${contract}]\n\n${request}` — in which case the
+        // bracket is reopened by dropping its closing `]\n\n`, by length, not by search:
+        // a criterion may itself end in a bracket.
+        turnText = turnText === promptText
+          ? `[${orientation}]\n\n${promptText}`
+          : `${turnText.slice(0, turnText.length - promptText.length - 3)}\n\n${orientation}]\n\n${promptText}`
+      }
       // Captured AFTER buildAgent() (which may append the system prompt on a fresh
       // transcript) and BEFORE runTurn(), so a length comparison after the call tells us,
       // directly, whether the user message actually reached the transcript.
@@ -3488,6 +3502,7 @@ export class Session {
         // Same computation the Agent makes: the paragraph must describe a call the model
         // can make in THIS mode, and plan mode filters `Agent` (not read-only) out.
         delegation: this.delegationAvailable(),
+        map: this.mapAvailable(),
       }),
     }, ...messages]
   }
@@ -3821,6 +3836,7 @@ export class Session {
         // Same computation the Agent makes: the paragraph must describe a call the model
         // can make in THIS mode, and plan mode filters `Agent` (not read-only) out.
         delegation: this.delegationAvailable(),
+        map: this.mapAvailable(),
       }),
     })
     // The generated briefing, then the facts it is not allowed to get wrong. Computed from
@@ -4469,6 +4485,24 @@ export class Session {
   private delegationAvailable(): boolean {
     if (this.meta.mode === 'plan') return false
     return this.opts.toolset.registry.schemas().some((t) => t.function.name === 'Agent')
+  }
+
+  /** A map on disk AND the tool to read it: what earns the prompt's map rule its place. */
+  private mapAvailable(): boolean {
+    return this.opts.toolset.registry.schemas().some((t) => t.function.name === 'ProjectMap')
+      && mapIndexFor(mapDirOf(this.workspace.root)) !== null
+  }
+
+  /** The notes nearest a request, or null — see `orientationFor`. Never throws: a map that
+   * cannot be read is a turn without a map, not a turn that fails. */
+  private mapOrientation(request: string): string | null {
+    try {
+      if (!this.mapAvailable()) return null
+      const index = mapIndexFor(mapDirOf(this.workspace.root))
+      return index === null ? null : orientationFor(index, request)
+    } catch {
+      return null
+    }
   }
 
   private buildAgent(signal?: AbortSignal, sampling?: import('../llama/types.js').Sampling): Agent {

@@ -7,7 +7,7 @@ import type { LlamaClient } from '../src/llama/client.js'
 import { MapBuilder, mapExists, mapStatus, readIndex, type MapProgress, parseModuleNote, parseProjectNote } from '../src/map/builder.js'
 import { noteName, renderFileNote, wikilink } from '../src/map/notes.js'
 import { readMapNote, mapTree } from '../src/map/read.js'
-import { projectMapTool, searchNotes } from '../src/map/tool.js'
+import { orientationFor, projectMapTool, searchNotes } from '../src/map/tool.js'
 import { Workspace } from '../src/workspace.js'
 
 /**
@@ -188,6 +188,8 @@ describe('reading the map', () => {
     expect(byPath.content).toContain('# src/orders.ts')
     const module = await projectMapTool.execute({ path: 'src' }, ctx)
     expect(module.content).toContain('# src/')
+    // A path and a query together: the path's note, not a search.
+    expect((await projectMapTool.execute({ path: 'src', query: 'placeOrder' }, ctx)).content).toContain('# src/')
     const hits = searchNotes(readIndex(dir)!, 'placeOrder formatted')
     expect(hits[0]?.path).toBe('src/orders.ts')
     // A hit carries the note's lines that matched: the answer is in the hit, not behind it.
@@ -196,6 +198,23 @@ describe('reading the map', () => {
     expect(search.content).toContain('src/orders.ts — Handles src/orders.ts.\n  · contract: placeOrder — returns the formatted total')
     const missing = await projectMapTool.execute({ path: 'src/nothing.ts' }, ctx)
     expect(missing.ok).toBe(false)
+  })
+
+  test('the first move is made by the harness: the notes nearest a request, or nothing', async () => {
+    await builder([]).build()
+    const index = readIndex(dir)!
+    const block = orientationFor(index, 'Where is placeOrder and what does it return?')!
+    expect(block.startsWith('Project map — the notes nearest this request')).toBe(true)
+    expect(block).toContain('- src/orders.ts — Handles src/orders.ts.')
+    expect(block).toContain('  · contract: placeOrder — returns the formatted total')
+    // Square brackets never reach the block: it lives inside one the window strips by depth.
+    expect(block).not.toMatch(/[[\]]/)
+    // A request about nothing on the map costs nothing.
+    expect(orientationFor(index, 'Why does the login page flicker on Safari?')).toBeNull()
+    // A file edited since its note was written is still offered, and says so.
+    writeFileSync(join(root, 'src', 'orders.ts'), 'export function placeOrder(total: number): string { return String(total * 3) }\n')
+    await builder([]).build({ limit: 0 })
+    expect(orientationFor(readIndex(dir)!, 'Where is placeOrder and what does it return?')).toContain('- src/orders.ts (note from an earlier version of the file) — Handles src/orders.ts.')
   })
 
   test('without a map the tool says so and points at the tab', async () => {

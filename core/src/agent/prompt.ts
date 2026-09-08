@@ -88,6 +88,20 @@ export interface PromptOptions {
    */
   delegation?: boolean
   /**
+   * Whether a project map exists for this workspace AND the `ProjectMap` tool is on offer —
+   * which earns the paragraph its place, on the same evidence as `delegation`.
+   *
+   * The paragraph DESCRIBES the map and leaves the choice to the model, by the owner's call:
+   * there are requests the map has nothing to say about, and a rule sending every one of
+   * them through it first was not wanted. What was measured on the way (`spike/map-help-
+   * probe.mts`, 2026-09-08): a sentence at the end of the repo map got the tool called in 2
+   * questions of 6; a first-move rule of the delegation paragraph's shape, 4 of 6. The
+   * notes also reach the model without being asked for — on top of a `Read` of a noted
+   * file, and the nearest ones folded into the request itself (`orientationFor`) — which is
+   * what makes a description enough. Absent leaves the prompt byte-for-byte unchanged.
+   */
+  map?: boolean
+  /**
    * The project's own check — the verify command the harness runs by itself after a step
    * that edited files — when one is configured.
    *
@@ -165,6 +179,19 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     'Work in small steps. Look at the result before deciding the next step, and never claim',
     'something works unless a command or test you ran says so.',
     '',
+    // A description, not a rule — see `PromptOptions.map` for why. Here, beside the other
+    // statements of what this session can reach for, so the model meets it before the
+    // listings below.
+    ...(opts.map === true
+      ? [
+        'This workspace has a detailed project map: notes written from the code on what each',
+        'file and folder does, its contracts and its traps, and how the files of a folder work',
+        'together. Use it when it helps — to check a detail before you rely on it, or to get the',
+        'overall structure before you read — with ProjectMap: a file or folder path for its',
+        'note, a query to search the notes, no arguments for the project overview.',
+        '',
+      ]
+      : []),
     // Directly after "work in small steps", because it QUALIFIES it: that instruction alone
     // reads as "do the reading yourself, incrementally", which is exactly what was observed —
     // 72 tool calls across two real investigation turns, none of them delegate. This is the

@@ -2997,8 +2997,9 @@ export class SessionHost {
  * call before the first file is opened. */
 export function withMapHint(repoMap: string, workspaceRoot: string): string {
   if (!mapExists(mapDirOf(workspaceRoot))) return repoMap
-  const hint = 'A project map exists — notes on what every file and module does, why, its contracts and traps, written from this code. ' +
-    'A Read of a noted file begins with its note. ProjectMap reads the rest: no arguments for the project note, a path for that note, a query to search the notes.'
+  // One line, a fact: the RULE that makes the model read the map first lives in the system
+  // prompt (`PromptOptions.map`), where a rule can be read before the listing it follows.
+  const hint = 'A project map is built for this workspace — ProjectMap reads its notes; a Read of a noted file begins with its note.'
   return repoMap === '' ? hint : `${repoMap}\n\n${hint}`
 }
 

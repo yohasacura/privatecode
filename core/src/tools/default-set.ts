@@ -85,10 +85,14 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   // judgement, role and cost framings all went 0/6. The paragraph ships in
   // `buildSystemPrompt` under `delegation:`, which is computed from THIS registration —
   // remove the tool and the paragraph goes with it.
-  for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webSearchTool, webFetchTool, csharpNavTool, databaseTool,
+  // `ProjectMap` FIRST, ahead of `Read`: it is the call the prompt's map rule names as the
+  // first move on a mapped workspace, and it sat 27th of 28 — after the browser, the
+  // skills and the memory tools — while the model read files with the map unopened.
+  // Position is as unmeasured a lever as it was for `CSharpNav`; the rule is the measured one.
+  for (const t of [projectMapTool, readFileTool, listDirTool, findFilesTool, searchCodeTool, webSearchTool, webFetchTool, csharpNavTool, databaseTool,
                    editFileTool, writeFileTool, moveFileTool, deleteFileTool, createBashTool({ background }), sqlDeployTool, pluginsTool,
                    taskOutputTool(background), taskStopTool(background), gitStatusTool, todoWriteTool, askUserTool,
-                   symbolOutlineTool, browserTool, useSkillTool, rememberTool, recallTool, sessionsTool, projectMapTool,
+                   symbolOutlineTool, browserTool, useSkillTool, rememberTool, recallTool, sessionsTool,
                    delegateTool]) {
     registry.register(t)
   }

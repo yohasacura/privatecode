@@ -49,8 +49,27 @@ export interface MapHit {
   lines: string[]
 }
 
+/** A word in more than this share of the notes tells them apart no better than "the" does. */
+const VOCABULARY_SHARE = 0.3
+/** Below this many notes the share above means nothing, and every word counts. */
+const VOCABULARY_FLOOR = 10
+
+/**
+ * The words of a query worth matching on. A request is a sentence, and a sentence is mostly
+ * words every note contains — "the", "when", "file" — so a word found in a third of the
+ * notes is dropped once there are enough notes to say so; what is left is what the request
+ * is about.
+ */
+export function queryWords(index: MapIndex, query: string): string[] {
+  const raw = [...new Set(query.toLowerCase().split(/[^a-z0-9_]+/i).filter((w) => w.length >= 3))]
+  const notes = Object.values(index.notes.files)
+  if (notes.length < VOCABULARY_FLOOR) return raw
+  const texts = notes.map((n) => [n.what, n.why, ...n.contracts.map((c) => `${c.symbol} ${c.guarantees}`), ...n.invariants, ...n.gotchas].join(' ').toLowerCase())
+  return raw.filter((w) => texts.filter((t) => t.includes(w)).length <= notes.length * VOCABULARY_SHARE)
+}
+
 export function searchNotes(index: MapIndex, query: string): MapHit[] {
-  const words = query.toLowerCase().split(/[^a-z0-9_]+/i).filter((w) => w.length >= 3)
+  const words = queryWords(index, query)
   if (words.length === 0) return []
   const hits: MapHit[] = []
   for (const note of Object.values(index.notes.files)) {
@@ -84,14 +103,55 @@ export function searchNotes(index: MapIndex, query: string): MapHit[] {
   return hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, MAX_HITS)
 }
 
+/** A hit is worth putting in front of the model unasked from this score: two words of the
+ * request in the note, or one in its path or symbols and one in its text. */
+const MIN_ORIENTATION_SCORE = 3
+const ORIENTATION_FILES = 3
+const ORIENTATION_MODULES = 1
+
+/**
+ * The first move, made by the harness: the notes nearest a request, as a block the session
+ * folds into the user message. Measured before it existed (`spike/map-help-probe.mts`):
+ * offered, the map was read in 2 of 6 questions; under a first-move rule in 3 of 5; the
+ * model greps first for a concept it can name and reads first for a file it can name, and
+ * both are cases the note would have shortened. Null when nothing in the map is close —
+ * a request about an unmapped area gets no block, and no cost.
+ *
+ * Square brackets inside the lines become round: the block lives inside one bracket the
+ * window strips on replay by counting depth, and a contract line quoting `files['']` must
+ * not unbalance it.
+ */
+export function orientationFor(index: MapIndex, request: string): string | null {
+  const hits = searchNotes(index, request).filter((h) => h.score >= MIN_ORIENTATION_SCORE)
+  const files = hits.filter((h) => h.kind === 'file').slice(0, ORIENTATION_FILES)
+  const modules = hits.filter((h) => h.kind === 'module').slice(0, ORIENTATION_MODULES)
+  if (files.length === 0 && modules.length === 0) return null
+  const flat = (s: string): string => s.replace(/\[/g, '(').replace(/\]/g, ')')
+  // A note about an earlier version of the file is still the nearest thing to the request,
+  // and still worth a line — said so, because it is read first and believed.
+  const stale = (h: MapHit): boolean => {
+    if (h.kind !== 'file') return false
+    const note = index.notes.files[h.path]
+    const node = index.skeleton.files.find((f) => f.path === h.path)
+    return note !== undefined && node !== undefined && note.hash !== node.hash
+  }
+  const lines = [
+    'Project map — the notes nearest this request, written from the code; ProjectMap reads any of them in full:',
+    ...[...files, ...modules].map((h) => [
+      `- ${h.kind === 'module' ? `${h.path || '.'}/` : h.path}${stale(h) ? ' (note from an earlier version of the file)' : ''} — ${flat(h.what)}`,
+      ...h.lines.slice(0, 2).map(flat),
+    ].join('\n')),
+  ]
+  return lines.join('\n')
+}
+
 export const projectMapTool: Tool<ProjectMapArgs> = {
   name: 'ProjectMap',
   readOnly: true,
   description:
-    'The project map: a wiki of this codebase written from its code (what each file does and why, contracts, invariants, traps, ' +
-    'who uses what, tests, what changes together; how each module fits; the project overview and conventions). ' +
-    'Call with no arguments for the project note, with `path` (a file or a directory) for its note, or with `query` to find the notes about a topic. ' +
-    'Read the map before opening files: one note answers what several reads would.',
+    'The project map: notes on this codebase written from its code — what a file or folder does and why, its contracts, ' +
+    'invariants and traps, who uses it, its tests, what changes with it. Use it to check a detail or to see the overall structure: ' +
+    '`path` — a file or folder ("." for the whole project); `query` — words to search the notes for; no arguments — the project overview.',
   parameters: {
     type: 'object',
     properties: {
@@ -118,7 +178,9 @@ export const projectMapTool: Tool<ProjectMapArgs> = {
     if (index === null) {
       return { ok: false, content: 'No project map has been built for this workspace yet — the person builds it from the Map tab. Read the code directly.' }
     }
-    if (args.query !== undefined) {
+    // Both given — the live model does that ("core/src/map", "builder rewrite note") — the
+    // path wins: the note it names is the fuller answer, and the words were its reason.
+    if (args.query !== undefined && args.path === undefined) {
       const hits = searchNotes(index, args.query)
       if (hits.length === 0) return { ok: true, content: `Nothing in the map mentions "${args.query}". Try other words, or Grep the code.` }
       return {

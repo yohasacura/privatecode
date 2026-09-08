@@ -115,3 +115,17 @@ test('with no command but the compiler check, the compiler check alone is announ
   const both = buildSystemPrompt({ workspaceRoot: '/w', mode: 'normal', autoCheck: 'dotnet build', compilerCheck: true })
   expect(both.split('[C# compiler check: ok, 0.3s]').length).toBe(2)
 })
+
+test('the map paragraph appears only on a mapped workspace, describes rather than orders, and leaves the prompt unchanged otherwise', () => {
+  const base = { workspaceRoot: 'D:/proj', mode: 'normal' as const }
+  const without = buildSystemPrompt(base)
+  expect(without).not.toContain('ProjectMap')
+  expect(buildSystemPrompt({ ...base, map: false })).toBe(without)
+  const withMap = buildSystemPrompt({ ...base, map: true })
+  expect(withMap).toContain('This workspace has a detailed project map')
+  expect(withMap).toContain('Use it when it helps')
+  // A description by the owner's call: no first-call rule for the map, whatever the
+  // delegation paragraph says about its own.
+  expect(withMap).not.toMatch(/FIRST call is\s+ProjectMap/)
+  expect(withMap.length - without.length).toBeLessThan(500)
+})
