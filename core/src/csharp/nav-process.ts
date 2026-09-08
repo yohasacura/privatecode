@@ -185,7 +185,12 @@ export class NavProcess {
    * caller falls back to the project's real build; a null here is "not available", never
    * "no errors".
    */
-  async diagnostics(root: string, files: string[]): Promise<CsharpDiagnostics | null> {
+  async diagnostics(
+    root: string, files: string[],
+    /** `everything`: bind the whole tree — "does it compile now?" — not only what the
+     * given files can have broken. The baseline of pre-existing errors is honoured either way. */
+    opts: { everything?: boolean } = {},
+  ): Promise<CsharpDiagnostics | null> {
     let loaded: Record<string, unknown>
     try {
       loaded = await this.ensureLoaded(root)
@@ -196,7 +201,7 @@ export class NavProcess {
     for (const f of files) this.dirty.delete(f)
     let reply: Record<string, unknown>
     try {
-      reply = await this.send('diagnostics', { files }, ASK_TIMEOUT_MS)
+      reply = await this.send('diagnostics', { files, ...(opts.everything === true ? { everything: true } : {}) }, ASK_TIMEOUT_MS)
     } catch {
       return null
     }

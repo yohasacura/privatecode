@@ -88,7 +88,7 @@ on first use), Marketplaces. A plugin's skills, slash commands, agents, hooks an
 servers all arrive. The tools carry Claude Code's names — `Read`, `Edit`, `Write`, `Bash`,
 `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Agent`, `Skill`, `TaskOutput`, `TaskStop`, and the rest in
 the same style (`LS`, `MoveFile`, `DeleteFile`, `GitStatus`, `SymbolOutline`, `Browser`,
-`Database`, `CSharpNav`, `SqlDeploy`, `Remember`, `Recall`, `Sessions`, `Plugin`) — so a plugin's hook matchers and
+`Database`, `CSharpNav`, `CSharpRename`, `SqlDeploy`, `Remember`, `Recall`, `Sessions`, `Plugin`) — so a plugin's hook matchers and
 agent files mean here what they mean there. `Bash` is bash: the app ships Git for Windows'
 bash and coreutils (`vendor/git`), the same shell Claude Code uses on Windows, so `&&`,
 pipes, `grep`, `sed` and `find` work as written; the model's PATH also reaches the

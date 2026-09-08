@@ -100,6 +100,13 @@ export interface ToolResult {
   /** Text handed back to the model as the tool message. Keep it short: it is permanent. */
   content: string
   /**
+   * Workspace-relative paths this call wrote, for a tool whose writes are not named by its
+   * arguments — a rename that touched every file using a symbol. The session counts them
+   * as writes exactly as it counts an `Edit`'s `path`: the folder to verify, the compiler
+   * check after the step. A tool with a `path` argument leaves this unset.
+   */
+  wrote?: string[]
+  /**
    * The same result, untruncated, for a HUMAN reader — the app's transcript, never the
    * model. Optional: only tools that deliberately clip `content` to protect the context
    * window set it.

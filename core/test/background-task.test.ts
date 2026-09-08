@@ -78,17 +78,43 @@ describe('TaskOutput and TaskStop', () => {
     })
     expect(started.content).toContain('ready: YES')
     const id = /as (task-\d+)/.exec(started.content)?.[1]
-    const early = await poll({ id })
+    // wait_seconds: 0 answers at once; the default wait would already have seen the marker.
+    const early = await poll({ id, wait_seconds: 0 })
     expect(early.content).toMatch(/ready: no/)
     const later = await poll({ id, wait_seconds: 5 })
     expect(later.content).toMatch(/ready: YES/)
     await stop({ id })
   }, 30_000)
 
-  it('TaskOutput on an unknown id fails without throwing', async () => {
+  it('TaskOutput on an unknown id fails without throwing, and points at Bash for running things', async () => {
     const r = await poll({ id: 'task-999' })
     expect(r.ok).toBe(false)
+    expect(r.content).toContain('use Bash')
   })
+
+  it('a poll with no wait_seconds waits for the next line rather than answering empty at once', async () => {
+    const started = await start({ command: 'sleep 1; echo later' })
+    const id = /as (task-\d+)/.exec(started.content)?.[1]
+    const t0 = Date.now()
+    const p = await poll({ id })
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(900)
+    expect(p.content).toContain('later')
+    // And once the task is over, the answer says so plainly.
+    const done = await poll({ id, wait_seconds: 5 })
+    expect(done.content).toContain('nothing more to poll')
+  }, 30_000)
+
+  it('polling a silent task again and again is answered with what to do about it', async () => {
+    const started = await start({ command: 'sleep 60' })
+    const id = /as (task-\d+)/.exec(started.content)?.[1]
+    const first = await poll({ id, wait_seconds: 0 })
+    expect(first.content).not.toContain('Nothing new in')
+    await poll({ id, wait_seconds: 0 })
+    const third = await poll({ id, wait_seconds: 0 })
+    expect(third.content).toContain('Nothing new in 3 polls')
+    expect(third.content).toContain('TaskStop')
+    await stop({ id })
+  }, 30_000)
 })
 
 /**

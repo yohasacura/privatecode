@@ -1209,12 +1209,14 @@ test('an audit gap leaves its plan item open while the affirmed one is ticked', 
  *
  * Without a test the wiring is one line in `buildAgent` and comes back silently.
  */
-test('a session never refuses a repeated call, however identical the answer', async () => {
+test('a session refuses the third identical call that got the identical answer twice', async () => {
+  // The detector was off for a while (see `Session.loopDetector`) and this test pinned that.
+  // It came back after a model was watched calling the same tool with the same arguments
+  // and the same "no such task" answer, turn after turn, past every request to stop.
   let call = 0
   const fake = await makeServer(() => {
     call++
-    // Four identical reads of the same directory, which returns the same thing every time —
-    // exactly the shape the detector used to stop on the third.
+    // Four identical reads of the same directory, which returns the same thing every time.
     return call <= 4
       ? toolCallSSE('LS', JSON.stringify({ path: '.' }))
       : textSSE('had a look')
@@ -1228,8 +1230,11 @@ test('a session never refuses a repeated call, however identical the answer', as
   const results = eventsNamed(transport, 'tool.result').map((e) => e.data as { name: string; content: string })
   const listings = results.filter((r) => r.name === 'LS')
   expect(listings.length).toBe(4)
-  expect(listings.some((r) => r.content.includes('already called'))).toBe(false)
-  expect(listings.some((r) => r.content.startsWith('Not run:'))).toBe(false)
+  // Twice is a retry; the third and fourth meet the wall. A refusal is not recorded as a
+  // result, so the fourth is refused too rather than reading as "something changed".
+  expect(listings.slice(0, 2).every((r) => !r.content.startsWith('Not run:'))).toBe(true)
+  expect(listings.slice(2).every((r) => r.content.startsWith('Not run:'))).toBe(true)
+  expect(listings[2]!.content).toContain('already called LS')
 })
 
 // ---------------------------------------------------------------------------------------

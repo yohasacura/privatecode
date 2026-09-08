@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../llama/types.js'
+import { modernizeMessage } from '../tools/legacy-names.js'
 
 /**
  * Every character of a message that the chat template renders into the prompt.
@@ -99,11 +100,15 @@ export class Transcript {
   static fromJSONL(text: string, lineOffset = 0): Transcript {
     const t = new Transcript()
     const lines = text.split('\n')
+    const renamed = new Map<string, string>()
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]!
       if (!line.trim()) continue
       try {
-        t.append(JSON.parse(line) as ChatMessage)
+        // Tool names as this build has them, whatever the file called them: the model reads
+        // this as its example of what works here (tools/legacy-names.ts). The file itself is
+        // left as written — it is the audit trail, and the doctor reads old names off it.
+        t.append(modernizeMessage(JSON.parse(line) as ChatMessage, renamed))
       } catch (e) {
         const localLine = i + 1
         const fileNote = lineOffset > 0 ? ` (file line ${localLine + lineOffset})` : ''

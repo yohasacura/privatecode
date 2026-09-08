@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 
 /**
@@ -402,5 +402,97 @@ describe.skipIf(!vendored)('errors a tree already had', () => {
     const errors = again['errors'] as { code: string; message: string }[]
     expect(errors).toHaveLength(1)
     expect(errors[0]!.message).toContain('Nope')
+  })
+})
+
+describe.skipIf(!vendored)('what the navigator answers beyond a location', () => {
+  test('a definition carries the declaration itself — a member whole, a type as its header', async () => {
+    const r = await helper!.ask('definition', { symbol: 'Run' })
+    expect(r['ok']).toBe(true)
+    expect(r['results'][0]['source']).toBe('public void Run() => _planner.Build();')
+    const t = await helper!.ask('definition', { symbol: 'MainViewModel' })
+    expect(t['results'][0]['source']).toBe('public sealed class MainViewModel : ViewModelBase')
+    const f = await helper!.ask('definition', { symbol: '_planner' })
+    expect(f['results'][0]['source']).toBe('private readonly IPlanner _planner;')
+  })
+
+  test('a reference names the member it sits in', async () => {
+    const r = await helper!.ask('references', { symbol: 'Build' })
+    const rows = r['results'] as { file: string; line: number; in: string | null }[]
+    const call = rows.find((row) => row.file.endsWith('MainViewModel.cs'))!
+    expect(call.in).toBe('MainViewModel.Run')
+    // The field whose type it is, the constructor whose parameter it is, the class whose
+    // base list names it — declarations, where the containing symbol alone would only
+    // have said "MainViewModel".
+    const field = (await helper!.ask('references', { symbol: 'IPlanner' }))['results'] as { file: string; in?: string }[]
+    expect(field.map((row) => row.in)).toEqual(expect.arrayContaining(['MainViewModel._planner', 'MainViewModel()', 'Planner']))
+  })
+
+  test('a name it does not know is answered with the closest ones', async () => {
+    const r = await helper!.ask('definition', { symbol: 'Planer' })
+    expect(r['results']).toEqual([])
+    const names = (r['suggestions'] as { located: { name: string } }[]).map((s) => s.located.name)
+    expect(names).toContain('Planner')
+    expect(names).toContain('IPlanner')
+    const lower = await helper!.ask('references', { symbol: 'mainviewmodel' })
+    expect((lower['suggestions'] as { located: { name: string } }[])[0]!.located.name).toBe('MainViewModel')
+  })
+
+  test('a wildcard searches by pattern', async () => {
+    const r = await helper!.ask('search', { symbol: '*Planner' })
+    expect(r['ok']).toBe(true)
+    // Types first, then the field whose name also ends that way — a match is a match.
+    expect((r['results'] as { signature: string }[]).map((s) => s.signature)).toEqual(['App.IPlanner', 'App.Planner', 'App.MainViewModel._planner'])
+  })
+
+  test('a hierarchy has what a type extends, implements, and what extends it', async () => {
+    const base = await helper!.ask('hierarchy', { symbol: 'ViewModelBase' })
+    expect(base['ok']).toBe(true)
+    expect(base['abstract']).toBe(true)
+    expect((base['interfaces'] as { name: string }[]).map((i) => i.name)).toContain('INotifyPropertyChanged')
+    expect((base['results'] as { name: string }[]).map((d) => d.name)).toEqual(['MainViewModel'])
+    const iface = await helper!.ask('hierarchy', { symbol: 'IPlanner' })
+    expect(iface['kind']).toBe('interface')
+    expect((iface['results'] as { name: string }[]).map((d) => d.name)).toEqual(['Planner'])
+    const leaf = await helper!.ask('hierarchy', { symbol: 'MainViewModel' })
+    expect((leaf['bases'] as { name: string }[]).map((b) => b.name)).toEqual(['ViewModelBase'])
+    expect(leaf['results']).toEqual([])
+  })
+
+  test('diagnostics can be asked about the whole tree at once', async () => {
+    // The tree at this point carries what the tests above left in it (a deleted helper);
+    // what is pinned is that EVERY file was bound, not only the touched ones' neighbourhood.
+    const r = await helper!.ask('diagnostics', { files: [], everything: true })
+    expect(r['ok']).toBe(true)
+    expect(r['bound']).toBe(r['trees'])
+    expect(r['bound']).toBeGreaterThan(0)
+  })
+
+  test('a rename answers with the new text of every file it touches, and writes nothing', async () => {
+    const r = await helper!.ask('rename', { symbol: 'IPlanner.Build', newName: 'Compose' })
+    expect(r['ok']).toBe(true)
+    expect(r['newName']).toBe('Compose')
+    const files = r['files'] as { file: string; text: string; places: number; lines: number[] }[]
+    const names = files.map((f) => basename(f.file))
+    expect(names).toEqual(expect.arrayContaining(['IPlanner.cs', 'MainViewModel.cs', 'Planner.cs']))
+    const vm = files.find((f) => f.file.endsWith('MainViewModel.cs'))!
+    expect(vm.text).toContain('_planner.Compose()')
+    expect(vm.places).toBe(1)
+    expect(vm.lines).toEqual([vm.text.split('\n').findIndex((l) => l.includes('_planner.Compose()')) + 1])
+    // Nothing on disk moved: the caller writes, then syncs.
+    expect(readFileSync(join(root, 'src', 'MainViewModel.cs'), 'utf8')).toContain('_planner.Build()')
+    expect((await helper!.ask('references', { symbol: 'Build' }))['results']).not.toEqual([])
+  })
+
+  test('a rename is refused for a bad identifier, an unknown symbol, or an ambiguous one', async () => {
+    expect((await helper!.ask('rename', { symbol: 'Build', newName: '9lives' }))['ok']).toBe(false)
+    const unknown = await helper!.ask('rename', { symbol: 'Bulid', newName: 'Compose' })
+    expect(unknown['ok']).toBe(false)
+    expect((unknown['suggestions'] as { signature: string }[]).map((s) => s.signature)).toContain('App.IPlanner.Build()')
+    // `PropertyChanged` is declared by two classes of the fixture.
+    const ambiguous = await helper!.ask('rename', { symbol: 'PropertyChanged', newName: 'Changed' })
+    expect(ambiguous['ok']).toBe(false)
+    expect(String(ambiguous['error'])).toContain('names 2 symbols')
+    expect((ambiguous['candidates'] as unknown[]).length).toBe(2)
   })
 })

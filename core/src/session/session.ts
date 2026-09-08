@@ -4,6 +4,7 @@ import {
   Agent, DEFAULT_STEP_TIMEOUT_MS, MAX_COLD_START_MS, PREFILL_MS_PER_TOKEN,
   type AgentEvents, type AgentOptions, type StepInfo, type StepPreamble, type TurnResult,
 } from '../agent/loop.js'
+import { LoopDetector } from '../agent/loop-detector.js'
 import { buildSystemPrompt } from '../agent/prompt.js'
 import { ROLES, runSubAgent, type SubAgentOutcome, type SubAgentRole } from '../agent/subagent.js'
 import type { Checkpoint } from '../checkpoints/store.js'
@@ -399,7 +400,7 @@ export interface SessionOptions {
 /** What counts as changing the workspace, for `turnFootprint`. Mirrors the permission
  * engine's own write family; restated here rather than imported so a change to the gate's
  * membership is a deliberate decision in both places. */
-const WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MoveFile', 'DeleteFile'])
+const WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MoveFile', 'DeleteFile', 'CSharpRename'])
 const COMMAND_TOOLS: ReadonlySet<string> = new Set(['Bash'])
 
 const PLAN_MODE_NOTE = '(mode is now plan: investigate and propose; do not edit)'
@@ -1963,6 +1964,11 @@ export class Session {
     const target = typeof parsed.path === 'string' ? parsed.path
       : typeof parsed.to === 'string' ? parsed.to : undefined
     if (target === undefined) return
+    this.noteWrittenTarget(target)
+  }
+
+  /** One workspace-relative path a tool wrote: the folder to verify, the file to check. */
+  private noteWrittenTarget(target: string): void {
     try {
       const abs = this.workspace.resolve(target)
       const mount = this.workspace.mountFor(abs)
@@ -2567,12 +2573,16 @@ export class Session {
       // the workspace exactly as it was, and counting them would make a turn that achieved
       // nothing look busy to the idle check.
       if (result.ok) {
-        if (WRITE_TOOLS.has(name)) {
+        const wrote = (result as { wrote?: string[] }).wrote ?? []
+        if (WRITE_TOOLS.has(name) || wrote.length > 0) {
           this.writeCount += 1
           // Which FOLDER was written, so verify runs where the change landed instead of
           // everywhere. Read from the call's own arguments: the tool has already resolved
           // and jailed the path, and the transcript is not a place to re-derive it from.
+          // A tool whose writes are not in its arguments — a rename across the tree — names
+          // them in its result instead (`ToolResult.wrote`).
           this.notePathWritten(this.lastToolArgs.get(name))
+          for (const path of wrote) this.noteWrittenTarget(path)
         } else if (COMMAND_TOOLS.has(name)) this.commandCount += 1
         this.noteModelRanVerify(name, this.lastToolArgs.get(name))
       }
@@ -4086,26 +4096,23 @@ export class Session {
     }
   }
 
-  /*
-   * THE LOOP DETECTOR IS OFF, by the owner's decision, and this is where it was switched on.
+  /**
+   * Refuses the third identical call that got the identical answer twice. One per session,
+   * not per turn, because the loop it exists for spans turns: a model that re-runs the same
+   * failing command once per turn for an hour looks reasonable inside each turn, and nothing
+   * else bounds a night.
    *
-   * What it was for is still real: a model that re-runs the same failing command once per
-   * turn for an hour looks reasonable inside each turn, and nothing else bounds a night.
-   * `LoopDetector` and its tests are untouched, and re-wiring it is this one line.
-   *
-   * Why it had to go, reported from use: it blocked re-reading a file that had genuinely
-   * changed. The class doc says the signal is the RESULT, not the call, precisely so that
-   * re-reading after an edit stays allowed — but `stableResult` compares only the first 400
-   * characters (`RESULT_PREFIX`). An edit below that point, whether the model made it or the
-   * owner made it in another editor, leaves the compared window identical, so a file that had
-   * really changed read as "the same answer again" and the third read was refused. Anything
-   * that returns a large result is affected the same way; `Read` is simply where it
-   * shows, because re-reading is the correct move after any change.
-   *
-   * The narrow fix, if this is ever revisited: compare a hash of the WHOLE result rather than
-   * a prefix — the reason given for the prefix (cost) is a hash over a string already in
-   * memory, which is not a real cost — or exempt the read family outright.
+   * It was OFF for a while, by the owner's decision, after it blocked re-reading a file that
+   * had genuinely changed: results were compared by their first 400 characters, so an edit
+   * below that point left the compared window identical and the third read of a changed file
+   * was refused as "the same answer again". The detector compares the whole result now
+   * (`loop-detector.ts`, `stableResult`), which is the narrow fix the note here proposed.
+   * What brought it back was the other failure it was written for, seen live: a model that
+   * had reached for `TaskOutput` with an invented id and kept calling it with the same
+   * arguments and the same "no such task" answer, turn after turn, past every request to
+   * stop. Switching it off again is deleting the `loopDetector` line in `buildAgent`.
    */
+  private readonly loopDetector = new LoopDetector()
 
   /** Built only for a long run; see `SessionOptions.longRun`. */
   private readonly checkpoints: CheckpointSet | null
@@ -4514,9 +4521,9 @@ export class Session {
       registry: this.opts.toolset.registry,
       context,
       transcript: this.transcript,
-      // No `loopDetector` — see the note where it used to be constructed. Omitting it is how
-      // the Agent turns the check off: `AgentOptions.loopDetector` is optional and absent
-      // means the code never runs, rather than running with a limit nothing can reach.
+      // The session's own, so it spans turns — see the field's note. Leaving it out is how
+      // the check is switched off: `AgentOptions.loopDetector` is optional.
+      loopDetector: this.loopDetector,
     }
     // Only with somewhere to ask. Without a port the check could read the request three ways
     // and have nobody to put the disagreement to, which is a generation spent on nothing.

@@ -63,14 +63,19 @@ describe('what counts as a loop', () => {
     expect(d.wouldRepeat('Read', '{"path":"a.ts"}')).toBe(false)
   })
 
-  test('only the compared prefix of a huge result has to match', () => {
-    // A megabyte of identical build output is identical in its first few hundred characters
-    // too, and hashing all of it on every call would cost more than it saves.
+  test('a result that differs only far past its first few hundred characters is a different result', () => {
+    // The owner's case, and the reason the detector spent a while switched off: results
+    // used to be compared by their first 400 characters, so a file edited below that point
+    // read as "the same answer again" and the third read of a genuinely changed file was
+    // refused. The whole result is compared now.
     const d = new LoopDetector()
     const big = (tail: string) => `${'x'.repeat(5_000)}${tail}`
-    d.record('Bash', '{"command":"build"}', big('a'))
-    d.record('Bash', '{"command":"build"}', big('b'))
-    expect(d.wouldRepeat('Bash', '{"command":"build"}')).toBe(true)
+    d.record('Read', '{"path":"a.ts"}', big('a'))
+    d.record('Read', '{"path":"a.ts"}', big('b'))
+    expect(d.wouldRepeat('Read', '{"path":"a.ts"}')).toBe(false)
+    // While two genuinely identical megabytes are still the same answer twice.
+    d.record('Read', '{"path":"a.ts"}', big('b'))
+    expect(d.wouldRepeat('Read', '{"path":"a.ts"}')).toBe(true)
   })
 })
 

@@ -140,7 +140,7 @@ export function answerFrom(
   if (toolNames.some((n) => EDITING_TOOL_NAMES.has(n))) return 'edited'
   // `looked` is a CLAIM that nothing changed, so it is granted only when every tool used is
   // one we ship and declare read-only. Everything else — `Agent`, `SqlDeploy`,
-  // `TaskStop`, an MCP tool, a name we do not recognise — did something, and saying
+  // `TaskOutput`, `TaskStop`, an MCP tool, a name we do not recognise — did something, and saying
   // so is the conservative direction: it understates how much, never what.
   if (toolNames.every((n) => READ_ONLY_TOOL_NAMES.has(n))) return 'looked'
   return 'ran'

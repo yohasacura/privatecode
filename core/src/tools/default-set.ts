@@ -21,6 +21,7 @@ import { symbolOutlineTool } from './symbol-outline.js'
 import { browserTool } from './browser.js'
 import { useSkillTool } from './use-skill.js'
 import { csharpNavTool } from './csharp-nav.js'
+import { csharpRenameTool } from './csharp-rename.js'
 import { databaseTool } from './database.js'
 import { sqlDeployTool } from './sql-deploy.js'
 import { recallTool } from './recall.js'
@@ -85,7 +86,7 @@ export function createToolset(opts: ToolsetOptions = {}): Toolset {
   // `buildSystemPrompt` under `delegation:`, which is computed from THIS registration —
   // remove the tool and the paragraph goes with it.
   for (const t of [readFileTool, listDirTool, findFilesTool, searchCodeTool, webSearchTool, webFetchTool, csharpNavTool, databaseTool,
-                   editFileTool, writeFileTool, moveFileTool, deleteFileTool, createBashTool({ background }), sqlDeployTool, pluginsTool,
+                   editFileTool, writeFileTool, csharpRenameTool, moveFileTool, deleteFileTool, createBashTool({ background }), sqlDeployTool, pluginsTool,
                    taskOutputTool(background), taskStopTool(background), gitStatusTool, todoWriteTool, askUserTool,
                    symbolOutlineTool, browserTool, useSkillTool, rememberTool, recallTool, sessionsTool,
                    delegateTool]) {

@@ -39,6 +39,8 @@ interface Entry {
   ready: ReadyWhen | null
   startedAt: number
   exit: { code: number | null; stopped: boolean } | null
+  /** Polls in a row that found nothing new and no exit — see `describe`. */
+  idlePolls: number
 }
 
 export type JobOrigin = 'agent' | 'user'
@@ -81,8 +83,19 @@ const MAX_BUFFER = 64_000
  * poll payload and the retained memory flat for a run of any length.
  */
 export const MAX_FINISHED = 30
-const MAX_WAIT_S = 30
+const MAX_WAIT_S = 120
 const POLL_INTERVAL_MS = 250
+/**
+ * How long a poll with no `wait_seconds` waits for something to report — new output, exit
+ * or readiness — before answering "(no new output)". Zero used to be the default, and a
+ * model reading a running task went round in a tight loop of TaskOutput calls that each
+ * came back with nothing, which from the outside looked like the shell had been replaced
+ * by a tool that only ever polled. Fifteen seconds turns that loop into a few calls; an
+ * explicit `wait_seconds: 0` still answers at once.
+ */
+const DEFAULT_WAIT_S = 15
+/** Polls in a row that found nothing new before the answer says what to do about it. */
+const IDLE_POLLS_TO_WARN = 3
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
@@ -120,7 +133,7 @@ export class BackgroundTasks {
       )) as unknown as ExecaChild
     const entry: Entry = {
       id, command, origin, child, buffer: '', dropped: 0, cursor: 0, markerSeen: false,
-      ready, startedAt: Date.now(), exit: null,
+      ready, startedAt: Date.now(), exit: null, idlePolls: 0,
     }
     // Same reason as the live stream in run-command: a chunk boundary can split a
     // multi-byte character, and toString() would turn the halves into mojibake.
@@ -184,6 +197,11 @@ export class BackgroundTasks {
         toDrop--
       }
     }
+  }
+
+  /** How many tasks this runner has started and still remembers, finished ones included. */
+  count(): number {
+    return this.entries.size
   }
 
   get(id: string): Entry | undefined {
@@ -270,10 +288,22 @@ function describe(entry: Entry, ready: string | null): string {
   const readyLine = ready === null ? '' : `\n${ready}`
   const fresh = entry.buffer.slice(entry.cursor)
   entry.cursor = entry.buffer.length
+  const idle = fresh.trim() === '' && entry.exit === null
+  entry.idlePolls = idle ? entry.idlePolls + 1 : 0
   const output = fresh.trim() === '' ? '(no new output)' : clipOutput(fresh.trim(), 6_000)
   const dropped = entry.dropped > 0
     ? `\n(${entry.dropped} old output characters were dropped from the front of the buffer)` : ''
-  return `${entry.id}: ${state}${readyLine}\nNew output since last poll:\n${output}${dropped}`
+  // A task polled again and again with nothing to show is either working quietly or
+  // wedged, and the model cannot tell which from "(no new output)" alone. Said once the
+  // pattern is plain: what would settle it, and what to do if it was never meant to run
+  // in the background at all.
+  const stuck = entry.idlePolls >= IDLE_POLLS_TO_WARN
+    ? `\nNothing new in ${entry.idlePolls} polls. If it should have finished by now, TaskStop it and ` +
+      'run it again in the foreground with a larger `timeout` — a one-shot command belongs there; ' +
+      `if it is a server, its ready_when says when it is up. wait_seconds (up to ${MAX_WAIT_S}) waits longer in one call.`
+    : ''
+  const closing = entry.exit !== null ? '\nThe task is finished; there is nothing more to poll.' : ''
+  return `${entry.id}: ${state}${readyLine}\nNew output since last poll:\n${output}${dropped}${stuck}${closing}`
 }
 
 /**
@@ -285,13 +315,20 @@ function describe(entry: Entry, ready: string | null): string {
 export function taskOutputTool(tasks: BackgroundTasks): Tool<TaskOutputArgs> {
   return {
     name: 'TaskOutput',
-    readOnly: true,
+    // It changes nothing, and it is still not read-only: that flag is also what plan mode
+    // offers, and a plan-mode turn has no Bash to start a task. Offered without Bash, this
+    // was the one process-shaped tool a model asked to run something could reach — and it
+    // reached for it with an invented id, again and again. It is offered where Bash is.
+    // The permission engine already treats it as a control op on a process Bash was
+    // approved to start (`EXEC_TOOLS`, engine.ts), so nothing is asked for a poll.
+    readOnly: false,
     description:
       'Read the output of a background task started with Bash (run_in_background: true). ' +
       'Returns only what appeared since the previous read, and whether the task is still ' +
-      'running or how it exited. A process exiting is evidence, not completion — when it was ' +
-      'started with ready_when, poll until "ready: YES". wait_seconds waits that long for exit ' +
-      'or readiness before answering.',
+      'running or how it exited. Waits up to 15 s for new output, exit or readiness before ' +
+      `answering; wait_seconds sets that wait (0 answers at once, up to ${MAX_WAIT_S}). A process ` +
+      'exiting is evidence, not completion — when it was started with ready_when, poll until ' +
+      '"ready: YES". Not a way to run commands: that is Bash.',
     parameters: {
       type: 'object',
       properties: {
@@ -321,8 +358,17 @@ export function taskOutputTool(tasks: BackgroundTasks): Tool<TaskOutputArgs> {
     },
     async execute(args, ctx) {
       const entry = tasks.get(args.id)
-      if (!entry) return { ok: false, content: `No background task with id ${args.id}. Use the id Bash returned.` }
-      const deadline = Date.now() + (args.wait_seconds ?? 0) * 1000
+      if (!entry) {
+        // Two different mistakes wear the same wrong id. With tasks running it is a slip;
+        // with none it is a model that reached for this tool to RUN something, and the
+        // answer has to say so, because the next call is otherwise the same one again.
+        const content = tasks.count() === 0
+          ? `No background task with id ${args.id} — nothing has been started in the background at all. ` +
+            'This tool only reads a task Bash started with run_in_background; to run a command, use Bash.'
+          : `No background task with id ${args.id}. Use the id Bash returned. To run a command, use Bash.`
+        return { ok: false, content }
+      }
+      const deadline = Date.now() + (args.wait_seconds ?? DEFAULT_WAIT_S) * 1000
       let ready = await tasks.isReady(entry, ctx.workspace)
       while (!entry.exit && !ready && Date.now() < deadline) {
         if (ctx.signal?.aborted) return { ok: false, content: 'Poll cancelled by the user.' }

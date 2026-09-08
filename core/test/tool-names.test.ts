@@ -17,7 +17,7 @@ describe('the names the model sees', () => {
       expect(name, name).toMatch(/^[A-Z][A-Za-z]*$/)
     }
     expect([...registered].sort()).toEqual([
-      'Agent', 'AskUserQuestion', 'Bash', 'Browser', 'CSharpNav', 'Database', 'DeleteFile', 'Edit', 'GitStatus', 'Glob',
+      'Agent', 'AskUserQuestion', 'Bash', 'Browser', 'CSharpNav', 'CSharpRename', 'Database', 'DeleteFile', 'Edit', 'GitStatus', 'Glob',
       'Grep', 'LS', 'MoveFile', 'Plugin', 'Read', 'Recall', 'Remember', 'Sessions', 'Skill', 'SqlDeploy', 'SymbolOutline',
       'TaskOutput', 'TaskStop', 'TodoWrite', 'WebFetch', 'WebSearch', 'Write',
     ])

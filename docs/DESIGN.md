@@ -145,7 +145,14 @@ needs its own inbound rule (elevated) before the work laptop can reach the serve
 | | `Write` | new files and full rewrites |
 | | `MoveFile`, `DeleteFile` | separate from bash so permission rules can see them |
 | run | `Bash` | PowerShell, with timeout |
-| | `TaskOutput`, `TaskStop` | read / stop a process `Bash` started in the background (`ready_when` says when it is up) |
+| | `TaskOutput`, `TaskStop` | read / stop a process `Bash` started in the background (`ready_when` says when it is up). Not read-only, although they change nothing: plan mode offers the read-only set, has no `Bash`, and a model asked to run something reached for the one process-shaped tool left, with an invented id, in a loop |
+
+The tools were renamed twice (2026-09-03, 2026-09-07), and every session recorded before
+keeps the old names in its transcript — which the model reads as the example of what works
+here. `tools/legacy-names.ts` translates both a stored transcript as it loads and a call the
+model still writes the old way (`run_command` runs as `Bash`, and its result says so;
+`background_task` splits by action). The file on disk is never rewritten: the doctor reads
+old names off it by design.
 | web | `Browser` | one tool, eleven actions, over CDP against the installed Edge/Chrome. Text-first (`read` returns the page with `[ref_N]` markers) because there is no vision tower; a screenshot is for the person watching |
 | meta | `TodoWrite` | visible plan |
 | | `AskUserQuestion` | question with options, instead of guessing |
@@ -234,7 +241,10 @@ approval at 22:06. `autopilot` does not stop, but nothing can be undone afterwar
 - **Loop detection** (`agent/loop-detector.ts`) refuses the third identical call *whose
   result was also identical*. The result, not the call, is the signal: `TaskOutput`
   exists to be called repeatedly, and a detector that counted calls would break the one tool
-  whose purpose is repetition.
+  whose purpose is repetition. The whole result is compared, by hash: a prefix comparison
+  once refused the re-read of a file edited past the compared window, and the detector was
+  off until it compared everything. It is one per session, so a loop that spends one call
+  per turn is still a loop.
 - **The work log** (`session/worklog.ts`) is one screenful per turn, and every line comes
   from something that happened — the changed files from the checkpoint diff, the exit codes
   from what the tools returned. A summary written by the model that did the work agrees with
@@ -484,6 +494,42 @@ further — an error in a touched file is then always the edit's.
 `core/test/roslyn-nav.test.ts` pins the helper against a real tree (sync, add, delete, the
 cross-file break, the baseline); `core/test/roslyn-check.test.ts` pins the session's half
 with the helper injected.
+
+## 8c. What the navigator answers, and a rename the compiler performs (2026-09-08)
+
+The owner's sessions on a real WPF project showed the tool used four times — `members`
+each time — beside sixty-two `dotnet build` commands the model ran by hand and every rename
+done as an Edit per site. The second round makes one question carry what the next call
+used to be for, and gives the model the one refactor only a compiler can do safely.
+
+- **A definition carries its declaration.** A member's whole text, a type's header up to
+  its brace (its body is `members`), forty lines at most — the Read that followed
+  "where is it defined" is in the answer.
+- **A reference names the member it sits in.** `MainViewModel.Run`, `MainViewModel()`,
+  `MainViewModel._planner` — found by syntax rather than by `GetEnclosingSymbol`, which
+  names the containing type for a position in a field's or a parameter's type. "Who calls
+  this" is answered without opening the callers.
+- **A name it does not know is answered with the closest ones.** The same name in another
+  case, a prefix, a substring, a typo one edit away for a four-letter name and two for
+  longer. "No symbol named X" used to be the end of the road; the model then read files to
+  find the name it had nearly right. `*Repository` and `Get*Async` search by pattern.
+- **`hierarchy`** — what a type extends, what it implements, and everything in the
+  workspace that extends or implements it, transitively. **`errors`** — the compile errors
+  the whole tree has now, the baseline of pre-existing ones honoured, in the seconds the
+  instant check takes rather than the build the model used to run to learn the same.
+- **`CSharpRename`** — a type, member or parameter renamed through Roslyn's own renamer:
+  every declaration and use in every file, nothing that only shares the name (a member of
+  another type, a word in a string or a comment). The helper answers with each changed
+  file's new text and writes nothing; the tool writes them with their byte-order marks and
+  line endings kept, tells the index and the check they moved, runs the compiler on them at
+  once — a collision with an existing name is heard about now — and names the files it
+  wrote (`ToolResult.wrote`), which is how the session counts writes a tool's arguments do
+  not name. Refused for a name that is not an identifier, a symbol not declared in the
+  workspace, or a query that names several (a qualified name settles it); generated files
+  that use the old name — a XAML partial — are counted and named as the markup's to fix.
+
+`core/test/roslyn-nav.test.ts` pins the answers on the fixture; `core/test/csharp-rename.test.ts`
+pins the rename end to end, with a CRLF file and a BOM file coming back byte for byte.
 
 ## 8. Open items
 

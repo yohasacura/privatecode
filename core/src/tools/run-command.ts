@@ -134,9 +134,10 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
       'in the workspace folder, or in `cwd`: a `cd` does not carry over to the next call, so ' +
       'set `cwd` rather than chaining `cd`. `git`, `node`, `python`, `dotnet` and the rest come ' +
       'from the machine\'s PATH. Exit code 0 is evidence, not proof — verify with a follow-up ' +
-      'check when it matters. A dev server, a watcher or anything long-running: pass ' +
+      'check when it matters. A command that needs more than two minutes takes a larger `timeout`. ' +
+      'A dev server, a watcher — a process that is not meant to finish — is started with ' +
       'run_in_background: true (with ready_when for a port, file or log marker that shows it is ' +
-      'up) and read it with TaskOutput; TaskStop ends it.',
+      'up) and read with TaskOutput; TaskStop ends it.',
     parameters: {
       type: 'object',
       properties: {
@@ -333,8 +334,12 @@ export function createBashTool(deps: { background?: BackgroundTasks } = {}): Too
       }
       if (stopped === 'timeout') {
         const head = `Command killed after ${Math.round(timeoutMs / 1000)} s (timeout). Partial output:\n`
-        const tail = '\nIf it legitimately needs longer, re-run with a larger `timeout`, or ' +
-          'start it with run_in_background: true.'
+        // The larger timeout first, and the background only for what is not meant to end:
+        // the old order sent one-shot commands into the background, where the model then
+        // polled them with TaskOutput in a loop instead of getting a result.
+        const tail = `\nIf it legitimately needs longer, re-run it with a larger \`timeout\` (up to ${MAX_TIMEOUT_MS} ms) ` +
+          'and it answers in one call. run_in_background is only for a process that is not meant to finish — ' +
+          'a server, a watcher.'
         return {
           ok: false,
           content: `${head}${out || '(none)'}${tail}${deviceNote}`,

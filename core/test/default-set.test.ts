@@ -42,13 +42,24 @@ test('buildRegistry() marks exactly the read-only tools as readOnly', () => {
      // Tuesday" are questions a plan should be built on rather than re-derived around.
      'Sessions',
      'SymbolOutline',
-     // Reads a background task's output; starting or stopping one is another tool.
-     'TaskOutput', 'TodoWrite',
+     // Not `TaskOutput`: it changes nothing, but it goes with Bash — see below.
+     'TodoWrite',
      // Reads a file the user wrote and returns its text; it runs nothing. Read-only is
      // what makes it available in PLAN mode, which is where reading a procedure before
      // proposing a plan is most of the point.
      'Skill'].sort(),
   )
+})
+
+test('TaskOutput is deliberately not read-only, so plan mode offers it only alongside Bash', () => {
+  // Reading a process changes nothing, but plan mode has no Bash to start one. Offered on
+  // its own it was the one process-shaped tool a model asked to run something could still
+  // reach, and it reached for it with a made-up id, over and over, while the user asked it
+  // to use the shell it did not have.
+  const registry = buildRegistry()
+  expect(registry.readOnlyNames()).not.toContain('TaskOutput')
+  expect(registry.readOnlyNames()).not.toContain('TaskStop')
+  expect(registry.names()).toContain('TaskOutput')
 })
 
 test('SqlDeploy is deliberately not read-only, so plan mode cannot reach it', () => {

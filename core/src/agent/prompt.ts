@@ -236,8 +236,10 @@ export function buildSystemPrompt(opts: PromptOptions): string {
     parts.push(
       '',
       'You are in PLAN mode. You cannot modify anything: no editing tools are available to',
-      'you at all. Investigate, then reply with a concrete plan — which files change and',
-      'how. The user will approve it before any change is made.',
+      'you at all, and nothing can be run or deleted. Investigate, then reply with a',
+      'concrete plan — which files change and how. The user will approve it before any',
+      'change is made. If the request itself needs a change, say so and ask the user to',
+      'switch the mode.',
     )
   } else if (opts.mode === 'autopilot') {
     parts.push(

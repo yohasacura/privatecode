@@ -48,6 +48,7 @@ export const BUILT_IN_TOOL_NAMES: ReadonlySet<string> = new Set([
   'Bash',
   'Browser',
   'CSharpNav',
+  'CSharpRename',
   'Database',
   'DeleteFile',
   'Edit',
@@ -108,7 +109,11 @@ export const MCP_TOOL_PREFIX = 'mcp__'
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'AskUserQuestion', 'CSharpNav', 'Database', 'Glob', 'GitStatus', 'LS',
   'Read', 'Recall', 'Grep', 'Sessions', 'SymbolOutline', 'TodoWrite',
-  'Skill', 'TaskOutput',
+  'Skill',
+  // Not `TaskOutput`, although reading a process changes nothing: this set is also what
+  // plan mode OFFERS, and a plan-mode turn has no Bash to start anything. Offered alone, it
+  // was the one process-shaped tool a model asked to run something could still reach —
+  // and it reached for it, with a made-up id, over and over. It goes with Bash now.
 ])
 
 /**
@@ -129,6 +134,8 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
  * rather than silently dropping out of the gate analysis.
  */
 export const EDITING_TOOL_NAMES: ReadonlySet<string> = new Set([
+  // Rewrites every file that uses a symbol — the files are named in its result, not its arguments.
+  'CSharpRename',
   'DeleteFile',
   'Edit',
   'MoveFile',

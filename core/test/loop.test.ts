@@ -1652,3 +1652,32 @@ test('a Stop hook holds a closing step exactly as it holds a plain answer', asyn
   expect(note.content).toContain('A Stop hook asked you to continue')
   expect(note.content).toContain('run the tests first')
 })
+
+test("a call under a tool's old name runs under its current one, and the result says which", async () => {
+  // A transcript recorded before the renames teaches the model `run_command`; answering
+  // "Unknown tool" to that got the same call again, turn after turn (tools/legacy-names.ts).
+  const fake = await startFakeServer(callsThenDone([
+    ['run_command', { command: 'echo hi' }],
+  ]))
+  stop = fake.close
+  const rec = recorder()
+  await makeAgent(fake.url, { events: rec.handlers }, [runCommandTool]).runTurn('go')
+
+  const contents = resultContents(rec)
+  expect(contents.length).toBe(1)
+  expect(contents[0]).toMatch(/^\(run_command is now Bash; run as Bash\.\)\n/)
+  expect(contents[0]).toContain('hi')
+})
+
+test('a name no tool ever had is answered with the list of tools, not just a refusal', async () => {
+  const fake = await startFakeServer(callsThenDone([
+    ['frobnicate', { value: 'a' }],
+  ]))
+  stop = fake.close
+  const rec = recorder()
+  await makeAgent(fake.url, { events: rec.handlers }).runTurn('go')
+
+  const contents = resultContents(rec)
+  expect(contents[0]).toContain('Unknown tool "frobnicate"')
+  expect(contents[0]).toContain('The tools here are: ping, boom')
+})

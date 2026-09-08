@@ -65,7 +65,9 @@ export class ToolRegistry {
   prepare(name: string, rawArgs: string): Prepared {
     const tool = this.tools.get(name)
     if (!tool) {
-      return { ok: false, content: `Unknown tool "${name}".` }
+      // Named, so a model holding a name from somewhere else — an older transcript, another
+      // harness — has the real list in front of it rather than a refusal to guess against.
+      return { ok: false, content: `Unknown tool "${name}". The tools here are: ${this.names().join(', ')}.` }
     }
     let parsed: unknown
     try {

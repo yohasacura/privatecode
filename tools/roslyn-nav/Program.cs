@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Rename;
 using Microsoft.CodeAnalysis.Text;
 using Basic.Reference.Assemblies;
 
@@ -81,6 +82,9 @@ public static class Program
         "references" => await References(id, Arg(root, "symbol"), Limit(root)),
         "implementations" => await Implementations(id, Arg(root, "symbol")),
         "members" => Members(id, Arg(root, "symbol")),
+        "hierarchy" => await Hierarchy(id, Arg(root, "symbol")),
+        "search" => await Search(id, Arg(root, "symbol"), Limit(root)),
+        "rename" => await Rename(id, Arg(root, "symbol"), Arg(root, "newName")),
         "sync" => Sync(id, root),
         "diagnostics" => await Diagnostics(id, root),
         "status" => new
@@ -660,7 +664,10 @@ public static class Program
         var (compilation, err) = await Compile();
         if (compilation is null) return new { id, ok = false, error = err };
         var found = await Resolve(compilation, symbol);
-        if (found.Count == 0) return new { id, ok = true, results = Array.Empty<object>(), note = $"no symbol named \"{symbol}\"" };
+        if (found.Count == 0)
+        {
+            return new { id, ok = true, results = Array.Empty<object>(), note = $"no symbol named \"{symbol}\"", suggestions = await Suggest(symbol) };
+        }
         return new
         {
             id,
@@ -670,8 +677,363 @@ public static class Program
                 located = Located(s),
                 signature = s.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat),
                 docs = Summary(s),
+                // The declaration itself, so the answer to "where is it defined" carries what
+                // the reader would open the file for next.
+                source = SourceOf(s),
             }).ToArray(),
             truncated = found.Count > 25 ? found.Count - 25 : (int?)null,
+        };
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Near misses, excerpts and the symbol's neighbourhood: what turns "no symbol named X"
+    // into an answer, and one question into what used to take a Read of the file.
+
+    /// <summary>
+    /// Declarations whose name is close to the query — the same name in another case, a
+    /// prefix, a substring either way, a typo two edits away. "No symbol named X" used to be
+    /// the end of the road, after which the model read files to find the name it had
+    /// nearly right.
+    /// </summary>
+    private static async Task<object[]> Suggest(string query)
+    {
+        var project = Current;
+        if (project is null) return Array.Empty<object>();
+        var wanted = query.Trim().Replace("*", "");
+        var simple = wanted.Contains('.') ? wanted[(wanted.LastIndexOf('.') + 1)..] : wanted;
+        if (simple.Length < 2) return Array.Empty<object>();
+        var ranked = new List<(ISymbol sym, int rank)>();
+        foreach (var sym in await SymbolFinder.FindSourceDeclarationsAsync(
+                     project, name => Closeness(name, simple) is not null, SymbolFilter.TypeAndMember))
+        {
+            if (DeclaredOnlyInGenerated(sym) || sym.IsImplicitlyDeclared) continue;
+            if (sym is IMethodSymbol { AssociatedSymbol: not null }) continue;
+            ranked.Add((sym, Closeness(sym.Name, simple) ?? 9));
+        }
+        return ranked
+            .OrderBy(r => r.rank).ThenBy(r => r.sym.Name.Length).ThenBy(r => r.sym.Name, StringComparer.Ordinal)
+            .Take(8)
+            .Select(r => (object)new
+            {
+                located = Located(r.sym),
+                signature = r.sym.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat),
+            })
+            .ToArray();
+    }
+
+    /// <summary>0 = the same name in another case … 4 = a typo; null = not close at all.</summary>
+    private static int? Closeness(string name, string wanted)
+    {
+        if (name.Equals(wanted, StringComparison.OrdinalIgnoreCase)) return 0;
+        if (name.StartsWith(wanted, StringComparison.OrdinalIgnoreCase)) return 1;
+        if (name.Contains(wanted, StringComparison.OrdinalIgnoreCase)) return 2;
+        if (name.Length >= 4 && wanted.Contains(name, StringComparison.OrdinalIgnoreCase)) return 3;
+        // A typo: one edit away for a short name (`Runn` for `Run`), two for a longer one
+        // (`Bulid` for `Build` — a transposition is two edits).
+        var allowed = wanted.Length >= 5 ? 2 : 1;
+        if (wanted.Length >= 4 && Math.Abs(name.Length - wanted.Length) <= allowed &&
+            EditDistance(name.ToLowerInvariant(), wanted.ToLowerInvariant(), allowed) <= allowed) return 4;
+        return null;
+    }
+
+    /// <summary>How many times <c>needle</c> occurs in <c>line</c> as a whole identifier.</summary>
+    private static int Occurrences(string line, string needle)
+    {
+        var count = 0;
+        var at = 0;
+        while ((at = line.IndexOf(needle, at, StringComparison.Ordinal)) >= 0)
+        {
+            var before = at == 0 ? ' ' : line[at - 1];
+            var afterEnd = at + needle.Length;
+            var next = afterEnd >= line.Length ? ' ' : line[afterEnd];
+            if (!(char.IsLetterOrDigit(before) || before == '_') && !(char.IsLetterOrDigit(next) || next == '_')) count++;
+            at = afterEnd;
+        }
+        return count;
+    }
+
+    /// <summary>Levenshtein with a ceiling: a row that is already past <c>max</c> ends the search.</summary>
+    private static int EditDistance(string a, string b, int max)
+    {
+        var prev = new int[b.Length + 1];
+        var cur = new int[b.Length + 1];
+        for (var j = 0; j <= b.Length; j++) prev[j] = j;
+        for (var i = 1; i <= a.Length; i++)
+        {
+            cur[0] = i;
+            var best = cur[0];
+            for (var j = 1; j <= b.Length; j++)
+            {
+                var cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                cur[j] = Math.Min(Math.Min(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+                best = Math.Min(best, cur[j]);
+            }
+            if (best > max) return max + 1;
+            (prev, cur) = (cur, prev);
+        }
+        return prev[b.Length];
+    }
+
+    /// <summary>
+    /// The declaration as written, bounded: a member's whole text, a type's header up to its
+    /// brace (its body is <c>members</c>). Forty lines or three thousand characters at most —
+    /// a receipt of what is there, not a second Read.
+    /// </summary>
+    private static string? SourceOf(ISymbol s)
+    {
+        var reference = s.DeclaringSyntaxReferences.FirstOrDefault(r => !IsGenerated(r.SyntaxTree.FilePath))
+                        ?? s.DeclaringSyntaxReferences.FirstOrDefault();
+        if (reference is null) return null;
+        SyntaxNode node;
+        try { node = reference.GetSyntax(); }
+        catch { return null; }
+        // A field's or event's declarator sits inside its declaration; the declaration is the
+        // readable unit ("private readonly IPlanner _planner;", not "_planner").
+        if (node is VariableDeclaratorSyntax v && v.Parent?.Parent is MemberDeclarationSyntax member) node = member;
+        string text;
+        if (node is BaseTypeDeclarationSyntax type && !type.OpenBraceToken.IsKind(SyntaxKind.None))
+        {
+            text = type.SyntaxTree.GetText()
+                .ToString(TextSpan.FromBounds(type.SpanStart, type.OpenBraceToken.SpanStart)).TrimEnd();
+        }
+        else
+        {
+            text = node.ToString();
+        }
+        var lines = text.Split('\n');
+        if (lines.Length > 40) text = string.Join('\n', lines.Take(40)) + $"\n… ({lines.Length - 40} more lines)";
+        if (text.Length > 3000) text = text[..3000] + "…";
+        return text;
+    }
+
+    /// <summary>
+    /// The member a position sits in — <c>MainViewModel.Run</c> — which is what "who calls
+    /// this" is really asking. Lambdas and local functions are named by the method they live
+    /// in; an accessor by its property.
+    /// </summary>
+    private static string? EnclosingOf(SemanticModel model, int position)
+    {
+        // By syntax, not by `GetEnclosingSymbol`: that answers the containing TYPE for a
+        // position in a field's type, a parameter's type or a method's return type — the
+        // declaration a reference most often sits in — because the member's body has not
+        // begun there. The member whose declaration holds the token is what the reader wants.
+        var token = model.SyntaxTree.GetRoot().FindToken(position);
+        foreach (var node in token.Parent?.AncestorsAndSelf() ?? Enumerable.Empty<SyntaxNode>())
+        {
+            ISymbol? declared = node switch
+            {
+                FieldDeclarationSyntax f => f.Declaration.Variables.Count > 0 ? model.GetDeclaredSymbol(f.Declaration.Variables[0]) : null,
+                EventFieldDeclarationSyntax e => e.Declaration.Variables.Count > 0 ? model.GetDeclaredSymbol(e.Declaration.Variables[0]) : null,
+                BaseMethodDeclarationSyntax or BasePropertyDeclarationSyntax or EnumMemberDeclarationSyntax or DelegateDeclarationSyntax => model.GetDeclaredSymbol(node),
+                BaseTypeDeclarationSyntax => model.GetDeclaredSymbol(node),
+                _ => null,
+            };
+            if (declared is null) continue;
+            return declared switch
+            {
+                IMethodSymbol { MethodKind: MethodKind.Constructor or MethodKind.StaticConstructor } ctor => $"{ctor.ContainingType.Name}()",
+                IMethodSymbol { AssociatedSymbol: { } associated } => Owned(associated),
+                INamedTypeSymbol t => t.Name,
+                _ => Owned(declared),
+            };
+        }
+        return null;
+
+        static string Owned(ISymbol s) => s.ContainingType is null ? s.Name : $"{s.ContainingType.Name}.{s.Name}";
+    }
+
+    /// <summary>
+    /// Hits that live in this workspace, one per symbol, with the ones from referenced
+    /// assemblies counted. A project that has been built once is referenced by its OWN bin
+    /// output, so every type it declares exists twice in this compilation — as source, and
+    /// as metadata from the assembly it compiled to; source wins, being the copy a reader
+    /// can open and the current one.
+    /// </summary>
+    private static (List<object> rows, int external) SourceOnly(IEnumerable<ISymbol> hits)
+    {
+        var bySource = new Dictionary<string, ISymbol>(StringComparer.Ordinal);
+        foreach (var h in hits)
+        {
+            var key = h.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            var inSource = h.Locations.Any(l => l.IsInSource);
+            if (!bySource.TryGetValue(key, out var kept) || (inSource && !kept.Locations.Any(l => l.IsInSource)))
+            {
+                bySource[key] = h;
+            }
+        }
+        var rows = new List<object>();
+        var external = 0;
+        foreach (var s in bySource.Values)
+        {
+            if (DeclaredOnlyInGenerated(s)) continue;
+            if (s.Locations.Any(l => l.IsInSource)) rows.Add(Located(s));
+            else external++;
+        }
+        return (rows, external);
+    }
+
+    /// <summary>
+    /// A type's place in the type graph: what it extends, what it implements, and what in
+    /// this workspace extends or implements it — transitively, which is the question
+    /// "what would break if I changed this base class" actually asks.
+    /// </summary>
+    private static async Task<object> Hierarchy(int id, string symbol)
+    {
+        var (compilation, err) = await Compile();
+        if (compilation is null) return new { id, ok = false, error = err };
+        var found = (await Resolve(compilation, symbol)).OfType<INamedTypeSymbol>().ToList();
+        if (found.Count == 0)
+        {
+            return new { id, ok = true, results = Array.Empty<object>(), note = $"no type named \"{symbol}\"", suggestions = await Suggest(symbol) };
+        }
+        var type = found[0];
+        var bases = new List<object>();
+        for (var b = type.BaseType; b is not null && b.SpecialType != SpecialType.System_Object; b = b.BaseType) bases.Add(Located(b));
+        var derived = new List<ISymbol>();
+        if (type.TypeKind == TypeKind.Interface)
+        {
+            derived.AddRange(await SymbolFinder.FindImplementationsAsync(type, _solution!));
+            derived.AddRange(await SymbolFinder.FindDerivedInterfacesAsync(type, _solution!, transitive: true));
+        }
+        else
+        {
+            derived.AddRange(await SymbolFinder.FindDerivedClassesAsync(type, _solution!, transitive: true));
+        }
+        var (rows, external) = SourceOnly(derived);
+        return new
+        {
+            id,
+            ok = true,
+            type = Located(type),
+            kind = type.TypeKind.ToString().ToLowerInvariant(),
+            @abstract = type.IsAbstract && type.TypeKind != TypeKind.Interface,
+            @sealed = type.IsSealed && type.TypeKind == TypeKind.Class,
+            bases,
+            interfaces = type.AllInterfaces.Select(i => (object)Located(i)).ToArray(),
+            results = rows,
+            external,
+            others = found.Count > 1 ? found.Skip(1).Select(Located).ToArray() : null,
+        };
+    }
+
+    /// <summary>
+    /// Declarations matching a wildcard — <c>*Repository</c>, <c>Get*Async</c> — for a name
+    /// the model only half knows. Names only, never bodies.
+    /// </summary>
+    private static async Task<object> Search(int id, string pattern, int limit)
+    {
+        var project = Current;
+        if (project is null) return new { id, ok = false, error = "nothing is loaded; call load first" };
+        var trimmed = pattern.Trim();
+        if (trimmed.Length == 0) return new { id, ok = false, error = "search needs a pattern" };
+        var regex = new Regex("^" + Regex.Escape(trimmed).Replace("\\*", ".*").Replace("\\?", ".") + "$", RegexOptions.IgnoreCase);
+        var matches = new List<ISymbol>();
+        foreach (var sym in await SymbolFinder.FindSourceDeclarationsAsync(project, name => regex.IsMatch(name), SymbolFilter.TypeAndMember))
+        {
+            if (DeclaredOnlyInGenerated(sym) || sym.IsImplicitlyDeclared || sym is IMethodSymbol { AssociatedSymbol: not null }) continue;
+            matches.Add(sym);
+        }
+        // Types first — a pattern like `*Repository` is nearly always after the types — then
+        // members, each group by name.
+        var ordered = matches
+            .OrderBy(s => s is INamedTypeSymbol ? 0 : 1)
+            .ThenBy(s => s.Name, StringComparer.Ordinal)
+            .ThenBy(s => s.ContainingType?.Name ?? "", StringComparer.Ordinal)
+            .ToList();
+        var rows = ordered.Take(limit).Select(s => (object)new
+        {
+            located = Located(s),
+            signature = s.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat),
+        }).ToList();
+        return new { id, ok = true, results = rows, total = ordered.Count, truncated = ordered.Count > rows.Count ? ordered.Count - rows.Count : (int?)null };
+    }
+
+    /// <summary>
+    /// The symbol renamed everywhere it is declared and used, as the new text of every file
+    /// that changes. Nothing is written here: the caller writes the files — keeping their
+    /// own line endings and byte-order marks — and tells this process they changed, so an
+    /// index and a disk that disagree cannot happen half-way. Refused for a name that is
+    /// not an identifier, a symbol not declared in this workspace, or a query that names
+    /// several (a qualified name settles it). Comments and strings are left alone: a word
+    /// that happens to be the name is not a use of it.
+    /// </summary>
+    private static async Task<object> Rename(int id, string symbol, string newName)
+    {
+        if (_solution is null || _projectId is null) return new { id, ok = false, error = "nothing is loaded; call load first" };
+        var wanted = newName.Trim();
+        if (!SyntaxFacts.IsValidIdentifier(wanted)) return new { id, ok = false, error = $"\"{wanted}\" is not a valid C# identifier" };
+        var (compilation, err) = await Compile();
+        if (compilation is null) return new { id, ok = false, error = err };
+        var found = (await Resolve(compilation, symbol))
+            .Where(s => s.Locations.Any(l => l.IsInSource) && !DeclaredOnlyInGenerated(s))
+            .GroupBy(s => s.OriginalDefinition, SymbolEqualityComparer.Default)
+            .Select(g => g.First())
+            .ToList();
+        if (found.Count == 0)
+        {
+            return new { id, ok = false, error = $"no symbol named \"{symbol}\" is declared in this workspace", suggestions = await Suggest(symbol) };
+        }
+        if (found.Count > 1)
+        {
+            return new
+            {
+                id, ok = false,
+                error = $"\"{symbol}\" names {found.Count} symbols; qualify it (Type.Member) so exactly one is meant",
+                candidates = found.Take(10).Select(s => (object)new
+                {
+                    located = Located(s),
+                    signature = s.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat),
+                }).ToArray(),
+            };
+        }
+        var target = found[0];
+        if (target.Name == wanted) return new { id, ok = false, error = $"\"{symbol}\" is already named {wanted}" };
+
+        var options = new SymbolRenameOptions(RenameOverloads: false, RenameInStrings: false, RenameInComments: false, RenameFile: false);
+        var renamed = await Renamer.RenameSymbolAsync(_solution, target, options, wanted);
+        var files = new List<object>();
+        var generatedTouched = 0;
+        foreach (var projectChanges in renamed.GetChanges(_solution).GetProjectChanges())
+        {
+            foreach (var docId in projectChanges.GetChangedDocuments())
+            {
+                var before = _solution.GetDocument(docId);
+                var after = renamed.GetDocument(docId);
+                if (before is null || after is null) continue;
+                // A generated file that uses the symbol — a XAML partial's `InitializeComponent`
+                // wiring, say — is the build's to regenerate, from a source this rename cannot
+                // reach. Counted, so the caller can say the XAML needs the same change.
+                if (IsGenerated(after.FilePath)) { generatedTouched++; continue; }
+                var oldText = await before.GetTextAsync();
+                var newText = await after.GetTextAsync();
+                // Line by line, not `GetTextChanges`: the renamed document's text is not an
+                // incremental edit of the old one, so that answered with one change that
+                // replaced the whole file. A rename never changes the line count, and the
+                // places are the lines that differ — with the new name counted where one line
+                // holds it twice.
+                var oldLines = oldText.Lines.Select(l => l.ToString()).ToList();
+                var newLines = newText.Lines.Select(l => l.ToString()).ToList();
+                var changedLines = new List<int>();
+                var places = 0;
+                for (var i = 0; i < Math.Min(oldLines.Count, newLines.Count); i++)
+                {
+                    if (oldLines[i] == newLines[i]) continue;
+                    changedLines.Add(i + 1);
+                    places += Math.Max(1, Occurrences(newLines[i], wanted) - Occurrences(oldLines[i], wanted));
+                }
+                if (changedLines.Count == 0 && oldLines.Count == newLines.Count) continue;
+                files.Add(new { file = after.FilePath, text = newText.ToString(), places, lines = changedLines.Take(50).ToArray() });
+            }
+        }
+        return new
+        {
+            id,
+            ok = true,
+            symbol = Located(target),
+            signature = target.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat),
+            newName = wanted,
+            files,
+            generated = generatedTouched,
         };
     }
 
@@ -691,10 +1053,17 @@ public static class Program
         var (compilation, err) = await Compile();
         if (compilation is null) return new { id, ok = false, error = err };
         var found = await Resolve(compilation, symbol);
-        if (found.Count == 0) return new { id, ok = true, results = Array.Empty<object>(), note = $"no symbol named \"{symbol}\"" };
+        if (found.Count == 0)
+        {
+            return new { id, ok = true, results = Array.Empty<object>(), note = $"no symbol named \"{symbol}\"", suggestions = await Suggest(symbol) };
+        }
 
-        var rows = new List<object>();
+        var hits = new List<(string file, int line, string text, string? within)>();
         var total = 0;
+        // An unqualified name can resolve to several symbols at once — an interface member
+        // and every implementation of it — and FindReferences cascades between those, so
+        // the same use came back once per symbol. One place is one row.
+        var seen = new HashSet<(string, int)>();
         foreach (var sym in found.Take(5))
         {
             foreach (var reference in await SymbolFinder.FindReferencesAsync(sym, _solution!))
@@ -702,20 +1071,27 @@ public static class Program
                 foreach (var loc in reference.Locations)
                 {
                     if (IsGenerated(loc.Document.FilePath)) continue;
+                    if (!seen.Add((loc.Document.FilePath ?? "", loc.Location.SourceSpan.Start))) continue;
                     total++;
-                    if (rows.Count >= limit) continue;
+                    if (hits.Count >= limit) continue;
                     var span = loc.Location.GetLineSpan();
-                    var text = loc.Document.GetTextAsync().Result;
+                    var text = await loc.Document.GetTextAsync();
+                    var model = await loc.Document.GetSemanticModelAsync();
                     var lineIndex = span.StartLinePosition.Line;
-                    rows.Add(new
-                    {
-                        file = span.Path,
-                        line = lineIndex + 1,
-                        text = lineIndex < text.Lines.Count ? text.Lines[lineIndex].ToString().Trim() : "",
-                    });
+                    hits.Add((
+                        span.Path,
+                        lineIndex + 1,
+                        lineIndex < text.Lines.Count ? text.Lines[lineIndex].ToString().Trim() : "",
+                        model is null ? null : EnclosingOf(model, loc.Location.SourceSpan.Start)));
                 }
             }
         }
+        // In file order, so the reader sees each caller's uses together; the member each use
+        // sits in rides along, which is what "who calls this" was asking.
+        var rows = hits
+            .OrderBy(h => h.file, StringComparer.OrdinalIgnoreCase).ThenBy(h => h.line)
+            .Select(h => (object)new { file = h.file, line = h.line, text = h.text, @in = h.within })
+            .ToList();
         return new { id, ok = true, results = rows, total, truncated = total > rows.Count ? total - rows.Count : (int?)null };
     }
 
@@ -739,38 +1115,20 @@ public static class Program
             }
         }
 
-        // A project that has been built once is referenced by its OWN bin output, so every
-        // type it declares exists twice in this compilation: as source, and as metadata from
-        // the assembly it compiled to. Both are real symbols and both match, so the raw answer
-        // listed each of this project's four view models twice. Source wins — it is the copy
-        // the reader can open, and it is current, which the compiled twin may not be.
-        var bySource = new Dictionary<string, ISymbol>(StringComparer.Ordinal);
-        foreach (var h in hits)
-        {
-            var key = h.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-            var inSource = h.Locations.Any(l => l.IsInSource);
-            if (!bySource.TryGetValue(key, out var kept) || (inSource && !kept.Locations.Any(l => l.IsInSource)))
-            {
-                bySource[key] = h;
-            }
-        }
-
         // The question is "what in THIS project implements it", so framework types that
         // happen to implement it too — ObservableCollection, ExpandoObject, DataRowView —
         // are counted rather than listed. Dropping them silently would be the same mistake
         // this file has already made once; a reader who wanted them is told they exist.
-        var rows = new List<object>();
-        var external = 0;
-        foreach (var s in bySource.Values)
-        {
-            if (DeclaredOnlyInGenerated(s)) continue;
-            if (s.Locations.Any(l => l.IsInSource)) rows.Add(Located(s));
-            else external++;
-        }
+        // (Source over its compiled twin, one row per symbol: see `SourceOnly`.)
+        var (rows, external) = SourceOnly(hits);
         var note = external == 0 ? null
             : $"{external} more implementations live in referenced assemblies rather than in " +
               "this workspace, and are not listed.";
-        return new { id, ok = true, results = rows, note };
+        return new
+        {
+            id, ok = true, results = rows, note,
+            suggestions = found.Count == 0 ? await Suggest(symbol) : null,
+        };
     }
 
     private static object Members(int id, string symbol)
@@ -781,7 +1139,10 @@ public static class Program
         if (compilation is null) return new { id, ok = false, error = "the compilation could not be built" };
 
         var found = Resolve(compilation, symbol).Result.OfType<INamedTypeSymbol>().ToList();
-        if (found.Count == 0) return new { id, ok = true, results = Array.Empty<object>(), note = $"no type named \"{symbol}\"" };
+        if (found.Count == 0)
+        {
+            return new { id, ok = true, results = Array.Empty<object>(), note = $"no type named \"{symbol}\"", suggestions = Suggest(symbol).Result };
+        }
         var type = found[0];
         return new
         {
@@ -898,11 +1259,14 @@ public static class Program
         if (root.TryGetProperty("files", out var arr) && arr.ValueKind == JsonValueKind.Array) ApplySync(arr);
         // `all`: everything, baseline included — what a person checking this index wants.
         var all = root.TryGetProperty("all", out var allEl) && allEl.ValueKind == JsonValueKind.True;
+        // `everything`: bind the whole tree rather than only what the touched files can have
+        // broken — the model asking "does it compile now?" — with the baseline still honoured.
+        var everything = root.TryGetProperty("everything", out var evEl) && evEl.ValueKind == JsonValueKind.True;
 
         var sw = Stopwatch.StartNew();
         var (compilation, err) = await Compile();
         if (compilation is null) return new { id, ok = false, error = err };
-        var (errors, bound) = ErrorsAfterEdits(compilation, all);
+        var (errors, bound) = ErrorsAfterEdits(compilation, all || everything);
         var baseline = _baseline is null ? new HashSet<string>(StringComparer.Ordinal) : await _baseline;
         // Only a tree with NO pre-existing errors earns the stricter reading, in which an old
         // error in a file the model touched is reported too. A source generator this

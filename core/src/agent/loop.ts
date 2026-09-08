@@ -4,6 +4,7 @@ import type { ChatMessage, ChatResult, StreamProgress, Timings, ToolCall } from 
 import { BROWSER_TOOL, MCP_TOOL_PREFIX, type AgentMode, type PermissionEngine } from '../permissions/engine.js'
 import { suggestRules } from '../permissions/rules.js'
 import { Transcript, transcriptChars } from '../transcript/transcript.js'
+import { currentToolCall } from '../tools/legacy-names.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import type { ApprovalPreview, PermissionKey, Tool, ToolContext, ToolResult } from '../tools/types.js'
 import { buildSystemPrompt } from './prompt.js'
@@ -1451,7 +1452,19 @@ export class Agent {
    * JSON or arguments that fail validation is rejected exactly as before, without ever
    * reaching the engine.
    */
-  private async runTool(name: string, args: string): Promise<ToolResult> {
+  private async runTool(rawName: string, rawArgs: string): Promise<ToolResult> {
+    // A call written under a tool's old name (tools/legacy-names.ts) runs under its current
+    // one, and the result opens by saying so — the model reads its own transcript as the
+    // example of what works here, and a transcript recorded before the renames taught it
+    // `run_command`. Answering "Unknown tool" to that got the same call again.
+    const call = currentToolCall(rawName, rawArgs)
+    const result = await this.runCurrentTool(call.name, call.args)
+    return call.renamed === null
+      ? result
+      : { ...result, content: `(${call.renamed} is now ${call.name}; run as ${call.name}.)\n${result.content}` }
+  }
+
+  private async runCurrentTool(name: string, args: string): Promise<ToolResult> {
     const allowed = this.opts.allowedTools
     if (allowed && !allowed.includes(name)) {
       return {
