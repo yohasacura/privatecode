@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import {
-  chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync,
   writeFileSync,
 } from 'node:fs'
 import { open } from 'node:fs/promises'
@@ -339,14 +339,27 @@ test('Write converts CRLF content to LF when the existing file is LF', async () 
   expect(r.content).toMatch(/LF/)
 })
 
-test('Write writes a genuinely new file exactly as given', async () => {
-  // Nothing to preserve: a new file's endings are the model's to choose, and silently
-  // rewriting them would be inventing a shape the workspace never asked for.
+test('Write writes a genuinely new file exactly as given where nothing expresses a preference', async () => {
+  // Nothing to preserve and nothing beside it: a new file's endings are the model's to
+  // choose, and rewriting them would be inventing a shape the workspace never asked for.
+  mkdirSync(join(root, 'fresh'))
   const r = await writeFileTool.execute(
-    { path: 'fresh.cs', content: 'line one\r\nline two\r\n' }, ctx)
+    { path: 'fresh/fresh.cs', content: 'line one\r\nline two\r\n' }, ctx)
   expect(r.ok).toBe(true)
-  expect(readFileSync(join(root, 'fresh.cs'), 'utf8')).toBe('line one\r\nline two\r\n')
-  expect(r.content).not.toMatch(/CRLF|byte-order mark/i)
+  expect(readFileSync(join(root, 'fresh', 'fresh.cs'), 'utf8')).toBe('line one\r\nline two\r\n')
+  expect(r.content).not.toMatch(/CRLF|byte-order mark|line endings/i)
+})
+
+test('Write gives a new file the ending its neighbours use, and says so', async () => {
+  // The workspace HAS expressed a preference — every file beside the new one — and a model
+  // can only ever write LF, so a CRLF folder used to collect one LF file per creation.
+  mkdirSync(join(root, 'crlf'))
+  writeFileSync(join(root, 'crlf', 'A.cs'), 'a\r\nb\r\n')
+  writeFileSync(join(root, 'crlf', 'B.cs'), 'c\r\nd\r\n')
+  const r = await writeFileTool.execute({ path: 'crlf/C.cs', content: 'x\ny\n' }, ctx)
+  expect(r.ok).toBe(true)
+  expect(readFileSync(join(root, 'crlf', 'C.cs'), 'utf8')).toBe('x\r\ny\r\n')
+  expect(r.content).toContain("line endings follow the folder's other files (CRLF)")
 })
 
 test('Write preserves the dominant ending of a mixed-ending file', async () => {
@@ -382,7 +395,9 @@ test('Write reports that it replaced an existing file, with both sizes in order'
   // Order-blind `toContain` checks let the two sizes swap places, and `toContain('5')` is
   // satisfied by the '5' inside '48890'. The receipt is the only surviving record that an
   // overwrite happened at all, so which number is which is the whole point of it.
-  expect(r.content).toBe('Replaced important.ts (48890 bytes -> 5 bytes).')
+  // The shrink is named too: an overwrite that lost 99% of a file is the shape of the
+  // silent truncation the receipt exists to make visible.
+  expect(r.content).toBe('Replaced important.ts (48890 bytes -> 5 bytes).\n(note: the file shrank from 48890 to 5 bytes)')
 })
 
 test('Write still reports a plain create for a new file', async () => {

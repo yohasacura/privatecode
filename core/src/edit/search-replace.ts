@@ -1,6 +1,44 @@
 export type EditOutcome =
-  | { ok: true; text: string; matchedExactly: boolean }
+  | { ok: true; text: string; matchedExactly: boolean; /** How many places changed: 1, or every occurrence under `all`. */ replaced: number }
   | { ok: false; reason: 'empty' | 'not_found' | 'ambiguous'; hint: string }
+
+/** How many places an ambiguous anchor is reported at before the list is cut. */
+const MAX_LISTED_PLACES = 8
+
+/** 1-based line numbers of every exact occurrence, for the ambiguity hint. */
+function linesOf(source: string, needle: string): number[] {
+  const out: number[] = []
+  let i = source.indexOf(needle)
+  while (i !== -1) {
+    out.push(source.slice(0, i).split('\n').length)
+    i = source.indexOf(needle, i + 1)
+  }
+  return out
+}
+
+function listPlaces(lines: number[]): string {
+  const shown = lines.slice(0, MAX_LISTED_PLACES).join(', ')
+  return lines.length > MAX_LISTED_PLACES ? `lines ${shown}, …` : `line${lines.length === 1 ? '' : 's'} ${shown}`
+}
+
+/**
+ * Where the anchor and the closest window first part ways, line by line and ignoring
+ * whitespace — the one fact that makes the retry a copy rather than a second guess. Null
+ * when the two agree on every line (a length mismatch, then) or the window is empty.
+ */
+function firstDifference(search: string, window: string): { line: number; wrote: string; has: string } | null {
+  const norm = (s: string): string => s.replace(/[ \t]+/g, ' ').trim()
+  const a = search.split('\n')
+  const b = window.split('\n')
+  const clip = (s: string): string => (s.length > 120 ? `${s.slice(0, 119)}…` : s)
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const wrote = a[i]
+    const has = b[i]
+    if (wrote === undefined || has === undefined) return null
+    if (norm(wrote) !== norm(has)) return { line: i + 1, wrote: clip(wrote.trim()), has: clip(has.trim()) }
+  }
+  return null
+}
 
 /** Counts overlapping occurrences too, so a self-overlapping anchor (`==` inside `===`) isn't undercounted. */
 function countOccurrences(haystack: string, needle: string): number {
@@ -74,7 +112,11 @@ function similarity(a: string, b: string): number {
   return shared / Math.max(A.size, B.size)
 }
 
-export function applySearchReplace(source: string, search: string, replace: string): EditOutcome {
+export function applySearchReplace(
+  source: string, search: string, replace: string,
+  /** `all`: change every exact occurrence — a rename — instead of requiring one. */
+  opts: { all?: boolean } = {},
+): EditOutcome {
   if (search.trim() === '') {
     return {
       ok: false,
@@ -85,18 +127,25 @@ export function applySearchReplace(source: string, search: string, replace: stri
   }
 
   const exact = countOccurrences(source, search)
+  if (opts.all === true && exact >= 1) {
+    // Exact occurrences only: a rename applied through the whitespace-tolerant matcher
+    // would re-indent every block it touched, and "every place that roughly looks like
+    // this" is not what anyone asked for.
+    const places = linesOf(source, search)
+    return { ok: true, text: source.split(search).join(replace), matchedExactly: true, replaced: places.length }
+  }
   if (exact === 1) {
     // A function replacer inserts `replace` literally. The two-argument form of String.replace
     // treats a string second argument as a replacement *pattern* and still expands $$, $&, $`
     // and $' even though `search` itself is a plain string, not a regex.
-    return { ok: true, text: source.replace(search, () => replace), matchedExactly: true }
+    return { ok: true, text: source.replace(search, () => replace), matchedExactly: true, replaced: 1 }
   }
   if (exact > 1) {
     return {
       ok: false,
       reason: 'ambiguous',
-      hint: `search_text occurs in ${exact} places. Include more surrounding lines so it ` +
-            `identifies exactly one.`,
+      hint: `search_text occurs in ${exact} places (${listPlaces(linesOf(source, search))}). Include more ` +
+            'surrounding lines so it identifies exactly one, or set replace_all to change every occurrence.',
     }
   }
 
@@ -122,14 +171,14 @@ export function applySearchReplace(source: string, search: string, replace: stri
     // was least sure about layout. The fix is to re-anchor the replacement onto the leading
     // whitespace the matched window actually had.
     const text = [...before, ...reindent(replace, lines[start] ?? ''), ...after].join('\n')
-    return { ok: true, text, matchedExactly: false }
+    return { ok: true, text, matchedExactly: false, replaced: 1 }
   }
   if (candidates.length > 1) {
     return {
       ok: false,
       reason: 'ambiguous',
-      hint: `search_text matches ${candidates.length} places once whitespace is ignored. ` +
-            `Include more surrounding lines.`,
+      hint: `search_text matches ${candidates.length} places once whitespace is ignored ` +
+            `(${listPlaces(candidates.map((i) => i + 1))}). Include more surrounding lines.`,
     }
   }
 
@@ -144,9 +193,18 @@ export function applySearchReplace(source: string, search: string, replace: stri
     const score = similarity(normSearch, normalise(window))
     if (score > best.score) best = { window, score, index: i }
   }
+  // The closest window, and WHERE it differs: "line 3 of your anchor says X, the file has Y"
+  // turns the retry into a copy. Measured on the sessions this tool ran in: every not-found
+  // was retried, and every retry after the closest-match hint succeeded — this makes the
+  // first retry the right one rather than the second.
+  const diff = best.index >= 0 ? firstDifference(search, best.window) : null
   const hint = best.index >= 0 && best.score > 0.2
     ? `search_text was not found. The closest match in the file starts at line ${best.index + 1}: ` +
-      `${JSON.stringify(best.window)}. Copy the text verbatim from the file.`
+      `${JSON.stringify(best.window)}.` +
+      (diff !== null
+        ? ` It differs at line ${diff.line} of your anchor: you wrote ${JSON.stringify(diff.wrote)}, the file has ${JSON.stringify(diff.has)}.`
+        : ` Your anchor has ${searchLineCount} line${searchLineCount === 1 ? '' : 's'}; the match ends there.`) +
+      ' Copy the text verbatim from the file.'
     : `search_text was not found anywhere in the file. Read the file again before editing.`
   return { ok: false, reason: 'not_found', hint }
 }

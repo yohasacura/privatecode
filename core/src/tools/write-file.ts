@@ -2,6 +2,7 @@ import { noteWorkspaceWrite } from '../csharp/nav-process.js'
 import { mkdir, open, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { writeFileAtomic, fsErrorReason } from './atomic-write.js'
+import { endingConvention } from './endings-convention.js'
 import { BOM, applyEndings, detectEndings, toLf } from './line-endings.js'
 import type { ApprovalPreview, PermissionKey, Tool } from './types.js'
 
@@ -192,8 +193,37 @@ export const writeFileTool: Tool<WriteFileArgs> = {
         content = `${BOM}${content}`
         notes.push("the file's UTF-8 byte-order mark was preserved")
       }
+    } else {
+      // A new file takes the ending its neighbours (or an .editorconfig) use — see
+      // `endings-convention.ts`. The model can only ever write LF; in a CRLF repository
+      // that made every created file the odd one out.
+      const convention = await endingConvention(abs, ctx.workspace.root)
+      if (convention !== null) {
+        const restored = applyEndings(toLf(content), convention.eol)
+        if (restored !== content) {
+          content = restored
+          notes.push(
+            `line endings follow ${convention.source === 'editorconfig' ? '.editorconfig' : "the folder's other files"} ` +
+            `(${convention.eol === '\r\n' ? 'CRLF' : 'LF'})`)
+        }
+      }
     }
     const written = Buffer.byteLength(content, 'utf8')
+
+    // Two facts about an overwrite that only this result can carry into the transcript,
+    // because nothing else survives it: the file was replaced without this session ever
+    // having read it whole (a ranged read of a long file counts as not whole — see
+    // `ReadMemory`), and it got much smaller. Each on its own is usually intended; together
+    // they are the shape of the silent truncation the comment above describes. Notes, not
+    // refusals: a regenerated file is a legitimate thing to write, and the model reads this
+    // line right after the write, with git and the session's checkpoint still holding the
+    // old text.
+    if (replaced !== null && ctx.reads !== undefined && ctx.reads.get(args.path) === null) {
+      notes.push('this session had not read the whole file it replaced; the old text is in git or the session checkpoint if any of it was meant to stay')
+    }
+    if (replaced !== null && replaced > 0 && written < replaced * 0.7) {
+      notes.push(`the file shrank from ${replaced} to ${written} bytes`)
+    }
 
     try {
       await mkdir(dirname(abs), { recursive: true })

@@ -9,6 +9,8 @@ export interface EditFileArgs {
   path: string
   search_text: string
   replace_text: string
+  /** Change every exact occurrence — a rename — instead of requiring exactly one. */
+  replace_all?: boolean
 }
 
 /**
@@ -31,6 +33,30 @@ const MAX_DIFF_CHARS = 4_000
 
 /** Ceiling on one rendered row, so a single minified line cannot blow the budget alone. */
 const MAX_DIFF_LINE_CHARS = 400
+
+/**
+ * How much of an anchor was context around the change, and how much was the change.
+ *
+ * Measured over 232 applied edits in the owner's sessions: the median anchor carried four
+ * unchanged lines around a four-line change, but 18% carried three times more context than
+ * change, and half of all anchor characters were lines that did not change — and the
+ * replacement repeats every one of them. Output tokens are the slow ones on this hardware,
+ * and a long anchor is also the one most likely to miss. The note this feeds is the shape
+ * that has moved this model before: a line right after the action, not a rule in the prompt.
+ */
+function contextAround(search: string, replace: string): { context: number; changed: number } {
+  const s = search.split('\n')
+  const r = replace.split('\n')
+  let pre = 0
+  while (pre < s.length && pre < r.length && s[pre] === r[pre]) pre++
+  let suf = 0
+  while (suf < s.length - pre && suf < r.length - pre && s[s.length - 1 - suf] === r[r.length - 1 - suf]) suf++
+  return { context: pre + suf, changed: Math.max(s.length - pre - suf, r.length - pre - suf) }
+}
+
+/** From here the context is worth a word: a two-line change wrapped in a whole method. */
+const HEAVY_CONTEXT_LINES = 4
+const HEAVY_CONTEXT_RATIO = 3
 
 /** Mirrors Read's size wording so the two tools describe the same file the same way. */
 function describeBytes(bytes: number): string {
@@ -137,15 +163,20 @@ export const editFileTool: Tool<EditFileArgs> = {
   readOnly: false,
   description:
     'Replace an exact fragment of a file. search_text must be copied verbatim from the ' +
-    'file and must identify exactly one place — include surrounding lines if it would ' +
-    'otherwise be ambiguous. This is the cheapest way to change code; do not rewrite ' +
-    'whole files.',
+    'file and must identify exactly one place: the lines that change plus a line or two ' +
+    'of context, not the whole block — add surrounding lines only if it would otherwise ' +
+    'be ambiguous, or set replace_all to change every occurrence (a rename). ' +
+    'This is the cheapest way to change code; do not rewrite whole files.',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Workspace-relative path.' },
       search_text: { type: 'string', description: 'Exact text to find, copied from the file.' },
       replace_text: { type: 'string', description: 'Text that replaces it.' },
+      replace_all: {
+        type: 'boolean',
+        description: 'Replace every exact occurrence of search_text instead of requiring exactly one — for renames.',
+      },
     },
     required: ['path', 'search_text', 'replace_text'],
   },
@@ -166,9 +197,15 @@ export const editFileTool: Tool<EditFileArgs> = {
     if (r.search_text === r.replace_text) {
       return { ok: false, error: 'search_text and replace_text are identical; this edit is a no-op' }
     }
+    if (r.replace_all !== undefined && typeof r.replace_all !== 'boolean') {
+      return { ok: false, error: 'replace_all must be true or false' }
+    }
     return {
       ok: true,
-      args: { path: r.path, search_text: r.search_text, replace_text: r.replace_text },
+      args: {
+        path: r.path, search_text: r.search_text, replace_text: r.replace_text,
+        ...(r.replace_all === true ? { replace_all: true } : {}),
+      },
     }
   },
   permissionKey(args): PermissionKey {
@@ -177,8 +214,8 @@ export const editFileTool: Tool<EditFileArgs> = {
   approvalPreview(args): ApprovalPreview {
     const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}\n... (clipped)` : s)
     return {
-      summary: `edit ${args.path}`,
-      detail: `Edit ${args.path}\n<<<<<<< SEARCH\n${clip(args.search_text, 1_500)}\n` +
+      summary: `edit ${args.path}${args.replace_all === true ? ' (every occurrence)' : ''}`,
+      detail: `Edit ${args.path}${args.replace_all === true ? ' — every occurrence' : ''}\n<<<<<<< SEARCH\n${clip(args.search_text, 1_500)}\n` +
               `=======\n${clip(args.replace_text, 1_500)}\n>>>>>>> REPLACE`,
     }
   },
@@ -280,7 +317,7 @@ export const editFileTool: Tool<EditFileArgs> = {
     const search = toLf(args.search_text)
     const replace = toLf(args.replace_text)
 
-    const outcome = applySearchReplace(lfBody, search, replace)
+    const outcome = applySearchReplace(lfBody, search, replace, { all: args.replace_all === true })
     if (!outcome.ok) {
       return { ok: false, content: `Edit could not apply the change: ${outcome.hint}` }
     }
@@ -322,7 +359,14 @@ export const editFileTool: Tool<EditFileArgs> = {
     }
 
     const notes: string[] = [...formatNotes]
+    if (outcome.replaced > 1) notes.push(`replaced ${outcome.replaced} occurrences`)
     if (!outcome.matchedExactly) notes.push('the anchor matched only after ignoring whitespace')
+    const around = contextAround(search, replace)
+    if (around.context >= HEAVY_CONTEXT_LINES && around.context >= HEAVY_CONTEXT_RATIO * Math.max(1, around.changed)) {
+      notes.push(
+        `the anchor carried ${around.context} unchanged lines around a ${around.changed}-line change; ` +
+        'the changed lines plus a line or two of context are enough, cheaper, and less likely to miss')
+    }
     if (endings.crlf > 0 && endings.lf > 0) {
       notes.push(
         `mixed line endings (${endings.crlf} CRLF, ${endings.lf} LF); the whole file was ` +
