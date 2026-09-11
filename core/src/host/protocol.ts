@@ -456,6 +456,14 @@ export interface WorkspaceFolderView {
   access: 'write' | 'read'
   primary: boolean
   git: string
+  /**
+   * Set when the definition names this folder but it is not mounted right now — moved,
+   * on a drive that is unplugged, or overlapping another folder — with the reason. Listed
+   * so the manager shows it and, when it saves, sends it back: a folder that vanished from
+   * the list because its drive was out would otherwise vanish from the file on the next
+   * save, which is the difference between "unplugged" and "gone".
+   */
+  missing?: string
 }
 export type WorkspaceGetParams = Empty
 export interface WorkspaceGetResult {
@@ -464,8 +472,17 @@ export interface WorkspaceGetResult {
   problems: string[]
 }
 
-/** The attached folders, whole — this replaces the list rather than patching it, so the file
- * on disk always matches what the manager was showing when Save was pressed. */
+/**
+ * The attached folders, whole — this replaces the list rather than patching it, so the file
+ * on disk always matches what the manager was showing when Save was pressed.
+ *
+ * With one guard, because "what the manager was showing" once was an EMPTY list: the tab
+ * starts with no folders, asks `workspace.get`, and an Add pressed before the answer (or
+ * while the folder picker was open) sent the new folder alone, and a workspace of five
+ * folders came back as two. The manager changes one folder per call, so a list that drops
+ * more than one existing folder, or drops one and adds another in the same call, is not
+ * something it can have meant, and the host refuses it with the folders named.
+ */
 export interface WorkspaceSetParams {
   name?: string
   folders: { path: string; name?: string; access: 'write' | 'read' }[]

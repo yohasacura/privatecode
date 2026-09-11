@@ -376,6 +376,15 @@ the permission engine, so no rule can open it — a reference folder a rule coul
 reference folder. This binds the file tools; `Bash` was never contained by the jail and
 still is not.
 
+**The definition is replaced whole, and guarded.** The manager sends the full folder list on
+every change, so the file always matches what it showed. It once showed nothing: the tab
+starts empty, asks the host for the list, and an Add pressed before the answer (or while the
+folder picker was open) saved the new folder alone — a five-folder workspace came back as
+two. Now the tab refuses every action until the list has loaded, a folder the definition
+names but that is not mounted (moved, unplugged, overlapping) is listed as `missing` so a
+save keeps it, and the host refuses a list that would drop more than one folder, or drop one
+while adding another, since the manager changes one folder per call.
+
 **Only the primary folder configures anything.** Settings, hooks, the formatter and the verify
 command are read from the primary and nowhere else. A verify command is a shell command run
 without a per-run approval, so an attached folder that could supply one would be a way to

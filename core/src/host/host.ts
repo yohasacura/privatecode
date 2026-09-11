@@ -6,7 +6,7 @@ import type {
   AgentView, AgentsCreateParams, AgentsCreateResult, AgentsListResult, FsOpenExternalParams, FsOpenExternalResult,
   FsWriteParams, FsWriteResult, MemoryListResult, SkillsCreateParams, SkillsCreateResult,
 } from './protocol.js'
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AgentEvents } from '../agent/loop.js'
 import { HEALTH_CHECK_TIMEOUT_MS } from '../cli/render.js'
 import type { ApprovalDecision, InteractionPort } from '../interaction.js'
@@ -190,6 +190,13 @@ export interface HostTransport { send(msg: HostOutbound): void }
  * Deliberately not the CLI's own `serverErrorMessage`: that one ends with advice about
  * `--server <url>` and a `.bat` file, which is a terminal's vocabulary, not a window's.
  */
+/** A folder path as a comparison key: resolved, without a trailing separator, and
+ * case-folded on Windows, where `D:\A` and `d:\a\` are one folder. */
+function folderKey(path: string): string {
+  const full = resolve(path).replace(/[\\/]+$/, '')
+  return process.platform === 'win32' ? full.toLowerCase() : full
+}
+
 function describeFailure(e: unknown): string {
   if (!(e instanceof LlamaRequestError)) return e instanceof Error ? e.message : String(e)
   if (!e.answered) return e.message
@@ -1847,9 +1854,11 @@ export class SessionHost {
     return { resolved, rejected }
   }
 
-  /** The folders this workspace is made of, with what git is under each. */
+  /** The folders this workspace is made of, with what git is under each — and the ones the
+   * definition names that are not mounted right now, marked `missing`, so the manager can
+   * show them and keep them (see `WorkspaceFolderView.missing`). */
   private async workspaceGet(): Promise<WorkspaceGetResult> {
-    const { workspace } = this.requireInitialized()
+    const { workspace, workspaceRoot } = this.requireInitialized()
     const folders: WorkspaceFolderView[] = []
     for (const mount of workspace.mounts) {
       folders.push({
@@ -1858,6 +1867,21 @@ export class SessionHost {
         access: mount.access,
         primary: mount.primary,
         git: await describeFolder(mount.root),
+      })
+    }
+    const mounted = new Set(workspace.mounts.map((m) => folderKey(m.root)))
+    for (const spec of this.workspaceFile?.folders ?? []) {
+      const root = isAbsolute(spec.path) ? resolve(spec.path) : resolve(workspaceRoot, spec.path)
+      if (mounted.has(folderKey(root))) continue
+      const reason = this.workspaceProblems.find((p) => p.includes(root))
+        ?? `not available right now: ${root} is not a folder this process can see`
+      folders.push({
+        name: spec.name ?? basename(root),
+        root,
+        access: spec.access ?? 'write',
+        primary: false,
+        git: '',
+        missing: reason,
       })
     }
     return { name: this.workspaceName, folders, problems: [...this.workspaceProblems] }
@@ -1936,7 +1960,30 @@ export class SessionHost {
   private async workspaceSet(params: WorkspaceSetParams): Promise<WorkspaceSetResult> {
     const { workspaceRoot } = this.requireInitialized()
     const existing = this.workspaceFile
-    saveWorkspaceFile(workspaceRoot, {
+    if (!Array.isArray(params?.folders)) throw new Error('workspace.set needs a "folders" array')
+    // The guard `WorkspaceSetParams` describes: the manager changes one folder per call, so
+    // a list that would drop two, or drop one while adding another, was built from a folder
+    // list the window had not finished loading — and saving it is how a five-folder
+    // workspace came back as two. Refused with the folders named, so the person knows what
+    // would have gone and that the fix is a reload rather than a retry.
+    const before = new Map<string, string>()
+    for (const f of existing?.folders ?? []) {
+      const root = isAbsolute(f.path) ? resolve(f.path) : resolve(workspaceRoot, f.path)
+      before.set(folderKey(root), f.name ?? basename(root))
+    }
+    const after = new Set(params.folders.map((f) => {
+      if (typeof f?.path !== 'string' || f.path.trim() === '') throw new Error('workspace.set: every folder needs a "path"')
+      return folderKey(isAbsolute(f.path) ? resolve(f.path) : resolve(workspaceRoot, f.path))
+    }))
+    const dropped = [...before].filter(([key]) => !after.has(key)).map(([, name]) => name)
+    const added = [...after].filter((key) => !before.has(key)).length
+    if (dropped.length > 1 || (dropped.length === 1 && added > 0)) {
+      throw new Error(
+        `Not saved: this change would drop ${dropped.map((n) => `"${n}"`).join(', ')} from the workspace. ` +
+        'The folder list you were looking at was out of date — reload the Workspace tab and try again.',
+      )
+    }
+    const file: WorkspaceFile = {
       version: 1,
       ...(params.name !== undefined && params.name.trim() !== '' ? { name: params.name.trim() } : {}),
       folders: params.folders.map((f) => ({
@@ -1951,7 +1998,12 @@ export class SessionHost {
       // Carried over untouched: the manager edits folders, and dropping the profile because
       // it was not part of this dialog would silently unconfigure the workspace.
       ...(existing?.profile !== undefined ? { profile: existing.profile } : {}),
-    })
+    }
+    saveWorkspaceFile(workspaceRoot, file)
+    // What the guard above compares the NEXT call against. The window re-opens the workspace
+    // after every save, which reloads this anyway; a caller that does not must still be
+    // judged against what is on disk now, not against the list from before its own save.
+    this.workspaceFile = file
     return {}
   }
 

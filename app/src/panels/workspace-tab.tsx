@@ -61,7 +61,13 @@ export function WorkspaceTab({
   reviewed: ReadonlyMap<string, number>
   onMarkReviewed: (entries: readonly ChangeEntry[]) => void
 }): VNode {
-  const [folders, setFolders] = useState<WorkspaceFolderView[]>([])
+  // null until `workspace.get` has answered: every action below refuses to build a folder
+  // list from nothing, because saving one is how a workspace lost its folders — an Add
+  // pressed before the answer, or while the folder picker was open, sent the new folder
+  // alone and the host replaced the file with it. A ref alongside, so an action that runs
+  // after an `await` (the picker) reads the list as it is NOW, not as it was at the click.
+  const [folders, setFolders] = useState<WorkspaceFolderView[] | null>(null)
+  const foldersRef = useRef<WorkspaceFolderView[] | null>(null)
   const [wsName, setWsName] = useState(workspaceName)
   const [nameDraft, setNameDraft] = useState<string | null>(null)
   const [addingPath, setAddingPath] = useState<string | null>(null)
@@ -80,7 +86,7 @@ export function WorkspaceTab({
 
   const load = useCallback(() => {
     client.call('workspace.get', {})
-      .then((r) => { setFolders(r.folders); setWsName(r.name) })
+      .then((r) => { foldersRef.current = r.folders; setFolders(r.folders); setWsName(r.name) })
       .catch((e: Error) => setError(e.message))
   }, [client])
   useEffect(() => { load() }, [load, workspaceRoot, reloadKey])
@@ -126,21 +132,37 @@ export function WorkspaceTab({
       .finally(() => setBusy(false))
   }
 
-  const secondary = useCallback(() => folders.filter((f) => !f.primary).map((f) => ({
-    path: f.root,
-    ...(f.name.trim() !== '' ? { name: f.name } : {}),
-    access: f.access,
-  })), [folders])
+  /** The attached folders as `workspace.set` takes them — the missing ones included, so a
+   * save keeps a folder whose drive is out rather than dropping it from the file. */
+  function secondaryOf(list: WorkspaceFolderView[]): { path: string; name?: string; access: 'write' | 'read' }[] {
+    return list.filter((f) => !f.primary).map((f) => ({
+      path: f.root,
+      ...(f.name.trim() !== '' ? { name: f.name } : {}),
+      access: f.access,
+    }))
+  }
+
+  /** Runs a management action with the folder list as it is now, or says why it cannot yet. */
+  function withFolders(action: (list: WorkspaceFolderView[]) => void): void {
+    const list = foldersRef.current
+    if (list === null) {
+      setError('The folder list has not loaded yet — wait a moment and try again.')
+      return
+    }
+    action(list)
+  }
 
   function addFolder(path: string): void {
     const trimmed = path.trim()
     if (trimmed === '') return
-    if (folders.some((f) => f.root.toLowerCase() === trimmed.toLowerCase())) {
-      setError('that folder is already in this workspace')
-      return
-    }
-    setAddingPath(null)
-    apply(wsName, [...secondary(), { path: trimmed, access: 'write' as const }])
+    withFolders((list) => {
+      if (list.some((f) => f.root.toLowerCase() === trimmed.toLowerCase())) {
+        setError('that folder is already in this workspace')
+        return
+      }
+      setAddingPath(null)
+      apply(wsName, [...secondaryOf(list), { path: trimmed, access: 'write' as const }])
+    })
   }
 
   async function pickFolder(): Promise<void> {
@@ -154,32 +176,26 @@ export function WorkspaceTab({
     requestAnimationFrame(() => { findRef.current?.focus(); findRef.current?.select() })
   }
 
-  const mounts: MountInfo[] = folders.map((f) => ({
+  // A folder the definition names that is not mounted right now is not in the tree (there
+  // is nothing to list under it); it is shown below the header instead, with its reason
+  // and a Remove — and it stays in every list this tab saves until that Remove.
+  const missing = (folders ?? []).filter((f) => f.missing !== undefined)
+  const mounts: MountInfo[] = (folders ?? []).filter((f) => f.missing === undefined).map((f) => ({
     name: f.name, primary: f.primary, access: f.access, git: f.git,
   }))
   const mountActions: MountActions = {
     busy,
-    toggleAccess: (name) => {
-      apply(wsName, folders.filter((f) => !f.primary).map((f) => ({
-        path: f.root,
-        ...(f.name.trim() !== '' ? { name: f.name } : {}),
-        access: f.name === name ? (f.access === 'read' ? 'write' as const : 'read' as const) : f.access,
-      })))
-    },
-    remove: (name) => {
-      apply(wsName, folders.filter((f) => !f.primary && f.name !== name).map((f) => ({
-        path: f.root,
-        ...(f.name.trim() !== '' ? { name: f.name } : {}),
-        access: f.access,
-      })))
-    },
-    rename: (name, next) => {
-      apply(wsName, folders.filter((f) => !f.primary).map((f) => ({
-        path: f.root,
-        ...(f.name === name ? { name: next } : (f.name.trim() !== '' ? { name: f.name } : {})),
-        access: f.access,
-      })))
-    },
+    toggleAccess: (name) => withFolders((list) => {
+      apply(wsName, secondaryOf(list).map((f) => (
+        f.name === name ? { ...f, access: f.access === 'read' ? 'write' as const : 'read' as const } : f
+      )))
+    }),
+    remove: (name) => withFolders((list) => {
+      apply(wsName, secondaryOf(list.filter((f) => f.name !== name)))
+    }),
+    rename: (name, next) => withFolders((list) => {
+      apply(wsName, secondaryOf(list).map((f) => (f.name === name ? { ...f, name: next } : f)))
+    }),
   }
 
   const shownName = wsName === '' ? workspaceName : wsName
@@ -205,7 +221,7 @@ export function WorkspaceTab({
               autoFocus
               onInput={(e) => setNameDraft(e.currentTarget.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') { apply(nameDraft, secondary()); setNameDraft(null) }
+                if (e.key === 'Enter') { withFolders((list) => apply(nameDraft, secondaryOf(list))); setNameDraft(null) }
                 if (e.key === 'Escape') { e.stopPropagation(); setNameDraft(null) }
               }}
             />
@@ -231,7 +247,7 @@ export function WorkspaceTab({
           <IconButton
             size="sm"
             label="Add a folder to the workspace"
-            disabled={busy}
+            disabled={busy || folders === null}
             onClick={() => (isDevBridge ? setAddingPath((v) => (v === null ? '' : null)) : void pickFolder())}
           >
             <FolderPlus />
@@ -244,6 +260,22 @@ export function WorkspaceTab({
           </IconButton>
         </span>
       </div>
+
+      {missing.map((f) => (
+        <div
+          key={f.root}
+          data-missing-folder={f.name}
+          class="mx-2.5 mb-1 flex shrink-0 items-center gap-2 rounded border border-border-soft px-2 py-1 font-ui text-[11.5px] text-dim"
+          title={f.missing}
+        >
+          <span class="min-w-0 truncate">
+            <span class="text-fg">{f.name}</span> is not available right now — {f.root}
+          </span>
+          <Button size="sm" variant="danger" class="ml-auto shrink-0" disabled={busy} onClick={() => mountActions.remove(f.name)}>
+            Remove
+          </Button>
+        </div>
+      ))}
 
       {find !== null && (
         <div class="shrink-0 px-2.5 pb-1.5">
