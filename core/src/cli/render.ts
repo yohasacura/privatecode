@@ -21,9 +21,10 @@ function fmtDuration(ms: number): string {
 export function serverUnreachableMessage(server: string, detail?: string): string {
   return (
     `\nCould not reach llama.cpp at ${server}${detail ? ` (${detail})` : ''}.\n` +
-    'Start it with D:\\LocalAgentAI\\Start-QwenServer.bat and wait for the dashboard to ' +
-    'show RUNNING with VRAM free, then try again. Pass --server <url> if it runs ' +
-    'somewhere else.\n'
+    // No launcher path: the app never starts the server, and the path that used to be baked
+    // in here named a folder that had long since moved.
+    'Start your llama.cpp server and wait until the model has loaded, then try again. ' +
+    'Pass --server <url> if it runs somewhere else.\n'
   )
 }
 

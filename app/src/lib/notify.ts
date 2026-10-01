@@ -17,8 +17,6 @@
  * able to take down a window that is otherwise working.
  */
 
-export type NotifyKind = 'question' | 'run-ended' | 'approval'
-
 /** Present only inside the Tauri shell; the dev bridge runs in a plain browser tab. */
 function inTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window

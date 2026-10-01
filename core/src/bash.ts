@@ -4,7 +4,6 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execa } from 'execa'
 import { isWindowsDeviceName } from './device-names.js'
-import { killTree } from './powershell.js'
 import { bundledSkillsDir } from './skills/skills.js'
 
 /**
@@ -145,7 +144,7 @@ export function bashArgs(command: string): string[] {
   return ['-c', rewriteDeviceRedirects(command).command]
 }
 
-/** The spawn itself, split out so its concrete option types survive into `runBash`. */
+/** The spawn itself, with the environment and the device-redirect rewrite every caller needs. */
 export function spawnBash(bash: BashLocation, command: string, opts: { cwd: string; extraPath?: readonly string[]; buffer?: boolean }) {
   return execa(bash.exe, bashArgs(command), {
     cwd: opts.cwd,
@@ -156,33 +155,4 @@ export function spawnBash(bash: BashLocation, command: string, opts: { cwd: stri
     all: true,
     ...(opts.buffer === false ? { buffer: false } : {}),
   })
-}
-
-/**
- * Run one bash command to completion, where a timeout or an abort takes down the whole
- * process tree — the same discipline `runPowershell` follows, for the same reason.
- */
-export async function runBash(
-  bash: BashLocation,
-  command: string,
-  opts: { cwd: string; timeoutMs: number; signal?: AbortSignal | undefined; extraPath?: readonly string[] },
-): Promise<{
-  result: Awaited<ReturnType<typeof spawnBash>>
-  stopped: 'cancelled' | 'timeout' | null
-}> {
-  const child = spawnBash(bash, command, { cwd: opts.cwd, ...(opts.extraPath !== undefined ? { extraPath: opts.extraPath } : {}) })
-  let stopped: 'cancelled' | 'timeout' | null = null
-  const stop = async (reason: 'cancelled' | 'timeout'): Promise<void> => {
-    if (stopped !== null) return
-    stopped = reason
-    await killTree(child)
-  }
-  const timer = setTimeout(() => { void stop('timeout') }, opts.timeoutMs)
-  const onAbort = (): void => { void stop('cancelled') }
-  opts.signal?.addEventListener('abort', onAbort)
-  const result = await child.finally(() => {
-    clearTimeout(timer)
-    opts.signal?.removeEventListener('abort', onAbort)
-  })
-  return { result, stopped }
 }

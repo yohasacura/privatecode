@@ -67,7 +67,3 @@ export function showGit(root?: string): void {
   if (root !== undefined) gitTabMemory.root = root
   window.dispatchEvent(new CustomEvent(SHOW_GIT_EVENT, { detail: root !== undefined ? { root } : {} }))
 }
-
-export function isGitViewKey(key: string): boolean {
-  return key.startsWith('git:')
-}

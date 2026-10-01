@@ -4,7 +4,7 @@
  * build, answer in prose) for every message, plus the dev WebSocket bridge over a throwaway
  * copy of WindowsOptimizer. Prints the URL to open in the Vite dev server.
  *
- *   npx tsx spike/ui-dev-bridge.mts            # then open the printed http://localhost:1420/?ws=...
+ *   npx tsx scripts/ui-dev-bridge.mts           # then open the printed http://localhost:1420/?ws=...
  *
  * User settings are read from a scratch APPDATA, so the window asks for the server URL on
  * its first screen — paste the fake server's — and the owner's own ui.json is never touched.

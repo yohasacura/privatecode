@@ -292,13 +292,3 @@ export function adoptDeclaredMarketplaces(store: PluginStore, workspaceRoot: str
   }
   return { added, problems: settings.problems }
 }
-
-/** Whether the marketplace's catalog is on this machine. */
-export function isFetched(m: KnownMarketplace): boolean {
-  const file = catalogPath(m)
-  return file !== null && existsSync(file)
-}
-
-export function marketplaceLabel(m: KnownMarketplace): string {
-  return `${m.name}  ${describeMarketplaceSource(m.source)}${m.bundled === true ? '  (bundled)' : ''}${isFetched(m) ? '' : '  (not fetched yet)'}`
-}

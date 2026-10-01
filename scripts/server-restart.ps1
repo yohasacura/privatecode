@@ -8,8 +8,8 @@
 # /health. To hand control back: run the launcher and press Start — it kills the orphan
 # and starts its own, with whatever `ExtraArgs` config.json carries by then.
 #
-#   powershell -File spike\server-restart.ps1 -Extra "--slot-save-path D:\Projects\LocalAgent\slot-cache --spec-type draft-mtp,ngram-map-k4v"
-#   powershell -File spike\server-restart.ps1 -Extra ""        # the launcher's own arguments, nothing added
+#   powershell -File scripts\server-restart.ps1 -Extra "--slot-save-path D:\Projects\LocalAgent\slot-cache --spec-type draft-mtp,ngram-map-k4v"
+#   powershell -File scripts\server-restart.ps1 -Extra ""        # the launcher's own arguments, nothing added
 #
 # Run it from PowerShell directly, never through a shell pipe (`| tail`): the server it
 # starts inherits the pipe's write end and lives for hours, so the reader never sees EOF

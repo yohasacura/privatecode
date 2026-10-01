@@ -130,11 +130,6 @@ export function parseHookConfig(source: HookSource, problems: string[]): HookDef
 
 export type HookShell = { kind: 'bash'; bash: BashLocation } | { kind: 'powershell' }
 
-/** The bash the `Bash` tool runs — the vendored Git Bash, else Git for Windows — as a path, or null. */
-export function findGitBash(): string | null {
-  return findBash()?.exe ?? null
-}
-
 /** Bash when it is there, PowerShell otherwise. `PRIVATECODE_HOOK_SHELL=powershell` forces the latter. */
 export function defaultHookShell(): HookShell {
   if (process.env['PRIVATECODE_HOOK_SHELL'] === 'powershell') return { kind: 'powershell' }

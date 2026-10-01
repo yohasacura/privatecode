@@ -11,7 +11,7 @@
  * request is the whole transcript, reply included, plus one new message.
  *
  *   npx tsx spike/slot-save-probe.mts save [tokens≈20000]      # prefill, reply, save; writes the transcript
- *   ... restart the server (spike/server-restart.ps1) ...
+ *   ... restart the server (scripts/server-restart.ps1) ...
  *   npx tsx spike/slot-save-probe.mts restore                    # restore, continue the conversation, measure
  *
  * Requires the server started with `--slot-save-path <dir>`.

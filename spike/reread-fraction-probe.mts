@@ -1,16 +1,16 @@
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { LlamaClient } from '../../src/llama/client.js'
-import { Session } from '../../src/session/session.js'
-import { SessionStore } from '../../src/session/store.js'
-import { createToolset } from '../../src/tools/default-set.js'
+import { LlamaClient } from '../core/src/llama/client.js'
+import { Session } from '../core/src/session/session.js'
+import { SessionStore } from '../core/src/session/store.js'
+import { createToolset } from '../core/src/tools/default-set.js'
 
 /**
- * The open measurement from docs/AUTONOMOUS-LOG.md: after a mid-turn compaction at the REAL
+ * The open measurement from docs/archive/AUTONOMOUS-LOG.md: after a mid-turn compaction at the REAL
  * window, what fraction of the work is re-acquiring contents the model already had?
  *
- *   npx tsx test/integration/reread-fraction.probe.ts
+ *   npx tsx spike/reread-fraction-probe.mts
  *
  * The earlier long-turn test could not answer this: it forced a 30k pretend window, so two
  * compactions in fifteen steps was an artefact of the harness. This runs at the server's own

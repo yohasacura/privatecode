@@ -147,8 +147,8 @@ describe.runIf(enabled)('against the real Qwen3.6 server', () => {
     const client = new LlamaClient({ baseUrl: SERVER, model: 'Qwen3.6-35B-A3B' })
     if (!(await client.health())) {
       throw new Error(
-        `llama.cpp is not reachable at ${SERVER}. Start D:\\LocalAgentAI\\Start-QwenServer.bat ` +
-        'and wait for the dashboard to show RUNNING before running this test.',
+        `llama.cpp is not reachable at ${SERVER}. Start the llama.cpp server ` +
+        'and wait for the model to load before running this test.',
       )
     }
   })

@@ -99,7 +99,7 @@ test('a 200 whose body is not JSON is reported as the server answering, not as u
   const err = await thrownBy(() => client.chat({ messages: [], maxTokens: 10 }))
 
   // Pre-fix this was a raw SyntaxError from JSON.parse, which is not a LlamaRequestError
-  // at all, so the CLI fell through to "Start it with Start-QwenServer.bat".
+  // at all, so the CLI fell through to its "start your server" advice.
   expect(err).toBeInstanceOf(LlamaRequestError)
   const e = err as LlamaRequestError
   expect(e.answered).toBe(true)
