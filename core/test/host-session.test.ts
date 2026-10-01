@@ -39,6 +39,13 @@ function newWorkspace(): string {
   return dir
 }
 
+/** The checks are off unless settings say otherwise (`session/checks.ts`); the tests of the
+ * checks themselves turn them on the way a person would. */
+function checksOn(root: string): void {
+  mkdirSync(join(root, '.privatecode'), { recursive: true })
+  writeFileSync(join(root, '.privatecode', 'settings.json'), JSON.stringify({ checks: 'on' }), 'utf8')
+}
+
 /** A request the fake server accepts and never answers -- same technique as loop.test.ts's
  * own `hang()`, used here for the compaction request the session-switch test aborts. */
 function hang(): Promise<never> {
@@ -401,6 +408,7 @@ test('abort during contract distillation rolls the whole message back: delivered
   const fake = await makeServer(() => hang())
   stop = fake.close
   const root = newWorkspace()
+  checksOn(root)
   const { host, transport } = await initHost(fake.url, root)
 
   // Task-shaped (>220 chars of prose), so the host asks for a distillation — which hangs.
@@ -677,7 +685,7 @@ test('verify runs after a turn that wrote, and not after one that only read', as
   let call = 0
   const fake = await makeServer((_body, _streaming) => {
     call++
-    if (call === 1) return toolCallSSE('Write', JSON.stringify({ path: 'a.txt', content: 'x' }))
+    if (call === 1) return toolCallSSE('Write', JSON.stringify({ path: 'a.ts', content: 'x' }))
     return textSSE('done')
   })
   stop = fake.close
@@ -688,6 +696,7 @@ test('verify runs after a turn that wrote, and not after one that only read', as
   writeFileSync(
     join(root, '.privatecode', 'settings.json'),
     JSON.stringify({
+      checks: 'on',
       verify: 'Write-Output ran >> verified.log',
       permissions: { allow: ['Write(**)'] },
     }),
@@ -721,7 +730,7 @@ test('verify runs only in the folder that was written', async () => {
   let call = 0
   const fake = await makeServer((_body, _streaming) => {
     call++
-    if (call === 1) return toolCallSSE('Write', JSON.stringify({ path: 'engine/x.txt', content: 'x' }))
+    if (call === 1) return toolCallSSE('Write', JSON.stringify({ path: 'engine/x.ts', content: 'x' }))
     return textSSE('done')
   })
   stop = fake.close
@@ -732,7 +741,7 @@ test('verify runs only in the folder that was written', async () => {
   mkdirSync(join(root, '.privatecode'), { recursive: true })
   writeFileSync(
     join(root, '.privatecode', 'settings.json'),
-    JSON.stringify({ permissions: { allow: ['Write(**)'] } }),
+    JSON.stringify({ checks: 'on', permissions: { allow: ['Write(**)'] } }),
     'utf8',
   )
   // Both commands are observable by what they leave behind, in their own folder.
@@ -761,6 +770,38 @@ test('verify runs only in the folder that was written', async () => {
   expect((fired[0]?.data as { folder?: string }).folder).toBe('engine')
   await host.shutdown()
 }, 30_000)
+
+test('a new session starts with the checks off, unless settings.json says "checks": "on"', async () => {
+  const fake = await makeServer(() => textSSE('hi'))
+  stop = fake.close
+
+  const free = newWorkspace()
+  const a = await initHost(fake.url, free)
+  expect(resultOf<{ gateMode: string }>(a.transport, 1).gateMode).toBe('manual')
+  await a.host.shutdown()
+
+  const held = newWorkspace()
+  checksOn(held)
+  const b = await initHost(fake.url, held)
+  expect(resultOf<{ gateMode: string }>(b.transport, 1).gateMode).toBe('auto')
+  await b.host.shutdown()
+})
+
+test('"no check is configured" waits for the checks to be switched on', async () => {
+  const fake = await makeServer(() => textSSE('hi'))
+  stop = fake.close
+  const root = newWorkspace()
+  const { host, transport } = await initHost(fake.url, root)
+  const notices = (): string[] => eventsNamed(transport, 'settings.problem')
+    .map((e) => (e.data as { text: string }).text)
+    .filter((t) => t.startsWith('No check is configured'))
+
+  // Off, nothing would build by itself whatever the settings say, so it is not news.
+  expect(notices()).toEqual([])
+  await host.handle({ id: 2, method: 'gates.set', params: { mode: 'auto' } })
+  expect(notices()).toHaveLength(1)
+  await host.shutdown()
+})
 
 /**
  * A turn that fills the window makes room and carries on.
@@ -923,6 +964,7 @@ test('a small task-shaped send seeds the plan from the contract criteria, for fr
   })
   stop = fake.close
   const root = newWorkspace()
+  checksOn(root)
   const { host, transport } = await initHost(fake.url, root)
 
   await host.handle({ id: 2, method: 'send', params: { text: TASK_TEXT } })
@@ -973,6 +1015,7 @@ test('a big task earns one forced decomposition, and its steps become the plan',
   })
   stop = fake.close
   const root = newWorkspace()
+  checksOn(root)
   const { host, transport } = await initHost(fake.url, root)
 
   await host.handle({ id: 2, method: 'send', params: { text: TASK_TEXT } })
@@ -1015,6 +1058,7 @@ test('a stretch of writes with the plan untouched earns one upkeep order', async
   })
   stop = fake.close
   const root = newWorkspace()
+  checksOn(root)
   const { host, transport } = await initHost(fake.url, root)
   // Autopilot, so the four writes run without approval round-trips.
   await host.handle({ id: 2, method: 'setMode', params: { mode: 'autopilot' } })
@@ -1184,6 +1228,7 @@ test('an audit gap leaves its plan item open while the affirmed one is ticked', 
   })
   stop = fake.close
   const root = newWorkspace()
+  checksOn(root)
   const { host, transport } = await initHost(fake.url, root)
   await host.handle({ id: 2, method: 'setMode', params: { mode: 'autopilot' } })
 

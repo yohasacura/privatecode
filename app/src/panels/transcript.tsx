@@ -212,7 +212,6 @@ export function Transcript({
   const lastShownId = all.length > 0 ? all[all.length - 1]!.id : 0
   const tailOf = (item: ChatItem): RowTail => (
     viewing !== null || item.id !== lastShownId ? null : state.turnRunning ? 'streaming' : 'last')
-  const checksOff = state.session?.gateMode === 'manual'
 
   // Only the tail is mounted, unless you ask for the rest.
   //
@@ -293,9 +292,9 @@ export function Transcript({
 
         {/* The checks of this turn, under the answer (§5). Live session only: a viewed
             session's gates ran in its own time and are in its rows. */}
-        {viewing === null && (state.stages.length > 0 || (checksOff && state.items.length > 0)) && (
+        {viewing === null && state.stages.length > 0 && (
           <Row kind="stages" marker={<ShieldCheck size={13} />}>
-            <StageStrip stages={state.stages} checksOff={checksOff} />
+            <StageStrip stages={state.stages} />
           </Row>
         )}
 

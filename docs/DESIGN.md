@@ -540,6 +540,44 @@ used to be for, and gives the model the one refactor only a compiler can do safe
 `core/test/roslyn-nav.test.ts` pins the answers on the fixture; `core/test/csharp-rename.test.ts`
 pins the rename end to end, with a CRLF file and a BOM file coming back byte for byte.
 
+## 8d. Freedom by default; checks on request, and about code (2026-10-01)
+
+The owner's report from daily use: the checks were the switch most often turned off, because
+together they dragged the model off its own line of work and it started making mistakes —
+and on work with no code in it they ran anyway. Asked for a letter, the agent distilled a
+contract whose criteria had to be "answerable by running a command", seeded a plan and was
+nudged through it, and then a reviewer told to read "the code around the change" went through
+the project over a saved `.md` file. The checks are right on the tasks they were built for;
+as a default around every request they cost more than they caught.
+
+Traced, the switch leaked as well. "Checks off" still distilled the contract, folded it into
+the request and seeded the plan; the plan nudges still fired in `thorough`; and a turn that
+wrote nothing but ended "all done" walked past the off switch into the audit and its fix
+rounds, because the switch only stopped turns that wrote. A short request that did not
+replace an unfinished contract was audited against the previous task's criteria and handed
+back to go and satisfy them.
+
+What changed (`session/checks.ts`, one table every mechanism reads):
+
+- **Off is the default and means nothing.** No contract, plan, nudge, first-write pair,
+  build, audit or review — the model works the way Claude Code's does. `/check` and
+  `/review` run on demand. `"checks": "on"` in settings.json starts a project's sessions on.
+- **`/review` needs no contract.** It distils one from the person's own words since the last
+  review (kept to itself, so it never starts gating later turns), and reads everything
+  changed since the last review rather than the last turn alone.
+- **On, the checks are about code** (`isCodePath`: prose extensions and `.privatecode/` are
+  not code; anything unknown is). A request the distiller judges `changesCode: false` keeps no
+  contract and retires the one before it; prose writes record nothing the build or the
+  compiler check reads; the automatic reviewer sees code diffs only; the first-write pair
+  waits for the first write of code.
+- **The audit judges work.** It opens only while code has been written since it last looked
+  (`codeWriteCount` against `codeWritesAtLastAudit`) — except in an unattended run, where
+  nobody is there and "done" is only believed once the audit agrees.
+
+The trade, stated: with the checks off a "done" said early is caught by the person, not by
+the harness, and an unattended run with them off ends on the agent's word (the run card says
+so). `core/test/checks.test.ts` pins both states.
+
 ## 8. Open items
 
 - ~~Finish the edit-reliability probe and settle whether SEARCH/REPLACE anchors need

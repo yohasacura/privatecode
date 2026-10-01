@@ -11,7 +11,7 @@ import type { Checkpoint } from '../checkpoints/store.js'
 import { CheckpointSet } from '../checkpoints/set.js'
 import { soleUnit, type SnapshotUnit } from '../checkpoints/units.js'
 import { commandsFrom, WorkLog } from './worklog.js'
-import { recordToolOutcome } from '../host/replay.js'
+import { recordToolOutcome, splitUserMessage } from '../host/replay.js'
 import { DecisionQueue, PARKED_ANSWER, queueingPort } from './decisions.js'
 import { ReadMemory } from '../tools/read-memory.js'
 import type { Mount } from '../mounts.js'
@@ -66,6 +66,7 @@ import {
 } from './contract.js'
 import { SessionStore, type CompactionMarker, type SessionMeta } from './store.js'
 import { clearSlotRecord, readSlotRecord, slotFilenameFor, writeSlotRecord } from './slot-record.js'
+import { checksPolicy, isCodePath, type ChecksPolicy, type GateProfile } from './checks.js'
 
 /** Task 9: background auto-compaction. Omitting this entirely from `SessionOptions`
  * turns the feature off completely -- no trigger check ever runs, no background
@@ -156,32 +157,6 @@ export interface CompactionEvent {
  *
  * The order is execution order, which is also the order they are worth explaining in.
  */
-/**
- * How much of the harness runs around a task-shaped turn.
- *
- * Measured on 2026-09-02 (docs/SPEED-2026-09-02.md), the gates working again after a week
- * silently off, every one of them a forced generation with thinking off:
- *
- *   contract   10–14 s   premises  12–13 s   lenses  15–17 s   acceptance  24–25 s
- *
- * plus two or three `TodoWrite` steps the plan nudges provoke — about a minute on top of a
- * task whose actual work took fifty seconds. The two turns measured needed none of it: every
- * premise held, the lenses asked nothing worth asking, the audit affirmed everything. That is
- * the design working, and it is also a minute.
- *
- *   thorough — everything, as designed.
- *   fast     — the contract and the acceptance audit, which are what hold a task to its goal
- *              and catch "done" said early; not the premise check, the lenses, the fresh
- *              reviewer or the plan nudges. The audit runs on every turn that wrote, since
- *              without the nudges the plan is not the signal it is in `thorough`.
- *   off      — no contract at all: the turn runs the way every turn ran before contracts
- *              existed, and the way every turn ran while the gates were broken.
- *
- * A judgement about the person's own time, so it lives in settings.json (`"gates"`), most
- * specific layer wins; absent means thorough.
- */
-export type GateProfile = 'thorough' | 'fast' | 'off'
-
 export type StageName =
   /** Distilling the request into a contract, before anything runs. */
   | 'contract'
@@ -357,6 +332,17 @@ export interface SessionOptions {
   /** How much of the harness runs around a task-shaped turn; see `GateProfile`. Absent
    * means `thorough`. */
   gates?: GateProfile
+  /**
+   * Whether a new session starts with its checks on (`checks.ts`). Recorded in its meta at
+   * creation, so the session owns its switch from then on; a session resumed from before
+   * the switch existed, with nothing recorded, follows this.
+   *
+   * Absent means on, which is what every caller that predates the switch was built against.
+   * The app passes the answer from settings.json, whose own default is off: the checks are
+   * something a person turns on for a piece of work, not something they have to remember to
+   * turn off.
+   */
+  checks?: 'on' | 'off'
   /** The shell's version, stamped onto sessions this process creates. See
    * `SessionMeta.appVersion`. Absent for callers with no app around them. */
   appVersion?: string
@@ -402,6 +388,20 @@ export interface SessionOptions {
  * membership is a deliberate decision in both places. */
 const WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MoveFile', 'DeleteFile', 'CSharpRename'])
 const COMMAND_TOOLS: ReadonlySet<string> = new Set(['Bash'])
+
+/** Whether a write-family call is about to change code (`checks.ts`), read from its own
+ * arguments — `MoveFile` names its destination `to`, the rest `path`. A call whose target
+ * cannot be read counts as code: a check skipped by mistake is the invisible failure. */
+function callWritesCode(tool: string, argsJson: string): boolean {
+  if (tool === 'CSharpRename') return true
+  try {
+    const args = JSON.parse(argsJson) as { path?: unknown; to?: unknown }
+    const target = typeof args.path === 'string' ? args.path : typeof args.to === 'string' ? args.to : undefined
+    return target === undefined || isCodePath(target)
+  } catch {
+    return true
+  }
+}
 
 const PLAN_MODE_NOTE = '(mode is now plan: investigate and propose; do not edit)'
 
@@ -895,6 +895,10 @@ export class Session {
         // build this session RAN under, and a session resumed under a newer one did not
         // run under it.
         ...(opts.appVersion !== undefined ? { appVersion: opts.appVersion } : {}),
+        // The switch the session starts with, recorded rather than re-derived: each session
+        // owns its switch from then on, a later change to the settings default leaves it
+        // alone, and `doctor` can count what sessions actually ran under.
+        ...(opts.checks !== undefined ? { gateMode: opts.checks === 'off' ? 'manual' as const : 'auto' as const } : {}),
       }
       this.transcript = new Transcript()
       this.loadedCompaction = null
@@ -1094,15 +1098,13 @@ export class Session {
     result: TurnResult, writesThisTurn: number, signal?: AbortSignal,
   ): Promise<TurnResult> {
     if (result.stoppedBecause !== 'done') return result
-    // Manual gates stop the whole post-turn chain here — build, acceptance and review — and
-    // SAY so rather than going quiet, because a check that silently stopped happening is
-    // indistinguishable from a check that silently passes. One line per turn, on the same
-    // channel the gates themselves report on.
-    if (this.gateMode === 'manual' && writesThisTurn > 0) {
-      const endStage = this.beginStage('build', 'gates are set to manual')
-      endStage('not run — ask for /check or /review when you are ready')
-      return result
-    }
+    // Checks off stops the whole post-turn chain here — build, acceptance and review — on
+    // EVERY turn. It used to stop only a turn that wrote, so one that wrote nothing and said
+    // "done" walked on into the audit and its fix rounds with the checks switched off. No
+    // stage is opened to say so: off is the default now, and the composer's switch is where
+    // that state is shown, rather than a dim line under every answer.
+    const policy = this.policy
+    if (!policy.buildAtEnd && !policy.audit) return result
     // A turn that wrote nothing cannot have broken the build — but it CAN be the turn
     // that claims the task finished. Found by the first giant unattended probe: turn 1
     // did all the work, turn 3 claimed the task fully finished with zero writes, and
@@ -1114,7 +1116,7 @@ export class Session {
     // shortcut used to carry them straight past the build gate — so the second half of the
     // test is "and there is nothing outstanding", not just "and I wrote nothing".
     if (writesThisTurn === 0 && this.writeCount === this.writesAtLastVerify) {
-      return await this.acceptanceGate(result, signal, writesThisTurn > 0)
+      return await this.acceptanceGate(result, signal)
     }
 
     // Nothing has been written since the mid-turn check last ran, and it passed. Running the
@@ -1130,25 +1132,20 @@ export class Session {
     if (this.writesAtLastVerify === this.writeCount &&
         [...this.lastVerifyFingerprint.values()].every((f) => f === 'ok') &&
         this.lastVerifyFingerprint.size > 0) {
-      return await this.acceptanceGate(result, signal, writesThisTurn > 0)
+      return await this.acceptanceGate(result, signal)
     }
 
-    // Work that does not change code has no build to break, and running one is not merely
-    // wasted: reported from the running app — "составь email" spent a `dotnet build` on a
-    // task with no source in it. The distiller answers `changesCode` as its own forced
-    // question, and only an explicit `false` skips: an absent or malformed answer leaves it
-    // undefined and the build runs, because a check silenced by omission is invisible.
-    //
-    // The CONTRACT gate still runs. "Did I do what you asked" is as true of an email as of a
-    // refactor; it is the build that has nothing to say about one.
-    if (this.meta.contract?.changesCode === false) {
-      return await this.acceptanceGate(result, signal, writesThisTurn > 0)
-    }
-
-    // Only the folders this turn actually wrote to, each with its own command. Running every
-    // folder's suite after a one-line edit in one of them turns a thirty-second turn into
-    // three minutes, and the folders that were not touched cannot have been broken.
-    const jobs = this.verifyJobs()
+    // Only the folders this turn actually wrote CODE to, each with its own command. Running
+    // every folder's suite after a one-line edit in one of them turns a thirty-second turn
+    // into three minutes, and the folders that were not touched cannot have been broken —
+    // nor can one where only a letter or a README was written ("составь email" once spent a
+    // `dotnet build` on a task with no source in it). Read off what was WRITTEN, not off the
+    // contract's `changesCode`: the artifact cannot be misjudged, and it holds with the
+    // contract absent, which is now the ordinary case.
+    const jobs = policy.buildAtEnd ? this.verifyJobs() : []
+    // Prose needs no build, and leaving its writes "outstanding" would bring the next turn
+    // back here to find the same nothing.
+    if (jobs.length === 0) this.writesAtLastVerify = this.writeCount
 
     let current = result
     for (const job of jobs) {
@@ -1159,7 +1156,7 @@ export class Session {
     }
     // The contract gate runs AFTER the build gate: green code that misses a criterion is
     // a different failure from red code, and handing the model both at once buries one.
-    return await this.acceptanceGate(current, signal, writesThisTurn > 0)
+    return await this.acceptanceGate(current, signal)
   }
 
   /**
@@ -1169,16 +1166,20 @@ export class Session {
    * on turns that wrote something under a distilled contract — the exact turns where the
    * measured failure ("finished with conviction, criteria plainly unmet") lives.
    */
-  private async acceptanceGate(
-    result: TurnResult, signal?: AbortSignal,
-    /** Whether the turn changed the workspace — in `fast` that alone opens the audit. */
-    wrote = false,
-  ): Promise<TurnResult> {
+  private async acceptanceGate(result: TurnResult, signal?: AbortSignal): Promise<TurnResult> {
+    if (!this.policy.audit) return result
     const contract = this.meta.contract
     // A SATISFIED contract has retired: the follow-up turns after a finished task must
     // not keep paying an audit (and a cache displacement) for criteria already met.
     if (contract === undefined || contract.satisfied === true) return result
     if (result.stoppedBecause !== 'done') return result
+    // The audit is over WORK: code written since it last looked. A turn that wrote no code
+    // has nothing new for it to judge, and judging it anyway is how a short request that
+    // did not replace the contract — "now draft the release note" — was audited against the
+    // previous task's criteria and handed back to go and satisfy them. An unattended run is
+    // the exception: nobody is there, and its "done" is only believed once the audit agrees.
+    const codePending = this.codeWriteCount > this.codeWritesAtLastAudit
+    if (!codePending && !this.unattendedActive) return result
     // The audit runs when the task looks OVER, not on every intermediate done-turn of a long
     // one: each check displaces the server cache (minutes of re-prefill on a fat session),
     // and an intermediate turn's work is audited anyway by whichever later turn ends it.
@@ -1197,10 +1198,10 @@ export class Session {
     const todos = this.opts.toolset.todos?.list() ?? []
     const planFinished = todos.length > 0 && todos.every((t) => t.status === 'completed')
     // In `fast` the plan is never nudged and so never reliably finished, and the phrase
-    // match alone missed three live runs in a row; a turn that WROTE is the honest trigger
+    // match alone missed three live runs in a row; code WRITTEN is the honest trigger
     // there. Affordable now that the audit is a pure append (no cache displacement) and its
     // evidence is bounded to a line per criterion.
-    const wroteInFast = this.gateProfile === 'fast' && wrote
+    const wroteInFast = this.policy.auditOnWrite && codePending
     if (!planFinished && !saysFinished(result.finalText) && !wroteInFast) return result
     let current = result
     // Three outcomes, not two. "Clean" and "unmet" want opposite things from the diff review
@@ -1253,6 +1254,9 @@ export class Session {
       // `withUnreportedCriteria`.
       const report = withUnreportedCriteria(contract.criteria, raw)
       this.lastUnmetCount = report.unmet.length
+      // It has seen the work up to here. What a fixer writes next is the next round's to
+      // judge, or — when the rounds run out — the next finished turn's.
+      this.codeWritesAtLastAudit = this.codeWriteCount
       // The audit's verdict becomes part of the contract itself: every later swap promotes
       // "where the task actually STANDS" into message 0, not only what done would mean.
       contract.checkedState = renderCheckedState(contract, report)
@@ -1335,9 +1339,9 @@ export class Session {
     explicit = false,
   ): Promise<TurnResult> {
     if (signal?.aborted || result.stoppedBecause !== 'done') return result
-    // The fresh reviewer is a six-step sub-agent; `fast` does without it — unless asked.
-    // See `GateProfile`.
-    if (this.gateProfile === 'fast' && !explicit) return result
+    // The fresh reviewer is a six-step sub-agent; only `thorough` runs it by itself. `/review`
+    // typed by a person runs it whatever the profile or the switch says.
+    if (!explicit && !this.policy.review) return result
     // Read HERE, not carried in: a fixer turn inside the acceptance gate can compact, and
     // `applyCompactionSwap` remaps the field while a value captured before the gate keeps
     // pointing into the pre-swap transcript. `slice(190)` of a 9-message transcript is
@@ -1345,8 +1349,20 @@ export class Session {
     // reviewer was ever built and before any review event was emitted — on exactly the
     // largest turns, the ones a compaction happens on. The comment at the capture site names
     // this hazard for the OUTER turn; it applies just as much to the fixer's.
-    const diff = this.turnDiffText(this.turnStartIndex)
-    if (diff.length < DIFF_REVIEW_MIN_CHARS) return result
+    //
+    // By itself it reads this turn's CODE: a letter saved to disk is not a change for a
+    // reader told to go through "the code around it". Asked for, it reads everything since
+    // the last review, prose included — with the checks off nothing reviewed each turn, and
+    // `/review` after three turns of work means all three.
+    const diff = explicit
+      ? this.turnDiffText(this.reviewFromIndex)
+      : this.turnDiffText(this.turnStartIndex, { codeOnly: true })
+    if (explicit && diff === '') {
+      const endEmpty = this.beginStage('review', 'looking for a change to review')
+      endEmpty('nothing to review — nothing was changed since the last review')
+      return result
+    }
+    if (!explicit && diff.length < DIFF_REVIEW_MIN_CHARS) return result
     // Not when there is no room for both. The reviewer's prompt shares nothing with the
     // conversation, so the server holds two prefixes at once -- and it does, for free, until
     // the conversation is nearly the whole window. Measured, one foreign prompt against a
@@ -1383,6 +1399,8 @@ export class Session {
       ? 'stopped before it reached a verdict'
       : issues.length === 0 ? 'no findings' : `${issues.length} finding${issues.length === 1 ? '' : 's'}`)
     if (issues !== null) {
+      // Everything up to here has had its review; the fixer's changes below are the next one's.
+      this.reviewFromIndex = this.transcript.messages().length
       this.lastUnmetCount = Math.max(this.lastUnmetCount ?? 0, issues.length)
       this.opts.onAcceptance?.({ met: 0, unmet: issues.length, round: 1, kind: 'review' })
     }
@@ -1557,18 +1575,20 @@ export class Session {
    * result line carries no diff at all, and a turn of pure creation is the biggest change
    * a review can look at.
    */
-  private turnDiffText(turnStartIndex: number): string {
+  private turnDiffText(turnStartIndex: number, opts: { codeOnly?: boolean } = {}): string {
+    const wanted = (path: string): boolean => opts.codeOnly !== true || isCodePath(path)
     const parts: string[] = []
     for (const m of this.transcript.messages().slice(turnStartIndex)) {
       if (m.role === 'tool' && typeof m.content === 'string' && m.content.startsWith('--- ')) {
-        parts.push(m.content)
+        // The header's first line is `--- path` (`edit-file.ts`).
+        if (wanted(m.content.split('\n', 1)[0]!.slice(4).trim())) parts.push(m.content)
         continue
       }
       for (const call of m.tool_calls ?? []) {
         if (call.function.name !== 'Write') continue
         try {
           const args = JSON.parse(call.function.arguments) as { path?: unknown; content?: unknown }
-          if (typeof args.path === 'string' && typeof args.content === 'string') {
+          if (typeof args.path === 'string' && typeof args.content === 'string' && wanted(args.path)) {
             // Generous, and ANNOUNCED when it clips: silently truncated input is the one
             // failure nobody can trace afterwards. The window affords whole files.
             const body = args.content.length > 24_000
@@ -1653,18 +1673,18 @@ export class Session {
    * correct one.
    */
   private async understandingGate(
-    tool: string, port: InteractionPort, signal?: AbortSignal,
+    tool: string, argsJson: string, port: InteractionPort, signal?: AbortSignal,
   ): Promise<string | undefined> {
     if (!WRITE_TOOLS.has(tool)) return undefined
+    // `thorough` with the checks on, and nothing else: together the pair is ~30 s at the
+    // first write, `fast` measured them finding nothing, and "Checks off" promises nothing
+    // checks until asked. There is no `/premises` to ask for; they simply wait.
+    if (!this.policy.firstWrite) return undefined
     const contract = this.meta.contract
     if (contract === undefined || contract.satisfied === true) return undefined
-    // Neither check in `fast`: together they are ~30 s at the first write, and on the turns
-    // measured they found nothing. See `GateProfile`.
-    if (this.gateProfile === 'fast') return undefined
-    // Nor with the checks switched off: "Checks off" promises that nothing checks until
-    // asked, and this pair ran anyway — forty seconds of gates on a turn the person had
-    // told to stop checking. There is no `/premises` to ask for; they simply wait.
-    if (this.gateMode === 'manual') return undefined
+    // The first write of CODE. A notes file or a README written on the way is not the moment
+    // the reading of the request, or what the change assumes about the code, is committed to.
+    if (!callWritesCode(tool, argsJson)) return undefined
 
     // The premise check first, and both of these run at the same moment for the same reason:
     // it is the last one that is free. They answer different questions in a deliberate order,
@@ -1810,7 +1830,7 @@ export class Session {
    * verify command is configured; with one, its paragraph already names the compiler check.
    */
   private compilerCheckAvailable(): boolean {
-    if (this.gateMode === 'manual') return false
+    if (!this.policy.buildAfterEdit) return false
     if (this.opts.csharpCheck === null) return false
     return this.opts.csharpCheck !== undefined || navProcess() !== null
   }
@@ -1820,7 +1840,7 @@ export class Session {
     // command by itself, so the model is left to run it — which is what "off" asks for. A
     // session switched to manual mid-way keeps the paragraph until its next compaction
     // swap rebuilds message 0; a stale sentence for a while, never a rewritten prefix.
-    if (this.gateMode === 'manual') return undefined
+    if (!this.policy.buildAfterEdit) return undefined
     const primary = this.workspace.mounts.find((m) => m.primary) ?? this.workspace.mounts[0]
     if (primary === undefined) return undefined
     const spec = this.opts.verifyFolders?.[primary.name] ?? this.opts.verify
@@ -1951,31 +1971,41 @@ export class Session {
     }
   }
 
-  /** Records the folder a successful write landed in, from the tool call's raw arguments. */
-  private notePathWritten(rawArgs: string | undefined): void {
-    if (rawArgs === undefined) return
+  /** Records the folder a successful write landed in, from the tool call's raw arguments.
+   * True when that write was code. */
+  private notePathWritten(rawArgs: string | undefined): boolean {
+    if (rawArgs === undefined) return false
     let parsed: { path?: unknown; to?: unknown }
     try {
       parsed = JSON.parse(rawArgs) as { path?: unknown; to?: unknown }
     } catch {
-      return
+      return false
     }
     // `MoveFile` reports its destination as `to`; every other write tool uses `path`.
     const target = typeof parsed.path === 'string' ? parsed.path
       : typeof parsed.to === 'string' ? parsed.to : undefined
-    if (target === undefined) return
-    this.noteWrittenTarget(target)
+    if (target === undefined) return false
+    return this.noteWrittenTarget(target)
   }
 
-  /** One workspace-relative path a tool wrote: the folder to verify, the file to check. */
-  private noteWrittenTarget(target: string): void {
+  /**
+   * One workspace-relative path a tool wrote: the folder to verify, the file to check.
+   *
+   * Code only, and that one filter is what keeps every build and compiler check off prose:
+   * both read their work from the two sets below, so a letter or a README written into the
+   * project leaves them empty and nothing runs. True when the path was code and recorded.
+   */
+  private noteWrittenTarget(target: string): boolean {
+    if (!isCodePath(target)) return false
     try {
       const abs = this.workspace.resolve(target)
       const mount = this.workspace.mountFor(abs)
       if (mount) this.writtenMounts.add(mount.name)
       this.writtenSinceCheck.add(abs)
+      return true
     } catch {
       // A path the jail refuses cannot have been written; nothing to record.
+      return false
     }
   }
 
@@ -2256,27 +2286,30 @@ export class Session {
   }
 
   /**
-   * Whether the end-of-turn gates run by themselves, or only when asked.
+   * Whether the checks run by themselves in this session (`'auto'`), or only when asked.
    *
-   * `'manual'` stops the three that fire AFTER the work: the build, the acceptance audit
-   * and the diff review. The three before it — contract, premises, understanding — stay on,
-   * and that asymmetry is the point rather than an oversight. The pre-turn gates shape what
-   * gets written and cost one generation each; the post-turn gates check what was written
-   * and cost, between them, up to three full agent turns, four command runs and a cold
-   * prefill on the NEXT turn. It is the second group that turns "change these three lines"
-   * into a five-minute wait, and the second group whose answer keeps until you are done.
+   * `'manual'` is the window's "Checks off", and it means all of them: no contract, no plan
+   * seeded or nudged, nothing at the first write, no build after an edit, no audit, no
+   * review — `/check` and `/review` run them on demand. It used to stop only the three that
+   * fire after the work, on the argument that the ones before it merely shape what gets
+   * written; in daily use the contract folded into the request and the plan it seeded were
+   * as much of a leash as the audit, and a turn that wrote nothing still opened the audit.
    *
    * Held on the session rather than in a settings file: it is a judgement about the piece
-   * of work in front of you, not about the project. A new session starts automatic again,
-   * which is the safer default to forget.
+   * of work in front of you. A session with no recorded choice follows `SessionOptions.checks`.
    */
   get gateMode(): 'auto' | 'manual' {
-    return this.meta.gateMode ?? 'auto'
+    return this.meta.gateMode ?? (this.opts.checks === 'off' ? 'manual' : 'auto')
   }
 
   /** See `GateProfile`. A settings-file decision, unlike `gateMode`, which is per session. */
   private get gateProfile(): GateProfile {
     return this.opts.gates ?? 'thorough'
+  }
+
+  /** What runs by itself right now — the switch and the profile, read as one table. */
+  private get policy(): ChecksPolicy {
+    return checksPolicy(this.gateMode === 'auto', this.gateProfile)
   }
 
   set gateMode(mode: 'auto' | 'manual') {
@@ -2353,17 +2386,58 @@ export class Session {
       return current
     }
 
-    const contract = this.meta.contract
-    if (contract === undefined) {
+    const stored = this.meta.contract
+    if (stored !== undefined) {
+      // `satisfied` would make `freshReview` skip its own guard chain; cleared so an explicit
+      // ask always runs. The flag means "the gates decided this is finished", and the person
+      // asking again is overriding exactly that.
+      stored.satisfied = false
+      return await this.freshReview(stored, asked, signal, true)
+    }
+    // With the checks off nothing distilled a contract, and that is now the ordinary case —
+    // so `/review` makes one for itself from what the person asked since the last review,
+    // and keeps it to itself: stored, it would start auditing and nudging later turns that
+    // the person chose to run free. Only once there is a change: the distillation is a
+    // generation, and a review of nothing does not need one.
+    if (this.turnDiffText(this.reviewFromIndex) === '') {
       const endStage = this.beginStage('review', 'looking for a change to review')
-      endStage('no contract on this session — there is nothing to review it against')
+      endStage('nothing to review — nothing was changed since the last review')
       return asked
     }
-    // `satisfied` would make `freshReview` skip its own guard chain; cleared so an explicit
-    // ask always runs. The flag means "the gates decided this is finished", and the person
-    // asking again is overriding exactly that.
-    contract.satisfied = false
+    const asks = this.asksSinceReview()
+    // No words to hold it to — they were folded into a compaction's summary — leaves the
+    // question every review asks anyway: does it work, and does it break what is around it.
+    let contract: TaskContract = { goal: 'the change works and breaks nothing around it', criteria: [], constraints: [] }
+    if (asks !== '') {
+      const endDistill = this.beginStage('contract', 'working out what was asked')
+      const distilled = await distillContract(
+        this.opts.client, this.transcript.messages(), asks, signal, this.stepSchemas(), { lean: true },
+      )
+      endDistill(distilled === null ? 'reviewing against your own words' : 'done')
+      if (signal?.aborted) return asked
+      // A distillation that failed still leaves the request itself, which the brief puts
+      // above the contract and tells the reader to trust over it.
+      contract = distilled ?? { goal: asks.split('\n', 1)[0]!.slice(0, 200), criteria: [], constraints: [] }
+      contract.request = asks
+    }
     return await this.freshReview(contract, asked, signal, true)
+  }
+
+  /**
+   * What the person typed since the last review, oldest first — the harness's own notes, the
+   * contract folded in front of a request and the mode note all left out. Read from the
+   * transcript rather than remembered, so a resumed session can be reviewed too.
+   */
+  private asksSinceReview(): string {
+    const asks: string[] = []
+    for (const m of this.transcript.messages().slice(this.reviewFromIndex)) {
+      if (m.role !== 'user' || typeof m.content !== 'string') continue
+      const split = splitUserMessage(m.content)
+      if (split.harness === true) continue
+      const text = split.text.replace(/^\(mode is now [^)]*\)\n/, '').trim()
+      if (text !== '') asks.push(text)
+    }
+    return asks.length <= 1 ? (asks[0] ?? '') : asks.map((a, i) => `${i + 1}. ${a}`).join('\n\n')
   }
 
   approxTokens(): number {
@@ -2581,8 +2655,9 @@ export class Session {
           // and jailed the path, and the transcript is not a place to re-derive it from.
           // A tool whose writes are not in its arguments — a rename across the tree — names
           // them in its result instead (`ToolResult.wrote`).
-          this.notePathWritten(this.lastToolArgs.get(name))
-          for (const path of wrote) this.noteWrittenTarget(path)
+          let code = this.notePathWritten(this.lastToolArgs.get(name))
+          for (const path of wrote) code = this.noteWrittenTarget(path) || code
+          if (code) this.codeWriteCount += 1
         } else if (COMMAND_TOOLS.has(name)) this.commandCount += 1
         this.noteModelRanVerify(name, this.lastToolArgs.get(name))
       }
@@ -2711,20 +2786,32 @@ export class Session {
       // transcript describes work that was never asked for.
       const todosBefore = this.opts.toolset.todos?.list()
       let turnText = promptText
-      if (this.gateProfile !== 'off' && (sendOpts?.distill ?? looksLikeTask(text)) && looksLikeTask(text)) {
+      if (this.policy.contract && (sendOpts?.distill ?? looksLikeTask(text)) && looksLikeTask(text)) {
         // The very first thing a long message pays for, and it happens BEFORE the model
         // says a word — so on a task-shaped request the window's first ten to sixty
         // seconds used to be blank. Naming it is most of the fix.
         const endDistill = this.beginStage('contract', 'working out what you asked for')
         const contract = await distillContract(
           this.opts.client, this.transcript.messages(), userText, signal, this.stepSchemas(),
-          // `fast` distils the smaller contract: a goal and at most four criteria.
-          { lean: this.gateProfile === 'fast' },
+          { lean: this.policy.leanContract },
         )
         endDistill(contract === null
           ? 'no contract — the turn runs without one'
-          : `${contract.criteria?.length ?? 0} criteri${(contract.criteria?.length ?? 0) === 1 ? 'on' : 'a'}`)
-        if (contract !== null) {
+          : contract.changesCode === false
+            ? 'not a change to code — this one runs without checks'
+            : `${contract.criteria?.length ?? 0} criteri${(contract.criteria?.length ?? 0) === 1 ? 'on' : 'a'}`)
+        if (contract !== null && contract.changesCode === false) {
+          // A letter, an explanation, a document: the checks are about code and have nothing
+          // to hold this to. Kept, a contract for it was folded into the request as criteria
+          // "answerable by running a command", seeded a plan, and audited and reviewed the
+          // answer — the reviewer reading through the project for a task about none of it.
+          // It still REPLACES the task before it, as every task-shaped request does: the
+          // previous task's criteria must not go on auditing the turns of this one.
+          if (this.meta.contract !== undefined) {
+            delete this.meta.contract
+            this.opts.store?.saveMeta(this.meta)
+          }
+        } else if (contract !== null) {
           // The user's own words ride along with the distillation of them: the understanding
           // check reads the request, never the summary, because a summary is where the
           // misreading would already have happened.
@@ -2996,7 +3083,13 @@ export class Session {
     if (this.writeCount === this.writesAtLastVerify) return
     // "Checks off" means this one too: the chip says nothing builds until asked, and the
     // build after every edit is the most frequent check there is. `/check` runs it by hand.
-    if (this.gateMode === 'manual') return
+    if (!this.policy.buildAfterEdit) return
+    // Only CODE is recorded here (`noteWrittenTarget`), so writes with nothing in this set
+    // were prose — a letter, a README — and there is nothing for a compiler or a build to say.
+    if (this.writtenSinceCheck.size === 0) {
+      this.writesAtLastVerify = this.writeCount
+      return
+    }
 
     // Right after the step that wrote — not, as it used to be, after the RUN of writes ends.
     //
@@ -3161,8 +3254,9 @@ export class Session {
     // outlives tasks, and a new small request re-pointed at the previous task's stale
     // plan read as an instruction to resume it.
     if (this.meta.contract === undefined || this.meta.contract.satisfied === true) return
-    // No nudges in `fast`: each one the model answers costs a `TodoWrite` step.
-    if (this.gateProfile === 'fast') return
+    // Only `thorough` with the checks on: each nudge the model answers costs a `TodoWrite`
+    // step, and with the checks off the plan is the model's own business.
+    if (!this.policy.planNudges) return
     const todos = this.opts.toolset.todos?.list() ?? []
     if (todos.length < 2) return // a one-item plan IS its own focus
     const current = todos.find((t) => t.status === 'in_progress') ?? todos.find((t) => t.status === 'pending')
@@ -3200,7 +3294,7 @@ export class Session {
     if (store.list().some((t) => t.status !== 'completed')) return
     if (!Array.isArray(contract.criteria) || contract.criteria.length === 0) return
     // `fast` keeps the free scaffold and skips the decomposition generation.
-    const big = this.gateProfile !== 'fast' &&
+    const big = this.policy.decompose &&
       (contract.criteria.length >= 4 || contract.interfaces !== undefined)
     if (big) {
       const planned = await decomposeTodos(
@@ -3330,7 +3424,7 @@ export class Session {
     const store = this.opts.toolset.todos
     if (store === undefined) return
     if (this.meta.contract === undefined || this.meta.contract.satisfied === true) return
-    if (this.gateProfile === 'fast') return // see `injectPlanFocus`
+    if (!this.policy.planNudges) return // see `injectPlanFocus`
     if (store.list().filter((t) => t.status !== 'completed').length < 2) return
     if (store.version !== this.lastTodoVersion) {
       this.syncUpkeepMarkers()
@@ -3981,6 +4075,7 @@ export class Session {
     // source `turnDiffText` has for a new file) were silently missing from the diff review.
     const tailStart = next.messages().length - keptMessages
     this.turnStartIndex = Math.min(this.turnStartIndex, tailStart)
+    this.reviewFromIndex = Math.min(this.reviewFromIndex, tailStart)
     this.opts.onCompaction?.({
       state: 'applied',
       droppedMessages,
@@ -4128,7 +4223,7 @@ export class Session {
    * "is there anything new to snapshot, and is it time". See `checkpointLongTurn`. */
   private writesAtLastCheckpoint = 0
   private writesAtLastVerify = 0
-  /** Absolute paths written since the last check of any kind; what the compiler check reads. */
+  /** Absolute paths of CODE written since the last check of any kind; what the compiler check reads. */
   private readonly writtenSinceCheck = new Set<string>()
   /** What the last mid-turn check said, so an unchanged answer is reported as unchanged
    * rather than repeated in full. 'ok' or a clipped failure fingerprint. */
@@ -4194,8 +4289,16 @@ export class Session {
   private readonly lastToolArgs = new Map<string, string>()
   /** Cumulative across the session; see `turnFootprint`. */
   private writeCount = 0
-  /** Folders written to in the CURRENT turn, cleared at the start of each one. Verify
-   * runs where the change landed, not everywhere. */
+  /** The write calls among `writeCount` that changed CODE (`checks.ts`), and how many of them
+   * the acceptance audit had seen when it last looked. The audit judges work, so it opens
+   * only while the first is ahead of the second. */
+  private codeWriteCount = 0
+  private codeWritesAtLastAudit = 0
+  /** Where the next explicit `/review` starts reading, in the CURRENT transcript — just past
+   * the last review, remapped at every compaction swap like `turnStartIndex`. */
+  private reviewFromIndex = 0
+  /** Folders CODE was written to in the current turn, cleared at the start of each one.
+   * Verify runs where the change landed, not everywhere — and not where only prose did. */
   private writtenMounts = new Set<string>()
   /**
    * Whether the next request's prompt is one llama.cpp has NOT already processed.
@@ -4527,7 +4630,7 @@ export class Session {
     }
     // Only with somewhere to ask. Without a port the check could read the request three ways
     // and have nobody to put the disagreement to, which is a generation spent on nothing.
-    if (port) agentOpts.onBeforeTool = (name) => this.understandingGate(name, port, signal)
+    if (port) agentOpts.onBeforeTool = (name, args) => this.understandingGate(name, args, port, signal)
     if (this.memoryText !== undefined) agentOpts.memory = this.memoryText
     if (this.notesText !== undefined) agentOpts.notes = this.notesText
     if (this.skillsText !== undefined) agentOpts.skills = this.skillsText

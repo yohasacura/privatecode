@@ -120,9 +120,15 @@ export function loadVerify(workspaceRoot: string): LoadedVerify {
   //
   // One sentence and the example: the window shows this on every session of a workspace
   // without a check, and a paragraph there read as an alarm rather than a note.
-  problems.push(
-    'No check is configured, so your build and tests never run by themselves after an edit. ' +
-    'Add { "verify": { "command": "dotnet build" } } to .privatecode/settings.json.',
-  )
+  problems.push(NO_CHECK_NOTICE)
   return { verify: null, problems }
 }
+
+/**
+ * The notice above, by name, so the host can hold it back while the checks are off — the
+ * build never runs by itself then whether a command is configured or not, and the sentence
+ * would describe the switch rather than the settings file. It is said once they are on.
+ */
+export const NO_CHECK_NOTICE =
+  'No check is configured, so your build and tests never run by themselves after an edit. ' +
+  'Add { "verify": { "command": "dotnet build" } } to .privatecode/settings.json.'

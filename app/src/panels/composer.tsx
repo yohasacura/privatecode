@@ -41,9 +41,9 @@ const MODE_TONE: Partial<Record<AgentMode, 'blue' | 'yellow' | 'red'>> = {
 }
 
 const CHECKS_ON_HINT =
-  'After a turn that changed code: the build and tests run, the work is audited against ' +
-  'what you asked for, and a reader with a fresh context goes over the diff. Turn them off ' +
-  'to run them by hand with /check and /review.'
+  'Checks are ON for this session. Around changes to code — never a letter or a note — the ' +
+  'build runs after edits, the work is audited against what you asked for, and a reader ' +
+  'with a fresh context goes over the diff. Turn them off to let the agent work freely.'
 /** The pickers under the box and the hint chips inside it, as one vocabulary. */
 const PICKER = 'mx-auto mb-1.5 w-full max-w-(--read) overflow-hidden rounded-md border border-border bg-panel font-ui'
 const PICKER_ITEM = 'flex w-full cursor-pointer items-baseline gap-2.5 border-0 bg-transparent px-3 py-1.5 text-left text-[12.5px] text-dim hover:bg-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent'
@@ -57,9 +57,9 @@ const SUGGEST = 'max-w-full cursor-pointer truncate rounded-full border border-b
 const SUGGEST_ON = 'border-accent text-fg'
 
 const CHECKS_OFF_HINT =
-  'Checks are OFF for this session. Nothing runs the build, audits the work against what ' +
-  'you asked for, or reviews the diff until you ask: /check runs the build and tests, ' +
-  '/review runs the independent read.'
+  'Checks are off: the agent works freely, and nothing builds, audits or reviews by itself. ' +
+  '/check runs the build and tests, /review has a fresh reader go over everything changed ' +
+  'since the last review. Turn them on for work that should be held to its goal.'
 
 /** Well under `protocol.ts`'s 1 MB line cap: one oversized request line makes the sidecar
  * treat the stream as compromised and exit, and the shell has no respawn path. Refusing
@@ -115,8 +115,13 @@ const GATE_COMMANDS: Record<string, 'build' | 'review'> = {
  */
 const DOCTOR_COMMANDS: readonly string[] = ['/doctor', '/доктор']
 
-const GATES_OFF = '/gates off'
-const GATES_ON = '/gates on'
+/** The composer switch, typed. `/gates` is the older spelling and still works. */
+const CHECKS_SWITCH: Record<string, 'auto' | 'manual'> = {
+  '/checks on': 'auto',
+  '/checks off': 'manual',
+  '/gates on': 'auto',
+  '/gates off': 'manual',
+}
 
 /** Claude Code's plugin commands, run by the host and answered in the transcript (docs/PLUGINS-2026-09.md). */
 const PLUGIN_COMMANDS = ['/plugin', '/plugins', '/reload-plugins']
@@ -444,8 +449,8 @@ export function Composer({
     name: 'review',
     description: 'Have a reader with a fresh context go over the change now',
   }, {
-    name: 'gates',
-    description: 'gates off — stop building, auditing and reviewing after every turn. gates on — resume',
+    name: 'checks',
+    description: 'checks on — build, audit and review code changes by themselves. checks off — only when you ask',
   }, {
     name: 'doctor',
     description: 'Diagnose this agent from its own history and save an anonymous report you can send',
@@ -881,23 +886,23 @@ export function Composer({
       runGate(gate)
       return
     }
-    if (text.trim().toLowerCase() === GATES_OFF || text.trim().toLowerCase() === GATES_ON) {
-      const manual = text.trim().toLowerCase() === GATES_OFF
+    const switched = CHECKS_SWITCH[text.trim().toLowerCase()]
+    if (switched !== undefined) {
       setInput('')
       setMention(null)
       // Through the SAME setter the chip uses. It did not, and the two disagreed: the
       // command changed the session and the chip went on showing the old state, which is
       // worse than having no chip — an indicator that is sometimes wrong is one you have to
       // stop believing.
-      setGateMode(manual ? 'manual' : 'auto')
+      setGateMode(switched)
       dispatch({
         type: 'error-note',
         tone: 'info',
-        message: manual
-          ? 'Automatic checks are off for this session. Nothing builds, audits or reviews '
-            + 'until you ask: /check runs the build and tests, /review runs the '
-            + 'independent read of the diff.'
-          : 'Automatic checks are back on for this session.',
+        message: switched === 'manual'
+          ? 'Checks are off for this session. Nothing builds, audits or reviews by itself: '
+            + '/check runs the build and tests, /review has a fresh reader go over the changes.'
+          : 'Checks are on for this session: code changes are built, audited and reviewed '
+            + 'by themselves.',
       })
       return
     }
@@ -924,7 +929,7 @@ export function Composer({
         return
       }
       // A built-in reaching here means it was written with arguments it does not take
-      // (`/review now`), or `/gates` without on|off. Same NOTE treatment as `/compact`:
+      // (`/review now`), or `/checks` without on|off. Same NOTE treatment as `/compact`:
       // send-failed would end a turn that is streaming perfectly well.
       if (name === 'doctor' || name === 'доктор') {
         dispatch({ type: 'error-note', message: `/${name} takes no arguments. Nothing was sent.` })
@@ -934,8 +939,8 @@ export function Composer({
         dispatch({ type: 'error-note', message: `/${name} takes no arguments. Nothing was sent.` })
         return
       }
-      if (name === 'gates') {
-        dispatch({ type: 'error-note', message: '/gates takes "on" or "off". Nothing was sent.' })
+      if (name === 'checks' || name === 'gates') {
+        dispatch({ type: 'error-note', message: `/${name} takes "on" or "off". Nothing was sent.` })
         return
       }
       if (name === 'compact') {
@@ -1641,6 +1646,10 @@ export function Composer({
             <div class="text-[11.5px] leading-[1.5] text-faint">
               Empty means no limit. The hour budget cuts a running turn; questions park in
               the decision queue instead of blocking.
+              {/* The run ends on "finished" only once the audit agrees — and with the checks
+                  off there is no audit, so it ends on the agent's word. Said here, at the one
+                  moment it can still be changed. */}
+              {gateMode === 'manual' && ' Checks are off, so the run ends when the agent says it is finished; turn them on to have the work audited first.'}
             </div>
             <div class="flex justify-end gap-1.5">
               <Button size="sm" onClick={() => setRunConfigOpen(false)}>Cancel</Button>

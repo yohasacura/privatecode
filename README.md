@@ -16,10 +16,12 @@ to and when it must not be rewritten. Those measurements, and what was built on 
   front of every write and every command
 - searches with ripgrep, understands C# through Roslyn, outlines code through tree-sitter,
   and can query a SQL Server read-only
-- checks its own work before it says it is finished: it distils your request into a contract,
-  asks when its own readings of that request disagree, states what it is assuming and verifies
-  the quotes, runs your project's own build or test command, and audits the result against the
-  contract — each of those is a gate that can hand the work back
+- works freely by default, the way Claude Code does — and for work that should be held to its
+  goal, checks it on request: switch the checks on and it distils your request into a
+  contract, asks when its own readings of that request disagree, states what it is assuming
+  and verifies the quotes, runs your project's own build or test command, and audits the result
+  against the contract — each of those a gate that can hand the work back, and all of them
+  about code only. `/check` and `/review` run them once, whenever you ask
 - keeps going on long tasks by compacting its own history rather than losing the thread
 
 ## Requirements
@@ -129,11 +131,11 @@ table: [docs/GIT.md](docs/GIT.md).
 line numbers. Bigger means fewer `LS` and `Glob` steps on a large workspace, paid
 once when the workspace opens (the prefix is prewarmed then, while you type).
 `"compaction": { "triggerTokens": 140000 }` is where a long session folds its history.
-A configured `verify` command runs by itself right after every step that edits files, and
-the model is told so; it should not be running the build itself.
+With the checks on, a configured `verify` command runs by itself right after every step that
+edits code, and the model is told so; it should not be running the build itself.
 
-**C# edits are checked by the compiler before the build gets a turn.** After a step that
-edited only `.cs` files, the Roslyn helper re-reads those files into its compilation and
+**C# edits are checked by the compiler before the build gets a turn** (checks on). After a
+step that edited only `.cs` files, the Roslyn helper re-reads those files into its compilation and
 reports the errors they introduced — with file, line and code — in a few hundred
 milliseconds on a small project and two or three seconds on a three-hundred-file backend,
 where `dotnet build` is two and ten seconds respectively. The verify command still runs
@@ -151,17 +153,25 @@ tokens) and reads it back when you resume — half a second, measured, where a l
 conversation used to be re-read for minutes. Without the flag nothing changes: the transcript
 is prefilled in the background as before.
 
-**`"gates"` decides how much checking a task-shaped request buys.** `thorough` (the default)
-is everything: the request is distilled into a contract, the plan is seeded, what the change
+**The checks are off unless you turn them on.** With the **Checks** switch in the composer
+off — the default for every new session — the agent works freely: no contract is distilled,
+no plan is seeded or nudged, nothing builds, audits or reviews by itself. `/check` runs the
+build and tests; `/review` has a reader with a fresh context go over everything changed since
+the last review, against what you asked for in that time. Switch the checks on (or `/checks
+on`) for work that should be held to its goal, or put `"checks": "on"` in a project's
+`settings.json` to start its sessions that way. On, they are about code only: a request that
+changes none — a letter, an explanation — runs free, a README or a note written into the
+project builds nothing, and the audit judges code written since it last looked rather than
+every turn that follows an unfinished task. An unattended run with the checks off ends when
+the agent says it is finished; with them on, only once the audit agrees.
+
+**`"gates"` decides how much the checks run, once they are on.** `thorough` (the default) is
+everything: the request is distilled into a contract, the plan is seeded, what the change
 assumes about the code is checked against the files, the request is read three ways for a
 disagreement worth asking about, the work is audited against the contract and an independent
 reviewer reads the diff. Measured, that is about a minute on top of a task whose own work
 takes fifty seconds. `fast` keeps the contract and the audit — what holds a task to its goal
-and catches "done" said early — and drops the rest; `off` runs a turn the way it ran before
-contracts existed. The **Checks on / off** chip in the composer is the other axis, per
-session: off means nothing checks by itself — not the build after an edit, not the
-first-write checks, not the audit — until you ask with `/check` (the build) or `/review` (the
-independent read of the diff). An explicit `/review` runs whatever the profile says.
+and catches "done" said early — and drops the rest; `off` keeps only the build.
 
 **Deliberately absent:** no images or screenshots — the model this is built for has no
 vision tower (DESIGN.md §6). And the app itself opens exactly one network connection: the

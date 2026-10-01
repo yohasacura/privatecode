@@ -137,10 +137,10 @@ describe('the checks strip', () => {
     expect(chips[1]!.title).toBe('dotnet build in src')
   })
 
-  it('says when the checks are off, and says nothing before anything happened', () => {
+  it('shows nothing when nothing ran: checks off is the default, and the switch says so', () => {
     const session = { sessionId: 's1', mode: 'normal' as const, gateMode: 'manual' as const, contextLength: null, title: '' }
     const off = mount({ items: [user(1), prose(2)], session })
-    expect(off.querySelector('[data-strip="off"]')?.textContent).toContain('checks off')
+    expect(off.querySelector('[data-strip]')).toBeNull()
     document.body.innerHTML = ''
     const empty = mount({ session })
     expect(empty.querySelector('[data-strip]')).toBeNull()

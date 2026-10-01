@@ -23,7 +23,7 @@ import { loadSchemaBlock } from '../sql/schema-block.js'
 import { loadFormatRules } from '../format/config.js'
 import { loadHooks } from '../hooks/hooks.js'
 import { createHookEngine, type HookEngine } from '../hooks/engine.js'
-import { loadVerify } from '../verify/config.js'
+import { NO_CHECK_NOTICE, loadVerify } from '../verify/config.js'
 import { loadProjectMemory } from '../memory/project-memory.js'
 import { loadProjectNotes } from '../memory/project-notes.js'
 import { bundledSkillSources, loadSkills, projectSkillsDir, userSkillsDir, type SkillSource } from '../skills/skills.js'
@@ -39,9 +39,8 @@ import {
   parsePluginCommand, readCatalog, runPluginCommand, updateMarketplace,
   type PluginComponents,
 } from '../plugins/index.js'
-import {
-  DEFAULT_TRIGGER_TOKENS, Session, type GateProfile, type SessionOptions,
-} from '../session/session.js'
+import { DEFAULT_TRIGGER_TOKENS, Session, type SessionOptions } from '../session/session.js'
+import type { GateProfile } from '../session/checks.js'
 import { SessionStore } from '../session/store.js'
 import { clearSlotRecord } from '../session/slot-record.js'
 import { createToolset, type Toolset } from '../tools/default-set.js'
@@ -365,6 +364,9 @@ export class SessionHost {
    * window with the settings problems, because a folder silently missing from the tree is
    * indistinguishable from an empty one. */
   private workspaceProblems: string[] = []
+  /** Whether the current session's workspace names no verify command at all — said when the
+   * checks are switched on, the one moment it starts to matter. */
+  private verifyMissing = false
   private workspace: Workspace | undefined
   private client: LlamaClient | undefined
   private toolset: Toolset | undefined
@@ -1215,6 +1217,7 @@ export class SessionHost {
     if (triggerTokens !== undefined) sessionOpts.compactionDefaults = { triggerTokens }
     const gates = loadGateProfile(workspaceRoot)
     if (gates !== undefined) sessionOpts.gates = gates
+    sessionOpts.checks = loadChecksDefault(workspaceRoot)
     if (this.contextLength !== null) {
       sessionOpts.compaction = {
         contextLength: this.contextLength,
@@ -1255,6 +1258,7 @@ export class SessionHost {
     }
     const session = new Session(sessionOpts)
     this.session = session
+    this.verifyMissing = verifying.verify === null && Object.keys(profile.verify).length === 0
     // Prefill the prefix now, while the person is still reading the window or typing: the
     // first step's 20 s of silence (measured, spike/speed-baseline-probe.mts) is the tool
     // block and the map being read for the first time, and both are known before the first
@@ -1289,7 +1293,9 @@ export class SessionHost {
       ...formatting.problems,
       ...db.problems,
       ...hooking.problems,
-      ...verifying.problems,
+      // "No check is configured" only while the checks are on: with them off nothing builds
+      // by itself either way, and the notice would greet every new session for nothing.
+      ...verifying.problems.filter((p) => p !== NO_CHECK_NOTICE || session.gateMode === 'auto'),
       ...this.externalProblems,
       ...this.pluginProblems,
       ...(this.hookEngine?.problems ?? []),
@@ -1496,6 +1502,9 @@ export class SessionHost {
 
   private gatesSet(params: GatesSetParams): GatesSetResult {
     this.requireSession().gateMode = params.mode
+    // Held back while the checks were off (see the session build); this is the moment it
+    // starts being true that nothing will build by itself.
+    if (params.mode === 'auto' && this.verifyMissing) this.emit('settings.problem', { text: NO_CHECK_NOTICE })
     return {}
   }
 
@@ -3071,8 +3080,26 @@ function loadTriggerTokens(workspaceRoot: string): number | undefined {
 }
 
 /**
- * settings.json's `"gates": "thorough" | "fast" | "off"` — see `GateProfile`. Most specific
- * file wins; anything else means the default, thorough.
+ * settings.json's `"checks": "on" | "off"` — whether a session nobody has flipped the switch
+ * on starts with its checks running (`session/checks.ts`). Most specific file wins; anything
+ * else means off: the model works freely until a person asks for the checks, by the switch,
+ * by `/check` and `/review`, or by putting `"checks": "on"` here for a project that wants them.
+ */
+function loadChecksDefault(workspaceRoot: string): 'on' | 'off' {
+  for (const path of [
+    localSettingsPath(workspaceRoot), projectSettingsPath(workspaceRoot), userSettingsPath(),
+  ]) {
+    try {
+      const parsed = JSON.parse(settingsText(readFileSync(path, 'utf8'))) as { checks?: unknown }
+      if (parsed.checks === 'on' || parsed.checks === 'off') return parsed.checks
+    } catch { /* absent file, or malformed — the permission loader already reports that */ }
+  }
+  return 'off'
+}
+
+/**
+ * settings.json's `"gates": "thorough" | "fast" | "off"` — what the checks run when they are
+ * on; see `GateProfile`. Most specific file wins; anything else means the default, thorough.
  */
 function loadGateProfile(workspaceRoot: string): GateProfile | undefined {
   for (const path of [

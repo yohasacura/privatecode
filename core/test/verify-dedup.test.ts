@@ -52,7 +52,7 @@ test("the model's own successful run of the verify command replaces the automati
   dirs.push(root)
 
   const registry = new ToolRegistry()
-  registry.register(fakeTool('Write', 'wrote a.txt'))
+  registry.register(fakeTool('Write', 'wrote a.js'))
   // The fake Bash REALLY runs the check, like the live tool would: the byte it
   // appends is the model's run, and any byte after it is the app repeating the question.
   registry.register({
@@ -78,7 +78,7 @@ test("the model's own successful run of the verify command replaces the automati
         choices: [{
           message: {
             role: 'assistant', content: null,
-            tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Write', arguments: '{"path":"a.txt","content":"hi"}' } }],
+            tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Write', arguments: '{"path":"a.js","content":"hi"}' } }],
           },
           finish_reason: 'tool_calls',
         }],
@@ -112,7 +112,7 @@ test("the model's own successful run of the verify command replaces the automati
     store: new SessionStore(root),
     verify: { command: VERIFY_CMD, timeoutMs: 20_000, source: 'test' },
   })
-  const result = await session.send('change a.txt and check it')
+  const result = await session.send('change a.js and check it')
   expect(result.stoppedBecause).toBe('done')
 
   // The boundary check right after the write, then the model's own run — and nothing at the

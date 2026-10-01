@@ -162,6 +162,8 @@ test('one step writing into two folders verifies both of them', async () => {
   const engine = join(root, '..', `${basename(root)}-engine`)
   mkdirSync(engine, { recursive: true })
   dirs.push(engine)
+  // The checks are off unless settings say otherwise; this is a test of them.
+  writeFileSync(join(root, PRIVATE_DIR, 'settings.json'), JSON.stringify({ checks: 'on' }), 'utf8')
   writeFileSync(
     join(root, PRIVATE_DIR, 'workspace.json'),
     JSON.stringify({
@@ -181,16 +183,16 @@ test('one step writing into two folders verifies both of them', async () => {
   const { host, transport } = await hostOver(root, (call) =>
     call === 1
       ? multiCallSSE([
-        { id: 'w1', name: 'Write', args: JSON.stringify({ path: `${primary}/here.txt`, content: 'x' }) },
-        { id: 'w2', name: 'Write', args: JSON.stringify({ path: 'engine/there.txt', content: 'y' }) },
+        { id: 'w1', name: 'Write', args: JSON.stringify({ path: `${primary}/here.ts`, content: 'x' }) },
+        { id: 'w2', name: 'Write', args: JSON.stringify({ path: 'engine/there.ts', content: 'y' }) },
       ])
       : undefined)
   try {
     await host.handle({ id: 2, method: 'send', params: { text: 'write into both folders' } })
 
     // Both files landed...
-    expect(existsSync(join(root, 'here.txt'))).toBe(true)
-    expect(existsSync(join(engine, 'there.txt'))).toBe(true)
+    expect(existsSync(join(root, 'here.ts'))).toBe(true)
+    expect(existsSync(join(engine, 'there.ts'))).toBe(true)
     // ...and both folders were checked afterwards, not just whichever write was last.
     expect(existsSync(join(root, 'primary-verified.log'))).toBe(true)
     expect(existsSync(join(engine, 'engine-verified.log'))).toBe(true)

@@ -1,6 +1,6 @@
 import type { VNode } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
-import { Check, CircleDashed, Eye, FileCheck2, Hammer, ListChecks, ScanSearch, ShieldCheck, Undo2, X } from 'lucide-preact'
+import { Check, Eye, FileCheck2, Hammer, ListChecks, ScanSearch, ShieldCheck, Undo2, X } from 'lucide-preact'
 import type { StageName, StageRecord } from '../lib/state'
 import { cn } from '../ui/cn'
 
@@ -9,7 +9,8 @@ import { cn } from '../ui/cn'
  * (docs/UI-REDESIGN-2026-09.md §5 "The check-stage strip"). A chip says where its stage
  * is: pending is dim, running pulses and counts seconds, passed is green, handed back is
  * yellow with the count, failed is red, skipped says why. Hover for the detail the stage
- * reported. When the checks are off the strip is one dim chip, so the absence is visible.
+ * reported. Nothing ran, nothing shown: with the checks off by default, a dim "checks off"
+ * line under every answer was noise, and the composer's switch already says it.
  */
 
 const ORDER: readonly StageName[] = ['contract', 'premises', 'understanding', 'build', 'acceptance', 'review']
@@ -55,10 +56,8 @@ export function chipText(r: StageRecord, now: number): string {
   }
 }
 
-export function StageStrip({ stages, checksOff, now: nowProp }: {
+export function StageStrip({ stages, now: nowProp }: {
   stages: readonly StageRecord[]
-  /** The gates are off for this session (`gateMode === 'manual'`). */
-  checksOff: boolean
   /** The clock, for tests; the strip keeps its own otherwise. */
   now?: number
 }): VNode | null {
@@ -72,17 +71,7 @@ export function StageStrip({ stages, checksOff, now: nowProp }: {
   }, [running])
   const now = nowProp ?? clock
 
-  if (stages.length === 0) {
-    if (!checksOff) return null
-    return (
-      <div data-strip="off" class="font-ui text-[12px]">
-        <span class={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 leading-[1.4]', TONE.skipped)}>
-          <span class="inline-flex [&>svg]:size-3"><CircleDashed /></span>
-          checks off — /check, /review
-        </span>
-      </div>
-    )
-  }
+  if (stages.length === 0) return null
 
   const ordered = [...stages].sort((a, b) => ORDER.indexOf(a.stage) - ORDER.indexOf(b.stage))
   return (

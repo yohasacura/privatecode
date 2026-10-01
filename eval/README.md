@@ -6,6 +6,7 @@ command, one table, a number that says whether a change to the agent made it bet
 ```bash
 npm run eval --prefix core                                   # every task, the default profile
 npm run eval --prefix core -- --gates fast                   # under a profile
+npm run eval --prefix core -- --checks off                   # free — the app's default since 2026-10-01
 npm run eval --prefix core -- --only logger-rotation,bp-quote-cost-total
 npm run eval --prefix core -- --workspace winopt             # one project's tasks
 npm run eval --prefix core -- --label after --baseline eval/results/before.json

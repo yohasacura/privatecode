@@ -5,6 +5,7 @@
  *
  *   npm run eval --prefix core                       # everything, the default gate profile
  *   npm run eval --prefix core -- --gates fast       # under a profile
+ *   npm run eval --prefix core -- --checks off       # free: the app's default since 2026-10-01
  *   npm run eval --prefix core -- --only logger-rotation,bp-quote-cost-total
  *   npm run eval --prefix core -- --workspace winopt
  *   npm run eval --prefix core -- --label after-roslyn --baseline eval/results/before.json
@@ -32,7 +33,11 @@ function argAfter(flag: string, fallback: string): string {
 }
 
 const GATES = argAfter('--gates', 'thorough') as 'thorough' | 'fast' | 'off'
-const LABEL = argAfter('--label', GATES)
+/** `off` is the app's default since 2026-10-01 (`session/checks.ts`); `on` — the default here,
+ * so every earlier result stays comparable — runs the `--gates` profile. */
+const CHECKS = argAfter('--checks', 'on') as 'on' | 'off'
+const SETUP = CHECKS === 'off' ? 'checks off' : `gates ${GATES}`
+const LABEL = argAfter('--label', CHECKS === 'off' ? 'free' : GATES)
 const ONLY = argAfter('--only', '').split(',').map((s) => s.trim()).filter(Boolean)
 const WORKSPACE = argAfter('--workspace', '')
 const BASELINE = argAfter('--baseline', '')
@@ -112,6 +117,7 @@ async function runTask(task: Task): Promise<TaskResult> {
     mode: 'autopilot',
     repoMap,
     ...(GATES !== 'thorough' ? { gates: GATES } : {}),
+    checks: CHECKS,
     compaction: { contextLength: 196_608, triggerTokens: 140_000 },
     ...(mounts.length > 1 ? { verifyFolders } : { verify: verifyFolders[primary.name]! }),
     onVerify: (i) => log({ t: at(), kind: 'verify', detail: `${i.folder ? `${i.folder}: ` : ''}${i.command.startsWith('C#') ? 'compiler check' : 'build'} ${i.ok ? 'ok' : 'FAIL'} attempt ${i.attempt}` }),
@@ -283,7 +289,7 @@ function table(results: TaskResult[]): string {
   const body = results.map((r) => `| ${r.id} | ${r.pass ? 'PASS' : 'FAIL'} | ${r.steps} | ${r.totalSeconds} | ${r.modelSeconds} | ${r.gateSeconds} | ${r.readCalls} | ${r.writeCalls} | ${r.verifyRuns} | ${r.compilerChecks} | ${r.selfChecks} | ${r.stoppedBecause}${r.timedOut ? ' (timeout)' : ''} |`)
   const passed = results.filter((r) => r.pass).length
   const total = results.reduce((n, r) => n + r.totalSeconds, 0)
-  return `${head}\n${body.join('\n')}\n\n**${passed}/${results.length} passed**, ${Math.round(total)} s of wall clock, gates ${GATES}.`
+  return `${head}\n${body.join('\n')}\n\n**${passed}/${results.length} passed**, ${Math.round(total)} s of wall clock, ${SETUP}.`
 }
 
 function failures(results: TaskResult[]): string {
@@ -315,7 +321,7 @@ async function main(): Promise<void> {
     tasks = tasks.filter((t) => ONLY.includes(t.id))
   }
   if (WORKSPACE !== '') tasks = tasks.filter((t) => t.workspace === WORKSPACE)
-  console.log(`eval: ${tasks.length} task(s), gates ${GATES}, server ${LLAMA_URL}`)
+  console.log(`eval: ${tasks.length} task(s), ${SETUP}, server ${LLAMA_URL}`)
 
   const results: TaskResult[] = []
   const started = Date.now()
@@ -349,7 +355,7 @@ const BASE = `${LABEL}-${new Date().toISOString().replace(/[:.]/g, '-').slice(0,
 function render(results: TaskResult[], started: number, planned: number): string {
   const md = [
     `# Eval — ${LABEL}`, '',
-    `${new Date().toISOString()} · gates ${GATES} · ${Math.round((Date.now() - started) / 1000)} s` +
+    `${new Date().toISOString()} · ${SETUP} · ${Math.round((Date.now() - started) / 1000)} s` +
       (results.length < planned ? ` · ${results.length} of ${planned} tasks so far` : ''),
     '', table(results),
   ]

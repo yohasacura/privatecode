@@ -241,8 +241,8 @@ handed back (orange, with the count: "audit: 1 criterion unmet"), failed (red), 
 stage reported. The strip animates chip by chip as stages complete.
 
 Failure paths: a stage times out → "timed out" in red with the seconds; the verify command
-cannot start → "could not run: <reason>" with a link to Settings; checks off → the strip is
-one dim chip "checks off — /check, /review" so the absence is visible; a fixer round →
+cannot start → "could not run: <reason>" with a link to Settings; checks off → no strip at
+all (since 2026-10-01 off is the default, and the composer's switch is where it shows); a fixer round →
 the build chip shows "attempt 2" and the transcript below it carries the fixer's work as its
 own group.
 
@@ -438,7 +438,7 @@ every shortcut. Screen-reader text for the stage strip reads the state, not the 
   strip) are kept and extended for the new states named in §3–§8; the reducer in
   `state.ts` is untouched, which is what keeps the protocol and the behaviour stable while
   the rendering changes.
-- **The bridge**: `spike/ui-dev-bridge.mts` grows a `--scenario` flag (happy path, tool
+- **The bridge**: `scripts/ui-dev-bridge.mts` grows a `--scenario` flag (happy path, tool
   failure, approval, dropped stream, compaction, checks off) and a screenshot script that
   captures each screen in both themes at 1440×900 and 1000×625 into `docs/ui/` — the
   reviewable evidence for every phase below.

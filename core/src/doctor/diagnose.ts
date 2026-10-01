@@ -232,7 +232,7 @@ export interface Diagnosis {
   versions: Partial<Record<string, VersionStat>>
   /** Sessions that carried a distilled contract — the gate chain's entry condition. */
   contractSessions: number
-  /** Sessions where the post-turn gates were turned off by hand. */
+  /** Sessions that ran with the checks off — the default since 2026-10-01, or by hand. */
   manualGateSessions: number
   /**
    * The checks, read as actors rather than as a total.
@@ -806,7 +806,7 @@ export function renderDiagnosis(d: Diagnosis): string {
     `contracts      ${d.contractSessions} of ${d.sessions} sessions distilled one`,
   ]
   if (d.manualGateSessions > 0) {
-    out.push(`checks off     ${d.manualGateSessions} sessions ran with the post-turn gates off`)
+    out.push(`checks off     ${d.manualGateSessions} sessions ran with the checks off`)
   }
   out.push(
     `modes          ${Object.entries(d.modes).map(([m, n]) => [m, n ?? 0] as const)

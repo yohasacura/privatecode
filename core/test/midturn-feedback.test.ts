@@ -38,7 +38,8 @@ const write = (n: number) => ({
       role: 'assistant',
       tool_calls: [{
         id: `c${n}`, type: 'function',
-        function: { name: 'Write', arguments: JSON.stringify({ path: `f${n}.txt`, content: `${n}` }) },
+        // Code, not prose: a `.txt` is a note to a person, and the checks leave notes alone.
+        function: { name: 'Write', arguments: JSON.stringify({ path: `f${n}.js`, content: `${n}` }) },
       }],
     },
     finish_reason: 'tool_calls',
